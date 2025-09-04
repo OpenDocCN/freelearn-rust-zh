@@ -1,0 +1,1144 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Getting Practical with Rust</h1>
+                </header>
+            
+            <article>
+                
+<p>Even after nine chapters of Rust, we are still missing the parts that make applications pleasant to use. Many crates within Rust's ecosystem provide important functions across different domains and, depending on the application type, you might need several additional crates. In this chapter, we will look at various parts within Rust's standard library and public crate repository to make our application development faster, easier, and—in general—more productive. Although this chapter has a strong focus on command-line applications, we think that many of the recipes are <span>just as </span>applicable for <span>other types, such as web servers or shared utility libraries. You can look forward to learning how to create usable Rust programs that integrate well with the OS and behave in ways that users know and expect. On top of that, we added a recipe for machine learning enthusiasts who are looking to use Rust for their work.</span></p>
+<p>Here is the full list of what we will cover:</p>
+<ul>
+<li>Random number generation</li>
+<li>File I/O</li>
+<li>Dynamic JSON</li>
+<li>Regular expressions</li>
+<li>Filesystem access</li>
+<li>Command-line arguments</li>
+<li>Piping input and output</li>
+<li>Web requests</li>
+<li>Using state-of-the-art machine learning libraries</li>
+<li>Logging</li>
+<li>Starting subprocesses</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Generating random numbers</h1>
+                </header>
+            
+            <article>
+                
+<p>Random number generation is a fundamental technology that we use daily—encryption, simulation, approximation, testing, data selection, and more. Each of these applications has its own requirements for the random number generator (<a href="https://xkcd.com/221/">https://xkcd.com/221/</a>). While encryption needs a generator that is as close to true randomness (<a href="https://www.random.org/">https://www.random.org/</a>) as possible, simulation, testing, and data selection may need to have reproducible samples drawn from a certain distribution.</p>
+<div class="packt_infobox"><span>Due to printing constraints we had to replace the original emoji with characters and numbers. Check out the GitHub repository for this book for the full version.</span></div>
+<p>Since there is no random generator in Rust's standard library, the <kbd>rand</kbd> crate is the way to go for many projects. Let's see how we can use it.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>We can obtain randomness in just a few steps:</p>
+<ol>
+<li>Open a Terminal to create a new project using <kbd>cargo new random-numbers --lib</kbd>. Use VS Code to open the project directory.</li>
+<li>First, we need to add the <kbd>rand</kbd> crate as a dependency in <kbd>Cargo.toml</kbd>. Open it to add the following:</li>
+</ol>
+<pre style="padding-left: 60px">[dependencies]<br/>rand = {version = "0.7", features = ["small_rng"]}<br/>rand_distr = "0.2"<br/>rand_pcg = "0.2"</pre>
+<ol start="3">
+<li>Since we are exploring how to use the <kbd>rand</kbd> library, we are going to add to the test module and implement three tests. Let's start by replacing the default content in <kbd>src/lib.rs</kbd> with some required imports:</li>
+</ol>
+<pre style="padding-left: 60px">#[cfg(test)]<br/>mod tests {<br/>    use rand::prelude::*;<br/>    use rand::SeedableRng;<br/>    use rand_distr::{Bernoulli, Distribution, Normal, Uniform};<br/>}</pre>
+<ol start="4">
+<li>Right underneath the imports (inside the <kbd>mod tests</kbd> scope), we are going to add the first test to check how <strong>Random Number Generators</strong> (<strong>RNGs</strong>) and <strong>Pseudo-Random Number Generators</strong> (<strong>PRNGs</strong>) work. To have predictable random numbers, we make every generator based on the first, which uses an array literal for initialization:</li>
+</ol>
+<pre>    #[test]<br/>    fn test_rngs() {<br/>        let mut rng: StdRng = SeedableRng::from_seed([42;32]);<br/>        assert_eq!(rng.gen::&lt;u8&gt;(), 152);<br/><br/>        let mut small_rng = SmallRng::from_rng(&amp;mut rng).unwrap();<br/>        assert_eq!(small_rng.gen::&lt;u8&gt;(), 174);<br/><br/>        let mut pcg = rand_pcg::Pcg32::from_rng(&amp;mut rng).unwrap();<br/>        assert_eq!(pcg.gen::&lt;u8&gt;(), 135);<br/>    }</pre>
+<ol start="5">
+<li>Having seen regular (P)RNGs, we can move on to something more sophisticated. How about using these RNGs to operate on sequences? Let's add this test that uses PRNGs to do a shuffle and pick results:</li>
+</ol>
+<pre>    #[test]<br/>    fn test_sequences() {<br/>        let mut rng: StdRng = SeedableRng::from_seed([42;32]);<br/><br/>        let emoji = "ABCDEF".chars();<br/>        let chosen_one = emoji.clone().choose(&amp;mut rng).unwrap();<br/>        assert_eq!(chosen_one, 'B');<br/><br/>        let chosen = emoji.choose_multiple(&amp;mut rng, 3);<br/>        assert_eq!(chosen, ['F', 'B', 'E']);<br/><br/>        let mut three_wise_monkeys = vec!['1', '2', '3'];<br/>        three_wise_monkeys.shuffle(&amp;mut rng);<br/>        three_wise_monkeys.shuffle(&amp;mut rng);<br/>        assert_eq!(three_wise_monkeys, ['1', '3', '2']);<br/><br/>        let mut three_wise_monkeys = vec!['1', '2', '3'];<br/>        let partial = three_wise_monkeys.partial_shuffle(&amp;mut rng, 2); <br/>        assert_eq!(partial.0, ['3', '2']);<br/>    }</pre>
+<ol start="6">
+<li>As we stated in this recipe's introduction, RNGs can follow a distribution. Now, let's add another test to the tests module to draw random numbers that follow a distribution using the <kbd>rand</kbd> crate:</li>
+</ol>
+<pre>    const SAMPLES: usize = 10_000;<br/><br/>    #[test]<br/>    fn test_distributions() {<br/>        let mut rng: StdRng = SeedableRng::from_seed([42;32]);<br/><br/>        let uniform = Uniform::new_inclusive(1, 100);<br/>        let total_uniform: u32 = uniform.sample_iter(&amp;mut rng)<br/>                                        .take(SAMPLES).sum();<br/>        assert!((50.0 - (total_uniform as f32 / (<br/>                 SAMPLES as f32)).round()).abs() &lt;= 2.0);<br/><br/>        let bernoulli = Bernoulli::new(0.8).unwrap();<br/>        let total_bernoulli: usize = bernoulli<br/>            .sample_iter(&amp;mut rng)<br/>            .take(SAMPLES)<br/>            .filter(|s| *s)<br/>            .count();<br/><br/>        assert_eq!(<br/>            ((total_bernoulli as f32 / SAMPLES as f32) * 10.0)<br/>                .round()<br/>                .trunc(),<br/>            8.0<br/>        );<br/><br/>        let normal = Normal::new(2.0, 0.5).unwrap();<br/>        let total_normal: f32 = normal.sample_iter(&amp;mut rng)<br/>                                      .take(SAMPLES).sum();<br/>        assert_eq!((total_normal / (SAMPLES as f32)).round(), 2.0);<br/>    }</pre>
+<ol start="7">
+<li>Lastly, we can run the tests to see whether the test outputs positive results:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo test</strong><br/> Compiling random-numbers v0.1.0 (Rust-Cookbook/Chapter10/random-numbers)<br/> Finished dev [unoptimized + debuginfo] target(s) in 0.56s<br/>     Running target/debug/deps/random_numbers-df3e1bbb371b7353<br/><br/>running 3 tests<br/>test tests::test_sequences ... ok<br/>test tests::test_rngs ... ok<br/>test tests::test_distributions ... ok<br/><br/>test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out<br/><br/>   Doc-tests random-numbers<br/><br/>running 0 tests<br/><br/>test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</pre>
+<p>Let's see how it's done behind the scenes.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>rand</kbd> crate has lived through several major version revisions since 2018 and several things have changed. In particular, the crate is now organized <span>differently </span><span>(</span><a href="https://rust-random.github.io/book/guide-gen.html">https://rust-random.github.io/book/guide-gen.html</a><span>)</span><span>, with several companion crates that contain implementations for lesser-used parts.</span></p>
+<p>This is why, in <em>step 2</em>, we don't only import a single crate, even though they all share a single GitHub repository (<a href="https://github.com/rust-random/rand">https://github.com/rust-random/rand</a>). The reason for this split was presumably to be compatible with the different requirements across the field. </p>
+<div class="packt_tip">RNGs represent—in short—a numeric sequence that is determined on the fly based on its predecessor. What is the first number though? It's called the <strong>seed</strong> and can be some literal (for reproducibility in tests) or as close to true randomness as possible (when not testing). <br/>
+<br/>
+Popular seeds include seconds since 1 Jan 1970, entropy by the OS, user input, and more. The less predictable it is, the better.</div>
+<p>In <em>step 3</em>, we set up the remaining code with some imports that we are using right away in <em>step 4</em>. There, we get into using different types of RNGs (<a href="https://rust-random.github.io/book/guide-rngs.html">https://rust-random.github.io/book/guide-rngs.html</a>). The first is <kbd>rand</kbd> crate's <kbd>StdRng</kbd>, which is an abstraction over (as of this writing) the ChaCha PRNG (<a href="https://docs.rs/rand/0.7.0/rand/rngs/struct.StdRng.html">https://docs.rs/rand/0.7.0/rand/rngs/struct.StdRng.html</a>), chosen for efficiency and cryptographic security. The second algorithm is SmallRng (<a href="https://docs.rs/rand/0.7.0/rand/rngs/struct.SmallRng.html">https://docs.rs/rand/0.7.0/rand/rngs/struct.SmallRng.html</a>), a PRNG chosen by the <kbd>rand</kbd> team that has great throughput and resource efficiency. However, since it is fairly easy to predict, the use cases have to be chosen carefully. The last algorithm (<kbd>Pcg32</kbd>) is a pick from the list of available PRNGs (<a href="https://rust-random.github.io/book/guide-rngs.html">https://rust-random.github.io/book/guide-rngs.html</a>), which comes as part of a different crate.</p>
+<p>In <em>step</em> 5, we work with sequences and choose from or shuffle through them. Functions include partial shuffling (that is, picking a random subset) and full, in-place shuffles, as well as a random choice of one or more elements in a list. Note that the traits for these operations are implemented in a way that they are agnostic of the actual random number generator used. This provides a very flexible and easy-to-use API. </p>
+<p>Only in <em>step 6</em> do we get to random numbers that follow distributions. These can be very important to do more scientific work such as initializing vectors, simulation, or games. </p>
+<p>The default of most RNGs is the uniform distribution where each number is equally likely. Actually drawing samples from the distribution requires an initialized RNG, which is provided in the form of a seeded StdRng. The assert statement (empirically) shows that it truly is a uniform distribution: after 10,000 draws, the numbers average almost exactly in the range's middle (+/-2). </p>
+<p>The following distribution is the Bernoulli distribution (<a href="http://mathworld.wolfram.com/BernoulliDistribution.html">http://mathworld.wolfram.com/BernoulliDistribution.html</a>). It can be initialized with a chance of success (0.8, in this case)—but, in general, it's easy to imagine as a series of coin flips. In fact, this distribution is used for generating Boolean values (which is why we can filter by the generated value). </p>
+<p>Lastly, in this test, we are creating a generator for a normal distribution (<a href="http://mathworld.wolfram.com/NormalDistribution.html">http://mathworld.wolfram.com/NormalDistribution.html</a>). This is a well-known form of distributing a random variable around a center point (mean) with a defined spread (standard deviation). The closer the values are to the center, the more likely their occurrence. In this case, we are initializing with a mean of 2.0 and a <span>standard deviation</span> of 0.5, which means that, after a significant number of draws, we should end up with exactly that mean and <span>standard deviation we provided. <kbd>assert_eq!</kbd> confirms that for the mean.</span></p>
+<p><em>Step 7</em> then shows the test output—and it works (at the time of this writing). </p>
+<div class="packt_infobox"><span>The code in the accompanying repository may fail for this recipe if some implementation details of the </span><kbd>rand</kbd><span> crate change (for example, a minor version update). </span></div>
+<p><span>To read more about the <kbd>rand</kbd> crate, read more in this book (<a href="https://rust-random.github.io/book/">https://rust-random.github.io/book/</a>). However, if you are interested in how to implement a PRNG and find out more about them, check out</span> <em>Hands-On Data Structures and Algorithms with Rust</em>, published by Packt (<a href="https://www.packtpub.com/application-development/hands-data-structures-and-algorithms-rust">https://www.packtpub.com/application-development/hands-data-structures-and-algorithms-rust</a>)<span>, where we go deeper. However, as we have successfully learned to use the <kbd>rand</kbd> crate, we can move on to the next recipe. </span></p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Writing to and reading from files</h1>
+                </header>
+            
+            <article>
+                
+<p>Processing files is a daily task and sometimes—depending on the programming language—unreasonably hard. The Rust project teams have taken care of that problem and provide an easy-to-use API to access files. Let's dive right in.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Getting ready</h1>
+                </header>
+            
+            <article>
+                
+<p>First, create a new project using<span> </span><kbd>cargo new file-stuff</kbd>. Now,<span> to work with files, we need a text file to read and process.</span> Lorem Ipsum (<a href="https://www.lipsum.com/">https://www.lipsum.com/</a>) <span>is a popular dummy text that can be generated on a large scale, so to proceed with the recipe, generate a few (200) paragraphs with</span> this generator<span> and save the text in a file called <kbd>lorem.txt</kbd> in the root directory. </span></p>
+<p>Finish your preparations by opening the project directory in VS Code.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>We can read files from disk in just a few steps:</p>
+<ol>
+<li>Since the Rust standard library comes with all of the basics we need, let's dive directly into <kbd>src/main.rs</kbd> to add the imports there:</li>
+</ol>
+<pre style="padding-left: 60px">use std::fs::{self, File};<br/>use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};<br/>use std::path::Path;<br/><br/>const TEST_FILE_NAME: &amp;str = "lorem.txt";</pre>
+<ol start="2">
+<li>First, let's take care of reading from files. For that, we create a function called <kbd>read()</kbd> that reads and extracts the contents from the prepared file, <kbd>lorem.txt</kbd>, underneath the imports:</li>
+</ol>
+<pre style="padding-left: 60px">fn read() -&gt; io::Result&lt;()&gt; {<br/>    let path = Path::new(TEST_FILE_NAME);<br/><br/>    let input = File::open(path)?;<br/>    let buffered = BufReader::new(input);<br/><br/>    let words: Vec&lt;usize&gt; = buffered<br/>        .lines()<br/>        .map(|line| line.unwrap().split_ascii_whitespace().count())<br/>        .collect();<br/>    let avg_word_count = words.iter().sum::&lt;usize&gt;() as f32 / <br/>     words.len() as f32;<br/>    println!(<br/>        "{}: Average words per line: {:.2}",<br/>        path.to_string_lossy(),<br/>        avg_word_count<br/>    );<br/><br/>    let mut input = File::open(path)?;<br/>    let mut input_buffer = String::new();<br/>    input.read_to_string(&amp;mut input_buffer)?;<br/><br/>    // ... or ...<br/><br/>    let lorem = fs::read_to_string(path)?;<br/>    println!(<br/>        "{}: Length in characters : {}",<br/>        path.to_string_lossy(),<br/>        lorem.len()<br/>    );<br/>    // reset file pointer to the beginning<br/>    input.seek(io::SeekFrom::Start(0))?; <br/>    println!(<br/>        "{}: Length in bytes: {}",<br/>        path.to_string_lossy(),<br/>        input.bytes().count()<br/>    );<br/>    Ok(())<br/>}</pre>
+<ol start="3">
+<li>Writing is going to be the next part we are taking care of. In this case, we are creating a dummy file and writing to it in a variety of ways. You can add the following to <kbd>src/main.rs</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">fn write() -&gt; io::Result&lt;()&gt; {<br/>    let mut path = Path::new(".").to_path_buf();<br/><br/>    path.push("hello.txt");<br/><br/>    let mut file = File::create(path)?;<br/>    println!("Opened {:?}", file.metadata()?);<br/><br/>    file.write_all(b"Hello")?;<br/><br/>    let mut buffered = BufWriter::new(file);<br/>    write!(buffered, " World!")?;<br/>    write!(buffered, "\n{: &gt;width$}", width=0x5ff)?;<br/>    Ok(())<br/>}</pre>
+<ol start="4">
+<li>In the last step, we should tie the functions together in the <kbd>main</kbd> function:</li>
+</ol>
+<pre style="padding-left: 60px">fn main() -&gt; io::Result&lt;()&gt; {<br/>    println!("===== READ =====");<br/>    read()?;<br/>    println!();<br/>    println!("===== WRITE ====");<br/>    write()?;<br/>    Ok(())<br/>}</pre>
+<ol start="5">
+<li>With <kbd>cargo run</kbd>, we can now read from and write to disk to perform various tasks. Here, we can observe some general statistics about the <kbd>lorem.txt</kbd> file and the file metadata for where we write to:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo run</strong><br/>   Compiling file-stuff v0.1.0 (Rust-Cookbook/Chapter10/file-stuff)<br/>    Finished dev [unoptimized + debuginfo] target(s) in 0.84s<br/>     Running `target/debug/file-stuff`<br/>===== READ =====<br/>lorem.txt: Average words per line: 42.33<br/>lorem.txt: Length in characters : 57076<br/>lorem.txt: Length in bytes: 57076<br/><br/>===== WRITE ====<br/>Opened Metadata { file_type: FileType(FileType { mode: 33188 }), is_dir: false, is_file: true, permissions: Permissions(FilePermissions { mode: 33188 }), modified: Ok(SystemTime { tv_sec: 1567003873, tv_nsec: 941523976 }), accessed: Ok(SystemTime { tv_sec: 1566569294, tv_nsec: 260780071 }), created: Err(Custom { kind: Other, error: "creation time is not available on this platform currently" }) }</pre>
+<p>Let's get behind how we were working with files here.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>After setting up the project, we dive right in with <em>step 1</em> and provide the imports required to work with the file APIs. Note that working with and reading/writing files are in two different modules: <kbd>std::fs</kbd> for access and <kbd>std::io</kbd> for read and write. In addition to that, the <kbd>std::path</kbd> module provides powerful and easy ways to work with paths in a platform-agnostic way. </p>
+<p><em>Step 2</em> provides a function that shows several ways to read data from the test file we created in preparation. First, we open the file and pass the reference to <kbd>BufReader</kbd> (<a href="https://doc.rust-lang.org/std/io/struct.BufReader.html">https://doc.rust-lang.org/std/io/struct.BufReader.html</a>), a buffered reader. While the initial reference allows reading data as well, <kbd>BufReader</kbd> reads the file contents in bulk and serves them from memory. This reduces disk access while improving performance considerably (compared to byte-to-byte reading). Additionally, this allows iterating over lines using the <kbd>lines()</kbd> function. </p>
+<p>With that, we can iterate over each line, splitting it on whitespace and counting the resulting iterator (<kbd>.split_ascii_whitespace().count()</kbd>). Summing these numbers up and dividing them by the number of lines found, we can determine the average number of words per line. This shows how everything boils down to iterators in Rust and allows powerful things to be created within just a couple of lines of code. </p>
+<p>Instead of reading in an iterator, the Rust standard library supports reading into one large string directly as well. For this common task, <kbd>fs::read_to_string()</kbd> provides a convenient shortcut. However, if you want to retain the file pointer for later use, the <kbd>File</kbd> struct provides a <kbd>read_to_string()</kbd> function as well. </p>
+<p>Since the file pointer is set to where it stopped reading in the file (which is the end, in this case), we have to reset the file pointer using the <kbd>seek()</kbd> function before further use. For example, if we want to read bytes instead of characters, the API provides an iterator for that as well (but there are better ways to get the file size in bytes). </p>
+<p><em>Step 3</em> goes deeper into writing files. We start off by creating a <kbd>Path</kbd> instance (which cannot be changed), so we translate it to a mutable <kbd>PathBuf</kbd> instance and add a filename. By calling <kbd>File::create()</kbd>, we create (overwrite) and obtain a file pointer quickly. The <kbd>metadata()</kbd> function provides some meta-information about the file (formatted for readability):</p>
+<pre>Metadata { <br/>  file_type: FileType(FileType { <br/>    mode: 33188 <br/>  }), <br/>  is_dir: false, <br/>  is_file: true, <br/>  permissions: Permissions(FilePermissions { <br/>    mode: 33188 <br/>  }), <br/>  modified: Ok(SystemTime { <br/>    tv_sec: 1567003873, <br/>    tv_nsec: 941523976 <br/>  }), <br/>  accessed: Ok(SystemTime { <br/>    tv_sec: 1566569294, <br/>    tv_nsec: 260780071 <br/>  }), <br/>  created: Err(Custom { <br/>    kind: Other, <br/>    error: "creation time is not available on this platform currently" <br/>  }) <br/>}</pre>
+<p>Writing to a file is the same as writing to the console (for example, using the <kbd>write!()</kbd> macro) and can include any data, as long as it can be serialized to bytes. The <kbd>b"Hello"</kbd> byte literal works just as well as an <kbd>&amp;str</kbd> slice. Akin to buffered reading, buffered writing also offers improved performance by only writing large blocks at once. </p>
+<p><em>Steps 4</em> and <em>5</em> tie everything together in the <kbd>main</kbd> function and by running to see the result.</p>
+<p>Nothing is surprising when working with files: the API is expectedly straightforward and profits from its integration in common iterators and by using standardized traits. We can happily move on to the next recipe. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Parsing unstructured formats like JSON</h1>
+                </header>
+            
+            <article>
+                
+<p>Before we start, let's define what we are talking about when we say structured and unstructured data. The former, structured data, follows a schema of some sorts—like a table schema in an SQL database. Unstructured data, on the other hand, is unpredictable in what it will contain. In the most extreme example, a body of prose text is the least structured thing we could probably come up with—each sentence may follow different rules depending on its content.</p>
+<p>JSON is a bit more readable, but unstructured, nevertheless. An object can have properties of various data types and no two objects have to be the same. In this chapter, we are going to explore some of the ways JSON (and other formats) can be handled when it doesn't follow a schema that we can declare in a struct.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Getting ready</h1>
+                </header>
+            
+            <article>
+                
+<p>This project requires Python to run a small script. For the Python part of the project, install Python (3.6 or 3.7 from <a href="https://www.python.org/">https://www.python.org/</a>), following the instructions on the website. The <kbd>python3</kbd> command should be available in a Terminal/PowerShell. </p>
+<p>Once available, create a new project using<span> </span><kbd>cargo new dynamic-data --lib</kbd>. Use VS Code to open the project directory.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>Parsing is a multi-step process (but it's easy to do):</p>
+<ol>
+<li>First, let's add <kbd>serde</kbd> and its sub-crates to <kbd>Cargo.toml</kbd>. Open the file and add the following:</li>
+</ol>
+<pre style="padding-left: 60px">[dependencies]<br/>serde = "1"<br/>serde_json ="1"<br/>toml = "0.5"<br/>serde-pickle = "0.5"<br/>serde_derive = "1"</pre>
+<ol start="2">
+<li>Now, let's use the crates and see what they can do. We do this by creating tests that parse the same data from various formats, starting with JSON. In <kbd>src/lib.rs</kbd>, we replace the default tests module with the following:</li>
+</ol>
+<pre style="padding-left: 60px">#[macro_use]<br/>extern crate serde_json;<br/><br/>#[cfg(test)]<br/>mod tests {<br/>    use serde_json::Value;<br/>    use serde_pickle as pickle;<br/>    use std::fs::File;<br/>    use toml;<br/><br/>    #[test]<br/>    fn test_dynamic_json() {<br/>        let j = r#"{<br/>            "userid": 103609,<br/>            "verified": true,<br/>            "friendly_name": "Jason",<br/>            "access_privileges": [<br/>              "user",<br/>              "admin"<br/>            ]<br/>        }"#;<br/><br/>        let parsed: Value = serde_json::from_str(j).unwrap();<br/>        let expected = json!({<br/>          "userid": 103609,<br/>          "verified": true,<br/>          "friendly_name": "Jason",<br/>          "access_privileges": [<br/>            "user",<br/>            "admin"<br/>          ]<br/>        });<br/>        assert_eq!(parsed, expected);<br/><br/>        assert_eq!(parsed["userid"], 103609);<br/>        assert_eq!(parsed["verified"], true);<br/>        assert_eq!(parsed["friendly_name"], "Jason");<br/>        assert_eq!(parsed["access_privileges"][0], "user");<br/>        assert_eq!(parsed["access_privileges"][1], "admin");<br/>        assert_eq!(parsed["access_privileges"][2], Value::Null);<br/>        assert_eq!(parsed["not-available"], Value::Null);<br/>    }<br/>}</pre>
+<ol start="3">
+<li>TOML is a text-based format rivaling JSON and YAML for configuration files. Let's create the same test as preceding, but with TOML instead of JSON, and add the following code to the <kbd>tests</kbd> module:</li>
+</ol>
+<pre>    #[test]<br/>    fn test_dynamic_toml() {<br/>        let t = r#"<br/>            [[user]]<br/>            userid = 103609<br/>            verified = true<br/>            friendly_name = "Jason"<br/>            access_privileges = [ "user", "admin" ]<br/>        "#;<br/><br/>        let parsed: Value = toml::de::from_str(t).unwrap();<br/><br/>        let expected = json!({<br/>            "user": [<br/>                {<br/>                    "userid": 103609,<br/>                    "verified": true,<br/>                    "friendly_name": "Jason",<br/>                    "access_privileges": [<br/>                        "user",<br/>                        "admin"<br/>                    ]<br/>                }<br/><br/>            ]<br/>        });<br/>        assert_eq!(parsed, expected);<br/>        <br/>        let first_user = &amp;parsed["user"][0];<br/>        assert_eq!(first_user["userid"], 103609);<br/>        assert_eq!(first_user["verified"], true);<br/>        assert_eq!(first_user["friendly_name"], "Jason");<br/>        assert_eq!(first_user["access_privileges"][0], "user");<br/>        assert_eq!(first_user["access_privileges"][1], "admin");<br/>        assert_eq!(first_user["access_privileges"][2], Value::Null);<br/>        assert_eq!(first_user["not-available"], Value::Null);<br/>    }</pre>
+<ol start="4">
+<li>Since the last two were text-based formats, let's look at a binary format as well. Python's pickle format is often used to serialize data as well as machine learning models. However, before we can use Rust to read it, let's create the file in a small Python script called <kbd>create_pickle.py</kbd> in the project's root directory:</li>
+</ol>
+<pre style="padding-left: 60px">import pickle <br/>import json<br/><br/>def main():<br/>    val = json.loads("""{<br/>            "userid": 103609,<br/>            "verified": true,<br/>            "friendly_name": "Jason",<br/>            "access_privileges": [<br/>              "user",<br/>              "admin"<br/>            ]<br/>        }""") # load the json string as dictionary<br/><br/>    # open "user.pkl" to write binary data (= wb)<br/>    with open("user.pkl", "wb") as out:<br/>        pickle.dump(val, out) # write the dictionary<br/><br/>if __name__ == '__main__':<br/>    main()</pre>
+<ol start="5">
+<li>Run <kbd>python3 create_pickle.py</kbd> to create a <kbd>user.pkl</kbd> file in the project's root directory (the script should exit silently).</li>
+</ol>
+<ol start="6">
+<li>Add the last test to the <kbd>tests</kbd> module in <kbd>src/lib.rs,</kbd> which parses and compares the contents of the pickle file with what's expected:</li>
+</ol>
+<pre>    #[test]<br/>    fn test_dynamic_pickle() {<br/>        let parsed: Value = { <br/>            let data = File::open("user.pkl")<br/>                       .expect("Did you run create_pickle.py?");<br/>            pickle::from_reader(&amp;data).unwrap()<br/>        };<br/><br/>        let expected = json!({<br/>          "userid": 103609,<br/>          "verified": true,<br/>          "friendly_name": "Jason",<br/>          "access_privileges": [<br/>            "user",<br/>            "admin"<br/>          ]<br/>        });<br/>        assert_eq!(parsed, expected);<br/><br/>        assert_eq!(parsed["userid"], 103609);<br/>        assert_eq!(parsed["verified"], true);<br/>        assert_eq!(parsed["friendly_name"], "Jason");<br/>        assert_eq!(parsed["access_privileges"][0], "user");<br/>        assert_eq!(parsed["access_privileges"][1], "admin");<br/>        assert_eq!(parsed["access_privileges"][2], Value::Null);<br/>        assert_eq!(parsed["not-available"], Value::Null);<br/>    }</pre>
+<ol start="7">
+<li>Lastly, we want to see the tests run (successfully). Let's execute <kbd>cargo test</kbd> to see the test results and how we were able to read binary and text data of various origins:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo test</strong><br/> Compiling dynamic-json v0.1.0 (Rust-Cookbook/Chapter10/dynamic-data)<br/>warning: unused `#[macro_use]` import<br/> --&gt; src/lib.rs:1:1<br/> |<br/>1 | #[macro_use]<br/> | ^^^^^^^^^^^^<br/> |<br/> = note: #[warn(unused_imports)] on by default<br/><br/> Finished dev [unoptimized + debuginfo] target(s) in 1.40s<br/> Running target/debug/deps/dynamic_json-cf635db43dafddb0<br/><br/>running 3 tests<br/>test tests::test_dynamic_json ... ok<br/>test tests::test_dynamic_pickle ... ok<br/>test tests::test_dynamic_toml ... ok<br/><br/>test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out<br/><br/> Doc-tests dynamic-json<br/><br/>running 0 tests<br/><br/>test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</pre>
+<p>Let's see how that works.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>Statically typed languages like Rust make programming a lot more comfortable once types are established. However, in a world with ever-changing web service APIs, a simple additional property can lead to a parser error, making it impossible to continue. Therefore, <kbd>serde</kbd> does not only support fully automated parsing but also dynamically extracting data from its <kbd>Value</kbd> type, complete with type parsing. </p>
+<p>In <em>step 1</em>, we add the various dependencies, all of which comply with the <kbd>serde</kbd> interfaces (which are located in the <kbd>serde</kbd> crate)—although they come from different sources. Using them is demonstrated in <em>step 2</em> and later. </p>
+<p>We begin with creating a raw string that contains a JSON string for <kbd>serde_json</kbd> to parse. Once the <kbd>Value</kbd> variable is created, we can use the <kbd>json!</kbd> macro to create an equivalent object to compare. After that, we call the <kbd>Value</kbd> API to retrieve individual properties and check for their type and content. <kbd>Value</kbd> is an enum (<a href="https://docs.serde.rs/serde_json/value/enum.Value.html">https://docs.serde.rs/serde_json/value/enum.Value.html</a>) that implements a range of automated conversions and retrieval functions, which enable these seamless <kbd>assert_eq!</kbd> statements. In case a property or list index doesn't exist, the <kbd>Null</kbd> variant of <kbd>Value</kbd> is returned. </p>
+<p><em>Step 3</em> parses the TOML (<a href="https://github.com/toml-lang/toml">https://github.com/toml-lang/toml</a>) format and compares it to the JSON output—thanks to the unified <kbd>Value</kbd> enum, it's very similar to <em>step 2</em>. The main difference is that the user property is a list in TOML to demonstrate the other list syntax (<kbd>[[this-way-to-declare-a-list-item]]</kbd>). </p>
+<p>In <em>steps 4</em> and <em>5,</em> we prepare a Python pickle file containing a dictionary object—parsed from the same JSON object as in <em>step 2</em>. Pickle is a binary format, which means we tell Python's file API to write raw bytes instead of encoded text. In contrast, when we read the file, Rust reads bytes by default and requires the programmer to provide the interpretation (codec) if they care to. The <kbd>File</kbd> API (<a href="https://doc.rust-lang.org/std/fs/struct.File.html">https://doc.rust-lang.org/std/fs/struct.File.html</a>) automatically returns an (unbuffered) <kbd>Read</kbd> object to fetch the contents, which we can directly pass into the appropriate pickle function. The remaining portion of the code verifies whether the contents read from the pickle file are the same as for the other objects. </p>
+<p>We showed reading three types here, but <kbd>serde</kbd> supports many more. Check out their documentation to learn more, but now let's move on to the next recipe.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Extract text using regular expressions</h1>
+                </header>
+            
+            <article>
+                
+<p>Regular expressions have been a part of programming for a long time and, in the context of Rust, found popularity in the form of <kbd>ripgrep</kbd> (<a href="https://github.com/BurntSushi/ripgrep">https://github.com/BurntSushi/ripgrep</a>). <kbd>ripgrep</kbd> is a grep variation that searches files for a particular regular expression—and it has been adopted as a major part of VS Code, where it powers the search engine. The reason for this is simple: speed (<a href="https://github.com/BurntSushi/ripgrep#quick-examples-comparing-tools">https://github.com/BurntSushi/ripgrep#quick-examples-comparing-tools</a>). </p>
+<p>Rust's regular expression library has been re-implemented, which may be why it outperforms earlier implementations (and because Rust is fast). Let's see how we can leverage regular expressions in our Rust projects. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it... </h1>
+                </header>
+            
+            <article>
+                
+<p>Let's follow a few steps to explore regular expressions in Rust:</p>
+<ol>
+<li>Open a Terminal to create a new project using<span> </span><kbd>cargo new regex --lib </kbd>. Use VS Code to open the project directory.</li>
+</ol>
+<ol start="2">
+<li>First, we are going to add the regex crate to our dependencies in <kbd>Cargo.toml:</kbd></li>
+</ol>
+<pre style="padding-left: 60px">[dependencies]<br/>regex = "1"</pre>
+<ol start="3">
+<li>Next, let's open <kbd>src/lib.rs</kbd> to create some tests that we can run. To start, we create a tests module, replacing any existing code:</li>
+</ol>
+<pre style="padding-left: 60px">#[cfg(test)]<br/>mod tests {<br/><br/>    use regex::Regex;<br/>    use std::cell::RefCell;<br/>    use std::collections::HashMap;<br/>}</pre>
+<ol start="4">
+<li>Regular expressions are typically used to parse data or validate that the data conforms to the expression's rules. Let's add a test inside the tests module for some simple parsing:</li>
+</ol>
+<pre>    #[test]<br/>    fn simple_parsing() {<br/>        let re = Regex::new(r"(?P&lt;y&gt;\d{4})-(<br/>                           ?P&lt;m&gt;\d{2})-(?P&lt;d&gt;\d{2})").unwrap();<br/><br/>        assert!(re.is_match("1999-12-01"));<br/>        let date = re.captures("2019-02-27").unwrap();<br/><br/>        assert_eq!("2019", &amp;date["y"]);<br/>        assert_eq!("02", &amp;date["m"]);<br/>        assert_eq!("27", &amp;date["d"]);<br/><br/>        let fun_dates: Vec&lt;(i32, i32, i32)&gt; = (1..12)<br/>                  .map(|i| (2000 + i, i, i * 2)).collect();<br/><br/>        let multiple_dates: String = fun_dates<br/>            .iter()<br/>            .map(|d| format!("{}-{:02}-{:02} ", d.0, d.1, d.2))<br/>            .collect();<br/><br/>        for (match_, expected) in re.captures_iter(<br/>             &amp;multiple_dates).zip(fun_dates.iter()) {<br/>            assert_eq!(match_.get(1).unwrap().as_str(), <br/>                       expected.0.to_string());<br/>            assert_eq!(<br/>                match_.get(2).unwrap().as_str(),<br/>                format!("{:02}", expected.1)<br/>            );<br/>            assert_eq!(<br/>                match_.get(3).unwrap().as_str(),<br/>                format!("{:02}", expected.2)<br/>            );<br/>        }<br/>    }</pre>
+<ol start="5">
+<li>However, regular expressions can do much more with their pattern matching. Another task could be to replace data:</li>
+</ol>
+<pre>    #[test]<br/>    fn reshuffle_groups() {<br/>        let re = Regex::new(r"(?P&lt;y&gt;\d{4})-(<br/>                 ?P&lt;m&gt;\d{2})-(?P&lt;d&gt;\d{2})").unwrap();<br/><br/>        let fun_dates: Vec&lt;(i32, i32, i32)&gt; = (1..12)<br/>             .map(|i| (2000 + i, i, i * 2)).collect();<br/><br/>        let multiple_dates: String = fun_dates<br/>            .iter()<br/>            .map(|d| format!("{}-{:02}-{:02} ", d.0, d.1, d.2))<br/>            .collect();<br/><br/>        let european_format = re.replace_all(<br/>                              &amp;multiple_dates, "$d.$m.$y");<br/><br/>        assert_eq!(european_format.trim(), "02.01.2001 04.02.2002 <br/>                   06.03.2003 08.04.2004 10.05.2005 <br/>                   12.06.2006 14.07.2007 16.08.2008 <br/>                   18.09.2009 20.10.2010 22.11.2011");<br/>    }</pre>
+<ol start="6">
+<li>As a last test, we can have some more fun analyzing data using regular expressions, for example, counting the prefixes on telephone numbers:</li>
+</ol>
+<pre><br/>    #[test]<br/>    fn count_groups() {<br/>        let counter: HashMap&lt;String, i32&gt; = HashMap::new();<br/><br/>        let phone_numbers = "+49 (1234) 45665<br/>        +43(0)1234/45665 43<br/>        +1 314-CALL-ME<br/>        +44 1234 45665<br/>        +49 (1234) 44444<br/>        +44 12344 55538";<br/><br/>        let re = Regex::new(r"(\+[\d]{1,4})").unwrap();<br/><br/>        let prefixes = re<br/>            .captures_iter(&amp;phone_numbers)<br/>            .map(|match_| match_.get(1))<br/>            .filter(|m| m.is_some())<br/>            .fold(RefCell::new(counter), |c, prefix| {<br/>                {<br/>                    let mut counter_dict = c.borrow_mut();<br/>                    let prefix = prefix.unwrap().as_str().to_string();<br/>                    let count = counter_dict.get(&amp;prefix)<br/>                                .unwrap_or(&amp;0) + 1;<br/>                    counter_dict.insert(prefix, count);<br/>                }<br/>                c<br/>            });<br/><br/>        let prefixes = prefixes.into_inner();<br/>        assert_eq!(prefixes.get("+49"), Some(&amp;2));<br/>        assert_eq!(prefixes.get("+1"), Some(&amp;1));<br/>        assert_eq!(prefixes.get("+44"), Some(&amp;2));<br/>        assert_eq!(prefixes.get("+43"), Some(&amp;1));<br/>    }</pre>
+<ol start="7">
+<li>Now, let's run the tests using <kbd>cargo test</kbd> and we can see that the regular expressions perform well:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo test<br/></strong> Finished dev [unoptimized + debuginfo] target(s) in 0.02s<br/> Running target/debug/deps/regex-46c0a096a2a4a140<br/><br/>running 3 tests<br/>test tests::count_groups ... ok<br/>test tests::simple_parsing ... ok<br/>test tests::reshuffle_groups ... ok<br/><br/>test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out<br/><br/> Doc-tests regex<br/><br/>running 0 tests<br/><br/>test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</pre>
+<p>Now that we know how to use regular expressions, let's find out how they work.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>After the initial setup in <em>steps 1</em> and <em>2</em>, we start by creating a tests module in <em>step 3</em> along with the required dependencies. <em>Step 4</em> then contains the first test that shows how the regex crate (<a href="https://docs.rs/regex/1.2.1/regex/">https://docs.rs/regex/1.2.1/regex/</a>) handles simple parsing of data. </p>
+<p>By using the raw string literal syntax, <kbd>r"I am a raw string"</kbd>, we compile a new <kbd>Regex</kbd> instance that we match to date strings. The included character classes are what is commonly used across OSes and languages, which includes support for whitespaces as well as (alpha) numerical characters and raw bytes. Additionally, flags can be placed directly in the expression using a <kbd>(?flag)</kbd> notation.</p>
+<p><span>The regular expression in</span><em><span> </span>step 4</em> is composed of three parts: <kbd>(?P&lt;y&gt;\d{4})-(?P&lt;m&gt;\d{2})-(?P&lt;d&gt;\d{2})</kbd>.</p>
+<p>The first part is named <kbd>y</kbd> (<kbd>?P&lt;name&gt;</kbd> declares a name) and looks for exactly four (<kbd>{4}</kbd>) digits <kbd>\d</kbd> that it can match. Parts two and three look for two digits each and are named <kbd>m</kbd> and <kbd>d</kbd> respectively. This naming is going to be important later on when we want to retrieve the matches. In between those patterns, we see a <kbd>-</kbd>, which means that the final pattern has to look like <kbd>yyyy-mm-dd</kbd> (or <kbd>1234-12-12</kbd> to be precise) to match. </p>
+<p>Going down the test, this is what we do. By preparing a few positive examples, we can validate a date (<kbd>1999-12-01</kbd>), as well as extract the individual parts by name (<kbd>2019-02-27</kbd>). If a string has multiple matches, we can also iterate over these captures to remain efficient. In the case of the test, we also check whether the extracted content matches the expected values while iterating. </p>
+<div class="packt_tip">Compiling a regular expression takes a fair amount of time, especially when the expression is very large. Consequently, pre-compile and reuse as much as possible and avoid compiling in loops!</div>
+<p><em>Step 5</em> creates a similar regular expression and replicates the <kbd>fun_dates</kbd> variable from the <em>step 4</em> test. However, instead of just extracting the content, we want to replace the pattern, which—in this case—transforms the ISO <kbd>-</kbd> notation into a European-style <kbd>.</kbd> notation. Since we named the groups in the regex, we can now also refer to those names in the replacement string. </p>
+<p>In <em>step 6</em>, we return to matching, but instead of simply validating, we extract and work with the extracted data to create information. Assuming that a task is to count country codes in phone numbers, we can apply the regular expression and use <kbd>HashMap</kbd> for keeping track of each number's occurrence. The regular expression matches anything starting with <kbd>+</kbd>, followed by one to four digits: <kbd>(\+[\d]{1,4})</kbd>. </p>
+<p>Using Rust's iterator powers, we extract the match and filter out any non-matches before folding the results into common <kbd>HashMap</kbd>. <kbd>RefCell</kbd> helps with managing mutability and, since the fold function has to return the accumulated result, we have to scope off the mutable borrowing to ensure memory safety (the compiler will tell you). Once we extract the inner value of the cell, we can see what the numbers were.</p>
+<p>This only touches on a few common subjects inside the realm of possible tasks with regular expressions. We highly recommend reading the documentation to find out more! </p>
+<p>However, now that we have had a taste of some regular expressions, we can move on to the next recipe.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Recursively searching the filesystem</h1>
+                </header>
+            
+            <article>
+                
+<p>ripgrep—as we mentioned in the previous recipe (<em>Extracting text using regular expressions</em>)—is a popular grep engine that walks through files to find anything that matches the provided regular expression rules. For that, it's not only necessary to compile and match a regular expression to massive amounts of text, but also to find these texts. To get to and open these files, we need to walk the directory trees of the filesystem. Let's find out how to do that in Rust.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>We can understand recursive search by following a few steps:</p>
+<ol>
+<li>Open a Terminal to create a new project using<span> </span><kbd>cargo new filesystem</kbd>. Use VS Code to open the project directory.</li>
+<li>Edit <kbd>Cargo.toml</kbd> to add a dependency to a crate called <kbd>glob</kbd> for walking the filesystem: </li>
+</ol>
+<pre style="padding-left: 60px">[dependencies]<br/>glob = "0.3.0"</pre>
+<p class="mce-root"/>
+<ol start="3">
+<li>In <kbd>src/main.rs</kbd>, we can then start implementing functions to walk the filesystem tree, but first, let's set up the imports and a type alias for boxed errors:</li>
+</ol>
+<pre style="padding-left: 60px">use glob;<br/>use std::error::Error;<br/>use std::io;<br/>use std::path::{Path, PathBuf};<br/><br/>type GenericError = Box&lt;dyn Error + Send + Sync + 'static&gt;;</pre>
+<ol start="4">
+<li>Next, we are going to add a recursive <kbd>walk</kbd> function that is only using the Rust standard library. Add the following:</li>
+</ol>
+<pre style="padding-left: 60px">fn walk(dir: &amp;Path, cb: &amp;dyn Fn(&amp;PathBuf), recurse: bool) -&gt; io::Result&lt;()&gt; {<br/>    for entry in dir.read_dir()? {<br/>        let entry = entry?;<br/>        let path = entry.path();<br/>        if recurse &amp;&amp; path.is_dir() {<br/>            walk(&amp;path, cb, true)?;<br/>        }<br/>        cb(&amp;path);<br/>    }<br/>    Ok(())<br/>}</pre>
+<ol start="5">
+<li><kbd>glob</kbd> is also the name of a style of wildcards for filesystems (for example, <kbd>*.txt</kbd> or <kbd>Cargo*</kbd>), working on both Windows and Linux/Unix. In some implementations, globs can be recursive as well, which is why we can use the crate of the same name to implement another <kbd>walk</kbd> function:</li>
+</ol>
+<pre style="padding-left: 60px">fn walk_glob(pattern: &amp;str, cb: &amp;dyn Fn(&amp;PathBuf)) -&gt; Result&lt;(), GenericError&gt; {<br/>    for entry in glob::glob(pattern)? {<br/>        cb(&amp;entry?);<br/>    }<br/>    Ok(())<br/>}</pre>
+<ol start="6">
+<li>What's missing now is the <kbd>main</kbd> function to tie it all together and call the functions accordingly. Add the following:</li>
+</ol>
+<pre style="padding-left: 60px">fn main() -&gt; Result&lt;(), GenericError&gt; {<br/>    let path = Path::new("./src");<br/>    println!("Listing '{}'", path.display());<br/>    println!("===");<br/>    walk(path, &amp;|d| println!(" {}", d.display()), true)?;<br/>    println!();<br/><br/>    let glob_pattern = "../**/*.rs";<br/>    println!("Listing by glob filter: {}", glob_pattern);<br/>    println!("===");<br/>    walk_glob(glob_pattern, &amp;|d| println!(" {}", d.display()))?;<br/>    println!();<br/><br/>    let glob_pattern = "Cargo.*";<br/>    println!("Listing by glob filter: {}", glob_pattern);<br/>    println!("===");<br/>    walk_glob(glob_pattern, &amp;|d| println!(" {}", d.display()))?;<br/>    Ok(())<br/>}</pre>
+<ol start="7">
+<li>As usual, we want to see it running—use <kbd>cargo run</kbd> to recursively list files from your filesystem using the filters we defined in <em>step 6</em>. We also encourage you to change the paths to something that fits your system:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo run</strong><br/>   Compiling filesystem v0.1.0 (Rust-Cookbook/Chapter10/filesystem)<br/>    Finished dev [unoptimized + debuginfo] target(s) in 0.25s<br/>     Running `target/debug/filesystem`<br/>Listing './src'<br/>===<br/>  ./src/main.rs<br/><br/>Listing by glob filter: ../**/*.rs<br/>===<br/>  ../command-line-args/src/main.rs<br/>  ../dynamic-data/src/lib.rs<br/>  ../file-stuff/src/main.rs<br/>  ../filesystem/src/main.rs<br/>  ../logging/src/main.rs<br/>  ../pipes/src/main.rs<br/>  ../random-numbers/src/lib.rs<br/>  ../regex/src/lib.rs<br/>  ../rusty-ml/src/main.rs<br/>  ../sub-processes/src/main.rs<br/>  ../web-requests/src/main.rs<br/><br/>Listing by glob filter: Cargo.*<br/>===<br/>  Cargo.lock<br/>  Cargo.toml</pre>
+<p>Let's get into the inner workings of walking through the filesystem with a filter. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>Walking a filesystem tree is not a particularly complicated task. However, just like any other tree walks, it is much easier to be done recursively, even though there is always a risk of running into stack overflow problems if the directory nesting is too deep. While an iterative approach is possible, it is much longer and more complicated to implement.</p>
+<p>In this recipe, we start off with setting everything up in <em>step 1</em>, adding the <kbd>glob</kbd><span> </span><span>crate </span><span>(</span><a href="https://docs.rs/glob/0.3.0/glob/">https://docs.rs/glob/0.3.0/glob/</a><span>) as a dependency in</span> <em>step 2</em><span>, and finally importing the required modules in</span> <em>step 3</em><span>. In</span> <em>step 4</em><em>,</em> <span>we write the first</span> <kbd>walk</kbd> <span>function, a recursive in-order walk. This means that we recursively descend as far as possible into the first (by some order) directory before we start executing the provided callback on that path—we are therefore processing the nodes in the order they came up. </span></p>
+<p>Rust's <kbd>DirEntry</kbd> struct is powerful in that it allows access to its contents via a property (instead of calling a different function). The <kbd>io::Result&lt;()&gt;</kbd> return type also allows for using the <kbd>?</kbd> operator and would end early in cases of errors. </p>
+<p><em>Step 5</em> offers a similar function using the <kbd>glob</kbd> iterator. Since the input is a pattern (both recursive and non-recursive), this pattern is parsed and—if it's valid—returns an iterator over matching file and folder paths. We can then call the callback with these entries. </p>
+<p>In <em>step 6</em>, we call the functions using a range of paths. The first descends into the <kbd>src</kbd> directory, listing all of the files there using the recursive approach. The second pattern first goes up into the project directory's parent and then recursively matches all of the <kbd>*.rs</kbd> files it finds there (and below). In the case of this book's chapter, you should see all of the code files we have written (and will write). </p>
+<p>Lastly, the filter can also be something simple and match the two <kbd>Cargo.*</kbd> files, as shown in the last call of <kbd>walk_glob()</kbd>.</p>
+<p>Now that we know how to go through the filesystem, let's move on to another recipe.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Custom command-line arguments</h1>
+                </header>
+            
+            <article>
+                
+<p>Working with command-line arguments is a great way to configure a program to run specific tasks, use a particular set of input data, or simply to output more information. However, looking at the help text output of a Linux program these days, it offers an impressive amount of information on all of the flags and arguments it can work with. In addition to that, the text is printed in a somewhat standardized format, which is why this is usually done with strong library support. </p>
+<p class="mce-root"/>
+<p>Rust's most popular crate for working with command-line arguments is called <kbd>clap</kbd> (<a href="https://clap.rs/">https://clap.rs/</a>), and, in this recipe, we are looking at how we can leverage its strengths to create a useful command-line interface.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>A simple program that uses command-line arguments to print directories/files only requires a few steps:</p>
+<ol>
+<li>Open a Terminal to create a new project using<span> </span><kbd>cargo new command-line-args </kbd>. Use VS Code to open the project directory.</li>
+<li>First, let's adapt <kbd>Cargo.toml</kbd> to download <kbd>clap</kbd> and to have a better binary output name:</li>
+</ol>
+<pre style="padding-left: 60px">[package]<br/>name = "list"<br/>version = "1.0.0"<br/>authors = ["Claus Matzinger &lt;claus.matzinger+kb@gmail.com&gt;"]<br/>edition = "2018"<br/><br/># See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html<br/><br/>[dependencies]<br/>clap = {version= "2.33", features = ["suggestions", "color"]}</pre>
+<ol start="3">
+<li>In <kbd>src/main.rs</kbd>, we are going to start with imports:</li>
+</ol>
+<pre style="padding-left: 60px">use clap::{App, Arg, SubCommand};<br/>use std::fs::DirEntry;<br/>use std::path::Path;<br/><br/>use std::io;</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<ol start="4">
+<li>Then, we define a <kbd>walk</kbd> function that recursively walks through the filesystem to execute a callback on each entry. The function supports excluding certain paths, which we implement using its own type:</li>
+</ol>
+<pre style="padding-left: 60px">struct Exclusion(String);<br/><br/>impl Exclusion {<br/>    pub fn is_excluded(&amp;self, path: &amp;Path) -&gt; bool {<br/>        path.file_name()<br/>            .map_or(false, |f| f.to_string_lossy().find(&amp;self.0).is_some())<br/>    }<br/>}</pre>
+<p style="padding-left: 60px">With that available, we can define the <kbd>walk</kbd> function:</p>
+<pre style="padding-left: 60px">fn walk(<br/>    dir: &amp;Path,<br/>    exclusion: &amp;Option&lt;Exclusion&gt;,<br/>    cb: &amp;dyn Fn(&amp;DirEntry),<br/>    recurse: bool,<br/>) -&gt; io::Result&lt;()&gt; {<br/>    for entry in dir.read_dir()? {<br/>        let entry = entry?;<br/>        let path = entry.path();<br/>        if !exclusion.as_ref().map_or(false, <br/>                 |e| e.is_excluded(&amp;path)) {<br/>            if recurse &amp;&amp; path.is_dir() {<br/>                walk(&amp;path, exclusion, cb, true)?;<br/>            }<br/>            cb(&amp;entry);<br/>        }<br/>    }<br/>    Ok(())<br/>}</pre>
+<ol start="5">
+<li>Next, a few helper functions make our life easier for printing:</li>
+</ol>
+<pre style="padding-left: 60px">fn print_if_file(entry: &amp;DirEntry) {<br/>    let path = entry.path();<br/>    if !path.is_dir() {<br/>        println!("{}", path.to_string_lossy())<br/>    }<br/>}<br/>fn print_if_dir(entry: &amp;DirEntry) {<br/>    let path = entry.path();<br/>    if path.is_dir() {<br/>        println!("{}", path.to_string_lossy())<br/>    }<br/>}</pre>
+<ol start="6">
+<li>In the <kbd>main</kbd> function, we are using the <kbd>clap</kbd> API for the first time. Here, we are creating the argument/subcommand structure of the application:</li>
+</ol>
+<pre style="padding-left: 60px">fn main() -&gt; io::Result&lt;()&gt; {<br/>    let matches = App::new("list")<br/>        .version("1.0")<br/>        .author("Claus M - claus.matzinger+kb@gmail.com")<br/>        .about("")<br/>        .arg(<br/>            Arg::with_name("exclude")<br/>                .short("e")<br/>                .long("exclude")<br/>                .value_name("NAME")<br/>                .help("Exclude directories/files with this name")<br/>                .takes_value(true),<br/>        )<br/>        .arg(<br/>            Arg::with_name("recursive")<br/>                .short("r")<br/>                .long("recursive")<br/>                .help("Recursively descend into subdirectories"),<br/>        )</pre>
+<p style="padding-left: 60px">After the arguments, we add subcommands in the same way—following the builder pattern:</p>
+<pre>        .subcommand(<br/>            SubCommand::with_name("files")<br/>                .about("Lists files only")<br/>                .arg(<br/>                    Arg::with_name("PATH")<br/>                        .help("The path to start looking")<br/>                        .required(true)<br/>                        .index(1),<br/>                ),<br/>        )<br/>        .subcommand(<br/>            SubCommand::with_name("dirs")<br/>                .about("Lists directories only")<br/>                .arg(<br/>                    Arg::with_name("PATH")<br/>                        .help("The path to start looking")<br/>                        .required(true)<br/>                        .index(1),<br/>                ),<br/>        )<br/>        .get_matches();</pre>
+<p style="padding-left: 60px">Once we retrieve the matches, we have to get the actual values that have been passed into the program:</p>
+<pre style="padding-left: 60px">    let recurse = matches.is_present("recursive");<br/>    let exclusions = matches.value_of("exclude")<br/>                     .map(|e| Exclusion(e.into()));</pre>
+<p style="padding-left: 60px">However, with subcommands, we can match on their specific flags and other arguments too, which is best extracted with Rust's pattern matching:</p>
+<pre style="padding-left: 60px">    match matches.subcommand() {<br/>        ("files", Some(subcmd)) =&gt; {<br/>            let path = Path::new(subcmd.value_of("PATH").unwrap());<br/>            walk(path, &amp;exclusions, &amp;print_if_file, recurse)?;<br/>        }<br/>        ("dirs", Some(subcmd)) =&gt; {<br/>            let path = Path::new(subcmd.value_of("PATH").unwrap());<br/>            walk(path, &amp;exclusions, &amp;print_if_dir, recurse)?;<br/>        }<br/>        _ =&gt; {}<br/>    }<br/>    Ok(())<br/>}</pre>
+<ol start="7">
+<li>Let's see what that did. Run <kbd>cargo run</kbd> to see the initial output:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo run</strong><br/><strong>   Compiling list v1.0.0 (Rust-Cookbook/Chapter10/command-line-args)</strong><br/><strong>    Finished dev [unoptimized + debuginfo] target(s) in 0.68s</strong><br/><strong>     Running `target/debug/list`</strong></pre>
+<p style="padding-left: 60px">Nothing! Indeed, we did not specify any required commands or parameters. Let's run <kbd>cargo run -- help</kbd> (since we named the program list, calling the compiled executable directly would be <kbd>list help</kbd>) to see the help text showing us which options we could try:</p>
+<pre style="padding-left: 60px"><strong>$ cargo run -- help</strong><br/>    Finished dev [unoptimized + debuginfo] target(s) in 0.03s<br/>     Running `target/debug/list help`<br/>list 1.0<br/>Claus M - claus.matzinger+kb@gmail.com<br/><br/><br/>USAGE:<br/>    list [FLAGS] [OPTIONS] [SUBCOMMAND]<br/><br/>FLAGS:<br/>    -h, --help Prints help information<br/>    -r, --recursive Recursively descend into subdirectories<br/>    -V, --version Prints version information<br/><br/>OPTIONS:<br/>    -e, --exclude &lt;NAME&gt; Exclude directories/files with this name<br/><br/>SUBCOMMANDS:<br/>    dirs Lists directories only<br/>    files Lists files only<br/>    help Prints this message or the help of the given subcommand(s)</pre>
+<p style="padding-left: 60px">We should look at the <kbd>dirs</kbd> subcommand first, so let's run <kbd>cargo run -- dirs</kbd> to see whether it recognizes the required <kbd>PATH</kbd> argument:</p>
+<pre style="padding-left: 60px"><strong>$ cargo run -- dirs </strong><br/> Finished dev [unoptimized + debuginfo] target(s) in 0.02s<br/> Running `target/debug/list dirs`<br/>error: The following required arguments were not provided:<br/> &lt;PATH&gt;<br/><br/>USAGE:<br/> list dirs &lt;PATH&gt;<br/><br/>For more information try --help</pre>
+<p style="padding-left: 60px">Let's also try a fully parameterized run where we list all subfolders of the project directory excluding anything called <kbd>src</kbd> (and their subdirectories):</p>
+<pre style="padding-left: 60px"><strong>$ cargo run -- -e "src" -r dirs "."</strong><br/>    Finished dev [unoptimized + debuginfo] target(s) in 0.03s<br/>     Running `target/debug/list -e src -r dirs .`<br/>./target/debug/native<br/>./target/debug/deps<br/>./target/debug/examples<br/>./target/debug/build/libc-f4756c111c76f0ce/out<br/>./target/debug/build/libc-f4756c111c76f0ce<br/>./target/debug/build/libc-dd900fc422222982<br/>./target/debug/build/bitflags-92aba5107334e3f1<br/>./target/debug/build/bitflags-cc659c8d16362a89/out<br/>./target/debug/build/bitflags-cc659c8d16362a89<br/>./target/debug/build<br/>./target/debug/.fingerprint/textwrap-a949503c1b2651be<br/>./target/debug/.fingerprint/vec_map-bffb157312ad2f55<br/>./target/debug/.fingerprint/bitflags-20c9ba1238fdf359<br/>./target/debug/.fingerprint/strsim-13cb32b0738f6106<br/>./target/debug/.fingerprint/libc-63efda3965f75b56<br/>./target/debug/.fingerprint/clap-062d4c7aff8b8ade<br/>./target/debug/.fingerprint/unicode-width-62c92f6253cf0187<br/>./target/debug/.fingerprint/libc-f4756c111c76f0ce<br/>./target/debug/.fingerprint/libc-dd900fc422222982<br/>./target/debug/.fingerprint/list-701fd8634a8008ef<br/>./target/debug/.fingerprint/ansi_term-bceb12a766693d6c<br/>./target/debug/.fingerprint/bitflags-92aba5107334e3f1<br/>./target/debug/.fingerprint/bitflags-cc659c8d16362a89<br/>./target/debug/.fingerprint/command-line-args-0ef71f7e17d44dc7<br/>./target/debug/.fingerprint/atty-585c8c7510af9f9a<br/>./target/debug/.fingerprint<br/>./target/debug/incremental/command_line_args-1s3xsytlc6x5x/s-ffbsjpqyuz-19aig85-4az1dq8f8e3e<br/>./target/debug/incremental/command_line_args-1s3xsytlc6x5x<br/>./target/debug/incremental/list-oieloyeggsml/s-ffjle2dbdm-1w5ez6c-13wi8atbsq2wt<br/>./target/debug/incremental/list-oieloyeggsml<br/>./target/debug/incremental<br/>./target/debug<br/>./target</pre>
+<p>Try it yourself: several combinations show the power of <kbd>clap</kbd>. Let's see how it works.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p><kbd>clap</kbd> (<a href="https://clap.rs/">https://clap.rs/</a>) prides itself on being a simple-to-use crate for working with command-line arguments in Rust—and they are right. In the initial two steps, we set up the application config and dependencies. We also renamed the binary since <kbd>list</kbd> is a more to-the-point name than <kbd>command-line-args</kbd>.</p>
+<p>In <em>step 3</em>, we start by importing the necessary structs (<a href="https://docs.rs/clap/2.33.0/clap/struct.App.html">https://docs.rs/clap/2.33.0/clap/struct.App.html</a>)—<kbd>App</kbd><a href="https://docs.rs/clap/2.33.0/clap/struct.App.html">,</a> <kbd>Arg</kbd><a href="https://docs.rs/clap/2.33.0/clap/struct.App.html">,</a> <kbd>SubCommand</kbd> for <kbd>clap</kbd>, and, in <em>step 4,</em> we are creating the function that we are going to parameterize using command line arguments. The function itself is a simple directory tree walk with the ability to execute a callback on each entry and a way to exclude certain paths as an exclusion.</p>
+<div class="packt_infobox">This is similar to what we did in the <em>Recursively searching the filesystem</em> <span>recipe </span>earlier in this chapter.</div>
+<p class="mce-root">Some additional helper callbacks for printing directories and files only are defined in <em>step 5</em>. Closures could have worked as well but wouldn't achieve the same readability. </p>
+<p><em>Step 6</em> is where we work with the <kbd>clap</kbd> API. This particular case is using the Rust API only; however, <kbd>clap</kbd> supports using external files for configuring the parameters as well. Read more at <a href="https://docs.rs/clap/2.33.0/clap/index.html">https://docs.rs/clap/2.33.0/clap/index.html</a>. Regardless of how you are going to define the parameters, the structure is very similar: the <kbd>App</kbd> struct has several meta-parameters for informing the user about the author, version, and others as well as the arguments it can have.</p>
+<p>An argument can be a flag (that is, setting something to <kbd>true</kbd>/<kbd>false</kbd>) or a value (such as an input path), which is why we use the <kbd>Arg</kbd> struct to configure each individually. Typical command-line flags have a shorthand for a longer name (<kbd>ls -a</kbd> versus <kbd>ls --all</kbd> on Linux/Unix), as well as a short help text explaining the usage. The last setting concerns whether the flag has a more complex type than a Boolean, which we set to <kbd>true</kbd> for <kbd>exclude</kbd> and leave at <kbd>false</kbd> for the <kbd>recursive</kbd> flag. These names will later be used to retrieve these values. </p>
+<p>Many command-line applications nowadays have a subcommand structure that allows for better structuring and readability. A subcommand can be nested and have its own arguments—just like the <kbd>App</kbd> struct. The arguments we define here are positional, so they are not referred to by their name but rather have to be present at that particular position. Since the argument is required, the argument parser takes in whatever value comes in. </p>
+<p>With a call to <kbd>get_matches()</kbd>, we execute the parsing (which also triggers help texts and early exits if necessary) and retrieve an <kbd>ArgMatches</kbd> instance. This type manages the key-value pairs (argument name and the value it got), using the <kbd>Option</kbd> and <kbd>Result</kbd> types, which allow us to use Rust code for defaults. </p>
+<p>Subcommands behave like sub-applications in a way. They come with their own <kbd>ArgMatches</kbd> instance, for accessing their flags and more directly. </p>
+<p><em>Step 6</em> shows a few possible calls to run the program. We use two dashes, <kbd>--</kbd>, to pass any arguments through to the application (rather than <kbd>cargo</kbd> interpreting them), and by running the default help subcommand, we can see a nice and standardized help output with all of the texts and names we supplied. </p>
+<p>These help texts are also provided in case parsing does not work out (for example, when a flag is misspelled) and for each subcommand. However, the last part of <em>step 6</em> shows what happens when it works out, listing all of the build directories in <kbd>target/</kbd> (since we excluded <kbd>src</kbd>). Since we don't want to bore you with various parameter combinations, we encourage you to try out the other arguments we configured and see different results!</p>
+<p>Now that we know how to work with command-line arguments, let's move on to the next recipe. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Working with piped input data</h1>
+                </header>
+            
+            <article>
+                
+<p>Reading data from files is a very common task that we described in another recipe in this chapter (<em>Writing to and reading from files</em>). However, that's not always the best option. In fact, many Linux/Unix programs can be chained together using a pipe (<kbd>|</kbd>) to process an incoming stream. This allows for several things to be done:</p>
+<ul>
+<li>Flexibility on the input source, static text, files, and networking streams—no need to change the programs</li>
+<li>Run several processes, writing only the end result back to disk</li>
+<li>Lazy evaluation of the stream</li>
+<li>Flexible processing up-/downstream (for example, gzipping the output before writing to disk)</li>
+</ul>
+<p>If you are not familiar with how this works, the pipe syntax may look cryptic. However, it actually stems from a functional programming paradigm (<a href="https://www.geeksforgeeks.org/functional-programming-paradigm/">https://www.geeksforgeeks.org/functional-programming-paradigm/</a>), where pipes and stream processing are quite common—not unlike Rust's iterators. Let's build a CSV to a line-based JSON (each line is an object) converter to see how we can work with pipes!</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Getting ready</h1>
+                </header>
+            
+            <article>
+                
+<p><span>Open a Terminal to create a new project using</span><span> </span><kbd>cargo new pipes.</kbd> <span>Use VS Code to open the project directory and create a simple CSV file called <kbd>cars.csv</kbd></span> with the following content:</p>
+<pre>year,make,model<br/>1997,Ford,E350<br/>1926,Bugatti,Type 35<br/>1971,Volkswagen,Beetle<br/>1992,Gurgel,Supermini</pre>
+<p>We are now going to parse this file and create a series of JSON objects from it.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>Follow the steps to implement <kbd>csv</kbd> to the JSON converter:</p>
+<ol>
+<li>Open <kbd>Cargo.toml</kbd> to add a few dependencies we need for parsing CSV and creating JSON:</li>
+</ol>
+<pre style="padding-left: 60px">[dependencies]<br/>csv = "1.1"<br/>serde_json = "1"</pre>
+<ol start="2">
+<li>Now, let's add some code. As usual, we are going to import a few things in <kbd>src/main.rs,</kbd> so we can use them in the code:</li>
+</ol>
+<pre style="padding-left: 60px">use csv;<br/>use serde_json as json;<br/>use std::io;</pre>
+<ol start="3">
+<li>The next thing to do is add a function that converts the input data into JSON. We can do this elegantly using the <kbd>Iterator</kbd> trait that each <kbd>csv::StringRecord</kbd> instance implements:</li>
+</ol>
+<pre style="padding-left: 60px">fn to_json(headers: &amp;csv::StringRecord, current_row: csv::StringRecord) -&gt; io::Result&lt;json::Value&gt; {<br/>    let row: json::Map&lt;String, json::Value&gt; = headers<br/>        .into_iter()<br/>        .zip(current_row.into_iter())<br/>        .map(|(key, value)| (key.to_string(), json::Value::String(value.into())))<br/>        .collect();<br/>    Ok(json::Value::Object(row))<br/>}</pre>
+<ol start="4">
+<li>How do we get these <kbd>csv::StringRecords</kbd> instances? By reading from the console! As a last piece of code, we replace the default <kbd>main</kbd> function with the following:</li>
+</ol>
+<pre style="padding-left: 60px">fn main() -&gt; io::Result&lt;()&gt; {<br/>    let mut rdr = csv::ReaderBuilder::new()<br/>        .trim(csv::Trim::All)<br/>        .has_headers(false)<br/>        .delimiter(b',')<br/>        .from_reader(io::stdin());<br/><br/>    let header_rec = rdr<br/>        .records()<br/>        .take(1)<br/>        .next()<br/>        .expect("The first line does not seem to be a valid CSV")?;<br/>        <br/>    for result in rdr.records() {<br/>        if let Ok(json_rec) = to_json(&amp;header_rec, result?) {<br/>            println!("{}", json_rec.to_string());<br/>        }<br/>    }<br/>    Ok(())<br/>}</pre>
+<ol start="5">
+<li>Lastly, use PowerShell (on Windows) or your favorite Terminal (Linux/macOS) to run the binary with piped input data:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cat cars.csv | cargo run</strong><br/>   Compiling pipes v0.1.0 (Rust-Cookbook/Chapter10/pipes)<br/>    Finished dev [unoptimized + debuginfo] target(s) in 1.46s<br/>     Running `target/debug/pipes`<br/>{"make":"Ford","model":"E350","year":"1997"}<br/>{"make":"Bugatti","model":"Type 35","year":"1926"}<br/>{"make":"Volkswagen","model":"Beetle","year":"1971"}<br/>{"make":"Gurgel","model":"Supermini","year":"1992"}</pre>
+<p>Let's dive into how we streamed data through multiple programs.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>The Linux OS is largely file-based; many important interfaces to the kernel can be found in virtual filesystems pretending to be a file or folder structure. The best example is the <kbd>/proc/</kbd> filesystem, which allows user-access to hardware and other current information of the kernel/system. In the same spirit, the console inputs and outputs are treated; they are actually reserved file handles with the numbers 0 (standard input), 1 (standard output), and 2 (standard error). In fact, these link back to the <kbd>/proc/</kbd> filesystem, where <kbd>/proc/&lt;process id&gt;/fd/1</kbd> is the standard output of that particular process ID. </p>
+<p>Keeping this concept in mind, these file descriptors can be read just like any other file—which is what we are doing in this recipe. After setting up the basic dependencies in <em>step 1</em> and importing the modules in <em>step 2</em>, we create a processing function in <em>step 3</em>. The function takes in two of the <kbd>csv</kbd> crate's (<a href="https://docs.rs/csv/1.1.1/">https://docs.rs/csv/1.1.1/</a>) generic <kbd>StringRecord</kbd>—which holds a row's worth of data each—for the header row and the current row. The <kbd>zip()</kbd> (<a href="https://doc.rust-lang.org/std/iter/trait.Iterator.html#method.zip">https://doc.rust-lang.org/std/iter/trait.Iterator.html#method.zip</a>) function on the iterator allows us to align the indices efficiently, the result of which we can then transform into a tuple of <kbd>String</kbd> and <kbd>serde_json::Value::String</kbd>. This allows us to collect these tuples into a <kbd>serde_json::Map</kbd> type, which gets converted into <kbd>serde_json::Value::Object</kbd> (representing a JSON object). </p>
+<div class="packt_infobox">The iterator's <kbd>collect()</kbd> function relies on implementing the <kbd>FromIterator</kbd> trait for the particular types. <kbd>serde_json::Map</kbd> implements this for <kbd>(String, serde_json::Value)</kbd>.</div>
+<p><em>Step 4</em> then calls this <kbd>to_json()</kbd> function—but only after it builds a custom <kbd>Reader</kbd> object! By default <kbd>csv::Reader</kbd> expects the incoming rows to conform to a <kbd>Deserialize</kbd> struct—something that is impossible in a generic tool. Therefore, we resort to creating an instance using <kbd>ReaderBuilder</kbd> by specifying the options we need:</p>
+<ul>
+<li><kbd>trim(csv::Trim::All)</kbd>: This makes sanitation easier.</li>
+<li><kbd>has_headers(false)</kbd>: This allows us to read the headers first; otherwise, they would be ignored.</li>
+<li><kbd>delimiter(b',')</kbd>: This hardcodes the delimiter to be a comma.</li>
+<li><kbd>from_reader(io::stdin())</kbd>: This attaches to the <kbd>Read</kbd> interface of standard input.</li>
+</ul>
+<p>Upon creation, we read the first row and assume it is the CSV's header. Hence, we save it separately to borrow it to the <kbd>to_json()</kbd> function as needed. Following that, the <kbd>for</kbd> loop takes care of evaluating the (unlimited) iterator over the <kbd>Read</kbd> interface of standard input (typically until the <kbd>EOF</kbd> signal is received, with <em>Ctrl</em> + <em>D</em> on Linux/UNIX OSes). Each iteration prints the result to standard output again for other programs to read via a pipe.</p>
+<p>That's it! We highly recommend checking out the repository of the <kbd>csv</kbd> crate to learn more about the functions it offers (as well as <kbd>serde_json</kbd> (<a href="https://docs.serde.rs/serde_json/)">https://docs.serde.rs/serde_json/</a>)<a href="https://docs.serde.rs/serde_json/)">), before moving on to the next recipe.</a></p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Sending web requests</h1>
+                </header>
+            
+            <article>
+                
+<p>Over recent years, web requests have become an important part of many applications. Almost anything integrates with some kind of web service, even if it's only diagnostics and usage statistics. HTTP's versatility has proven to be a great asset in a more centralized computing world. </p>
+<div class="packt_infobox">One of the libraries in this recipe (<kbd>surf</kbd>) is cutting edge and depends on an unstable (at the time of writing this) <kbd>async</kbd>/<kbd>await</kbd> feature of Rust. Depending on when you read this, the library or <kbd>async</kbd>/<kbd>await</kbd> in Rust may have changed—in that case, please open an issue on the accompanying GitHub repository so we can provide a working example for other readers.</div>
+<p>Making these web requests has not always been straightforward in any language, especially with regard to sending and receiving data types, variables, and more. Since Rust does not come with web request modules available out of the box, there are a few libraries we can use to connect to remote HTTP services. Let's see how.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>We can make web requests in just a few steps:</p>
+<ol>
+<li>O<span>pen a Terminal to create a new project using</span><span> </span><kbd>cargo new web-requests.</kbd> <span>Use VS Code to open the project directory. </span></li>
+<li>First, let's edit <kbd>Cargo.toml</kbd> to add the dependencies we are going to use later:</li>
+</ol>
+<pre style="padding-left: 60px">[dependencies]<br/>surf = "1.0"<br/>reqwest = "0.9"<br/>serde = "1"<br/>serde_json = "1"<br/>runtime = "0.3.0-alpha.6"</pre>
+<ol start="3">
+<li>Let's start importing these external dependencies and setting up some data structs in <kbd>src/main.rs</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">#[macro_use]<br/>extern crate serde_json;<br/><br/>use surf::Exception;<br/>use serde::Serialize;<br/><br/>#[derive(Serialize)]<br/>struct MyGetParams {<br/>    a: u64,<br/>    b: String,<br/>}</pre>
+<ol start="4">
+<li><kbd>surf</kbd> (<a href="https://github.com/rustasync/surf">https://github.com/rustasync/surf</a>) is a recent crate developed fully <kbd>async</kbd>. Let's create a test function to see it in action. First, we create the client and issue a simple <kbd>GET</kbd> request:</li>
+</ol>
+<pre style="padding-left: 60px">async fn test_surf() -&gt; Result&lt;(), Exception&gt; {<br/>    println!("&gt; surf ...");<br/><br/>    let client = surf::Client::new();<br/>    let mut res = client<br/>        .get("https://blog.x5ff.xyz/other/cookbook2018")<br/>        .await?;<br/><br/>    assert_eq!(200, res.status());<br/>    assert_eq!("Rust is awesome\n", res.body_string().await?);</pre>
+<p style="padding-left: 60px">Then, we upgrade to something more complex, form data, which we also confirm was received well:</p>
+<pre>    let form_values = vec![<br/>        ("custname", "Rusty Crabbington"),<br/>        ("comments", "Thank you"),<br/>        ("custemail", "rusty@nope.com"),<br/>        ("custtel", "+1 234 33456"),<br/>        ("delivery", "25th floor below ground, no elevator. sorry"),<br/>    ];<br/><br/>    let res_forms: serde_json::Value = client<br/>        .post("https://httpbin.org/post")<br/>        .body_form(&amp;form_values)?<br/>        .recv_json()<br/>        .await?;<br/><br/>    for (name, value) in form_values.iter() {<br/>        assert_eq!(res_forms["form"][name], *value);<br/>    }</pre>
+<p style="padding-left: 60px">Next, the same procedure is repeated for JSON payloads:</p>
+<pre>    let json_payload = json!({<br/>        "book": "Rust 2018 Cookbook",<br/>        "blog": "https://blog.x5ff.xyz",<br/>    });<br/><br/>    let res_json: serde_json::Value = client<br/>        .put("https://httpbin.org/anything")<br/>        .body_json(&amp;json_payload)?<br/>        .recv_json()<br/>        .await?;<br/><br/>    assert_eq!(res_json["json"], json_payload);</pre>
+<p style="padding-left: 60px">And finally, we query parameters in <kbd>GET</kbd> requests:</p>
+<pre>    let query_params = MyGetParams {<br/>        a: 0x5ff,<br/>        b: "https://blog.x5ff.xyz".into(),<br/>    };<br/>    let res_query: serde_json::Value = client<br/>        .get("https://httpbin.org/get")<br/>        .set_query(&amp;query_params)?<br/>        .recv_json()<br/>        .await?;<br/><br/>    assert_eq!(res_query["args"]["a"], query_params.a.to_string());<br/>    assert_eq!(res_query["args"]["b"], query_params.b);<br/>    println!("&gt; surf successful!");<br/>    Ok(())<br/>}</pre>
+<ol start="5">
+<li>Since <kbd>surf</kbd> is very new, let's also test a more mature (and not <kbd>async</kbd>) crate, <kbd>reqwest</kbd> (<a href="https://github.com/seanmonstar/reqwest/">https://github.com/seanmonstar/reqwest/</a>). Just like the previous function, it will go through several ways to do different types of web tasks, starting with a simple <kbd>GET</kbd> request:</li>
+</ol>
+<pre style="padding-left: 60px">fn test_reqwest() -&gt; Result&lt;(), Exception&gt; {<br/>    println!("&gt; reqwest ...");<br/><br/>    let client = reqwest::Client::new();<br/><br/>    let mut res = client<br/>        .get("https://blog.x5ff.xyz/other/cookbook2018")<br/>        .send()?;<br/><br/>    assert_eq!(200, res.status());<br/>    assert_eq!("Rust is awesome\n", res.text()?);</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p style="padding-left: 60px">The next request features an HTML form request body:</p>
+<pre>    let form_values = vec![<br/>        ("custname", "Rusty Crabbington"),<br/>        ("comments", "Thank you"),<br/>        ("custemail", "rusty@nope.com"),<br/>        ("custtel", "+1 234 33456"),<br/>        ("delivery", "25th floor below ground, no elevator. sorry"),<br/>    ];<br/><br/>    let res_forms: serde_json::Value = client<br/>        .post("https://httpbin.org/post")<br/>        .form(&amp;form_values)<br/>        .send()?<br/>        .json()?;<br/><br/>    for (name, value) in form_values.iter() {<br/>        assert_eq!(res_forms["form"][name], *value);<br/>    }</pre>
+<p style="padding-left: 60px">This is followed by a JSON <kbd>PUT</kbd> request:</p>
+<pre>    let json_payload = json!({<br/>        "book": "Rust 2018 Cookbook",<br/>        "blog": "https://blog.x5ff.xyz",<br/>    });<br/><br/>    let res_json: serde_json::Value = client<br/>        .put("https://httpbin.org/anything")<br/>        .json(&amp;json_payload)<br/>        .send()?<br/>        .json()?;<br/><br/>    assert_eq!(res_json["json"], json_payload);</pre>
+<p style="padding-left: 60px">The final request features query parameters, automatically serialized by <kbd>serde</kbd>:</p>
+<pre>    let query_params = MyGetParams {<br/>        a: 0x5ff,<br/>        b: "https://blog.x5ff.xyz".into(),<br/>    };<br/><br/>    let res_query: serde_json::Value = client<br/>        .get("https://httpbin.org/get")<br/>        .query(&amp;query_params)<br/>        .send()?<br/>        .json()?;<br/><br/>    assert_eq!(res_query["args"]["a"], query_params.a.to_string());<br/>    assert_eq!(res_query["args"]["b"], query_params.b);<br/><br/>    println!("&gt; reqwest successful!");<br/>    Ok(())<br/>}</pre>
+<ol start="6">
+<li>One major function is still required: <kbd>main()</kbd>. Here, we are going to call the preceding tests:</li>
+</ol>
+<pre style="padding-left: 60px">#[runtime::main]<br/>async fn main() -&gt; Result&lt;(), Exception&gt; {<br/>    println!("Running some tests");<br/>    test_reqwest()?;<br/>    test_surf().await?;<br/>    Ok(())<br/>}</pre>
+<ol start="7">
+<li>The most important command is <kbd>cargo +nightly run</kbd>, so we can see that making requests works for both crates:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo +nightly run<br/></strong> Finished dev [unoptimized + debuginfo] target(s) in 0.10s<br/> Running `target/debug/web-requests`<br/>Running some tests<br/>&gt; reqwest ...<br/>&gt; reqwest successful!<br/>&gt; surf ...<br/>&gt; surf successful!</pre>
+<p>Let's check behind the scenes to see what's up.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>The Rust community's web frameworks are great examples of how the lessons learned from other languages influence the design of a more recent technology. Both crates discussed in this chapter follow a similar pattern that can be observed in a range of libraries and frameworks across various languages (for example, Python's requests), which evolved to this stage themselves. </p>
+<div class="packt_tip">The way these frameworks operate is often called the builder pattern together with the decorator pattern (both described in <em>Design Patterns,</em> Gamma et al, 1994). For C# programmers, the pattern is explained at <a href="https://airbrake.io/blog/design-patterns/structural-design-patterns-decorator">https://airbrake.io/blog/design-patterns/structural-design-patterns-decorator</a>.</div>
+<p>In this recipe, we look at two frameworks: <kbd>reqwest</kbd> and <kbd>surf</kbd>. After setting up the dependencies in <kbd>Cargo.toml</kbd> (<em>step 2</em>), we import some structs to create a serializable data type (to pass into <kbd>serde_urlencoded</kbd> (<a href="https://github.com/nox/serde_urlencoded">https://github.com/nox/serde_urlencoded</a>)) for <kbd>GET</kbd> parameters in <em>step 3</em>.</p>
+<p>In <em>step 4</em>, we create a function that covers <kbd>surf</kbd>. <kbd>surf</kbd> is fully <kbd>async</kbd>, which means that—to use <kbd>await</kbd>—we need to declare the function to be <kbd>async</kbd> as well. Then, we can create reusable <kbd>surf::Client</kbd>, which issues a <kbd>GET</kbd> request (to <a href="https://blog.x5ff.xyz/other/cookbook2018">https://blog.x5ff.xyz/other/cookbook2018</a>) right away. As with all of the other calls in this function, we use <kbd>await</kbd> to wait for the request to complete and the <kbd>?</kbd> operator to fail in case an error occurs. </p>
+<div class="packt_infobox"><span>In this recipe, we are using the incredibly useful <a href="https://httpbin.org/">https://httpbin.org/</a></span>. This website<span> reflects many properties of the request back to the sender, allowin</span>g us to <span>see what the server received in a JSON-formatted output (among other things). </span></div>
+<p>The next request is a <kbd>POST</kbd> request with form data, which can be represented as a vector of tuples (key-value pairs). Using the same client as before (unlike other frameworks, it's not bound to a specific domain), we can simply pass the vector as the form-body of the <kbd>POST</kbd> request. Since we already know what the endpoint will return (JSON), we can ask the framework to parse the results into <kbd>serde_json::Value</kbd> (see also the <em>Parsing unstructured formats such as JSON</em> <span>recipe </span>in this chapter) right away. Again, any parsing errors, timeouts, and more are handled by the <kbd>?</kbd> operator, which would return an error at this point. </p>
+<p>The returned JSON contains the form values in the request, confirming that the request contained the data in the expected encoding and format. Similarly, if we send JSON data in a <kbd>PUT</kbd> request, the returned JSON is expected to be equal to what we sent. </p>
+<p>In the last request, we send HTTP <kbd>GET</kbd> with automatically constructed <span>query parameters </span>from the previously defined <kbd>struct</kbd>. After sending off the request, the reflected JSON contains the data found in the query parameters, which is what we sent off—if we (and the library) did everything correctly. </p>
+<p><em>Step 5</em> repeats the same ideas for <kbd>reqwest</kbd>, with only a few API differences (features aside):</p>
+<ul>
+<li>Instead of <kbd>futures</kbd> and <kbd>await</kbd>, <kbd>reqwest</kbd> uses <kbd>send()</kbd> to execute the request.</li>
+<li>Declaring the format for receiving data (JSON, plaintext, and so on) is done on the response instance (that is, on the <kbd>send()</kbd> return type).</li>
+</ul>
+<p><em>Step 6</em> shows that each of the test functions works and no panics or errors are reported. </p>
+<p>Both libraries provide excellent ways to connect to remote web services, with <kbd>surf</kbd> having more features on the portability side (for example, various backends and WASM support), while <kbd>reqwest</kbd> is great for stable applications without <kbd>async</kbd> support and in need of cookies and proxies. For more information, read their respective documentations to match it to your project and use case. For now, let's move on to the next recipe.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Running machine learning models</h1>
+                </header>
+            
+            <article>
+                
+<p>Machine learning and especially deep learning has been a rising topic ever since AlexNet's triumph in 2012 (<a href="https://papers.nips.cc/paper/4824-imagenet-classification-with-deep-convolutional-neural-networks.pdf">https://papers.nips.cc/paper/4824-imagenet-classification-with-deep-convolutional-neural-networks.pdf</a>), with the language of choice being mostly Python for its easy-to-use syntax and flexibility. However, the underlying frameworks (TensorFlow, PyTorch, and more) are commonly built using C++, not only for performance reasons but also because accessing hardware (such as a GPU) is a lot easier. Rust has—so far—not been the language of choice to implement lower-level frameworks. Even outside the area of deep learning, Rust lacks library support in several areas including data preparation, classical machine learning, and optimization (progress is tracked here: <a href="http://www.arewelearningyet.com/">http://www.arewelearningyet.com/</a>)—so, why bother using Rust in any machine learning task? </p>
+<p>The Rust community provides bindings to popular deep learning frameworks to a Rust API, allowing users to do some (limited) experimentation as well as using weights of known architectures for inference. While all of this is highly experimental, it represents a push in the right direction and it's fascinating to work with.</p>
+<p><span>In the long run, we see Rust—as a low-level language—utilizing its low overhead and high performance to benefit the </span><em>deploying </em><span>of machine learning models (that is, model inference), targeting IoT-type devices with limited resources (for example, <a href="https://github.com/snipsco/tract">https://github.com/snipsco/tract</a>). Until then, we can have some fun getting Rust's torch bindings to work. One example of using Rust in an efficient way for non-neural networks can be found at <a href="https://blog.x5ff.xyz/blog/azure-functions-wasm-rust-ai/">https://blog.x5ff.xyz/blog/azure-functions-wasm-rust-ai/</a>.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Getting ready</h1>
+                </header>
+            
+            <article>
+                
+<p>This recipe cannot cover the details of how and why neural networks work, so we assume that you already have an idea what training and test datasets are, what a convolutional network does, and how loss functions together with an optimizer achieve model convergence. If that sentence didn't make sense to you, we recommend taking one of the many online courses such as the <a href="https://www.fast.ai/">https://www.fast.ai/</a> MOOC (<a href="http://course.fast.ai/">http://course.fast.ai/</a>), the Coursera machine learning course (<a href="https://www.coursera.org/learn/machine-learning">https://www.coursera.org/learn/machine-learning</a>), or Microsoft AI school (<a href="https://aischool.microsoft.com/en-us/machine-learning/learning-paths">https://aischool.microsoft.com/en-us/machine-learning/learning-paths</a>) before implementing this recipe. If you are ready to start, use a command-line Terminal to create a new Rust project by running <kbd>cargo new rusty-ml</kbd> and change into the <kbd>rusty-ml</kbd> directory to create a new directory, <kbd>models</kbd>.</p>
+<p>To obtain the data, change into the <kbd>rusty-ml</kbd> directory and <span>clone (or download and extract) Zalando Research's fashion MNIST (<a href="https://research.zalando.com/welcome/mission/research-projects/fashion-mnist/">https://research.zalando.com/welcome/mission/research-projects/fashion-mnist/</a>) repository from</span> <a href="https://github.com/zalandoresearch/fashion-mnist">https://github.com/zalandoresearch/fashion-mnist</a>. Ultimately, you should end up with three directories, namely, <kbd>models</kbd>, <kbd>fashion-mnist</kbd>, and <kbd>src</kbd> within the <kbd>rusty-ml</kbd> project directory.</p>
+<div class="packt_infobox">In the GitHub repository accompanying this book, the <kbd>fashion-mnist</kbd> repository is liked as a Git submodule (<a href="https://git-scm.com/book/en/v2/Git-Tools-Submodules">https://git-scm.com/book/en/v2/Git-Tools-Submodules</a>). If you run <kbd>git submodule update --init</kbd> from within your local copy of the repository, it will download the <kbd>fashion-mnist</kbd> repository. </div>
+<p>Before we can continue, we need to unzip the data files, which are located in <kbd>fashion-mnist/data/fashion</kbd>. On Linux/macOS, you can use <kbd>gunzip *.gz</kbd> from within this directory to extract all; on Windows, use your preferred tool to do the same.</p>
+<p>The end result should look like this:</p>
+<pre>rusty-ml<br/>├── Cargo.toml<br/>├── fashion-mnist<br/>│   ├── ...<br/>│   ├── data<br/>│   │   ├── fashion<br/>│   │   │   ├── t10k-images-idx3-ubyte<br/>│   │   │   ├── t10k-labels-idx1-ubyte<br/>│   │   │   ├── train-images-idx3-ubyte<br/>│   │   │   └── train-labels-idx1-ubyte<br/>│   │   └── mnist<br/>│   │   └── README.md<br/>|   └── ...<br/>├── models<br/>└── src<br/>    └── main.rs</pre>
+<p>The original MNIST (<a href="http://yann.lecun.com/exdb/mnist/">http://yann.lecun.com/exdb/mnist/</a>) is a dataset comprised of small images (28 x 28 pixels, grayscale) that show handwritten digits, and the goal was to classify them into classes from 0 to 9—that is, recognize the number. After 20 years, modern algorithms solve this task with exceedingly high accuracy, so it needed an upgrade—which is what Zalando, a fashion company located in Berlin, Germany, took on. The <kbd>fashion-mnist</kbd> dataset is a drop-in replacement for the original showing small clothing items instead of digits. The classification of these items is much harder, thanks to their intricate details that make up each item in the ten classes. The task is to correctly classify which class (out of ten) a clothing item belongs to. The classes include boots, sneakers, pants, t-shirts, and others. </p>
+<p>In this recipe, we are going to train a very accurate (~90%) model to identify these items using Rust's PyTorch bindings, <kbd>tch-rs</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>Only a few steps <span><span>are needed to</span></span> train and use a neural network in Rust:</p>
+<ol>
+<li>Open <kbd>Cargo.toml</kbd> to add the dependency for <kbd>tch-rs</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">[dependencies]<br/>tch = "0.1"<br/>failure ="0.1"</pre>
+<ol start="2">
+<li>Let's add some code for the imports to <kbd>src/main.rs</kbd> before diving deep:</li>
+</ol>
+<pre style="padding-left: 60px">use std::io::{Error, ErrorKind};<br/>use std::path::Path;<br/>use std::time::Instant;<br/>use tch::{nn, nn::ModuleT, nn::OptimizerConfig, Device, Tensor};</pre>
+<ol start="3">
+<li>PyTorch (and thereby, <kbd>tch-rs</kbd>) architectures typically store their layers individually, so we can store them in individual properties in <kbd>struct</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">#[derive(Debug)]<br/>struct ConvNet {<br/>    conv1: nn::Conv2D,<br/>    conv2: nn::Conv2D,<br/>    fc1: nn::Linear,<br/>    fc2: nn::Linear,<br/>}<br/><br/>impl ConvNet {<br/>    fn new(vs: &amp;nn::Path, labels: i64) -&gt; ConvNet {<br/>        ConvNet {<br/>            conv1: nn::conv2d(vs, 1, 32, 5, Default::default()),<br/>            conv2: nn::conv2d(vs, 32, 64, 5, Default::default()),<br/>            fc1: nn::linear(vs, 1024, 512, Default::default()),<br/>            fc2: nn::linear(vs, 512, labels, Default::default()),<br/>        }<br/>    }<br/>}</pre>
+<ol start="4">
+<li>For these layers to work together as a neural network, it requires a forward pass. The <kbd>nn</kbd> module of <kbd>tch</kbd> provides two traits (<kbd>Module</kbd> and <kbd>ModuleT</kbd>) that we can implement to do that. We decided on implementing <kbd>ModuleT</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">impl nn::ModuleT for ConvNet {<br/>    fn forward_t(&amp;self, xs: &amp;Tensor, train: bool) -&gt; Tensor {<br/>        xs.view([-1, 1, 28, 28])<br/>            .apply(&amp;self.conv1)<br/>            .relu()<br/>            .max_pool2d_default(2)<br/>            .apply(&amp;self.conv2)<br/>            .relu()<br/>            .max_pool2d_default(2)<br/>            .view([-1, 1024]) // flatten<br/>            .apply(&amp;self.fc1)<br/>            .relu()<br/>            .dropout_(0.5, train)<br/>            .apply(&amp;self.fc2)<br/>    }<br/>}</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<ol start="5">
+<li>Next, we are going to implement the training loop. Other deep learning frameworks hide these bits from the user, but PyTorch allows us to understand the individual steps better by writing them from scratch. Add the following function to <kbd>src/main.rs</kbd>, starting with some data loading:</li>
+</ol>
+<pre style="padding-left: 60px">fn train_from_scratch(learning_rate: f64, batch_size: i64, epochs: usize) -&gt; failure::Fallible&lt;()&gt; {<br/>    let data_path = Path::new("fashion-mnist/data/fashion");<br/>    let model_path = Path::new("models/best.ot");<br/><br/>    if !data_path.exists() {<br/>        println!(<br/>            "Data not found at '{}'. Did you run '<br/>             git submodule update --init'?",<br/>            data_path.to_string_lossy()<br/>        );<br/>        return Err(Error::from(ErrorKind::NotFound).into());<br/>    }<br/><br/>    println!("Loading data from '{}'", data_path.to_string_lossy());<br/>    let m = tch::vision::mnist::load_dir(data_path)?;</pre>
+<p style="padding-left: 60px">Then, we instantiate two important things: <kbd>VarStore</kbd> where everything gets saved in <kbd>tch</kbd>, and <kbd>ConvNet</kbd>, which we declared earlier:</p>
+<pre>    let vs = nn::VarStore::new(Device::cuda_if_available());<br/>    let net = ConvNet::new(&amp;vs.root(), 10);<br/>    let opt = nn::Adam::default().build(&amp;vs, learning_rate)?;<br/><br/>    println!(<br/>        "Starting training, saving model to '{}'",<br/>        model_path.to_string_lossy()<br/>    );</pre>
+<p style="padding-left: 60px">Once we have that, we can use a loop to iterate over the training data in (random) batches, feeding them into the network, computing the loss, and running the back propagation:</p>
+<pre>    let mut min_loss = ::std::f32::INFINITY;<br/>    for epoch in 1..=epochs {<br/>        let start = Instant::now();<br/><br/>        let mut losses = vec![];<br/><br/>        // Batched training, otherwise we would run out of memory<br/>        for (image_batch, label_batch) in m.train_iter(<br/>             batch_size).shuffle().to_device(vs.device())<br/>        {<br/>            let loss = net<br/>                .forward_t(&amp;image_batch, true)<br/>                .cross_entropy_for_logits(&amp;label_batch);<br/>            opt.backward_step(&amp;loss);<br/><br/>            losses.push(f32::from(loss));<br/>        }<br/>        let total_loss = losses.iter().sum::&lt;f32&gt;() / <br/>                         (losses.len() as f32);</pre>
+<p style="padding-left: 60px">After going through the entire training set, we then test the model on the entire test set. Since this should not influence the model performance, we skip the backpropagation this time:</p>
+<pre>         // Predict the test set without using batches<br/>        let test_accuracy = net<br/>            .forward_t(&amp;m.test_images, false)<br/>            .accuracy_for_logits(&amp;m.test_labels);</pre>
+<p style="padding-left: 60px">Finally, we print some statistics so we know whether we are on the right track, but only after we save the current best model weights (that is, where the loss is the lowest):</p>
+<pre>        // Checkpoint<br/>        if total_loss &lt;= min_loss {<br/>            vs.save(model_path)?;<br/>            min_loss = total_loss;<br/>        }<br/><br/>        // Output for the user<br/>        println!(<br/>            "{:4} | train loss: {:7.4} | test acc: {:5.2}% <br/>             | duration: {}s",<br/>            epoch,<br/>            &amp;total_loss,<br/>            100. * f64::from(&amp;test_accuracy),<br/>            start.elapsed().as_secs()<br/>        );<br/>    }<br/>    println!(<br/>        "Done! The best model was saved to '{}'",<br/>        model_path.to_string_lossy()<br/>    );<br/>    Ok(())<br/>}</pre>
+<ol start="6">
+<li>After having a trained model, you typically also want to run inference on other images (that is, predict stuff). The next function takes the best model's weights and applies it to the <kbd>ConvNet</kbd> architecture:</li>
+</ol>
+<pre style="padding-left: 60px">fn predict_from_best() -&gt; failure::Fallible&lt;()&gt; {<br/>    let data_path = Path::new("fashion-mnist/data/fashion");<br/>    let model_weights_path = Path::new("models/best.ot");<br/><br/>    let m = tch::vision::mnist::load_dir(data_path)?;<br/>    let mut vs = nn::VarStore::new(Device::cuda_if_available());<br/>    let net = ConvNet::new(&amp;vs.root(), 10);<br/><br/>    // restore weights<br/>    println!(<br/>        "Loading model weights from '{}'",<br/>        model_weights_path.to_string_lossy()<br/>    );<br/>    vs.load(model_weights_path)?;</pre>
+<p style="padding-left: 60px">With this model in place, we can then take a random subset of the training data and run inference:</p>
+<pre>    println!("Probabilities and predictions <br/>              for 10 random images in the test set");<br/>    for (image_batch, label_batch) in m.test_iter(1)<br/>         .shuffle().to_device(vs.device()).take(10) {<br/>        let raw_tensor = net<br/>            .forward_t(&amp;image_batch, false)<br/>            .softmax(-1)<br/>            .view(m.labels);<br/>        let predicted_index: Vec&lt;i64&gt; = <br/>            raw_tensor.argmax(0, false).into();<br/>        let probabilities: Vec&lt;f64&gt; = raw_tensor.into();<br/><br/>        print!("[ ");<br/>        for p in probabilities {<br/>            print!("{:.4} ", p);<br/>        }<br/>        let label: Vec&lt;i64&gt; = label_batch.into();<br/>        println!("] predicted {}, was {}", <br/>                  predicted_index[0], label[0]);<br/>    }<br/>    Ok(())<br/>}</pre>
+<ol start="7">
+<li>The <kbd>main</kbd> function ties it all together and trains a model before calling the inference function:</li>
+</ol>
+<pre style="padding-left: 60px"> fn main() -&gt; failure::Fallible&lt;()&gt; {<br/>    train_from_scratch(1e-2, 1024, 5)?;<br/>    predict_from_best()?;<br/>    Ok(())<br/>}</pre>
+<ol start="8">
+<li>That's exciting! Let's train a model for a few epochs to see decreasing loss and increasing test accuracy scores:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo run</strong><br/>    Finished dev [unoptimized + debuginfo] target(s) in 0.19s<br/>     Running `target/debug/rusty-ml`<br/>Loading data from 'fashion-mnist/data/fashion'<br/>Starting training, saving model to 'models/best.ot'<br/>   1 | train loss: 1.1559 | test acc: 82.87% | duration: 29s<br/>   2 | train loss: 0.4132 | test acc: 86.70% | duration: 32s<br/>   3 | train loss: 0.3383 | test acc: 88.41% | duration: 32s<br/>   4 | train loss: 0.3072 | test acc: 89.16% | duration: 29s<br/>   5 | train loss: 0.2869 | test acc: 89.36% | duration: 28s<br/>Done! The best model was saved to 'models/best.ot'<br/>Loading model weights from 'models/best.ot'<br/>Probabilities and predictions for 10 random images in the test set<br/>[ 0.0000 1.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 ] predicted 1, was 1<br/>[ 0.5659 0.0001 0.0254 0.0013 0.0005 0.0000 0.4062 0.0000 0.0005 0.0000 ] predicted 0, was 0<br/>[ 0.0003 0.0000 0.9699 0.0000 0.0005 0.0000 0.0292 0.0000 0.0000 0.0000 ] predicted 2, was 2<br/>[ 0.0000 1.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 ] predicted 1, was 1<br/>[ 0.6974 0.0000 0.0008 0.0001 0.0000 0.0000 0.3017 0.0000 0.0000 0.0000 ] predicted 0, was 0<br/>[ 0.0333 0.0028 0.1053 0.7098 0.0420 0.0002 0.1021 0.0007 0.0038 0.0001 ] predicted 3, was 2<br/>[ 0.0110 0.0146 0.0014 0.9669 0.0006 0.0000 0.0038 0.0003 0.0012 0.0000 ] predicted 3, was 3<br/>[ 0.0003 0.0001 0.0355 0.0014 0.9487 0.0001 0.0136 0.0001 0.0004 0.0000 ] predicted 4, was 4<br/>[ 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 1.0000 0.0000 0.0000 ] predicted 7, was 7<br/>[ 0.0104 0.0091 0.0037 0.8320 0.0915 0.0001 0.0505 0.0002 0.0026 0.0000 ] predicted 3, was 3</pre>
+<p>This was a very interesting detour into the world of machine learning. Let's find out more about it.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>Deep learning in Rust works—however, it comes with many strings attached. <kbd>tch-rs</kbd> (<a href="https://github.com/LaurentMazare/tch-rs">https://github.com/LaurentMazare/tch-rs</a>) is a great framework if you already know some PyTorch and it lets you get into it right away. However, anyone who is new to the idea of machine learning should look at Python (and PyTorch) to get comfortable with the type of thinking that is required. <kbd>tch-rs</kbd> uses the C++ foundation of the Python version and provides a thin wrapper around the bindings it created. This means two things:</p>
+<ul>
+<li>Most ideas of the Python version should apply to <kbd>tch-rs</kbd>.</li>
+<li>The extensive C++ usage is likely <em>very</em> unsafe.</li>
+</ul>
+<p class="mce-root">By using bindings, wrapped code is much more likely to leave some kind of memory unfreed thanks to the added layer of abstraction and the changed programming paradigms in the host language. For applications such as machine learning, where tens (or even hundreds) of gigabytes of memory usage is not uncommon, a memory leak has a much larger impact. However, it's great to see it working so well already and we expect that this project will go much further. </p>
+<div class="packt_infobox">We made a few simplifications to the model training process for brevity. It's recommended to do some research into how to properly evaluate a model and rule out overfitting before going any further with it. </div>
+<p>In <em>step 1</em>, we set up the <kbd>tch</kbd> dependency to resolve the imports we use in <em>step 2</em>. <em>Step 3</em> is where things get interesting (model architecture). Deep learning is a set of matrix multiplications, where—technically speaking—the input and output dimensions have to match for it to work. Since PyTorch (<a href="https://pytorch.org/">https://pytorch.org/</a>) is famously low-level, we have to set the individual layers up and match their dimensions by hand. In this case, we use two layers of 2-dimensional convolutions with two dense layers at the end to make sense of what the convolutions found. When we initialize the network in the <kbd>new()</kbd> function, we assign the input size, number of neurons/filters, and output/layers to the instantiation (<kbd>nn::conv2d</kbd> and <kbd>nn::linear</kbd>) functions. As you can see, the numbers match between the layers for it to be able to concatenate them, while the last layer outputs exactly the number of classes we are looking for (10). </p>
+<div class="packt_infobox">Tensors are a generalized version of vectors in mathematics. They can be anything from a single number (scalar) to a multi-dimensional vector of vectors. Read more at <a href="http://mathworld.wolfram.com/Tensor.html">http://mathworld.wolfram.com/Tensor.html</a> (warning: lots of math).</div>
+<p>In <em>step 4</em>, we implement the forward process provided by the <kbd>nn::ModuleT</kbd> trait. The difference to <kbd>nn::Module</kbd> is the <kbd>train</kbd> parameter, which indicates whether this run is intended for training in the <kbd>forward_t()</kbd> function. The other parameter in that function is the actual data represented as an <kbd>nn::Tensor</kbd> reference. Before we can use it, we have to assign a structure to it, and, since we are dealing with (grayscale) images, the choice is straightforward: it's a 4-dimensional tensor. The dimensions are assigned as follows:</p>
+<ul>
+<li>The first dimension is the batch, so there are zero to <kbd>batchsize</kbd> number of images in there.</li>
+<li>The second dimension represents the number of channels in the image, which is one for grayscale but three for RGB.</li>
+<li>In the last two dimensions, we are storing the actual image, so they are the image's width and height. </li>
+</ul>
+<p>So, as we call the <kbd>.view()</kbd> function on the tensor instance, we are changing the interpretation to these dimensions, with -1 meaning whatever fits (typical for batch size). From there on, we are dealing with a bunch of 28 x 28 x 1 images that we feed into the first convolutional layer and apply the <strong>Rectified Linear Unit</strong> (<strong>ReLU</strong>) (<a href="https://machinelearningmastery.com/rectified-linear-activation-function-for-deep-learning-neural-networks/">https://machinelearningmastery.com/rectified-linear-activation-function-for-deep-learning-neural-networks/</a>) function on the outcome. That follows a 2-dimensional max pooling layer, after which the pattern is repeated for the second convolutional layer. This is common to control the output sizes of a convolutional layer. After the second max pooling, we flatten the output vector (1,024 is a calculated value: <a href="https://medium.com/@iamvarman/how-to-calculate-the-number-of-parameters-in-the-cnn-5bd55364d7ca">https://medium.com/@iamvarman/how-to-calculate-the-number-of-parameters-in-the-cnn-5bd55364d7ca</a>) and apply the fully connected layers one after the other with a ReLU function in between. The raw output of the last layer is then returned as a tensor.</p>
+<p>In the training loop in <em>step 5</em>, we start off by reading the data from disk, using a predefined dataset function. We are taking advantage of this since the MNIST data is very common in machine learning examples. Ultimately, this is an iterator over the data (in this case, images) that comes with a few handy functions attached. In fact, there are multiple iterators since the data is already split into training and test sets.</p>
+<p>Once loaded, we create an <kbd>nn::VarStore</kbd>, which is a <kbd>tch-rs</kbd> concept to store the model weights. This <kbd>VarStore</kbd> instance is passed into our model architecture struct, <kbd>ConvNet</kbd>, and the optimizer, so that it can do the backpropagation (Adam (<a href="https://arxiv.org/abs/1412.6980">https://arxiv.org/abs/1412.6980</a>) is a stochastic optimizer and, as of early 2019, considered state of the art). Since PyTorch allows moving data between devices (that is CPU versus GPU), we always have to assign a device to weights and data so the framework knows which memory to write to. </p>
+<div class="packt_infobox">The <kbd>learning_rate</kbd> parameter represents a step size of how far the optimizer jumps toward the best solution. This parameter is almost always very small (for example, <kbd>1e-2</kbd>) because choosing a larger value might overshoot its goal and worsen the solution, and a too-small value could mean it never gets there. Read more at <a href="https://www.jeremyjordan.me/nn-learning-rate/">https://www.jeremyjordan.me/nn-learning-rate/</a>.</div>
+<p>Next in the training loop, we have to implement the actual loop. This loop runs for several epochs and, generally, a higher number means more convergence (for example, overfitting: <a href="https://machinelearningmastery.com/overfitting-and-underfitting-with-machine-learning-algorithms/">https://machinelearningmastery.com/overfitting-and-underfitting-with-machine-learning-algorithms/</a>), but the number we chose (5) in this recipe is definitely too low and chosen for the training to finish quickly with tangible results. Try a higher number and see how (whether) the model improves! Within each epoch, we can then run through the shuffled batches (a convenience function provided by the dataset implementation), run the forward pass and compute the loss for each batch. The loss function—cross entropy (<a href="https://pytorch.org/docs/stable/nn.html#crossentropyloss">https://pytorch.org/docs/stable/nn.html#crossentropyloss</a>)—comes back with a number that lets us know how far off we were with the prediction, which is important for running the backpropagation. In this example, we chose a large batch size of 1,024 images in one go, meaning that it has to run the loop 59 times for each epoch. This speeds up the process without too much of an impact on the training quality—if you can fit everything into memory.</p>
+<div class="packt_tip">Think of a loss function as a function to determine how wrong the model was. Typically, we choose a predefined loss function based on the type of problem (regression, binary classification, or multi-class classification). Cross entropy is the default for multi-class classification.</div>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="CDPAlignCenter CDPAlign">As we are walking through the batches, we also want to know how we are doing, which is why we created a simple vector to store the average loss per batch. Plotting the losses per epoch, we get a typical shape where the loss <span>levels off toward zero:</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="Images/e0ba6358-59b7-4961-b7c5-888816be9fa1.png"/></p>
+<p class="CDPAlignCenter CDPAlign">Since the algorithm has seen the training data, we need some test data to see whether it actually improved or whether it just learned to recognize the training data really well. This is why the test set is done without backpropagation and calculates the accuracy directly. </p>
+<div class="packt_tip">It is generally recommended to have a three-way split of your data (<a href="https://machinelearningmastery.com/difference-test-validation-datasets/">https://machinelearningmastery.com/difference-test-validation-datasets/</a>). A training set that the model learns on should make up the majority, a test set that should show progress and overfitting after every epoch, and, finally, another set of data that the network has never seen before. The last one is to make sure that it performs as expected on real-world data and it must not be used to change any parameter in training. Confusingly, the naming of these three is sometimes training, validation, test (respectively) as well as training, test, validation.</div>
+<p>In a strategy known as checkpointing, we then save the best model to disk as soon as the loss it produces is lower than what we had before. When training 200 epochs, the loss function likely shows several spikes as the model learns wrong features and we don't want to lose the best model so far. Once done with the training for one epoch, we want to print out something to see if the model converges as expected.</p>
+<p>In <em>step 6</em>, we repeat some of the setup processes for loading the data, but, instead of training the architecture, we simply load the weights of the network from disk. The weights are the parts that we trained in the previous step and, in an inference-only scenario, we would train somewhere else and simply transfer the weights to where we classify real-world data (or load the entire model with something like ONNX: <a href="https://onnx.ai/">https://onnx.ai/</a>). </p>
+<p>To illustrate the prediction process, we are using the test set (again)—something that should be avoided in practice, since the model has to work on unseen data just as well as the data used in training. We take 10 random images (in 10 batches of size 1), run the forward pass, and then use a function called softmax to derive probabilities from the raw network output. After an application of <kbd>.view()</kbd> to align the data to the labels, we print the probabilities to the command line for us to see. Since these are probabilities, taking the index with the highest probability is the network's prediction. Since we used a dataset implementation, we can trust that these indices align with the input labels. </p>
+<p><em>Step 7</em> calls the functions in order and we get to see some training and predictions in the <em>step 8</em> output. As described in the <em>step 5</em> explanation, we print the loss (for this machine, each line took about 30 seconds to appear) and training accuracy. After the training is done, we know where the best model weights are located and use those to run the inference and print out the probability matrix. </p>
+<p>Each line in that matrix represents the possible outcomes with probabilities assigned to each class—and, while it is 100% certain in the first line, the second line is a closer call (57% for class 0 and 40% for class 6). The sixth example has been wrongly predicted, and unfortunately, the model was fairly confident as well (71% for class 3 and 11% for class 2), which leads us to believe that more training is required. </p>
+<p>We encourage you to play around a little bit with the parameters to see how the outcomes can change quickly (for better or worse), or if you are more experienced, to build a better architecture. Regardless of what you are doing, <kbd>tch-rs</kbd> is an interesting way of using deep learning in Rust and we hope that it develops further so we can use it for a range of tasks in machine learning. </p>
+<p>Now that we know more about machine learning in Rust, let's move on to more tangible things in the next recipe.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Configuring and using logging</h1>
+                </header>
+            
+            <article>
+                
+<p>While sending debug and other information out to the console is popular and easy, chances are that it becomes confusing and chaotic beyond a certain complexity. This includes the lack of a standardized date/time or origin class or inconsistent formatting, making it hard to trace an execution path through the system. Moreover, recent systems focus on logs as an additional source for information: how many users did we serve each hour of the day? Where did they come from? What was the 95<sup>th</sup> percentile response time? </p>
+<div class="packt_infobox"><span>Due to printing constraints we had to replace the original emoji with their names. Check out the GitHub repository for this book for the full version.</span></div>
+<p>These questions can be answered with diligent logging using a framework that provides consistent and configurable output that can be easily parsed and shipped to a log analytics service. Let's create a simple Rust application that logs data in a variety of ways. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>Follow the steps to create and use a custom logger:</p>
+<ol>
+<li>Open a Terminal to create a new project using<span> </span><kbd>cargo new logging</kbd>. Use VS Code to open the project directory.</li>
+<li>As a first step, we adapt <kbd>Cargo.toml</kbd> to include our new dependencies:</li>
+</ol>
+<pre style="padding-left: 60px">[dependencies]<br/>log = "0.4"<br/>log4rs = "0.8.3"<br/>time = "0.1"</pre>
+<ol start="3">
+<li>Then, in <kbd>src/main.rs</kbd>, we can import the required macros:</li>
+</ol>
+<pre style="padding-left: 60px">use log::{debug, error, info, trace, warn};</pre>
+<ol start="4">
+<li>Before getting into more complex things, let's add a function that shows us how to use the macros we just imported:</li>
+</ol>
+<pre style="padding-left: 60px">fn log_some_stuff() {<br/>    let a = 100;<br/><br/>    trace!("TRACE: Called log_some_stuff()");<br/>    debug!("DEBUG: a = {} ", a);<br/>    info!("INFO: The weather is fine");<br/>    warn!("WARNING, stuff is breaking down");<br/>    warn!(target: "special-target", "WARNING, stuff is breaking down");<br/>    error!("ERROR: stopping ...");<br/>}</pre>
+<ol start="5">
+<li>These macros work because they are pre-configured by the logging framework. Consequently, if we are configuring the logging, it has to be done globally—for example, in the <kbd>main</kbd> function:</li>
+</ol>
+<pre style="padding-left: 60px">const USE_CUSTOM: bool = false;<br/><br/>fn main() {<br/>    if USE_CUSTOM { <br/>    log::set_logger(&amp;LOGGER)<br/>        .map(|()| log::set_max_level(log::LevelFilter::Trace))<br/>        .unwrap();<br/>    } else {<br/>        log4rs::init_file("log4rs.yml", Default::default()).unwrap();<br/>    }<br/>    log_some_stuff();<br/>}</pre>
+<ol start="6">
+<li>By using <kbd>log4rs::init_file()</kbd>, we use a YAML configuration that can be changed without recompiling the program. Before continuing in <kbd>src/main.rs</kbd>, we should create <kbd>log4rs.yml</kbd> like this (the YAML format is picky about indentations):</li>
+</ol>
+<pre style="padding-left: 60px">refresh_rate: 30 seconds<br/><br/>appenders:<br/>  stdout:<br/>    kind: console<br/><br/>  outfile:<br/>    kind: file<br/>    path: "outfile.log"<br/>    encoder:<br/>      pattern: "{d} - {m}{n}"<br/><br/>root:<br/>  level: trace<br/>  appenders:<br/>    - stdout<br/><br/>loggers:<br/>  special-target:<br/>    level: info<br/>    appenders:<br/>      - outfile</pre>
+<ol start="7">
+<li>Back to <kbd>src/main.rs</kbd>: we saw an ability to create and use a fully custom logger. For that, we create a nested module in <kbd>src/main.rs</kbd> and implement our logger there:</li>
+</ol>
+<pre style="padding-left: 60px">mod custom {<br/>    pub use log::Level;<br/>    use log::{Metadata, Record};<br/><br/>    pub struct EmojiLogger {<br/>        pub level: Level,<br/>    }</pre>
+<p style="padding-left: 60px">Once we have defined the imports and basic <kbd>struct</kbd>, we can implement the <kbd>log::Log</kbd> trait for our new <kbd>EmojiLogger</kbd> type:</p>
+<pre>    impl log::Log for EmojiLogger {<br/><br/>        fn flush(&amp;self) {}        <br/><br/>        fn enabled(&amp;self, metadata: &amp;Metadata) -&gt; bool {<br/>            metadata.level() &lt;= self.level<br/>        }<br/><br/>        fn log(&amp;self, record: &amp;Record) {<br/>            if self.enabled(record.metadata()) {<br/>                let level = match record.level() {<br/>                    Level::Warn =&gt; "WARNING-SIGN",<br/>                    Level::Info =&gt; "INFO-SIGN",<br/>                    Level::Debug =&gt; "CATERPILLAR",<br/>                    Level::Trace =&gt; "LIGHTBULB",<br/>                    Level::Error =&gt; "NUCLEAR",<br/>                };<br/>                let utc = time::now_utc();<br/>                println!("{} | [{}] | {:&lt;5}", <br/>                         utc.rfc3339(), record.target(), level);<br/>                println!("{:21} {}", "", record.args());<br/>            }<br/>        }<br/>    }<br/>}</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<ol start="8">
+<li>To avoid any lifetime conflicts, we want the logger to have a static lifetime (<a href="https://doc.rust-lang.org/reference/items/static-items.html">https://doc.rust-lang.org/reference/items/static-items.html</a>), so let's instantiate and declare the variable using Rust's <kbd>static</kbd> keyword:</li>
+</ol>
+<pre style="padding-left: 60px">static LOGGER: custom::EmojiLogger = custom::EmojiLogger {<br/>    level: log::Level::Trace,<br/>};</pre>
+<ol start="9">
+<li>Let's execute <kbd>cargo run</kbd>, first with the <kbd>USE_CUSTOM</kbd> constant (created in <em>step 5</em>) set to <kbd>false</kbd>, which tells the program to read and use the <kbd>log4rs.yaml</kbd> configuration, instead of the custom module:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo run<br/></strong> Finished dev [unoptimized + debuginfo] target(s) in 0.04s<br/>     Running `target/debug/logging`<br/>2019-09-01T12:42:18.056681073+02:00 TRACE logging - TRACE: Called log_some_stuff()<br/>2019-09-01T12:42:18.056764247+02:00 DEBUG logging - DEBUG: a = 100 <br/>2019-09-01T12:42:18.056791639+02:00 INFO logging - INFO: The weather is fine<br/>2019-09-01T12:42:18.056816420+02:00 WARN logging - WARNING, stuff is breaking down<br/>2019-09-01T12:42:18.056881011+02:00 ERROR logging - ERROR: stopping ...</pre>
+<p style="padding-left: 60px"> In addition to that, we configured it so that, if something gets logged to <kbd>special-target</kbd>, we append it to a file called <kbd>outfile.log.</kbd> Let's see what's in there as well:</p>
+<pre style="padding-left: 60px">2019-09-01T12:45:25.256922311+02:00 - WARNING, stuff is breaking down</pre>
+<ol start="10">
+<li>Now that we have used the <kbd>log4rs</kbd> default logger, let's see what our own logging class does. Set <kbd>USE_CUSTOM</kbd> (from <em>step 5</em>) to <kbd>true</kbd> and use <kbd>cargo run</kbd> to create the following output:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo run</strong><br/>   Compiling logging v0.1.0 (Rust-Cookbook/Chapter10/logging)<br/>    Finished dev [unoptimized + debuginfo] target(s) in 0.94s<br/>     Running `target/debug/logging`<br/>2019-09-01T10:46:43Z | [logging] | LIGHTBULB <br/>                      TRACE: Called log_some_stuff()<br/>2019-09-01T10:46:43Z | [logging] | CATERPILLAR <br/>                      DEBUG: a = 100 <br/>2019-09-01T10:46:43Z | [logging] | INFO-SIGN <br/>                      INFO: The weather is fine<br/>2019-09-01T10:46:43Z | [logging] | WARNING-SIGN <br/>                      WARNING, stuff is breaking down<br/>2019-09-01T10:46:43Z | [special-target] | WARNING-SIGN <br/>                      WARNING, stuff is breaking down<br/>2019-09-01T10:46:43Z | [logging] | NUCLEAR <br/>                      ERROR: stopping ...</pre>
+<p>Now that we have seen it at work, let's dive into why this is the case.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>In this more complex example, we are using Rust's logging infrastructure, which consists of two main parts:</p>
+<ul>
+<li>The <kbd>log</kbd> crate (<a href="https://github.com/rust-lang-nursery/log">https://github.com/rust-lang-nursery/log</a>), which provides the facade (interface) to the logging macros</li>
+<li>A logging implementor such as <kbd>log4rs</kbd> (<a href="https://github.com/sfackler/log4rs">https://github.com/sfackler/log4rs</a>), <kbd>env_logger</kbd> (<a href="https://github.com/sebasmagri/env_logger/">https://github.com/sebasmagri/env_logger/</a>), or similar (<a href="https://docs.rs/log/0.4.8/log/#available-logging-implementations">https://docs.rs/log/0.4.8/log/#available-logging-implementations</a><a href="https://github.com/sfackler/log4rs">)</a></li>
+</ul>
+<p>After the initial setup in <em>steps 1</em> and <em>2</em>, we simply have to import the macros provided by the <kbd>log</kbd> crate in <em>step 3</em>—nothing more. As we create a function to write to all available log levels (think of the levels as tags to filter by) and an additional target in this line in <em>step 4</em> (as shown in the following), we cover most of the use cases for logging:</p>
+<pre>warn!(target: "special-target", "WARNING, stuff is breaking down");</pre>
+<p><em>Step 5</em> sets up the logging framework, <kbd>log4rs</kbd>, a crate that is modeled after the de-facto standard in the Java world: <kbd>log4j</kbd> (<a href="https://logging.apache.org/log4j/2.x/">https://logging.apache.org/log4j/2.x/</a>). The crate provides excellent flexibility when it comes to where to write which log levels and using what format, and it can be changed at runtime. Check the <em>step 6</em> configuration file to see an example. There we define <kbd>refresh_rate</kbd> (when to rescan the file for changes) of 30 seconds, which enables us to change the file without having to restart the application. Next, we define two appenders, which means output targets. The first one, <kbd>stdout</kbd>, is a simple console output, whereas <kbd>outfile</kbd> produces <kbd>outfile.log</kbd>, which we show in <em>step 10</em>. Its encoder property also hints toward how we can change the formatting.</p>
+<p>Next, we defined a <kbd>root</kbd> logger, which represents the default. Having <kbd>trace</kbd> as the default level leads to excessive logging in many cases; having <kbd>warn</kbd> is often enough, especially in production settings. Additional loggers are created in the loggers property, where each child (<kbd>special-target</kbd>) represents a target we can use in the log macro (as seen in the preceding). These targets come with a configurable log level (<kbd>info</kbd>, in this case) and can use a range of appenders to write to. There are many more options that you can use here—just check out the documentation on how to set up more complex scenarios.</p>
+<p>In <em>step 7</em>, we return to Rust code and create our own logger. This logger implements the log crate's <kbd>Log</kbd> trait directly and translates any incoming <kbd>log::Record</kbd> into an emoji-backed console output for our visual entertainment. By implementing <kbd>enabled()</kbd>, we can filter whether any calls to <kbd>log()</kbd> are made and therefore base our decisions on more than just simple log levels as well. We instantiate the <kbd>EmojiLogger</kbd> struct in <em>step 8</em> as a static variable (<a href="https://doc.rust-lang.org/reference/items/static-items.html">https://doc.rust-lang.org/reference/items/static-items.html</a>), which is passed into the <kbd>log::set_logger()</kbd> function whenever we set the <kbd>USE_CUSTOM</kbd> constant (<em>step 5</em>) to <kbd>true</kbd>. <em>Step 9</em> and <em>step 10</em> show these two outcomes:</p>
+<ul>
+<li>The <kbd>log4rs</kbd> default format includes the module, log level, timestamp, and message, and it creates the <kbd>outfile.log</kbd> file we configured it to.</li>
+<li>Our custom logger creates unusual formatting along with an emoji showing the log levels—just as we wanted.</li>
+</ul>
+<p>The <kbd>log</kbd> crate is particularly useful in Rust since it allows you to attach your own loggers to third-party crates as well. The crates for issuing web requests in this chapter (in the <em>Sending web requests</em> <span>recipe</span>) provide infrastructure (<a href="https://docs.rs/surf/1.0.2/surf/middleware/logger/index.html">https://docs.rs/surf/1.0.2/surf/middleware/logger/index.html</a>) to do that, just like many other crates do (for example, <kbd>actix-web</kbd> in an earlier chapter). This means that, just by adding a dependency and a few lines of code, you can already create an application completely with logging. </p>
+<p>This concludes our detour into logging, so let's move on to another recipe. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Starting subprocesses</h1>
+                </header>
+            
+            <article>
+                
+<p>Pipelines, container orchestration, and command-line tools all share a common task: they all have to start and monitor other programs. These system calls are done in a variety of ways in other technologies, so let's call a few standard programs with Rust's <kbd>Command</kbd> interface.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<p>Follow these quick steps to call on external programs:</p>
+<ol>
+<li>Open a Terminal to create a new project using<span> </span><kbd>cargo new sub-processes.</kbd> Use VS Code to open the project directory.</li>
+<li>Open <kbd>src/main.rs</kbd>. Rust's standard library comes with an external command interface built-in, but first, let's import it:</li>
+</ol>
+<pre style="padding-left: 60px">use std::error::Error;<br/>use std::io::Write;<br/>use std::process::{Command, Stdio};</pre>
+<ol start="3">
+<li>Once imported, we can do the rest in the <kbd>main</kbd> function. We'll start off by calling <kbd>ls</kbd> with some arguments in two different directories:</li>
+</ol>
+<pre style="padding-left: 60px">fn main() -&gt; Result&lt;(), Box&lt;dyn Error + Send + Sync + 'static&gt;&gt; {<br/>    let mut ls_child = Command::new("ls");<br/>    if !cfg!(target_os = "windows") {<br/>        ls_child.args(&amp;["-alh"]);<br/>    }<br/>    println!("{}", ls_child.status()?);<br/>    ls_child.current_dir("src/");<br/>    println!("{}", ls_child.status()?);</pre>
+<p style="padding-left: 60px">In the next step, we are setting environment variables in the subprocess and, by grabbing the standard output of the <kbd>env</kbd> program, we can check whether it worked:</p>
+<pre>    let env_child = Command::new("env")<br/>        .env("CANARY", "0x5ff")<br/>        .stdout(Stdio::piped())<br/>        .spawn()?;<br/>    <br/>    let env_output = &amp;env_child.wait_with_output()?;<br/>    let canary = String::from_utf8_lossy(&amp;env_output.stdout)<br/>    .split_ascii_whitespace()<br/>    .filter(|line| *line == "CANARY=0x5ff")<br/>    .count();<br/><br/>    // found it!<br/>    assert_eq!(canary, 1);    </pre>
+<p style="padding-left: 60px"><kbd>rev</kbd> is a program that reverses anything that comes in via standard input and it's available on Windows and Linux/Unix. Let's call it with some text and capture the output:</p>
+<pre>    let mut rev_child = Command::new("rev")<br/>        .stdin(Stdio::piped())<br/>        .stdout(Stdio::piped())<br/>        .spawn()?;<br/><br/>    {<br/>        rev_child<br/>            .stdin<br/>            .as_mut()<br/>            .expect("Could not open stdin")<br/>            .write_all(b"0x5ff")?;<br/>    }<br/><br/>    let output = rev_child.wait_with_output()?;<br/>    assert_eq!(String::from_utf8_lossy(&amp;output.stdout), "ff5x0");<br/><br/>    Ok(())<br/>}<br/><br/></pre>
+<ol start="4">
+<li>Use <kbd>cargo run</kbd> to see the program print the <kbd>ls</kbd> output (your output will look a little different):</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cargo run</strong><br/>   Compiling sub-processes v0.1.0 (Rust-Cookbook/Chapter10/sub-processes)<br/>    Finished dev [unoptimized + debuginfo] target(s) in 0.44s<br/>     Running `target/debug/sub-processes`<br/>total 24K<br/>drwxr-xr-x. 4 cm cm 4.0K Aug 26 09:21 .<br/>drwxr-xr-x. 13 cm cm 4.0K Aug 11 23:27 ..<br/>-rw-r--r--. 1 cm cm 145 Aug 26 09:21 Cargo.lock<br/>-rw-r--r--. 1 cm cm 243 Jul 26 10:23 Cargo.toml<br/>drwxr-xr-x. 2 cm cm 4.0K Jul 26 10:23 src<br/>drwxr-xr-x. 3 cm cm 4.0K Aug 26 09:21 target<br/>exit code: 0<br/>total 12K<br/>drwxr-xr-x. 2 cm cm 4.0K Jul 26 10:23 .<br/>drwxr-xr-x. 4 cm cm 4.0K Aug 26 09:21 ..<br/>-rw-r--r--. 1 cm cm 1.1K Aug 31 11:49 main.rs<br/>exit code: 0</pre>
+<div class="packt_infobox"><span>Windows users have to run this program in PowerShell, where <kbd>ls</kbd> is available. </span></div>
+<p>Let's see how it works behind the scenes.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>This recipe quickly covers some abilities of the Rust <kbd>std::process::Command</kbd> struct. After setting everything up in <em>steps 1</em> and <em>2</em>, we create the <kbd>main</kbd> function in <em>step 3</em>. Using <kbd>Result&lt;(), Box&lt;dyn Error + ...&gt;&gt;</kbd> with a boxed <kbd>dyn</kbd> trait (<a href="https://doc.rust-lang.org/edition-guide/rust-2018/trait-system/dyn-trait-for-trait-objects.html">https://doc.rust-lang.org/edition-guide/rust-2018/trait-system/dyn-trait-for-trait-objects.html</a>) as the return type for the main function allows us to use the <kbd>?</kbd> operator instead of <kbd>unwrap()</kbd>, <kbd>expect()</kbd>, or other constructs—regardless of the actual error type. </p>
+<p>We start off by using the <kbd>ls</kbd> command, which lists the directory contents. Except for Windows, the program takes arguments to expand the output: </p>
+<ul>
+<li><kbd>-l</kbd> adds additional information such as permissions, date, and size (also called a long listing).</li>
+<li><kbd>-a</kbd> includes hidden files as well (a stands for all).</li>
+<li><kbd>-h</kbd> uses human-friendly sizes (for example, KiB after 1,000 bytes).</li>
+</ul>
+<p class="mce-root">For <kbd>ls</kbd>, we can pass these flags as one large flag, <kbd>-alh</kbd>, (the order doesn't matter) and the <kbd>args()</kbd> <span>function</span><span> </span><span>allows us to do that as a string slice. The actual execution of the process child is only done when we check the</span> <kbd>status()</kbd> <span>function of the instance and, here, we are also printing the results. The status code (on Linux) represents the success or failure of a particular program when it's</span> <kbd>zero</kbd> <span>or</span> <kbd>non-zero</kbd> <span>respectively. </span></p>
+<p>The next part catches the standard output of the program and sets an environment variable for it. Environment variables can be a great way to transfer data or settings to the subprogram as well (for example, compiler flags for builds and keys for command-line APIs). <kbd>env</kbd> (<a href="https://linux.die.net/man/1/env">https://linux.die.net/man/1/env</a>) is a program on Linux (<span>with a PowerShell equivalent)</span> that prints available environment variables, so when we capture standard output, we can try to find the variable and its value. </p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>The next part passes data to the <kbd>rev</kbd> program through the standard input while catching standard output. <kbd>rev</kbd> simply reverses the input data, so we expect the output to be the reverse of the input. There are two interesting things to note:</p>
+<ul>
+<li>Getting a handle for standard input is scoped to avoid violating borrowing rules.</li>
+<li>Writing and reading from the pipes is done in bytes, which requires parsing to convert from/into a string. The <kbd>String::from_utf8_lossy()</kbd> function does that while ignoring invalid data.</li>
+</ul>
+<p>After that, the <kbd>main</kbd> function returns with a positive empty result (<kbd>Ok(())</kbd>). </p>
+<p>In the last step, as usual, we run the code to see whether it works and, although we only have two <kbd>println!()</kbd> statements with only the exit code of the <kbd>ls</kbd> command in our source file, there is a lot of output. This is due to the default setting of passing a subprocess's standard output through the console. What we see here is, therefore, the output of the <kbd>ls -alh</kbd> command on Linux, which will be a little different on your machine. </p>
+<p>Having successfully created and run several commands using Rust, we can now go out and create our own applications. We hope that this book helped you with that. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div></body></html>
