@@ -846,22 +846,26 @@
   id: totrans-102
   prefs: []
   type: TYPE_NORMAL
+  zh: 发送者负责创建队列文件并将它们填满到最大容量。`Receiver`负责从队列文件中读取，并在文件耗尽时删除该文件。确定队列文件耗尽机制的简单方法是：当`Sender`退出一个队列文件时，它将创建一个新的队列文件，并在文件系统中将旧路径标记为只读。当`Receiver`尝试从磁盘读取字节并发现没有字节时，它会检查文件的写入状态。如果文件仍然是读写状态，最终会有更多的字节到来。如果文件是只读的，则文件已耗尽。这里还有一些小技巧，以及`Sender`和`Receiver`之间未解释的进一步协作，但这应该足以让我们有效地深入研究。
 - en: The deque
   id: totrans-103
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 双端队列（deque）
 - en: Roughly speaking, hopper is a concurrent deque with two cooperating finite state
     machines layered on top. We'll start in with the deque, defined in `src/deque.rs`.
   id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: 大致来说，hopper是一个具有两个协作的有限状态机的并发双端队列。我们将从`src/deque.rs`中定义的双端队列开始。
 - en: The discussion of hopper that follows lists almost all of its source code. We'll
     call out the few instances where the reader will need to refer to the listing
     in the book's source repository.
   id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面的讨论列出了几乎所有的hopper源代码。我们将指出读者需要参考书中源代码仓库中的几个实例。
 - en: 'To be totally clear, a deque is a data structure that allows for queuing and
     dequeuing at either end of the queue. Rust''s `stdlib` has `VecDeque<T>`, which
     is very useful. Hopper is unable to use it, however, as one of its design goals
@@ -874,6 +878,7 @@
   id: totrans-106
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了完全清楚，双端队列是一种数据结构，允许在队列的两端进行入队和出队操作。Rust的`stdlib`有`VecDeque<T>`，这非常有用。然而，hopper无法使用它，因为其设计目标之一是允许对hopper队列进行并行发送和接收，而`VecDeque`不是线程安全的。此外，尽管在crate生态系统中存在并发双端队列实现，但hopper双端队列与其支持的有限状态机以及hopper的内部所有权模型紧密相关。也就是说，你可能无法在不做任何修改的情况下在自己的项目中使用hopper的双端队列。无论如何，这里是一些前置说明：
 - en: '[PRE29]'
   id: totrans-107
   prefs: []
@@ -887,6 +892,8 @@
   id: totrans-108
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里唯一不熟悉的部分是从`std::sync::atomic`导入的内容。我们将在下一章更详细地介绍原子操作，但我们将根据需要以高级别概述它们。请注意，对于某些尚不为人知的类型`Queue<T,
+    S>`，`send`和`sync`的声明是不安全的。我们即将进入非标准领域：
 - en: '[PRE30]'
   id: totrans-109
   prefs: []
@@ -900,6 +907,7 @@
   id: totrans-110
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Queue<T, S>`的定义与我们之前章节中看到的是相似的：一个简单的结构封装了一个内部结构，这里称为`InnerQueue<T, S>`。`InnerQueue`被封装在一个`Arc`中，这意味着堆上只有一个分配的`InnerQueue`。正如你所期望的，`Queue`的克隆是将`Arc`复制到一个新的结构体中：'
 - en: '[PRE31]'
   id: totrans-111
   prefs: []
@@ -911,6 +919,7 @@
   id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 重要的是，每个与`Queue`交互的线程都能看到相同的`InnerQueue`。否则，线程正在处理不同的内存区域，彼此之间没有关系。让我们看看`InnerQueue`：
 - en: '[PRE32]'
   id: totrans-113
   prefs: []
@@ -999,6 +1008,8 @@
   id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 类型 `S` 必须实现一个默认初始化，该初始化足够充分，因为调用者的走私状态总是相同的值，这可以充分定义为默认值。如果这个去队列打算用于通用用途，我们可能需要提供一个
+    `with_capacity`，它也直接接受 `S`。现在，我们快速浏览一下实现中的几个其他函数：
 - en: '[PRE35]'
   id: totrans-122
   prefs: []
@@ -1008,6 +1019,7 @@
   id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一个函数 `push_back` 非常重要且微妙：
 - en: '[PRE36]'
   id: totrans-124
   prefs: []
@@ -1035,11 +1047,20 @@
   id: totrans-125
   prefs: []
   type: TYPE_NORMAL
+  zh: '`InnerQueue::push_back` 负责将 `T` 放置在环形缓冲区的当前尾部，或者在容量不足时发出信号表示缓冲区已满。当我们讨论环形缓冲区时，我们注意到
+    `size == capacity` 检查是一个竞争条件。但在 `InnerQueue` 中不是这样，多亏了大小的原子性。`self.size.load(Ordering::Acquire)`
+    执行对 `self.size` 的内存加载，但确信它是唯一一个可以将 `self.size` 作为可操作值的线程。线程中的后续内存操作将在 `Acquire`
+    之后排序，至少直到发生 `Ordering::Release` 的存储操作。这种类型的存储操作就在几行之后发生——`self.size.fetch_add(1,
+    Ordering::Release)`。在这两点之间，我们看到元素 `T` 被加载到缓冲区中——在之前检查确保我们不会覆盖一个 `Some` 值——并且对
+    `BackGuardInner` 的偏移量进行包装增加。就像在上一章中一样。这个实现的不同之处在于返回 `Ok(must_wake_dequeuers)`。因为内部
+    `S` 被保护，队列无法知道在可以放弃互斥锁之前是否需要做更多的工作。因此，队列本身无法发出有值可读的信号，尽管在函数返回时该值已经被写入内存。调用者必须运行通知。这是一个尖锐的边缘。如果调用者忘记通知在
+    condvar 上阻塞的线程，那么阻塞的线程将永远保持这种状态。'
 - en: 'The `InnerQueue::push_front` is a little simpler and not a radical departure
     from `push_back`:'
   id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: '`InnerQueue::push_front` 比较简单，并且与 `push_back` 没有太大差异：'
 - en: '[PRE37]'
   id: totrans-127
   prefs: []
@@ -1053,11 +1074,14 @@
   id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: 弹出前端的线程，因为它不需要协调，能够自己获取前端锁，因为没有需要通过线程传递的状态。在获取锁后，线程进入一个条件检查循环，以防止在 `not_empty`
+    上的虚假唤醒。当线程能够唤醒时，用 `None` 替换偏移量处的项目。通常的偏移量维护也会发生。
 - en: 'The implementation of `Queue<T, S>` is pretty minimal in comparison to the
     inner structure. Here''s `push_back`:'
   id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: 与内部结构相比，`Queue<T, S>` 的实现相当简单。以下是 `push_back` 的实现：
 - en: '[PRE38]'
   id: totrans-130
   prefs: []
@@ -1071,6 +1095,8 @@
   id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Queue` 中唯一实质上新的功能是 `notify_not_empty(&self, _guard: &MutexGuard<FrontGuardInner>)
+    -> ()`。调用者负责在 `push_back` 信号指示需要通知去队列时调用此功能，并且尽管守卫未使用，但通过要求传入守卫，该库的一个粗糙边缘得到了平滑处理，证明它被持有。'
 - en: That's the deque at the core of hopper. This structure was very difficult to
     get right. Any slight re-ordering of the load and store on the atomic size with
     respect to other memory operations will introduce bugs, such as parallel access
@@ -1084,11 +1110,14 @@
   id: totrans-132
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是跳转器核心的双端队列。这个结构非常难以正确实现。任何对原子大小相对于其他内存操作的加载和存储的轻微重新排序都会引入错误，例如在没有协调的情况下对同一区域内存的并行访问。这些错误非常微妙，不会立即显现。在
+    x86 和 ARM 处理器上广泛使用 helgrind 加 quickcheck 测试——关于这一点稍后还会详细介绍——将有助于提高对实现的信心。测试运行数小时并不罕见，可以发现那些不是确定性的但可以通过足够的时间和重复示例进行推理的错误。从非常原始的组件构建并发数据结构是*困难的*。
 - en: The Receiver
   id: totrans-133
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 接收器
 - en: 'Now that we''ve covered the deque, let''s jump on to the `Receiver`, defined
     in `src/receiver.rs`. As mentioned previously, the receiver is responsible for
     either pulling a value out of memory or from disk in the style of an iterator.
@@ -1100,6 +1129,9 @@
   id: totrans-134
   prefs: []
   type: TYPE_NORMAL
+  zh: 既然我们已经涵盖了双端队列，让我们跳转到定义在 `src/receiver.rs` 中的 `Receiver`。如前所述，接收器负责以迭代器的风格从内存或磁盘中拉取值。`Receiver`
+    声明将自身转换为迭代器的通常机制，我们在这本书中不会涉及这一点，主要是因为它有点繁琐。话虽如此，`Receiver` 中有两个重要的函数需要介绍，而且它们都不在公共接口中。第一个是
+    `Receiver::next_value`，由接收器的迭代器版本调用。此函数定义如下：
 - en: '[PRE39]'
   id: totrans-135
   prefs: []
@@ -1111,6 +1143,8 @@
   id: totrans-136
   prefs: []
   type: TYPE_NORMAL
+  zh: 定义为移动 `T` 值的跳转器并不定义一个在 `T`s 上的双端队列——如前文所述——而是实际上它持有 `Placement<T>`。`Placement`
+    在 `src/private.rs` 中定义，是一个小的枚举：
 - en: '[PRE40]'
   id: totrans-137
   prefs: []
@@ -1124,10 +1158,12 @@
   id: totrans-138
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是使跳转器工作的小技巧。并发数据结构的主要挑战在于在线程之间提供足够的同步，以便您的结果可以在调度混乱的情况下保持一致性，但又不要求与顺序解决方案相比同步过多。
 - en: That does happen.
   id: totrans-139
   prefs: []
   type: TYPE_NORMAL
+  zh: 这种情况确实会发生。
 - en: Now, recall that maintaining order is a key design need for any channel-style
     queue. The Rust standard library MPSC achieves this with atomic flags, aided by
     the fact that, ultimately, there's only one place for inserted elements to be
@@ -1144,12 +1180,16 @@
   id: totrans-140
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，回想一下，保持顺序是任何通道式队列的关键设计需求。Rust 标准库的 MPSC 通过原子标志实现这一点，得益于最终只有一个地方可以存储插入的元素，以及一个地方可以从中移除。但在跳转器中并非如此。但是，这个一站式商店是一个非常有用且低同步的方法。这就是
+    `Placement` 发挥作用的地方。当遇到 `Memory` 变体时，`T` 已经存在，接收器只需返回它。当返回 `Disk(usize)` 时，这向接收器发送一个信号，使其切换到*磁盘模式*。在磁盘模式下，当
+    `self.disk_writes_to_read` 不为零时，接收器优先从磁盘读取一个值。只有当没有更多磁盘值可以读取时，接收器才会尝试再次从内存中读取。这种模式切换方法保持了顺序，同时也具有在磁盘模式下不需要同步的额外好处，这有助于在从慢速磁盘读取时节省关键时间。
 - en: 'The second important function to examine is `read_disk_value`, referenced in
     `next_value`. It''s long and mostly book-keeping, but I did want to call out the
     first part of that function here:'
   id: totrans-141
   prefs: []
   type: TYPE_NORMAL
+  zh: 需要检查的第二个重要函数是`read_disk_value`，它在`next_value`中被引用。这个函数很长，主要是记录，但我确实想在这里指出该函数的第一部分：
 - en: '[PRE41]'
   id: totrans-142
   prefs: []
@@ -1173,11 +1213,13 @@
   id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 这段小代码使用了两个非常实用的库。Hopper将其磁盘上的元素以bincode格式存储到磁盘上。Bincode（[https://crates.io/crates/bincode](https://crates.io/crates/bincode)）是为servo项目发明的，是一个用于IPC的序列化库——几乎就是hopper用它来做的。bincode的优点是序列化和反序列化速度快，但缺点是它不是一个标准，并且版本之间没有保证的二进制格式。需要指出的第二个库在这个例子中几乎看不见；byteorder。你可以在这里看到它：`self.fp.read_u32::<BigEndian>`。Byteorder扩展了`std::io::Read`，以便从字节缓冲区中反序列化原始类型。你可以手动做这件事，但这样做容易出错，而且重复起来很麻烦。使用byteorder。所以，我们在这里看到的是hopper从`self.fp`——一个指向当前磁盘队列文件的`std::io::BufReader`——读取32位长度的big-ending长度前缀，并使用这个前缀从磁盘上读取恰好这么多字节，然后再将这些字节传递给反序列化器。就是这样。所有hopper磁盘上的元素都是32位长度的前缀，后面跟着这么多字节。
 - en: The Sender
   id: totrans-144
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 发送者
 - en: 'Now that we''ve covered the `Receiver`, all that remains is the `Sender.` It''s
     defined in `src/sender.rs`. The most important function in the `Sender` is `send.`
     The `Sender` follows the same disk/memory mode idea that `Receiver` uses but is
@@ -1185,6 +1227,7 @@
   id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经涵盖了`Receiver`，剩下的就是`Sender`。它在`src/sender.rs`中定义。`Sender`中最重要的函数是`send`。`Sender`遵循与`Receiver`相同的磁盘/内存模式理念，但在其操作上更为复杂。让我们深入探讨：
 - en: '[PRE42]'
   id: totrans-146
   prefs: []
@@ -1196,6 +1239,7 @@
   id: totrans-147
   prefs: []
   type: TYPE_NORMAL
+  zh: 回想一下，双端队列允许后端守护者通过它走私状态以进行协调。我们在这里看到了它的回报。`Sender`的内部状态被称为`SenderSync`，其定义如下：
 - en: '[PRE43]'
   id: totrans-148
   prefs: []
@@ -1218,6 +1262,12 @@
   id: totrans-149
   prefs: []
   type: TYPE_NORMAL
+  zh: 每个发送线程都必须能够写入当前的磁盘队列文件，该文件由 `sender_fp` 指向。同样，`bytes_written` 跟踪已经写入磁盘的字节数。`Sender`
+    必须跟踪这个值，以便在队列文件变得太大时正确地滚动队列文件。`sender_seq_num` 定义了当前可写入队列文件的名称，因为它们是从零开始的顺序命名。对我们来说，关键字段是
+    `total_disk_writes`。请注意，内存写入——`self.mem_buffer.push_back(placed_event, &mut back_guard)`——可能会因为
+    `Full` 错误而失败。在这种情况下，会调用 `self.write_to_disk` 将 `T` 写入磁盘，从而增加磁盘写入的总数。这种写入模式前面有一个检查跨线程
+    `SenderSync`，以确定是否有挂起的磁盘写入。记住，在这个时候，`Receiver` 没有办法确定是否有额外的写入操作已经写入磁盘；与 `Receiver`
+    的唯一通信渠道是通过内存中的双端队列。为此，下一个 `Sender` 线程将切换到不同的写入模式：
 - en: '[PRE44]'
   id: totrans-150
   prefs: []
@@ -1235,6 +1285,9 @@
   id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦有单个写入磁盘，`Sender` 就切换到磁盘优先写入模式。在这个分支的开始，`T` 被写入磁盘，并进行刷新。然后，`Sender` 尝试将一个 `Placement::Disk`
+    推送到内存中的双端队列，如果 `Receiver` 的调度分配缓慢或不走运，可能会失败。然而，如果成功，`total_disk_writes` 就会被设置为零——不再有任何挂起的磁盘写入，并且如果需要，`Receiver`
+    会被唤醒以读取其新的事件。下一次 `Sender` 线程遍历时，它可能或可能没有足够的空间在内存中的双端队列中执行内存放置，但这将是下一个线程的问题。
 - en: That's the heart of `Sender`. While there is another large function in-module,
     `write_to_disk`, we won't list it here. The implementation is primarily book-keeping
     inside a mutex, a topic that has been covered in detail in this and the previous
@@ -1243,11 +1296,13 @@
   id: totrans-152
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是 `Sender` 的核心。虽然模块中还有一个大的函数 `write_to_disk`，但我们在这里不会列出它。实现主要是使用互斥锁进行账目管理，这个主题在本章和上一章中已经详细讨论过，还包括文件系统操作。话虽如此，我们热情地鼓励好奇的读者阅读代码。
 - en: Testing concurrent data structures
   id: totrans-153
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 测试并发数据结构
 - en: Hopper is a subtle beast and proves to be quite tricky to get correct, owing
     to the difficulty of manipulating the same memory across multiple threads. Slight
     synchronization bugs were common in the writing of the implementation, bugs that
@@ -1262,16 +1317,19 @@
   id: totrans-154
   prefs: []
   type: TYPE_NORMAL
+  zh: Hopper是一个微妙的生物，证明要正确地处理它相当棘手，因为要在多个线程之间操作相同的内存很困难。在实现编写过程中，轻微的同步错误很常见，这些错误突出了基本的错误，但很少触发，甚至更难重现。传统的单元测试在这里是不够的。找不到干净的单元，因为计算机的非确定性行为是程序运行最终结果的基本因素。考虑到这一点，hopper使用了三种关键的测试策略：在随机输入上执行随机测试以寻找逻辑错误（QuickCheck）、在随机输入上执行随机测试以寻找崩溃（模糊测试），以及运行数百万次相同的程序以寻找一致性失败。在接下来的章节中，我们将依次讨论这些策略。
 - en: QuickCheck and loops
   id: totrans-155
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: QuickCheck和循环
 - en: 'Previous chapters discussed QuickCheck at length and we''ll not duplicate that
     here. Instead, let''s dig into a test from `hopper`, defined in `src/lib.rs`:'
   id: totrans-156
   prefs: []
   type: TYPE_NORMAL
+  zh: 前面的章节详细讨论了QuickCheck，我们在这里不会重复。相反，让我们深入探讨一个来自`hopper`的测试，该测试在`src/lib.rs`中定义：
 - en: '[PRE45]'
   id: totrans-157
   prefs: []
@@ -1284,6 +1342,7 @@
   id: totrans-158
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个测试设置了一个多发送者、单接收者的往返环境，并小心地拒绝那些在内存缓冲区中允许小于64位空间、没有发送者或类似情况的输入。它将任务委托给另一个函数`multi_thread_concurrent_snd_and_rcv_round_trip_exp`来实际运行测试。
 - en: 'This setup is awkward, admittedly, but has the benefit of allowing `multi_thread_concurrent_snd_and_rcv_round_trip_exp`
     to be run over explicit inputs. That is, when a bug is found you can easily re-play
     that test by creating a manual—or *explicit*, in `hopper` testing terms—test.
@@ -1291,6 +1350,7 @@
   id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个设置确实有些尴尬，但它的好处是允许`multi_thread_concurrent_snd_and_rcv_round_trip_exp`在明确的输入上运行。也就是说，当发现错误时，你可以通过创建手动测试或*明确地*（在hopper测试术语中）测试来轻松地重新播放那个测试。内部测试函数很复杂，我们将分部分考虑：
 - en: '[PRE46]'
   id: totrans-160
   prefs: []
@@ -1307,10 +1367,13 @@
   id: totrans-161
   prefs: []
   type: TYPE_NORMAL
+  zh: 就像我们在本节开头对hopper的示例用法一样，内部测试函数使用tempdir ([https://crates.io/crates/tempdir](https://crates.io/crates/tempdir))创建一个临时路径，以便传递给`channel_with_explicit_capacity`。但是，我们在这里非常小心，不要解包。因为hopper使用了文件系统，并且因为Rust
+    QuickCheck是积极的多线程的，所以任何单个测试运行都可能遇到文件句柄耗尽的情况。这会导致QuickCheck出错，测试失败与这次特定执行的输入完全无关。
 - en: 'The next piece is as follows:'
   id: totrans-162
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一个部分如下：
 - en: '[PRE47]'
   id: totrans-163
   prefs: []
@@ -1324,6 +1387,7 @@
   id: totrans-164
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们创建了发送者线程，每个线程从`vals`中抓取一个等大小的块。现在，由于线程调度的不可确定性，我们无法模拟`vals`元素被推入hopper的顺序。我们所能做的就是确认在通过hopper传输后没有丢失元素。实际上，它们可能在顺序上被破坏：
 - en: '[PRE48]'
   id: totrans-165
   prefs: []
@@ -1334,6 +1398,7 @@
   id: totrans-166
   prefs: []
   type: TYPE_NORMAL
+  zh: 另一个只有一个发送者的测试`single_sender_single_rcv_round_trip`能够检查正确的顺序以及没有数据丢失：
 - en: '[PRE49]'
   id: totrans-167
   prefs: []
@@ -1344,6 +1409,7 @@
   id: totrans-168
   prefs: []
   type: TYPE_NORMAL
+  zh: 就像它的多堂兄弟一样，这个QuickCheck测试使用一个内部函数来执行实际的测试：
 - en: '[PRE50]'
   id: totrans-169
   prefs: []
@@ -1369,11 +1435,13 @@
   id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: 这一点也应该很熟悉，只是现在接收线程能够检查顺序。之前是将`Vec<u64>`输入到函数中，我们现在通过跳转队列流式传输`0, 1, 2, .. total_vals`，断言顺序并且另一侧没有间隙。对单个输入的单次运行将无法可靠地触发低概率竞态问题，但这不是目标。我们正在寻找逻辑错误。例如，这个库的早期版本会愉快地允许内存中的最大字节数小于元素`T`的总字节数。另一个版本可以将多个`T`实例放入缓冲区，但如果`total_vals`是奇数并且内存大小足够小以至于需要磁盘分页，那么流中的最后一个元素将永远不会被踢出。实际上，这仍然是一个问题。这是发送者中懒惰翻转至磁盘模式的结果；如果没有其他元素可能触发磁盘放置到内存缓冲区，写入将被刷新到磁盘，但接收者永远不会意识到这一点。为此，发送者确实提供了一个`flush`函数，您可以在测试中看到它的使用。在实践中，在cernan中，刷新是不必要的。但是，这是设计者没有预料到的设计角落，如果这个设计被广泛使用，可能很难注意到这个问题。
 - en: 'The inner test of our single-sender variant is also used for the repeat-loop
     variant of hopper testing:'
   id: totrans-171
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们单发送者变体的内部测试也用于跳转测试的重复循环变体：
 - en: '[PRE51]'
   id: totrans-172
   prefs: []
@@ -1389,11 +1457,13 @@
   id: totrans-173
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，这里的内部循环仅进行2,500次迭代。这是为了尊重CI服务器的需求，它们不介意连续几小时运行高CPU负载的代码。在开发过程中，这个2,500次将会调整增加。但核心思想是明显的；检查一系列有序输入是否能够一次又一次地通过跳转队列按顺序且完整地返回。QuickCheck搜索状态空间中的暗角，而更传统的手动测试则反复敲打同一位置以挖掘计算机的不确定性。
 - en: Searching for crashes with AFL
   id: totrans-174
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用AFL搜索崩溃
 - en: The repeat-loop variant of testing in the previous section is an interesting
     one. It's not, like QuickCheck, a test wholly focused on finding logic bugs. We
     know that the test will work for most iterations. What's being sought out there
@@ -1403,6 +1473,7 @@
   id: totrans-175
   prefs: []
   type: TYPE_NORMAL
+  zh: 上一节中测试的重复循环变体很有趣。它不像QuickCheck那样，完全专注于寻找逻辑错误。我们知道测试将在大多数迭代中工作。在那里寻找的是未能正确控制底层机器的不确定性。在某种程度上，这种测试变体使用逻辑检查来搜索崩溃。它是一种模糊测试。
 - en: Hopper interacts with the filesystem, spawns threads, and manipulates bytes
     up from files. Each of these activities is subject to failure for want of resources,
     offsetting errors, or fundamental misunderstandings of the medium. An early version
@@ -1415,6 +1486,9 @@
   id: totrans-176
   prefs: []
   type: TYPE_NORMAL
+  zh: Hopper 与文件系统交互，创建线程，并从文件中操作字节。这些活动都可能因为资源不足、偏移错误或对介质的基本误解而失败。例如，hopper 的早期版本假设对磁盘的小原子写入不会交错，这在
+    XFS 中是正确的，但在大多数其他文件系统中则不正确。或者，hopper 的另一个版本总是通过更熟悉的 `thread::spawn` 来创建测试中的线程。然而，如果无法创建线程，这个函数会引发恐慌，这就是为什么测试使用
+    `thread::Builder` 模式而不是，允许恢复。
 - en: 'Crashes are important to figure out in their own right. To this end, hopper
     has a fuzzing setup, based on AFL. To avoid producing an unnecessary binary on
     users'' systems, the hopper project does not host its own fuzzing code as of this
@@ -1428,6 +1502,10 @@
   id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 崩溃本身很重要。为此，hopper 有一个基于 AFL 的模糊设置。为了避免在用户系统上产生不必要的二进制文件，截至本文撰写时，hopper 项目没有托管自己的模糊代码。相反，它位于
+    `blt/hopper-fuzz` ([https://github.com/blt/hopper-fuzz](https://github.com/blt/hopper-fuzz))。诚然，这很尴尬，但模糊测试，由于其不常见，通常是这样的。模糊测试可能持续数天，而且不适合现代
+    CI 系统。AFL 本身也不是一个容易自动化的工具，这也加剧了问题。模糊测试通常在用户私有机器上的小批量中进行，至少对于社区规模较小的开源项目是这样的。在
+    hopper-fuzz 中，有一个用于模糊测试的单个程序，其前言如下：
 - en: '[PRE52]'
   id: totrans-178
   prefs: []
@@ -1444,6 +1522,8 @@
   id: totrans-179
   prefs: []
   type: TYPE_NORMAL
+  zh: 基于我们迄今为止所看到的，相当直接。将输入传递给模糊程序有时并不简单，尤其是当输入不仅仅是输入集而不是，比如说，解析器的情况下的程序的实际工作单元。作者的方法是依赖
+    serde 来反序列化 AFL 将投入程序的字节缓冲区，知道大多数有效载荷将无法解码，但并不太在意。为此，作者模糊程序的顶部通常有一个填充了控制数据的输入结构体，这个程序也不例外：
 - en: '[PRE53]'
   id: totrans-180
   prefs: []
@@ -1460,11 +1540,14 @@
   id: totrans-181
   prefs: []
   type: TYPE_NORMAL
+  zh: 种子是为 `XorShiftRng`，而 `max_in_memory_bytes` 和 `max_disk_bytes` 是为 hopper。仔细计算输入的字节大小，以避免模糊测试
+    bincode 反序列化器拒绝异常大输入的能力。虽然 AFL 不是盲目的——毕竟它已经对程序的分支进行了仪器化——但它也不是很聪明。完全有可能，程序员想要模糊测试的内容并不是一开始就模糊测试的内容。在模糊项目中引入任何额外的库中找出错误并不罕见。这是为了将库的使用限制在最小范围内，并使其使用最小化。
 - en: 'The `main` function of the fuzz program starts off with a setup similar to
     other hopper tests:'
   id: totrans-182
   prefs: []
   type: TYPE_NORMAL
+  zh: 模糊程序的 `main` 函数开始于与其他 hopper 测试类似的设置：
 - en: '[PRE54]'
   id: totrans-183
   prefs: []
@@ -1477,6 +1560,7 @@
   id: totrans-184
   prefs: []
   type: TYPE_NORMAL
+  zh: 唯一奇怪的是前缀的产生。与AFL将要运行的数以百万计的测试相比，`tempdir`名称中的熵相对较低。我们特别想要确保没有两个料斗运行具有相同的数据目录，因为这将是未定义的行为：
 - en: '[PRE55]'
   id: totrans-185
   prefs: []
@@ -1486,6 +1570,7 @@
   id: totrans-186
   prefs: []
   type: TYPE_NORMAL
+  zh: AFL测试的核心内容令人惊讶：
 - en: '[PRE56]'
   id: totrans-187
   prefs: []
@@ -1501,47 +1586,56 @@
   id: totrans-188
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个程序引入了一个随机数生成器，在执行读取和写入料斗通道操作之间进行切换。为什么没有使用线程？好吧，结果是，AFL在模型中很难适应线程。AFL有一个稳定性概念，即它能够重新运行一个程序，并在指令执行等方面达到相同的结果。在多线程使用料斗的情况下，这行不通。尽管如此，尽管错过了探测发送者和接收者线程之间潜在竞争条件的机会，这个模糊测试发现：
 - en: File-descriptor exhaustion crashes
   id: totrans-189
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 文件描述符耗尽导致的崩溃
 - en: Incorrect offset computations in deque
   id: totrans-190
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 双端队列中的错误偏移计算
 - en: Incorrect offset computations at the Sender/Receiver level
   id: totrans-191
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 发送者/接收者级别的错误偏移计算
 - en: Deserialization of elements into a non-cleared buffer, resulting in phantom
     elements
   id: totrans-192
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 将元素反序列化到未清除的缓冲区中，导致产生幽灵元素
 - en: Arithmetic overflow/underflow crashes
   id: totrans-193
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 算术溢出/下溢导致的崩溃
 - en: A failure to allocate enough space for serialization.
   id: totrans-194
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 分配足够空间进行序列化失败。
 - en: Issues with the interior deque that happen only in a multi-threaded context
     will be missed, of course, but the preceding list is nothing to sneeze at.
   id: totrans-195
   prefs: []
   type: TYPE_NORMAL
+  zh: 仅在多线程环境中发生的内部双端队列问题将会被忽略，当然，但前面的列表并非微不足道。
 - en: Benchmarking
   id: totrans-196
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 基准测试
 - en: Okay, by now we can be reasonably certain that hopper is fit for purpose, at
     least in terms of not crashing and producing the correct results. But, it also
     needs to be *fast*. To that end, hopper ships with the criterion ([https://crates.io/crates/criterion](https://crates.io/crates/criterion))
@@ -1554,10 +1648,12 @@
   id: totrans-197
   prefs: []
   type: TYPE_NORMAL
+  zh: 好吧，到目前为止，我们可以合理地确信料斗适合使用，至少在不会崩溃并产生正确结果方面。但是，它也需要*快速*。为此，料斗附带criterion（[https://crates.io/crates/criterion](https://crates.io/crates/criterion)）基准测试。截至写作时，criterion是一个快速发展的库，它对基准运行结果进行统计分析，而Rust内置的夜间基准测试库则没有。此外，criterion还可在稳定渠道上使用。要匹配的目标是标准库的MPSC，这为料斗设定了基线。为此，基准测试套件执行了比较，位于料斗存储库中的`benches/stdlib_comparison.rs`。
 - en: 'The preamble is typical:'
   id: totrans-198
   prefs: []
   type: TYPE_NORMAL
+  zh: 前置代码很典型：
 - en: '[PRE57]'
   id: totrans-199
   prefs: []
@@ -1568,6 +1664,7 @@
   id: totrans-200
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，我们已经引入了MPSC和料斗。我们将要基准测试的MPSC函数是：
 - en: '[PRE58]'
   id: totrans-201
   prefs: []
@@ -1580,6 +1677,7 @@
   id: totrans-202
   prefs: []
   type: TYPE_NORMAL
+  zh: 一些发送线程被创建，一个接收者存在，并尽可能快地从MPSC中提取值。这根本不是逻辑检查，收集到的材料立即被丢弃。就像模糊测试一样，函数的输入是结构化数据。`MpscInput`定义如下：
 - en: '[PRE59]'
   id: totrans-203
   prefs: []
@@ -1590,6 +1688,7 @@
   id: totrans-204
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个函数的料斗版本稍微长一些，因为需要处理更多的错误状态，但我们之前都见过：
 - en: '[PRE60]'
   id: totrans-205
   prefs: []
@@ -1599,6 +1698,7 @@
   id: totrans-206
   prefs: []
   type: TYPE_NORMAL
+  zh: 同样适用于`HopperInput`：
 - en: '[PRE61]'
   id: totrans-207
   prefs: []
@@ -1609,6 +1709,7 @@
   id: totrans-208
   prefs: []
   type: TYPE_NORMAL
+  zh: Criterion提供了许多运行基准测试的选项，但在这里我们选择在输入上运行。以下是MPSC的设置：
 - en: '[PRE62]'
   id: totrans-209
   prefs: []
@@ -1622,6 +1723,7 @@
   id: totrans-210
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了解释，我们有一个函数，`mpsc_benchmark`，它接受可变的criterion结构，这个结构在使用时是透明的，但其中criterion会存储运行数据。这个结构暴露了`bench_function_over_inputs`，它消耗一个闭包，我们可以通过`mpsc_test`来传递。唯一的输入列在一个向量中。以下是一个设置，它做的是同样的事情，但针对hopper：
 - en: '[PRE63]'
   id: totrans-211
   prefs: []
@@ -1636,6 +1738,7 @@
   id: totrans-212
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意现在我们有两个输入，一个是保证全部在内存中，另一个保证需要磁盘分页。磁盘分页输入的大小适当，以匹配MSPC运行。对于hopper和MPSC进行内存比较并无害处，但作者更倾向于悲观的基准测试，因为作者是一个乐观主义者。以下是我们将在本书剩余部分看到的基准测试中需要的最终位几乎都是稳定的：
 - en: '[PRE64]'
   id: totrans-213
   prefs: []
@@ -1647,11 +1750,13 @@
   id: totrans-214
   prefs: []
   type: TYPE_NORMAL
+  zh: 我鼓励你自己运行基准测试。我们看到hopper的时间大约是我们打算为hopper设计的系统的三倍快。这已经足够快了。
 - en: Summary
   id: totrans-215
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 摘要
 - en: In this chapter, we covered the remainder of the essential non-atomic Rust synchronization
     primitives, doing a deep-dive on the postmates/hopper libraries to explore their
     use in a production code base. After having digested [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml),
@@ -1664,15 +1769,20 @@
   id: totrans-216
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们介绍了剩余的基本非原子Rust同步原语，对postmates/hopper库进行了深入研究，以探索其在生产代码库中的应用。在消化了[第4章](5a332d94-37e4-4748-8920-1679b07e2880.xhtml)，*同步与发送
+    – Rust并发的基石*，以及本章内容后，读者应该能够很好地在Rust中构建基于锁的并发数据结构。对于需要更高性能的读者，我们将在[第6章](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml)，*原子操作
+    – 同步的原始操作*，和[第7章](2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml)，*原子操作 – 安全地回收内存*中探讨原子编程主题。
 - en: If you thought lock-based concurrency was hard, wait  until you see atomics.
   id: totrans-217
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你认为基于锁的并发很困难，那么等你看到原子操作。
 - en: Further reading
   id: totrans-218
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 进一步阅读
 - en: Building concurrent data structure is a broad field of wide concern. These notes
     cover much the same space as the notes from [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync
     and Send – the Foundation of Rust Concurrency*. Please do refer back to those
@@ -1680,6 +1790,8 @@
   id: totrans-219
   prefs: []
   type: TYPE_NORMAL
+  zh: 构建并发数据结构是一个广泛关注的领域。这些笔记涵盖了与[第4章](5a332d94-37e4-4748-8920-1679b07e2880.xhtml)，*同步与发送
+    – Rust并发的基石*中笔记几乎相同的空间。请务必参考那些笔记。
 - en: '*The Little Book of Semaphores*, Allen Downey, available at [http://greenteapress.com/wp/semaphores/](http://greenteapress.com/wp/semaphores/).This
     is a charming book of concurrency puzzles, suitable for undergraduates but challenging
     enough in Rust for the absence of semaphores. We''ll revisit this book in the
@@ -1688,6 +1800,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《信号量小书》*，艾伦·道尼，可在[http://greenteapress.com/wp/semaphores/](http://greenteapress.com/wp/semaphores/)找到。这是一本关于并发谜题的迷人书籍，适合本科生阅读，但在Rust中由于没有信号量，挑战性也足够大。我们将在下一章构建原子并发原语时再次回顾这本书。'
 - en: '*The Computability of Relaxed Data Structures: Queues and Stacks as Examples*,
     Nir Shavit and Gadi Taubenfeld. This chapter discussed the implementation of a
     concurrent queue based on the presentation of *The Art of Multiprocessor Programming*
@@ -1699,6 +1812,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《松散数据结构的可计算性：队列和栈为例》，作者：尼尔·沙维特和加迪·塔本菲尔德。本章讨论了基于《多处理器编程的艺术》的演示和作者对Erlang进程队列的了解实现的并发队列。队列是一种常见的并发数据结构，有许多可能的实现方法。本文讨论了一个有趣的概念。也就是说，如果我们放松队列的排序约束，我们能否从现代机器中挤出更多的性能？'
 - en: '*Is Parallel Programming Hard, and, If So, What Can You Do About It?*, Paul
     McKenney. This book covers roughly the same material as [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync
     and Send – the Foundation of Rust Concurrency,* and [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml), *Locks
@@ -1709,3 +1823,5 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《并行编程难吗？如果难，你能做什么？》*，作者：保罗·麦肯尼。这本书涵盖了与[第4章](5a332d94-37e4-4748-8920-1679b07e2880.xhtml)，*同步与发送——Rust
+    并发的基础*和[第5章](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml)，*锁——互斥锁、条件变量、屏障和读写锁*大致相同的材料，但内容更为详细。我强烈建议读者寻找这本书的副本并阅读它，尤其是关于验证实现的第十一章。'
