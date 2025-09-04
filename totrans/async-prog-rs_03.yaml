@@ -1,52 +1,72 @@
 - en: '3'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: '3'
 - en: Understanding OS-Backed Event Queues, System Calls, and Cross-Platform Abstractions
+  id: totrans-1
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 理解基于操作系统的事件队列、系统调用和跨平台抽象
 - en: In this chapter, we’ll take a look at how an OS-backed event queue works and
     how three different operating systems handle this task in different ways. The
     reason for going through this is that most async runtimes I know of use OS-backed
     event queues such as this as a fundamental part of achieving high-performance
     I/O. You’ll most likely hear references to these frequently when reading about
     how async code really works.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将探讨基于操作系统的事件队列的工作方式以及三个不同的操作系统如何以不同的方式处理这项任务。我们这样做的原因是，我所知道的大多数异步运行时都将此类基于操作系统的事件队列作为实现高性能I/O的基本部分。你很可能在阅读有关异步代码真正是如何工作的内容时经常听到对这些的引用。
 - en: 'Event queues based on the technology we discuss in this chapter is used in
     many popular libraries like:'
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 基于本章讨论的技术的事件队列被用于许多流行的库中，例如：
 - en: mio ([https://github.com/tokio-rs/mio](https://github.com/tokio-rs/mio)), a
     key part of popular runtimes like Tokio
+  id: totrans-4
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: mio ([https://github.com/tokio-rs/mio](https://github.com/tokio-rs/mio))，Tokio等流行运行时的关键部分
 - en: polling ([https://github.com/smol-rs/polling](https://github.com/smol-rs/polling)),
     the event queue used in Smol and async-std
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: polling ([https://github.com/smol-rs/polling](https://github.com/smol-rs/polling))，Smol和async-std中使用的事件队列
 - en: libuv ([https://libuv.org/](https://libuv.org/)), the library used to create
     the event queue used in Node.js (a JavaScript runtime) and the Julia programming
     language
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: libuv ([https://libuv.org/](https://libuv.org/))，用于创建Node.js（一种JavaScript运行时）和Julia编程语言中使用的事件队列的库
 - en: C# for its asynchronous network calls
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: C#用于其异步网络调用
 - en: Boost.Asio, a library for asynchronous network I/O for C++
+  id: totrans-8
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Boost.Asio，一个用于C++的异步网络I/O库
 - en: All our interactions with the host operating system are done through **system
     calls** (**syscalls**). To make a system call using Rust, we need to know how
     to use Rust’s **foreign function** **interface** (**FFI**).
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们与宿主操作系统的所有交互都是通过**系统调用**（**syscalls**）完成的。要使用Rust进行系统调用，我们需要知道如何使用Rust的**外部函数接口**（**FFI**）。
 - en: In addition to knowing how to use FFI and make syscalls, we need to cover cross-platform
     abstractions. When creating an event queue, whether you create it yourself or
     use a library, you’ll notice that the abstractions might seem a bit unintuitive
@@ -55,95 +75,138 @@
     the fact that different operating systems handle the same task differently. This
     process often involves identifying a common denominator between the platforms
     and building a new abstraction on top of that.
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 除了知道如何使用FFI和进行系统调用外，我们还需要涵盖跨平台抽象。在创建事件队列时，无论你是自己创建还是使用库，如果你只有对例如Windows上IOCP工作方式的高级概述，你可能会发现这些抽象似乎有点不直观。这是因为这些抽象需要提供一个API，涵盖不同操作系统以不同方式处理相同任务的事实。这个过程通常涉及在平台之间识别共同分母，并在其上构建新的抽象。
 - en: Instead of using a rather complex and lengthy example to explain FFI, syscalls,
     and cross-platform abstractions, we’ll ease into the topic using a simple example.
     When we encounter these concepts later on, we’ll already know these subjects well
     enough, so we’re well prepared for the more interesting examples in the following
     chapters.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了解释FFI、系统调用和跨平台抽象，我们不会使用一个相当复杂且冗长的示例，而是通过一个简单的示例来逐步介绍这个主题。当我们后来遇到这些概念时，我们已经对这些主题有了足够的了解，因此我们为以下章节中更有趣的示例做好了充分的准备。
 - en: 'In this chapter, we’ll go through the following main topics:'
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将探讨以下主要主题：
 - en: Why use an OS-backed event queue?
+  id: totrans-13
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 为什么使用基于操作系统的事件队列？
 - en: Readiness-based event queues
+  id: totrans-14
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 基于就绪状态的事件队列
 - en: Completion-based event queues
+  id: totrans-15
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 基于完成的事件队列
 - en: epoll
+  id: totrans-16
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: epoll
 - en: kqueue
+  id: totrans-17
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: kqueue
 - en: IOCP
+  id: totrans-18
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: IOCP
 - en: Syscalls, FFI, and cross-platform abstractions
+  id: totrans-19
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 系统调用、FFI和跨平台抽象
 - en: Note
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: 'There are popular, although lesser-used, alternatives you should know about
     even though we don’t cover them here:'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 尽管我们在这里没有涵盖它们，但有一些流行的、尽管使用较少的替代方案，你应该了解：
 - en: '**wepoll**: This uses specific APIs on Windows and wraps IOCP so it closely
     resembles how epoll works on Linux in contrast to regular IOCP. This makes it
     easier to create an abstraction layer with the same API on top of the two different
     technologies. It’s used by both **libuv** and **mio** .'
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: '**wepoll**：这使用Windows上的特定API，并封装IOCP，使其在Linux上与epoll的工作方式非常相似，而不是常规的IOCP。这使得在两种不同技术之上创建具有相同API的抽象层变得更容易。它被**libuv**和**mio**都使用。'
 - en: '**io_uring**: This is a relatively new API on Linux with many similarities
     to IOCP on Windows.'
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: '**io_uring**：这是 Linux 上一个相对较新的 API，与 Windows 上的 IOCP 有很多相似之处。'
 - en: I’m pretty confident that after you’ve gone through the next two chapters, you
     will have an easy time reading up on these if you want to learn more about them.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 我非常自信，在你阅读完接下来的两个章节后，如果你想要了解更多关于它们的信息，你会很容易阅读。
 - en: Technical requirements
+  id: totrans-25
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: This chapter doesn’t require you to set up anything new, but since we’re writing
     some low-level code for three different platforms, you need access to these platforms
     if you want to run all the examples.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章不需要你设置任何新的东西，但由于我们将为三个不同的平台编写一些底层代码，如果你想运行所有示例，你需要访问这些平台。
 - en: The best way to follow along is to open the accompanying repository on your
     computer and navigate to the `ch03` folder.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 跟随的最佳方式是在你的计算机上打开配套的存储库，并导航到 `ch03` 文件夹。
 - en: This chapter is a little special since we build some basic understanding from
     the ground up, which means some of it is quite low-level and requires a specific
     operating system and CPU family to run. Don’t worry; I’ve chosen the most used
     and popular CPU, so this shouldn’t be a problem, but it is something you need
     to be aware of.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章有些特别，因为我们从最基本的概念开始构建一些基本理解，这意味着其中一些内容相当底层，需要特定的操作系统和 CPU 系列。不用担心；我已经选择了最常用和最受欢迎的
+    CPU，所以这不应该是个问题，但这是你需要注意的事情。
 - en: The machine must use a CPU using the x86-64 instruction set on Windows and Linux.
     Intel and AMD desktop CPUs use this architecture, but if you run Linux (or WSL)
     on a machine using an ARM processor you might encounter issues with some of the
     examples using inline assembly. On macOS, the example in the book targets the
     newer M-family of chips, but the repository also contains examples targeting the
     older Intel-based Macs.
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 Windows 和 Linux 上，机器必须使用 x86-64 指令集的 CPU。Intel 和 AMD 的台式机 CPU 使用这种架构，但如果你在基于
+    ARM 处理器的机器上运行 Linux（或 WSL），你可能会遇到一些使用内联汇编的示例的问题。在 macOS 上，本书中的示例针对的是较新的 M 系列芯片，但存储库中也包含针对较旧的基于
+    Intel 的 Mac 的示例。
 - en: Unfortunately, some examples targeting specific platforms require that specific
     operating system to run. However, this will be the only chapter where you need
     access to three different platforms to run all the examples. Going forward, we’ll
@@ -151,69 +214,98 @@
     Subsystem for Linux** (**WSL**), but to understand the basics of cross-platform
     abstractions, we need to actually create examples that target these different
     platforms.
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 不幸的是，一些针对特定平台的示例需要特定的操作系统才能运行。然而，这将是唯一一个你需要访问三个不同平台才能运行所有示例的章节。展望未来，我们将创建可以在所有平台上本地运行或使用
+    **Windows Subsystem for Linux** (**WSL**) 运行的示例，但为了理解跨平台抽象的基础，我们需要实际创建针对这些不同平台的示例。
 - en: Running the Linux examples
+  id: totrans-31
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 运行 Linux 示例
 - en: If you don’t have a Linux machine set up, you can run the Linux example on the
     Rust Playground, or if you’re on a Windows system, my suggestion is to set up
     WSL and run the code there. You can find the instructions on how to do that at
     [https://learn.microsoft.com/en-us/windows/wsl/install](https://learn.microsoft.com/en-us/windows/wsl/install).
     Remember, you have to install Rust in the WSL environment as well, so follow the
     instructions in the *Preface* section of this book on how to install Rust on Linux.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你没有设置 Linux 机器，你可以在 Rust Playground 上运行 Linux 示例，或者如果你在 Windows 系统上，我的建议是设置
+    WSL 并在那里运行代码。你可以在 [https://learn.microsoft.com/en-us/windows/wsl/install](https://learn.microsoft.com/en-us/windows/wsl/install)
+    上找到如何操作的说明。记住，你还需要在 WSL 环境中安装 Rust，所以请遵循本书 *前言* 部分中关于如何在 Linux 上安装 Rust 的说明。
 - en: If you use VS Code as your editor, there is a very simple way of switching your
     environment to WSL. Press *Ctrl*+*Shift*+*P* and write `Reopen folder in WSL`.
     This way, you can easily open the example folder in WSL and run the code examples
     using Linux there.
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你使用 VS Code 作为你的编辑器，有一个非常简单的方法可以将你的环境切换到 WSL。按 *Ctrl*+*Shift*+*P* 并输入 `Reopen
+    folder in WSL`。这样，你就可以轻松地在 WSL 中打开示例文件夹，并使用 Linux 运行代码示例。
 - en: Why use an OS-backed event queue?
+  id: totrans-34
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 为什么使用操作系统支持的事件队列？
 - en: You already know by now that we need to cooperate closely with the OS to make
     I/O operations as efficient as possible. Operating systems such as Linux, macOS,
     and Windows provide several ways of performing I/O, both blocking and non-blocking.
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 到现在为止，你已经知道我们需要与操作系统紧密合作，以使 I/O 操作尽可能高效。Linux、macOS 和 Windows 等操作系统提供了多种执行 I/O
+    的方式，包括阻塞和非阻塞。
 - en: I/O operations need to go through the operating system since they are dependent
     on resources that our operating system abstracts over. This can be the disk drive,
     the network card, or other peripherals. Especially in the case of network calls,
     we’re not only dependent on our own hardware, but we also depend on resources
     that might reside far away from our own, causing a significant delay.
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: I/O操作需要通过操作系统进行，因为它们依赖于操作系统抽象的资源。这可以是磁盘驱动器、网卡或其他外围设备。特别是在网络调用的案例中，我们不仅依赖于自己的硬件，还依赖于可能位于我们很远的资源，这会导致显著的延迟。
 - en: 'In the previous chapter, we covered different ways to handle asynchronous operations
     when programming, and while they’re all different, they all have one thing in
     common: they need control over when and if they should yield to the OS scheduler
     when making a syscall.'
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 在上一章中，我们介绍了编程时处理异步操作的不同方法，虽然它们各不相同，但它们都有一个共同点：它们在执行系统调用时需要控制何时以及是否应该让出给操作系统调度器。
 - en: In practice, this means that syscalls that normally would yield to the OS scheduler
     (blocking calls) needs to be avoided and we need to use non-blocking calls instead.
     We also need an efficient way to know the status of each call so we know when
     the task that made the otherwise blocking call is ready to progress. This is the
     main reason for using an OS-backed event queue in an asynchronous runtime.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 实际上，这意味着那些通常需要让出给操作系统调度器的系统调用（阻塞调用）需要避免，我们需要使用非阻塞调用。我们还需要一种有效的方法来了解每个调用的状态，以便我们知道发起阻塞调用的任务何时可以继续进行。这就是在异步运行时使用操作系统支持的事件队列的主要原因。
 - en: We’ll look at three different ways of handling an I/O operation as an example.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将以处理I/O操作的三种不同方式为例进行探讨。
 - en: Blocking I/O
+  id: totrans-40
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 阻塞I/O
 - en: When we ask the operating system to perform a blocking operation, it will suspend
     the OS thread that makes the call. It will then store the CPU state it had at
     the point where we made the call and go on to do other things. When data arrives
     for us through the network, it will wake up our thread again, restore the CPU
     state, and let us resume as if nothing has happened.
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 当我们请求操作系统执行阻塞操作时，它将挂起发起调用的操作系统线程。然后，它会存储我们在调用点所拥有的CPU状态，继续执行其他任务。当通过网络到达我们的数据时，它会再次唤醒我们的线程，恢复CPU状态，并让我们像什么都没发生一样继续执行。
 - en: Blocking operations are the least flexible to use for us as programmers since
     we yield control to the OS at every call. The big advantage is that our thread
     gets woken up once the event we’re waiting for is ready so we can continue. If
@@ -224,207 +316,299 @@
     if we still have work that our process could do. This leaves us with the choice
     of spawning new threads to do work on or just accepting that we have to wait for
     the blocking call to return. We’ll go a little more into detail about this later.
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于我们程序员来说，阻塞操作是最不灵活的，因为我们在每次调用时都会将控制权交给操作系统。它的一个重大优势是，一旦我们等待的事件准备好，我们的线程就会被唤醒，我们可以继续执行。如果我们考虑整个在操作系统上运行的系统，这是一个相当高效的解决方案，因为操作系统会为有工作要做的线程在CPU上分配时间来推进。然而，如果我们缩小范围，只关注我们的进程，我们会发现每次我们进行阻塞调用时，我们都会让一个线程进入休眠状态，即使我们还有进程可以完成的工作。这让我们面临选择：是生成新的线程来执行工作，还是接受我们必须等待阻塞调用返回。我们稍后会对此进行更详细的讨论。
 - en: Non-blocking I/O
+  id: totrans-43
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 非阻塞I/O
 - en: Unlike a blocking I/O operation, the OS will not suspend the thread that made
     an I/O request, but instead give it a handle that the thread can use to ask the
     operating system if the event is ready or not.
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 与阻塞I/O操作不同，操作系统不会挂起发起I/O请求的线程，而是给它一个句柄，线程可以使用这个句柄来询问操作系统事件是否已准备好。
 - en: We call the process of querying for status **polling**.
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们称查询状态的这个过程为**轮询**。
 - en: Non-blocking I/O operations give us as programmers more freedom, but, as usual,
     that comes with a responsibility. If we poll too often, such as in a loop, we
     will occupy a lot of CPU time just to ask for an updated status, which is very
     wasteful. If we poll too infrequently, there will be a significant delay between
     an event being ready and us doing something about it, thus limiting our throughput.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 非阻塞I/O操作给我们程序员更多的自由，但，像往常一样，这也伴随着责任。如果我们轮询过于频繁，比如在一个循环中，我们只会占用大量的CPU时间来请求更新状态，这是非常浪费的。如果我们轮询过于不频繁，那么事件就绪和我们对它采取行动之间会有显著的延迟，从而限制我们的吞吐量。
 - en: Event queuing via epoll/kqueue and IOCP
+  id: totrans-47
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 通过epoll/kqueue和IOCP进行事件排队
 - en: This is a sort of hybrid of the previous approaches. In the case of a network
     call, the call itself will be non-blocking. However, instead of polling the handle
     regularly, we can add that handle to an event queue, and we can do that with thousands
     of handles with very little overhead.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一种先前方法的混合体。在网络调用的情况下，调用本身将是非阻塞的。然而，我们不必定期轮询句柄，我们可以将句柄添加到事件队列中，我们可以用很少的开销处理数千个句柄。
 - en: As programmers, we now have a new choice. We can either query the queue with
     regular intervals to check if any of the events we added have changed status or
     we can make a blocking call to the queue, telling the OS that we want to be woken
     up when at least one event in our queue has changed status so that the task that
     was waiting for that specific event can continue.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 作为程序员，我们现在有一个新的选择。我们可以定期查询队列以检查我们添加的事件是否已更改状态，或者我们可以向队列发出阻塞调用，告诉操作系统我们希望在队列中至少有一个事件的状态发生变化时被唤醒，这样等待该特定事件的任务就可以继续。
 - en: This allows us to only yield control to the OS when there is no more work to
     do and all tasks are waiting for an event to occur before they can progress. We
     can decide exactly when we want to issue such a blocking call ourselves.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 这允许我们在没有更多工作要做且所有任务都在等待事件发生才能继续之前，只向操作系统交出控制权。我们可以决定何时自己发起这样的阻塞调用。
 - en: Note
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: We will not cover methods such as **poll** and **select**. Most operating systems
     have methods that are older and not widely used in modern async runtimes today.
     Just know that there are other calls we can make that essentially seek to give
     the same flexibility as the event queues we just discussed.
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将不会介绍**poll**和**select**这样的方法。大多数操作系统都有一些较老的方法，在今天的现代异步运行时中并不广泛使用。只需知道我们还可以调用其他方法，这些方法本质上旨在提供与我们刚才讨论的事件队列相同的灵活性。
 - en: Readiness-based event queues
+  id: totrans-53
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 基于就绪状态的事件队列
 - en: '**epoll** and **kqueue** are known as **readiness-based event queues**, which
     means they let you know when an action is ready to be performed. An example of
     this is a socket that is ready to be read from.'
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: '**epoll**和**kqueue**被称为**基于就绪状态的事件队列**，这意味着它们会在动作准备好执行时通知你。一个例子是准备好读取的套接字。'
 - en: 'To give an idea about how this works in practice, we can take a look at what
     happens when we read data from a socket using epoll/kqueue:'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了了解这种做法在实际中的工作原理，我们可以看看当我们使用epoll/kqueue从套接字读取数据时会发生什么：
 - en: We create an event queue by calling the syscall `epoll_create` or `kqueue`.
+  id: totrans-56
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们通过调用系统调用`epoll_create`或`kqueue`来创建一个事件队列。
 - en: We ask the OS for a file descriptor representing a network socket.
+  id: totrans-57
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们向操作系统请求一个表示网络套接字的文件描述符。
 - en: Through another syscall, we register an interest in `Read` events on this socket.
     It’s important that we also inform the OS that we’ll be expecting to receive a
     notification when the event is ready in the event queue we created in *step 1*.
+  id: totrans-58
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 通过另一个系统调用，我们在该套接字上注册对`Read`事件的兴趣。重要的是我们也要通知操作系统，我们将期待在我们在*步骤1*中创建的事件队列中事件就绪时收到通知。
 - en: Next, we call `epoll_wait` or `kevent` to wait for an event. This will block
     (suspend) the thread it’s called on.
+  id: totrans-59
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 接下来，我们调用`epoll_wait`或`kevent`以等待事件。这将阻塞（挂起）被调用的线程。
 - en: When the event is ready, our thread is unblocked (resumed) and we return from
     our `wait` call with data about the event that occurred.
+  id: totrans-60
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 当事件准备就绪时，我们的线程将被解除阻塞（恢复）并从`wait`调用返回，返回有关已发生事件的数据。
 - en: We call `read` on the socket we created in *step 2*.
+  id: totrans-61
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们在*步骤2*中创建的套接字上调用`read`。
 - en: '![Figure 3.1 – A simplified view of the epoll and kqueue flow](img/B20892_Figure_03.1.jpg)'
+  id: totrans-62
   prefs: []
   type: TYPE_IMG
+  zh: '![图3.1 – epoll和kqueue流程的简化视图](img/B20892_Figure_03.1.jpg)'
 - en: Figure 3.1 – A simplified view of the epoll and kqueue flow
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 图3.1 – epoll和kqueue流程的简化视图
 - en: Completion-based event queues
+  id: totrans-64
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 基于完成的的事件队列
 - en: IOCP stands for **input/output completion port**. This is a completion-based
     event queue. This type of queue notifies you when events are completed. An example
     of this is when data has been read into a buffer.
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: IOCP代表**输入/输出完成端口**。这是一种基于完成的的事件队列。此类队列在事件完成时通知您。一个例子是将数据读入缓冲区。
 - en: 'The following is a basic breakdown of what happens in this type of event queue:'
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 以下是对此类事件队列中发生的基本情况的分解：
 - en: We create an event queue by calling the syscall `CreateIoCompletionPort`.
+  id: totrans-67
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们通过调用系统调用`CreateIoCompletionPort`创建一个事件队列。
 - en: We create a buffer and ask the OS to give us a handle to a socket.
+  id: totrans-68
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们创建一个缓冲区并请求操作系统给我们一个套接字的句柄。
 - en: We register an interest in `Read` events on this socket with another syscall,
     but this time we also pass in the buffer we created in (step 2) , which the data
     will be read to.
+  id: totrans-69
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们使用另一个系统调用在套接字上注册对`Read`事件的兴趣，但这次我们还传递了在（步骤2）中创建的缓冲区，数据将被读入该缓冲区。
 - en: Next, we call `GetQueuedCompletionStatusEx`, which will block until an event
     has been completed.
+  id: totrans-70
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 接下来，我们调用`GetQueuedCompletionStatusEx`，它将阻塞，直到事件完成。
 - en: Our thread is unblocked and our buffer is now filled with the data we’re interested
     in.
+  id: totrans-71
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们的线程被解除阻塞，并且我们的缓冲区现在充满了我们感兴趣的数据。
 - en: '![Figure 3.2 – A simplified view of the IOCP flow](img/B20892_Figure_03.2.jpg)'
+  id: totrans-72
   prefs: []
   type: TYPE_IMG
+  zh: '![图3.2 – IOCP流程的简化视图](img/B20892_Figure_03.2.jpg)'
 - en: Figure 3.2 – A simplified view of the IOCP flow
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 图3.2 – IOCP流程的简化视图
 - en: epoll, kqueue, and IOCP
+  id: totrans-74
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: epoll、kqueue和IOCP
 - en: '**epoll** is the Linux way of implementing an event queue. In terms of functionality,
     it has a lot in common with kqueue. The advantage of using epoll over other similar
     methods on Linux, such as select or poll, is that epoll was designed to work very
     efficiently with a large number of events.'
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: '**epoll**是Linux实现事件队列的方式。在功能方面，它与kqueue有很多共同之处。使用epoll而不是Linux上其他类似方法（如select或poll）的优势在于，epoll被设计成能够与大量事件非常高效地工作。'
 - en: '**kqueue** is the macOS way of implementing an event queue (which originated
     from BSD) in operating systems such as FreeBSD and OpenBSD. In terms of high-level
     functionality, it’s similar to epoll in concept but different in actual use.'
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: '**kqueue**是macOS在操作系统（如FreeBSD和OpenBSD）中实现事件队列（起源于BSD）的方式。在高级功能方面，它与epoll在概念上相似，但在实际使用中有所不同。'
 - en: '**IOCP** is the way Windows handle this type of event queue. In Windows, a
     **completion port** will let you know when an event has been completed. Now, this
     might sound like a minor difference, but it’s not. This is especially apparent
     when you want to write a library since abstracting over both means you’ll either
     have to model IOCP as readiness-based or model epoll/kqueue as completion-based.'
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: '**IOCP**是Windows处理此类事件队列的方式。在Windows中，一个**完成端口**会在事件完成时通知您。现在，这听起来可能是一个微小的差异，但事实并非如此。当您想要编写库时，这一点尤其明显，因为抽象这两种方法意味着您必须将IOCP建模为基于准备状态的，或者将epoll/kqueue建模为基于完成的。'
 - en: Lending out a buffer to the OS also provides some challenges since it’s very
     important that this buffer stays untouched while waiting for an operation to return.
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 或者，将缓冲区借给操作系统也带来了一些挑战，因为当等待操作返回时，这个缓冲区保持不变非常重要。
 - en: '| **Windows** | **Linux** | **macOS** |'
+  id: totrans-79
   prefs: []
   type: TYPE_TB
+  zh: '| **Windows** | **Linux** | **macOS** |'
 - en: '| IOCP | epoll | kqueue |'
+  id: totrans-80
   prefs: []
   type: TYPE_TB
+  zh: '| IOCP | epoll | kqueue |'
 - en: '| Completion based | Readiness based | Readiness based |'
+  id: totrans-81
   prefs: []
   type: TYPE_TB
+  zh: '| 基于完成 | 基于准备状态 | 基于准备状态 |'
 - en: Table 3.1 – Different platforms and event queues
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 表3.1 – 不同平台和事件队列
 - en: Cross-platform event queues
+  id: totrans-83
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 跨平台事件队列
 - en: When creating a cross-platform event queue, you have to deal with the fact that
     you have to create one unified API that’s the same whether it’s used on Windows
     (IOCP), macOS (kqueue), or Linux (epoll). The most obvious difference is that
     IOCP is completion-based while kqueue and epoll are readiness-based.
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 当创建跨平台事件队列时，您必须处理这样一个事实：您必须创建一个统一的API，无论是在Windows（IOCP）、macOS（kqueue）还是Linux（epoll）上使用，都是相同的。最明显的区别是IOCP是基于完成的，而kqueue和epoll是基于准备状态的。
 - en: 'This fundamental difference means that you have to make a choice:'
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 这种基本差异意味着您必须做出选择：
 - en: You can create an abstraction that treats kqueue and epoll as completion-based
     queues, or
+  id: totrans-86
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 您可以创建一个抽象，将kqueue和epoll视为基于完成的事件队列，
 - en: You can create an abstraction that treats IOCP as a readiness-based queue
+  id: totrans-87
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 您可以创建一个抽象，将IOCP视为基于准备状态的事件队列
 - en: From my personal experience, it’s a lot easier to create an abstraction that
     mimics a completion-based queue and handle the fact that kqueue and epoll are
     readiness-based behind the scenes than the other way around. The use of wepoll,
@@ -432,25 +616,33 @@
     It will simplify creating such an API greatly, but we’ll leave that out for now
     because it’s less well known and not an approach that’s officially documented
     by Microsoft.
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 根据我的个人经验，创建一个模仿基于完成的队列的抽象，并处理kqueue和epoll在幕后是基于准备状态的这一事实，比反过来要容易得多。正如我之前提到的，使用wepoll是创建Windows上基于准备状态的队列的一种方法。这将极大地简化创建这样的API，但我们现在不讨论这一点，因为它不太为人所知，并且不是微软官方文档化的方法。
 - en: Since IOCP is completion-based, it needs a buffer to read data into since it
     returns when data is read into that buffer. Kqueue and epoll, on the other hand,
     don’t require that. They’ll only return when you can read data into a buffer without
     blocking.
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于IOCP是基于完成的，它需要一个缓冲区来读取数据，因为它在数据被读取到该缓冲区时返回。另一方面，Kqueue和epoll不需要。它们只会在你可以不阻塞地将数据读取到缓冲区时返回。
 - en: By requiring the user to supply a buffer of their preferred size to our API,
     we let the user control how they want to manage their memory. The user defines
     the size of the buffers, and the re-usages and controls all the aspects of the
     memory that will be passed to the OS when using IOCP.
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 通过要求用户为我们API提供他们偏好的缓冲区大小，我们让用户控制他们想要如何管理他们的内存。用户定义缓冲区的大小，并控制所有将被传递给操作系统的内存方面，当使用IOCP时。
 - en: In the case of epoll and kqueue in such an API, you can simply call read for
     the user and fill the same buffers, making it appear to the user that the API
     is completion-based.
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这种API的情况下，对于epoll和kqueue，你可以简单地调用read为用户服务，并填充相同的缓冲区，这样用户就会觉得API是基于完成的。
 - en: If you wanted to present a readiness-based API instead, you have to create an
     illusion of having two separate operations when doing I/O on Windows. First, request
     a notification when the data is ready to be read on a socket, and then actually
@@ -458,216 +650,300 @@
     create a very complex API or accept some inefficiencies on Windows platforms due
     to having intermediate buffers to keep the illusion of having a readiness-based
     API.
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你想要展示一个基于准备状态的API，那么在Windows上进行I/O操作时，你必须创建一个有两个独立操作的错觉。首先，当数据准备好在套接字上读取时请求一个通知，然后实际读取数据。虽然可以做到，但你很可能会发现自己不得不创建一个非常复杂的API或在Windows平台上接受一些由于中间缓冲区而导致的效率低下，以保持基于准备状态的API的错觉。
 - en: We’ll leave the topic of event queues for when we go on to create a simple example
     showing how exactly they work. Before we do that, we need to become really comfortable
     with FFI and syscalls, and we’ll do that by writing an example of a syscall on
     three different platforms.
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将把事件队列的话题留到我们创建一个简单示例来展示它们是如何工作的具体时刻。在我们这样做之前，我们需要真正熟悉FFI和系统调用，我们将通过编写一个在三个不同平台上实现系统调用的示例来实现这一点。
 - en: We’ll also use this opportunity to talk about abstraction levels and how we
     can create a unified API that works on the three different platforms.
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们还将利用这个机会来讨论抽象级别以及我们如何创建一个在三个不同平台上都能工作的统一API。
 - en: System calls, FFI, and cross-platform abstractions
+  id: totrans-95
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 系统调用、FFI和跨平台抽象
 - en: 'We’ll implement a very basic syscall for the three architectures: **BSD/macOS**,
     **Linux**, and **Windows**. We’ll also see how this is implemented in three levels
     of abstraction.'
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将为三种架构实现一个非常基本的系统调用：**BSD/macOS**、**Linux**和**Windows**。我们还将看到这是如何在三个抽象级别上实现的。
 - en: The syscall we’ll implement is the one used when we write something to the **standard
     output** (**stdout**) since that is such a common operation and it’s interesting
     to see how it really works.
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将实现的系统调用是在我们将某些内容写入**标准输出**（**stdout**）时使用的，因为这是一个非常常见的操作，而且了解它是如何真正工作的很有趣。
 - en: We’ll start off by looking at the lowest level of abstraction we can use to
     make system calls and build our understanding of them from the ground up.
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将从查看我们可以用来进行系统调用和从底层构建我们对它们的理解的最低抽象级别开始。
 - en: The lowest level of abstraction
+  id: totrans-99
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 最低的抽象级别
 - en: The lowest level of abstraction is to write what is often referred to as a “raw”
     syscall. A raw syscall is one that bypasses the OS-provided library for making
     syscalls and instead relies on the OS having a stable **syscall ABI**. A stable
     syscall ABI means it guarantees that if you put the right data in certain registers
     and call a specific CPU instruction that passes control to the OS, it will always
     do the same thing.
+  id: totrans-100
   prefs: []
   type: TYPE_NORMAL
 - en: To make a raw syscall, we need to write a little **inline assembly**, but don’t
     worry. Even though we introduce it abruptly here, we’ll go through it line by
     line, and in [*Chapter 5*](B20892_05.xhtml#_idTextAnchor092), we’ll introduce
     inline assembly in more detail so you become familiar with it.
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
 - en: At this level of abstraction, we need to write different code for BSD/macOS,
     Linux, and Windows. We also need to write different code if the OS is running
     on different CPU architectures.
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
 - en: Raw syscall on Linux
+  id: totrans-103
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: On Linux and macOS, the syscall we want to invoke is called `write`. Both systems
     operate based on the concept of `stdout` is already present when you start a process.
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
 - en: If you don’t run Linux on your machine, you have some options to run this example.
     You can copy and paste the code into the Rust Playground or you can run it using
     WSL in Windows.
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
 - en: As mentioned in the introduction, I’ll list what example you need to go to at
     the start of each example and you can run the example there by writing `cargo
     run`. The source code itself is always located in the example folder at `src/main.rs`.
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
 - en: The first thing we do is to pull in the standard library module that gives us
     access to the `asm!` macro.
+  id: totrans-107
   prefs: []
   type: TYPE_NORMAL
 - en: 'Repository reference: ch03/a-raw-syscall'
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE0]'
+  id: totrans-109
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'The next step is to write our syscall function:'
+  id: totrans-110
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE1]'
+  id: totrans-111
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: We’ll go through this first one line by line. The next ones will be pretty similar,
     so we only need to cover this in great detail once.
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
 - en: First, we have an attribute named `#[inline(never)]` that tells the compiler
     that we never want this function to be inlined during optimization. Inlining is
     when the compiler omits the function call and simply copies the body of the function
     instead of calling it. In this case, we don’t want that to ever happen.
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
 - en: Next, we have our function call. The first two lines in the function simply
     get the raw pointer to the memory location where our text is stored and the length
     of the text buffer.
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
 - en: The next line is an unsafe block since there is no way to call assembly such
     as this safely in Rust.
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
 - en: The first line of assembly puts the value `1` in the `rax` register. When the
     CPU traps our call later on and passes control to the OS, the kernel knows that
     a value of one in `rax` means that we want to make a `write`.
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
 - en: The second line puts the value `1` in the `rdi` register. This tells the kernel
     where we want to write to, and a value of one means that we want to write to `stdout`.
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
 - en: The third line calls the `syscall` instruction. This instruction issues a software
     interrupt, and the CPU passes on control to the OS.
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
 - en: Rust’s inline assembly syntax will look a little intimidating at first, but
     bear with me. We’ll cover this in detail a little later in this book so that you
     get comfortable with it. For now, I’ll just briefly explain what it does.
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust 的内联汇编语法一开始可能会显得有些令人生畏，但请耐心等待。我们将在本书稍后详细讲解，以便你能够熟悉它。现在，我只会简要地解释它做了什么。
 - en: The fourth line writes the address to the buffer where our text is stored in
     the `rsi` register.
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: 第四行将地址写入缓冲区，其中我们的文本存储在 `rsi` 寄存器中。
 - en: The fifth line writes the length (in bytes) of our text buffer to the `rdx`
     register.
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 第五行将我们的文本缓冲区的长度（以字节为单位）写入 `rdx` 寄存器。
 - en: The next four lines are not instructions to the CPU; they’re meant to tell the
     compiler that it can’t store anything in these registers and assume the data is
     untouched when we exit the inline assembly block. We do that by telling the compiler
     that there will be some unspecified data (indicated by the underscore) written
     to these registers.
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来的四行不是对 CPU 的指令；它们的目的是告诉编译器它不能将这些寄存器中的任何内容存储，并且假设我们在退出内联汇编块时数据未被修改。我们通过告诉编译器将有一些未指定数据（由下划线表示）写入这些寄存器来实现这一点。
 - en: 'Finally, it’s time to call our raw syscall:'
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，是时候调用我们的原始系统调用了：
 - en: '[PRE2]'
+  id: totrans-124
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: This function simply creates a `String` and calls our `syscall` function, passing
     it in as an argument.
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个函数只是创建一个 `String` 并调用我们的 `syscall` 函数，将其作为参数传递。
 - en: 'If you run this on Linux, you should now see the following message in your
     console:'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你在这台 Linux 机器上运行它，你现在应该在控制台看到以下消息：
 - en: '[PRE3]'
+  id: totrans-127
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: Raw syscall on macOS
+  id: totrans-128
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: macOS 上的原始系统调用
 - en: Now, since we use instructions that are specific to the CPU architecture, we’ll
     need different functions depending on if you run an older Mac with an intel CPU
     or if you run a newer Mac with an Arm 64-based CPU. We only present the one working
     for the new M series of chips using an ARM 64 architecture, but don’t worry, if
     you’ve cloned the Github repository, you’ll find code that works on both versions
     of Mac there.
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，由于我们使用的是特定于 CPU 架构的指令，所以我们需要根据你运行的是带有英特尔 CPU 的较老 Mac 还是带有基于 Arm 64 架构的较新
+    Mac 来使用不同的函数。我们只展示了适用于使用 ARM 64 架构的新 M 系列芯片的函数，但不用担心，如果你已经克隆了 Github 仓库，你会在那里找到适用于两种版本
+    Mac 的代码。
 - en: Since there are only minor changes, I’ll present the whole example here and
     just go through the differences.
+  id: totrans-130
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于只有细微的变化，我将在这里展示整个示例，并仅说明差异。
 - en: Remember, you need to run this code on a machine with macOS and an M-series
     chip. You can’t try this in the Rust playground.
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: 记住，你需要在一台带有 macOS 和 M 系列芯片的机器上运行此代码。你不能在 Rust 演示场地上尝试此操作。
 - en: ch03/a-raw-syscall
+  id: totrans-132
   prefs: []
   type: TYPE_NORMAL
+  zh: ch03/a-raw-syscall
 - en: '[PRE4]'
+  id: totrans-133
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: Aside from different register naming, there is not that much difference from
     the one we wrote for Linux, with the exception of the fact that a `write` operation
     has the code `4` on macOS instead of `1` as it did on Linux. Also, the CPU instruction
     that issues a software interrupt is `svc 0` instead of `syscall`.
+  id: totrans-134
   prefs: []
   type: TYPE_NORMAL
+  zh: 除了不同的寄存器命名外，与我们在 Linux 上编写的那一个相比，并没有太大的区别，除了在 macOS 上，`write` 操作的代码是 `4`，而不是
+    Linux 上的 `1`。此外，引发软件中断的 CPU 指令是 `svc 0`，而不是 `syscall`。
 - en: 'Again, if you run this on macOS, you’ll get the following printed to your console:'
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: 再次强调，如果你在 macOS 上运行此代码，你将在控制台看到以下输出：
 - en: '[PRE5]'
+  id: totrans-136
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: What about raw syscalls on Windows?
+  id: totrans-137
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 那么在 Windows 上原始的系统调用呢？
 - en: This is a good opportunity to explain why writing raw syscalls, as we just did,
     is a bad idea if you want your program or library to work across platforms.
+  id: totrans-138
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一个很好的机会来解释为什么如果你想让你的程序或库跨平台工作，像我们刚才那样编写原始的系统调用是一个坏主意。
 - en: You see, if you want your code to work far into the future, you have to worry
     about what guarantees the OS gives. Linux guarantees that, for example, the value
     `1` written to the `rax` register will always refer to `write`, but Linux works
     on many platforms, and not everyone uses the same CPU architecture. We have the
     same problem with macOS that just recently changed from using an Intel-based x86_64
     architecture to an ARM 64-based architecture.
+  id: totrans-139
   prefs: []
   type: TYPE_NORMAL
+  zh: 你看，如果你想让你的代码在未来很长时间内都能工作，你必须担心操作系统提供的保证。Linux 保证，例如，写入 `rax` 寄存器的值 `1` 总是指向
+    `write`，但 Linux 在许多平台上运行，并不是每个人都使用相同的 CPU 架构。我们与 macOS 面临着相同的问题，它最近刚刚从基于英特尔 x86_64
+    架构转变为基于 ARM 64 架构。
 - en: Windows gives absolutely zero guarantees when it comes to low-level internals
     such as this. Windows has changed its internals numerous times and provides no
     official documentation on this matter. The only things we have are reverse-engineered
@@ -676,200 +952,295 @@
     time you run Windows update. Even if that’s unlikely, you have no guarantee, which
     in turn makes it impossible for you to guarantee to users of your program that
     it’s going to work in the future.
+  id: totrans-140
   prefs: []
   type: TYPE_NORMAL
+  zh: 当涉及到像这样的低级内部结构时，Windows根本不提供任何保证。Windows已经多次更改其内部结构，并且没有提供关于此问题的官方文档。我们唯一拥有的只是可以在互联网上找到的反汇编表，但这些不是稳健的解决方案，因为下一次运行Windows更新时，原本是`write`的系统调用可能会变成`delete`的系统调用。即使这种情况不太可能发生，你也没有任何保证，这反过来又使得你无法向你的程序用户保证它将来会工作。
 - en: So, while raw syscalls in theory do work and are good to be familiar with, they
     mostly serve as an example of why we’d rather link to the libraries that the different
     operating systems supply for us when making syscalls. The next segment will show
     how we do just that.
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，虽然原始的系统调用在理论上确实有效，并且熟悉它们是有好处的，但它们主要作为我们为什么更愿意在系统调用时链接到不同操作系统为我们提供的库的例子。下一部分将展示我们是如何做到这一点的。
 - en: The next level of abstraction
+  id: totrans-142
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 抽象的下一层次
 - en: The next level of abstraction is to use the API, which all three operating systems
     provide for us.
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 抽象的下一层次是使用API，这是三个操作系统都为我们提供的。
 - en: We’ll soon see that this abstraction helps us remove some code. In this specific
     example, the syscall is the same on Linux and on macOS, so we only need to worry
     if we’re on Windows. We can differentiate between the platforms by using the `#[cfg(target_family
     = "windows")]` and `#[cfg(target_family = "unix")]` conditional compilation flags.
     You’ll see these used in the example in the repository.
+  id: totrans-144
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们很快就会看到这个抽象有助于我们移除一些代码。在这个特定例子中，Linux和macOS上的系统调用是相同的，所以我们只需要担心我们是否在Windows上。我们可以通过使用`#[cfg(target_family
+    = "windows")]`和`#[cfg(target_family = "unix")]`条件编译标志来区分平台。你将在仓库中的示例中看到这些标志的使用。
 - en: 'Our main function will look the same as it did before:'
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的主要功能将和之前看起来一样：
 - en: ch03/b-normal-syscall
+  id: totrans-146
   prefs: []
   type: TYPE_NORMAL
+  zh: ch03/b-normal-syscall
 - en: '[PRE6]'
+  id: totrans-147
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: The only difference is that instead of pulling in the `asm` module, we pull
     in the `io` module.
+  id: totrans-148
   prefs: []
   type: TYPE_NORMAL
+  zh: 唯一的区别是，我们不是引入`asm`模块，而是引入`io`模块。
 - en: Using the OS-provided API in Linux and macOS
+  id: totrans-149
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 在Linux和macOS中使用操作系统提供的API
 - en: 'You can run this code directly in the Rust playground since it runs on Linux,
     or you can run it locally on a Linux machine using WSL or on macOS:'
+  id: totrans-150
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以直接在Rust playground上运行这段代码，因为它在Linux上运行，或者你可以在使用WSL的Linux机器上本地运行它，或者在macOS上运行：
 - en: ch03/b-normal-syscall
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: ch03/b-normal-syscall
 - en: '[PRE7]'
+  id: totrans-152
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: Let’s go through the different steps one by one. Knowing how to do a proper
     syscall will be very useful for us later on in this book.
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们一步一步地了解不同的步骤。了解如何进行适当的系统调用将在本书后面的内容中对我们非常有用。
 - en: '[PRE8]'
+  id: totrans-154
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: Every Linux (and macOS) installation comes with a version of `libc`, which is
     a C library for communicating with the operating system. Having `libc`, with a
     consistent API, allows us to program the same way without worrying about the underlying
     platform architecture. Kernel developers can also make changes to the underlying
     ABI without breaking everyone’s program. This flag tells the compiler to link
     to the `"c"` library on the system.
+  id: totrans-155
   prefs: []
   type: TYPE_NORMAL
+  zh: 每个Linux（和macOS）安装都附带了一个`libc`版本，这是一个用于与操作系统通信的C库。有了`libc`和一致的API，我们可以以相同的方式进行编程，而不用担心底层平台架构。内核开发者也可以在不破坏每个人程序的情况下更改底层的ABI。这个标志告诉编译器链接到系统上的`"c"`库。
 - en: 'Next up is the definition of what functions in the linked library we want to
     call:'
+  id: totrans-156
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来是定义我们想要在链接的库中调用的函数：
 - en: '[PRE9]'
+  id: totrans-157
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: '`extern "C"` (sometimes written without the `"C"`, since `"C"` is assumed if
     nothing is specified) means we want to use the `"C"` `write` in the `"C"` library
     we’re linking to. This function needs to have the exact same name as the function
     in the library we’re linking to. The parameters don’t have to have the same name,
     but they must be in the same order. It’s good practice to name them the same as
     in the library you’re linking to.'
+  id: totrans-158
   prefs: []
   type: TYPE_NORMAL
+  zh: '`extern "C"`（有时可以不带`"C"`，因为如果未指定，则假定使用`"C"`）意味着我们想要在链接到的`"C"`库中使用`"C"`的`write`函数。这个函数需要有与链接到的库中函数完全相同的名称。参数名称不必相同，但它们必须以相同的顺序排列。将它们命名为与链接到的库中相同的名称是一种良好的做法。'
 - en: Here, we use Rusts FFI, so when you read about using FFI to call external functions,
     it’s exactly what we’re doing here.
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们使用Rust的FFI（Foreign Function Interface，外部函数接口），所以当你读到使用FFI调用外部函数时，这正是我们在做的事情。
 - en: The `write` function takes a file descriptor, `fd`, which in this case is a
     handle to `stdout`. In addition, it expects us to provide a pointer to an array
     of u8, `buf` values and the length of that buffer, `count`.
+  id: totrans-160
   prefs: []
   type: TYPE_NORMAL
+  zh: '`write`函数接受一个文件描述符`fd`，在这个例子中，它是`stdout`的句柄。此外，它期望我们提供一个指向u8数组`buf`值的指针和该缓冲区的长度`count`。'
 - en: Calling convention
+  id: totrans-161
   prefs: []
   type: TYPE_NORMAL
+  zh: 调用约定
 - en: This is the first time we’ve encountered this term, so I’ll go over a brief
     explanation, even though we dive deeper into this topic later in the book.
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是我们第一次遇到这个术语，所以即使我们稍后会更深入地探讨这个主题，我仍会简要解释一下。
 - en: 'A calling convention defines how function calls are performed and will, amongst
     other things, specify:'
+  id: totrans-163
   prefs: []
   type: TYPE_NORMAL
+  zh: 调用约定定义了函数调用是如何执行的，并将指定如下：
 - en: '- How arguments are passed into the function'
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
+  zh: '- 函数参数是如何传递给函数的'
 - en: '- What registers the function is expected to store at the start and restore
     before returning'
+  id: totrans-165
   prefs: []
   type: TYPE_NORMAL
+  zh: '- 函数在开始时预期存储哪些寄存器，并在返回前恢复'
 - en: '- How the function returns its result'
+  id: totrans-166
   prefs: []
   type: TYPE_NORMAL
+  zh: '- 函数如何返回其结果'
 - en: '- How the stack is set up (we’ll get back to this one later)'
+  id: totrans-167
   prefs: []
   type: TYPE_NORMAL
+  zh: '- 如何设置堆栈（我们稍后会回到这个问题）'
 - en: So, before you call a foreign function you need to specify what calling convention
     to use since there is no way for the compiler to know if we don’t tell it. The
     C calling convention is by far the most common one to encounter.
+  id: totrans-168
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，在调用外部函数之前，你需要指定要使用的调用约定，因为编译器不知道的话，就没有办法知道了。C调用约定是最常见的一种。
 - en: Next, we wrap the call to our linked function in a normal Rust function.
+  id: totrans-169
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们将对链接的函数的调用包装在一个正常的Rust函数中。
 - en: ch03/b-normal-syscall
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: ch03/b-normal-syscall
 - en: '[PRE10]'
+  id: totrans-171
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: You’ll probably be familiar with the first two lines now, as they’re the same
     as we wrote for our raw syscall example. We get the pointer to the buffer where
     our text is stored and the length of that buffer.
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
+  zh: 你现在可能已经熟悉前两行，因为它们与我们为原始系统调用示例编写的相同。我们获取存储文本的缓冲区的指针和该缓冲区的长度。
 - en: Next is our call to the `write` function in `libc`, which needs to be wrapped
     in an `unsafe` block since Rust can’t guarantee safety when calling external functions.
+  id: totrans-173
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来是`libc`中的`write`函数的调用，由于Rust在调用外部函数时不能保证安全性，所以需要包装在`unsafe`块中。
 - en: You might wonder how we know that the value `1` refers to the file handle of
     `stdout`.
+  id: totrans-174
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可能会想知道我们是如何知道值`1`指的是`stdout`的文件句柄。
 - en: You’ll meet this situation a lot when writing syscalls from Rust. Usually, constants
     are defined in the `C` header files, so we need to manually search them up and
     look for these definitions. `1` is always the file handle to `stdout` on UNIX
     systems, so it’s easy to remember.
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
+  zh: 当你从Rust编写系统调用时，你会经常遇到这种情况。通常，常量是在`C`头文件中定义的，因此我们需要手动搜索它们并查找这些定义。`1`在UNIX系统中始终是`stdout`的文件句柄，所以很容易记住。
 - en: Note
+  id: totrans-176
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: Wrapping the `libc` functions and providing these constants is exactly what
     the create `libc` ([https://github.com/rust-lang/libc](https://github.com/rust-lang/libc))
     provides for us. Most of the time, you can use that instead of doing all the manual
     work of linking to and defining functions as we do here.
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 包装`libc`函数并提供这些常量正是create `libc` ([https://github.com/rust-lang/libc](https://github.com/rust-lang/libc))为我们提供的。大多数时候，你可以使用它来代替我们在这里所做的所有手动工作，比如链接和定义函数。
 - en: Lastly, we have the error handling, and you’ll see this all the time when using
     FFI. `C` functions often use a specific integer to indicate if the function call
     was successful or not. In the case of this `write` call, the function will either
     return the number of bytes written or, if there is an error, it will return the
     value `–1`. You’ll find this information easily by reading the *man-pages* ([https://man7.org/linux/man-pages/index.html](https://man7.org/linux/man-pages/index.html))
     for Linux.
+  id: totrans-178
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们有错误处理，当使用FFI时，你会经常看到这一点。`C`函数通常使用一个特定的整数来指示函数调用是否成功。在这个`write`调用的例子中，函数将返回写入的字节数，或者如果发生错误，它将返回值`-1`。你可以通过阅读Linux的*man-pages*（[https://man7.org/linux/man-pages/index.html](https://man7.org/linux/man-pages/index.html)）来轻松找到这些信息。
 - en: If there is an error, we use the built-in function in Rust’s standard library
     to query the OS for the last error it reported for this process and convert that
     to a rust `io::Error` type.
+  id: totrans-179
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果发生错误，我们使用Rust标准库中的内置函数查询OS为该进程报告的最后错误，并将其转换为rust `io::Error`类型。
 - en: 'If you run this function using `cargo run`, you will see this output:'
+  id: totrans-180
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你使用`cargo run`运行这个函数，你会看到以下输出：
 - en: '[PRE11]'
+  id: totrans-181
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: Using Windows API
+  id: totrans-182
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 使用Windows API
 - en: On Windows, things work a bit differently. While UNIX models almost everything
     as “files” you interact with, Windows uses other abstractions. On Windows, you
     get a **handle** that represents some object you can interact with in specific
     ways depending on exactly what kind of handle you have.
+  id: totrans-183
   prefs: []
   type: TYPE_NORMAL
+  zh: 在Windows上，事情有点不同。虽然UNIX模型几乎将你交互的每一件事都视为“文件”，但Windows使用其他抽象。在Windows上，你得到一个**句柄**，它代表你可以以特定方式与之交互的对象。句柄的具体类型决定了交互方式。
 - en: We will use the same `main` function as before, but we need to link to different
     functions in the Windows API and make changes to our `syscall` function.
+  id: totrans-184
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将使用之前相同的`main`函数，但我们需要链接到Windows API中的不同函数，并对我们的`syscall`函数进行修改。
 - en: ch03/b-normal-syscall
+  id: totrans-185
   prefs: []
   type: TYPE_NORMAL
+  zh: ch03/b-normal-syscall
 - en: '[PRE12]'
+  id: totrans-186
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: The first thing you notice is that we no longer link to the `"C"` library. Instead,
     we link to the `kernel32` library. The next change is the use of the system calling
     convention. This calling convention is a bit peculiar. You see, Windows uses different
@@ -878,128 +1249,181 @@
     the `"C"` calling convention, so if you have a newer system you can try changing
     that out and see that it still works. “Specifying system” lets the compiler figure
     out the right one to use based on the system.
+  id: totrans-187
   prefs: []
   type: TYPE_NORMAL
+  zh: 你首先注意到的是，我们不再链接到`"C"`库。相反，我们链接到`kernel32`库。下一个变化是使用系统调用约定。这个约定有点特别。你看，Windows根据你为32位x86
+    Windows版本还是64位x86_64 Windows版本编写代码而使用不同的调用约定。运行在x86_64上的较新版本的Windows使用`"C"`调用约定，所以如果你有一个较新的系统，你可以尝试将其更改并查看它是否仍然工作。“指定系统”让编译器根据系统确定正确的调用约定。
 - en: 'We link to two different syscalls in Windows:'
+  id: totrans-188
   prefs: []
   type: TYPE_NORMAL
+  zh: 在Windows中，我们链接到两个不同的系统调用：
 - en: '`GetStdHandle`: This retrieves a reference to a standard device like `stdout`'
+  id: totrans-189
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`GetStdHandle`: 这个函数用于获取对标准设备（如`stdout`）的引用'
 - en: '`WriteConsoleW`: WriteConsole comes in two types. `WriteConsoleW` takes Unicode
     text and `WriteConsoleA` takes ANSI-encoded text. We’re using the one that takes
     Unicode text in our program.'
+  id: totrans-190
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`WriteConsoleW`: `WriteConsole`有两种类型。`WriteConsoleW`接受Unicode文本，而`WriteConsoleA`接受ANSI编码的文本。在我们的程序中，我们使用接受Unicode文本的那个版本。'
 - en: Now, **ANSI-encoded** text works fine if you only write English text, but as
     soon as you write text in other languages, you might need to use special characters
     that are not possible to represent in ANSI but possible in **Unicode**. If you
     mix them up, your program will not work as you expect.
+  id: totrans-191
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，如果你只写英文文本，**ANSI编码**的文本可以正常工作，但一旦你开始写其他语言的文本，你可能需要使用ANSI无法表示但在**Unicode**中可以表示的特殊字符。如果你混合使用它们，你的程序可能不会按预期工作。
 - en: 'Next is our new `syscall` function:'
+  id: totrans-192
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来是我们的新`syscall`函数：
 - en: ch03/b-normal-syscall
+  id: totrans-193
   prefs: []
   type: TYPE_NORMAL
+  zh: ch03/b-normal-syscall
 - en: '[PRE13]'
+  id: totrans-194
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: The first thing we do is convert the text to `utf-16`-encoded text, which Windows
     uses. Fortunately, Rust has a built-in function to convert our `utf-8`-encoded
     text to `utf-16` code points. `encode_utf16` returns an iterator over `u16` code
     points that we can collect to a `Vec`.
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们首先做的事情是将文本转换为Windows使用的`utf-16`编码的文本。幸运的是，Rust有一个内置函数可以将我们的`utf-8`编码文本转换为`utf-16`代码点。`encode_utf16`返回一个`u16`代码点的迭代器，我们可以将其收集到一个`Vec`中。
 - en: The next two lines should be familiar by now. We get the pointer to where the
     text is stored and the length of the text in bytes.
+  id: totrans-196
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来的两行现在应该很熟悉了。我们获取文本存储位置的指针和文本的字节长度。
 - en: The next thing we do is call `GetStdHandle` and pass in the value `–11`. The
     values we need to pass in for the different standard devices are described together
     with the GetStdHandle documentation at [https://learn.microsoft.com/en-us/windows/console/getstdhandle](https://learn.microsoft.com/en-us/windows/console/getstdhandle).
     This is convenient, as we don’t have to dig through C header files to find all
     the constant values we need.
+  id: totrans-197
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们调用`GetStdHandle`并传入值`-11`。我们需要为不同的标准设备传入的值与`GetStdHandle`的文档一起描述，在[https://learn.microsoft.com/en-us/windows/console/getstdhandle](https://learn.microsoft.com/en-us/windows/console/getstdhandle)。这很方便，因为我们不需要在C头文件中挖掘以找到我们需要的所有常量值。
 - en: The return code to expect is also documented thoroughly for all functions, so
     we handle potential errors here in the same way as we did for the Linux/macOS
     syscalls.
+  id: totrans-198
   prefs: []
   type: TYPE_NORMAL
+  zh: 所有函数的返回码都有详细的文档说明，所以我们在这里以与Linux/macOS系统调用相同的方式处理潜在的错误。
 - en: Finally, we have the call to the `WriteConsoleW` function. There is nothing
     too fancy about this, and you’ll notice similarities with the `write` syscall
     we used for Linux. One difference is that the output is not returned from the
     function but written to an address location we pass in in the form of a pointer
     to our output variable.
+  id: totrans-199
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们有调用`WriteConsoleW`函数的例子。这没有什么太复杂的，你会注意到它与我们在Linux中使用的`write`系统调用的相似之处。一个不同之处在于，输出不是从函数返回，而是写入我们以指针形式传递的输出变量地址位置。
 - en: Note
+  id: totrans-200
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: Now that you’ve seen how we create cross-platform syscalls, you will probably
     also understand why we’re not including the code to make every example in this
     book cross-platform. It’s simply the case that the book would be extremely long
     if we did, and it’s not apparent that all that extra information will actually
     benefit our understanding of the key concepts.
+  id: totrans-201
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在你已经看到了我们如何创建跨平台的系统调用，你可能也会理解为什么我们不包含使本书中每个示例都跨平台的代码。简单来说，如果这样做，这本书会非常长，而且并不明显这些额外的信息实际上会帮助我们理解关键概念。
 - en: The highest level of abstraction
+  id: totrans-202
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 最高级别的抽象
 - en: This is simple, but I wanted to add this just for completeness. Rust standard
     library wraps the calls to the underlying OS APIs for us, so we don’t have to
     care about what syscalls to invoke.
+  id: totrans-203
   prefs: []
   type: TYPE_NORMAL
+  zh: 这很简单，但我只是想为了完整性而添加这一点。Rust标准库为我们封装了对底层操作系统API的调用，所以我们不需要关心要调用哪些系统调用。
 - en: '[PRE14]'
+  id: totrans-204
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: Congratulations! You’ve now written the same syscall using three levels of abstraction.
     You now know what FFI looks like, you’ve seen some inline assembly (which we’ll
     cover in greater detail later), and you’ve made a proper syscall to print something
     to the console. You’ve also seen one of the things our standard library tries
     to solve by wrapping these calls for different platforms so we don’t have to know
     these syscalls to print something to the console.
+  id: totrans-205
   prefs: []
   type: TYPE_NORMAL
+  zh: 恭喜！你现在已经用三个层次抽象写出了相同的系统调用。你现在知道了FFI的样子，你看到了一些内联汇编（我们将在稍后更详细地介绍），并且你已经正确地进行了系统调用，将内容打印到控制台。你还看到了我们标准库通过封装这些针对不同平台的调用来尝试解决的问题，这样我们就不需要知道这些系统调用来打印内容到控制台。
 - en: Summary
+  id: totrans-206
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 概述
 - en: In this chapter, we went through what OS-backed event queues are and gave a
     high-level overview of how they work. We also went through the defining characteristics
     of epoll, kqueue, and IOCP and focused on how they differ from each other.
+  id: totrans-207
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们介绍了基于操作系统的事件队列是什么，并对其工作原理进行了高级概述。我们还讨论了epoll、kqueue和IOCP的定义特征，并重点介绍了它们之间的差异。
 - en: In the last half of this chapter, we introduced some examples of syscalls. We
     discussed raw syscalls, and “normal” syscalls so that you know what they are and
     have seen examples of both. We also took the opportunity to talk about abstraction
     levels and the advantages of relying on good abstractions when they’re available
     to us.
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章的后半部分，我们介绍了一些系统调用的例子。我们讨论了原始系统调用和“正常”系统调用，这样你知道它们是什么，并看到了两者的示例。我们还利用这个机会讨论了抽象层次，以及当我们能够利用好的抽象时，依赖它们的优点。
 - en: As a part of making system calls, you also got an introduction to Rusts FFI.
+  id: totrans-209
   prefs: []
   type: TYPE_NORMAL
+  zh: 作为系统调用的一个部分，你也了解了Rust的FFI（Foreign Function Interface）。
 - en: Finally, we created a cross-platform abstraction. You also saw some of the challenges
     that come with creating a unifying API that works across several operating systems.
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们创建了一个跨平台的抽象。你也看到了创建一个在多个操作系统上工作的统一API所面临的挑战。
 - en: The next chapter will walk you through an example using epoll to create a simple
     event queue, so you get to see exactly how this works in practice. In the repository,
     you’ll also find the same example for both Windows and macOS, so you have that
     available if you ever want to implement an event queue for either of those platforms.
+  id: totrans-211
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一章将带你通过一个使用epoll创建简单事件队列的例子，这样你可以看到它在实际中是如何工作的。在仓库中，你还可以找到Windows和macOS的相同示例，所以如果你想要为这些平台中的任何一个实现事件队列，这些示例都是可用的。
 - en: Part 2:Event Queues and Green Threads
+  id: totrans-212
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 第二部分：事件队列和绿色线程
 - en: 'In this part, we’ll present two examples. The first example demonstrates the
     creation of an event queue using epoll. We will design the API to closely resemble
     the one used by mio, allowing us to grasp the fundamentals of both mio and epoll.
@@ -1010,13 +1434,21 @@
     Throughout the exploration, we will delve into fundamental programming concepts
     such as ISAs, ABIs, calling conventions, stacks, and touch on assembly programming.
     This section comprises the following chapters:'
+  id: totrans-213
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这部分，我们将展示两个示例。第一个示例演示了使用epoll创建事件队列的过程。我们将设计API，使其与mio使用的API非常相似，这样我们就可以掌握mio和epoll的基本原理。第二个示例说明了使用fibers/green
+    threads的方法，这与Go使用的方法类似。这种方法是Rust使用futures和async/await进行异步编程的流行替代方案之一。在Rust达到1.0版本之前，它也使用了green
+    threads，这使得它成为了Rust异步编程历史的一部分。在整个探索过程中，我们将深入研究诸如ISAs、ABIs、调用约定、栈等基本编程概念，并简要涉及汇编编程。本节包括以下章节：
 - en: '[*Chapter 4*](B20892_04.xhtml#_idTextAnchor081)*, Create Your Own Event Queue*'
+  id: totrans-214
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[*第四章*](B20892_04.xhtml#_idTextAnchor081)*，创建你自己的事件队列*'
 - en: '[*Chapter 5*](B20892_05.xhtml#_idTextAnchor092)*, Creating Our Own Fibers*'
+  id: totrans-215
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[*第五章*](B20892_05.xhtml#_idTextAnchor092)*，创建我们自己的纤维*'
