@@ -1,11 +1,15 @@
 - en: '18'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: '18'
 - en: Queuing Tasks with Redis
+  id: totrans-1
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用 Redis 排队任务
 - en: Receiving requests, performing an action, and then returning a response to the
     user can solve a lot of problems in web programming. However, there are times
     when this simple approach will simply not cut it. For instance, when I was working
@@ -21,48 +25,71 @@
     get an update. Another example could be a food ordering application where the
     food order goes through a series of steps such as confirming the order, processing
     the order, and then delivering the order.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 接收请求，执行操作，然后向用户返回响应可以解决网络编程中的许多问题。然而，有时这种简单的方法根本无法满足需求。例如，当我还在 MonolithAi 工作时，我们有一个功能，用户可以输入数据和参数，然后点击按钮在数据上训练机器学习模型。然而，在向用户发送响应之前尝试训练机器学习模型会花费太长时间。连接可能会超时。为了解决这个问题，我们有一个
+    **Redis** 队列和一组工作进程消费任务。训练任务将被放入队列，当工作进程有空时，其中一个工作进程将开始训练模型。HTTP 服务器将接受用户的请求，将训练任务发布到队列中，并告知用户任务已发布。当模型训练完成后，用户将收到更新。另一个例子可能是一个食品订购应用程序，其中食品订单需要经过一系列步骤，如确认订单、处理订单然后交付订单。
 - en: Considering the MonolithAi example, it is not hard to see why learning how to
     implement queuing in web programming is not only useful but also gives the developer
     another solution, increasing the number of problems they can solve.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑 MonolithAi 的例子，不难看出为什么学习如何在网络编程中实现排队不仅有用，而且为开发者提供了另一种解决方案，增加了他们可以解决的问题数量。
 - en: 'In this chapter, we will cover the following topics:'
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将涵盖以下主题：
 - en: Laying out the queuing project, describing the components and approach needed
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 布局排队项目，描述所需的组件和方法
 - en: Building an HTTP server
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 构建 HTTP 服务器
 - en: Building a polling worker
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 构建 polling 工作进程
 - en: Getting our application running with Redis
+  id: totrans-8
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用 Redis 运行我们的应用程序
 - en: Defining tasks for workers
+  id: totrans-9
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 定义工作进程的任务
 - en: Defining messages for the Redis queue
+  id: totrans-10
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 定义 Redis 队列的消息
 - en: Integrating routing in the HTTP server
+  id: totrans-11
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在 HTTP 服务器中集成路由
 - en: Running all servers and workers in Docker
+  id: totrans-12
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在 Docker 中运行所有服务器和工作进程
 - en: By the end of this chapter, you will be able to build a single Rust program
     that can either be a worker or server depending on the environment variable passed
     into it. You will also be able to serialize a range of tasks in the form of different
@@ -71,31 +98,46 @@
     to implement queues but also utilize Redis to implement many other solutions,
     such as multiple servers receiving messages through a broadcast via a Redis pub/sub
     channel.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章结束时，你将能够构建一个 Rust 程序，该程序可以根据传入的环境变量是作为工作进程还是服务器来运行。你还将能够将一系列任务以不同结构体的形式序列化，并将它们插入
+    Redis 队列中，使这些结构体能够排队并在不同的服务器之间传输。这不仅将赋予你实现队列的技能，还能利用 Redis 实现许多其他解决方案，例如多个服务器通过
+    Redis pub/sub 通道进行广播接收消息。
 - en: Technical requirements
+  id: totrans-14
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: In this chapter, we will be purely focusing on how to build workers using Tokio
     and Hyper on a Redis queue. Therefore, we will not be relying on any previous
     code as we are building our own new server.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将专注于如何使用 Tokio 和 Hyper 在 Redis 队列上构建工作进程。因此，我们不会依赖任何之前的代码，因为我们正在构建自己的新服务器。
 - en: The code for this chapter can be found at [https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter18](https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter18).
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章的代码可以在 [https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter18](https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter18)
+    找到。
 - en: Breaking down our project
+  id: totrans-17
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 拆分我们的项目
 - en: In our system, we have a series of tasks that need to be executed. However,
     these tasks take a long time to complete. If we were to just have a normal server
     handling the tasks, the server will end up being choked and multiple users will
     receive a delayed experience. If the task is too long, then the users’ connection
     might time out.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的系统中，有一系列需要执行的任务。然而，这些任务需要很长时间才能完成。如果我们只有一个普通的服务器来处理任务，服务器最终会变得拥堵，多个用户将收到延迟的服务体验。如果任务太长，那么用户的连接可能会超时。
 - en: 'To avoid degrading users’ experience when long tasks are needed, we utilize
     a queuing system. This is where an HTTP server receives a request from the user.
     The long task associated with the request is then sent to a first-in-first-out
@@ -105,29 +147,45 @@
     and flows of traffic, we will not need all our workers and HTTP servers when the
     traffic is low. However, we will need to create and connect extra HTTP servers
     and workers when the traffic increases, as seen in the following diagram:'
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了避免在需要长时间任务时降低用户体验，我们利用排队系统。这就是 HTTP 服务器从用户那里接收请求的地方。与请求相关联的长时间任务随后被发送到先入先出队列，由一组工作者进行处理。因为任务在队列中，HTTP
+    服务器除了向用户响应任务已被发送并且他们的请求已被处理之外，别无他法。由于流量的起伏，当流量低时，我们不需要所有的工作者和 HTTP 服务器。然而，当流量增加时，我们需要创建和连接额外的
+    HTTP 服务器和工作者，如下面的图所示：
 - en: '![Figure 18.1 – Our approach to processing lengthy tasks](img/Figure_18.1_B18722.jpg)'
+  id: totrans-20
   prefs: []
   type: TYPE_IMG
+  zh: '![图 18.1 – 我们处理长时间任务的方法](img/Figure_18.1_B18722.jpg)'
 - en: Figure 18.1 – Our approach to processing lengthy tasks
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 18.1 – 我们处理长时间任务的方法
 - en: 'Considering the preceding diagram, we will need the following infrastructure:'
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑到前面的图，我们需要以下基础设施：
 - en: '**Redis database**: To store the tasks in the queue'
+  id: totrans-23
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**Redis 数据库**：用于在队列中存储任务'
 - en: '**HTTP server**: To send tasks to the queue to be processed'
+  id: totrans-24
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**HTTP 服务器**：将任务发送到队列以进行处理'
 - en: '**Worker**: To pull/pop/poll/process tasks from the queue'
+  id: totrans-25
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**工作者**：从队列中拉取/弹出/轮询/处理任务'
 - en: We could build individual applications for the worker and the HTTP server. However,
     this would increase complexity for no gain. With two separate applications, we
     would have to maintain two separate Docker images. We would also duplicate a lot
@@ -138,146 +196,219 @@
     fields for the input and a run function to execute the task with those fields.
     Serialization traits for these task structs can enable us to pass the fields over
     the queue and receive them.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以为工作者和 HTTP 服务器构建单独的应用程序。然而，这样做会增加复杂性而没有获得任何收益。使用两个独立的应用程序，我们必须维护两个独立的 Docker
+    镜像。我们还会大量复制代码，因为 HTTP 服务器发送到 Redis 队列的任务必须与工作者拾取并处理的任务相同。对于特定任务，HTTP 服务器传递给工作者的字段可能存在不匹配。我们可以通过具有一系列字段的任务结构体和用于使用这些字段执行任务的运行函数来防止这种不匹配。这些任务结构体的序列化特性可以让我们在队列中传递字段并接收它们。
 - en: When it comes to building an HTTP server and worker, we can build the server
     so that environment variables are checked once the program is started. If the
     environment variable states that the application is a worker, the application
     can then spin up an actor that polls the queue. If the environment variable states
     that the application is an HTTP server, the application can then run an HTTP server
     and listen for requests.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 当涉及到构建 HTTP 服务器和工作者时，我们可以构建服务器，以便在程序启动后检查环境变量。如果环境变量表明应用程序是一个工作者，那么应用程序可以启动一个轮询队列的演员。如果环境变量表明应用程序是一个
+    HTTP 服务器，那么应用程序可以运行一个 HTTP 服务器并监听请求。
 - en: 'For our task queue project, we have the following outline:'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于我们的任务队列项目，我们有以下概述：
 - en: '[PRE0]'
+  id: totrans-29
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'We will define the server entry point in the `src/main.rs` file. We will then
     define our task structs in the `src/tasks/` directory. In terms of our dependencies
     in our `Cargo.toml` file, we have the following:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将在 `src/main.rs` 文件中定义服务器入口点。然后，我们在 `src/tasks/` 目录中定义我们的任务结构体。就我们 `Cargo.toml`
+    文件中的依赖项而言，我们有以下内容：
 - en: '[PRE1]'
+  id: totrans-31
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: None of these dependencies should be new to you apart from the `bytes` and `bincode`
     crates. We will use `bytes` to convert our struct into HTTP responses and `bincode`
     to serialize structs into binary to be stored in Redis.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 除了`bytes`和`bincode`包之外，这些依赖项对你来说都不应该陌生。我们将使用`bytes`将我们的结构体转换为HTTP响应，并使用`bincode`将结构体序列化为二进制，以便存储在Redis中。
 - en: With the approach that we have just laid out in this section, we will be able
     to build a simple task-processing queue where we can assure that the task definitions
     between the servers and workers are always in sync. With our approach defined,
     we can move on to the first part of a task’s journey, which is the HTTP server.
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 通过本节中刚刚阐述的方法，我们将能够构建一个简单的任务处理队列，其中我们可以确保服务器和工作者之间的任务定义始终保持同步。定义了我们的方法后，我们可以继续进行任务旅程的第一部分，即HTTP服务器。
 - en: Building the HTTP server
+  id: totrans-34
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 构建HTTP服务器
 - en: 'For our HTTP server, we need to carry out the following steps:'
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于我们的HTTP服务器，我们需要执行以下步骤：
 - en: Define a struct that deserializes the HTTP request body.
+  id: totrans-36
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 定义一个反序列化HTTP请求主体的结构体。
 - en: Define a function that handles the incoming request.
+  id: totrans-37
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 定义一个处理传入请求的函数。
 - en: Define pathways for the program to run based on environment variables.
+  id: totrans-38
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 根据环境变量定义程序的运行路径。
 - en: Run a server that listens for incoming requests.
+  id: totrans-39
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 运行一个监听传入请求的服务器。
 - en: 'We are not going to section off individual sections for each step as we have
     covered all of these steps/processes in the previous chapter. Before we carry
     out all the steps, we must import the following into the `src/main.rs` file:'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们不会为每个步骤分别划分部分，因为我们已经在上一章中涵盖了所有这些步骤/过程。在我们执行所有步骤之前，我们必须将以下内容导入到`src/main.rs`文件中：
 - en: '[PRE2]'
+  id: totrans-41
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'You should be familiar with all these imports apart from the `bytes` import,
     which we will cover when defining the HTTP handle function. First, we will define
     a trivial struct to serialize the incoming HTTP request bodies with the following
     code:'
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 你应该熟悉所有这些导入，除了`bytes`导入，我们将在定义HTTP处理函数时介绍它。首先，我们将定义一个简单的结构体，用于使用以下代码序列化传入的HTTP请求主体：
 - en: '[PRE3]'
+  id: totrans-43
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: This is the same approach to our Actix Web applications. We will be able to
     annotate our task structs with the `Serialize` and `Deserialize` traits.
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 这与我们的Actix Web应用程序的方法相同。我们将能够使用`Serialize`和`Deserialize`特性对任务结构体进行注解。
 - en: 'Now that we have defined the `IncomingBody` struct, we can define our `handle`
     function with the following code:'
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经定义了`IncomingBody`结构体，我们可以使用以下代码定义我们的`handle`函数：
 - en: '[PRE4]'
+  id: totrans-46
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: It must be noted that we are calling the `freeze` function when returning our
     body. This `freeze` function converts the mutable bytes to immutable, preventing
     any buffer modifications. Here, we can see that we are accepting a generic body
     with the request. We can then use `serde` to serialize the body and the `BytesMut`
     struct (which is essentially just a contiguous slice of memory) to return the
     body to the user, essentially creating an echo server.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 必须注意，我们在返回主体时调用了`freeze`函数。这个`freeze`函数将可变的字节转换为不可变的，防止任何缓冲区修改。在这里，我们可以看到我们正在接受一个通用的请求主体。然后我们可以使用`serde`将主体和`BytesMut`结构体（本质上只是一个连续的内存切片）序列化，然后将主体返回给用户，本质上创建了一个回声服务器。
 - en: 'We can now define the `main` function, which is the entry point with the following
     code:'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们可以定义`main`函数，这是程序的入口点，以下是其代码：
 - en: '[PRE5]'
+  id: totrans-49
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: Here we can see that the environment variable `"APP_TYPE"` is extracted. Depending
     on what the app type is, we have different blocks of code being executed. For
     now, we will just print out a statement that the worker is not defined if the
     app type is a `"worker"`. We also state that the program is going to panic if
     the app type is neither a `"server"` nor a `"worker"` type.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们可以看到环境变量`"APP_TYPE"`被提取。根据应用程序类型的不同，将执行不同的代码块。目前，我们只需打印出一条消息，说明如果应用程序类型是`"worker"`，则工作者未定义。我们还声明，如果应用程序类型既不是`"server"`也不是`"worker"`类型，程序将发生恐慌。
 - en: 'In our server block, we defined `addr` and `server` with the following code:'
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的服务器块中，我们使用以下代码定义了`addr`和`server`：
 - en: '[PRE6]'
+  id: totrans-52
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: This is very similar to our server code in the previous chapter.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 这与上一章中的服务器代码非常相似。
 - en: 'We then run the server with the following command:'
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后我们使用以下命令运行服务器：
 - en: '[PRE7]'
+  id: totrans-55
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'We can then send the following request:'
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们可以发送以下请求：
 - en: '![Figure 18.2 – A request to our HTTP server](img/Figure_18.2_B18722.jpg)'
+  id: totrans-57
   prefs: []
   type: TYPE_IMG
+  zh: '![图18.2 – 向我们的HTTP服务器发送请求](img/Figure_18.2_B18722.jpg)'
 - en: Figure 18.2 – A request to our HTTP server
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 图18.2 – 向我们的HTTP服务器发送请求
 - en: Here, we can see that our server works and echoes the same body that was sent
     to the server. We can now move on to building our worker application.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们可以看到我们的服务器正在工作，并回显发送到服务器的相同正文。我们现在可以继续构建我们的工作者应用程序。
 - en: Building the polling worker
+  id: totrans-60
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 构建轮询工作者
 - en: Our worker is essentially looping and polling a queue in Redis. If there is
     a message in the queue, the worker will then execute the task that has been extracted
     from the queue. For building the polling worker section, the worker will be creating
@@ -286,89 +417,134 @@
     but this does mean that we can test to see how our queue insertion works quickly.
     By the end of the chapter, our HTTP servers will be inserting tasks and our workers
     will be consuming tasks.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的工作者本质上是在 Redis 中循环和轮询队列。如果队列中有消息，工作者将会执行从队列中提取的任务。为了构建轮询工作者部分，工作者将会创建一个结构体，将结构体插入
+    Redis 队列，然后从队列中提取该插入的结构体以打印出来。这不是我们期望的行为，但这确实意味着我们可以快速测试我们的队列插入功能。到本章结束时，我们的 HTTP
+    服务器将插入任务，而我们的工作者将消费任务。
 - en: 'We do not want the worker to be polling the Redis queue constantly without
     any rest. To reduce the polling to a reasonable rate, we will need to make the
     worker sleep during each loop. Therefore, we must import the following in the
     `src/main.rs` file to enable us to get our worker sleeping:'
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们不希望工作者在没有休息的情况下不断轮询 Redis 队列。为了将轮询降低到合理的速率，我们需要让工作者在每次循环中休眠。因此，我们必须在 `src/main.rs`
+    文件中导入以下内容，以便我们能够使工作者休眠：
 - en: '[PRE8]'
+  id: totrans-63
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'We can now move to the section where the worker is run to define our worker
     code in the following section in the `main` function:'
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在可以进入工作者运行的部分，在下面的 `main` 函数中定义我们的工作者代码：
 - en: '[PRE9]'
+  id: totrans-65
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: 'Our worker code takes the following general outline:'
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的工作者代码采用以下一般轮廓：
 - en: '[PRE10]'
+  id: totrans-67
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: Here, we can see that we define the Redis client and then run the worker on
     an infinite loop. In this loop, we will be establishing a connection with Redis,
     polling the queue in Redis, and then removing the connection. We can establish
     and remove the connection in the loop because the task will take a long time.
     There is no point in holding onto a Redis connection throughout the duration of
     a task.
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们可以看到我们定义了 Redis 客户端，然后在一个无限循环中运行工作者。在这个循环中，我们将与 Redis 建立连接，轮询 Redis 中的队列，然后断开连接。由于任务可能需要很长时间，所以在任务执行期间保持
+    Redis 连接是没有意义的。
 - en: Unfortunately, at the point of writing this book, the Rust Redis crate does
     not have a simple implementation of queues. However, this should not hold us back.
     If we know the raw commands needed to get Redis to implement our queue, we can
     implement our own queues. Redis performs like a SQL database. If you know the
     commands, you can implement your own logic like in SQL.
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 不幸的是，在撰写本书时，Rust Redis crate 没有简单的队列实现。然而，这不应该阻碍我们。如果我们知道获取 Redis 实现我们队列所需的原始命令，我们可以实现自己的队列。Redis
+    的性能类似于 SQL 数据库。如果你知道命令，你可以像在 SQL 中一样实现自己的逻辑。
 - en: 'Inside our infinite loop, we are going to create a generic struct that has
     the `Serialize` and `Deserialize` traits implemented, then serialize the struct
     into binary with the following code:'
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的无限循环中，我们将创建一个实现了 `Serialize` 和 `Deserialize` 特性的泛型结构体，然后使用以下代码将结构体序列化为二进制：
 - en: '[PRE11]'
+  id: totrans-71
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: 'Our struct is now a vector of bytes. We will then establish a connection with
     Redis and push `"some_queue"` with the `"LPUSH"` command to the queue, which inserts
     the value at the head of the queue, with the following code:'
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的结构体现在是一个字节数组。然后我们将与 Redis 建立连接，使用 `"LPUSH"` 命令将 `"some_queue"` 推送到队列中，该命令将值插入队列的头部，以下代码所示：
 - en: '[PRE12]'
+  id: totrans-73
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: We have `Option<Vec<u8>>` because there may not be anything in the queue. If
     there is nothing in the queue, then the outcome will be none. Right now, we will
     never get a none because we are directly inserting tasks into the queue before
     we extract a task from the queue. However, in periods of low traffic, our workers
     will be polling queues that could be empty for a while.
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们有 `Option<Vec<u8>>` 因为队列中可能没有任何内容。如果队列中没有内容，那么结果将是 none。目前，我们永远不会得到 none，因为我们是在从队列中提取任务之前直接将任务插入队列中的。然而，在低流量期间，我们的工作者将会轮询可能空置一段时间的队列。
 - en: 'Now that we have our outcome, we can process it with the following `match`
     statement:'
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们有了结果，我们可以使用以下 `match` 语句来处理它：
 - en: '[PRE13]'
+  id: totrans-76
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: 'If we have some data, we will merely deserialize the binary data and print
     out the struct with the following code:'
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们有数据，我们只需反序列化二进制数据，并使用以下代码打印出结构体：
 - en: '[PRE14]'
+  id: totrans-78
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: 'If there is nothing in the queue, the `outcome` is `None`, and we can just
     sleep for five seconds before running the loop again with the following code:'
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果队列中没有内容，`outcome`将是`None`，我们可以在再次运行循环之前简单地休眠五秒钟，代码如下：
 - en: '[PRE15]'
+  id: totrans-80
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: With this, our worker is ready to be tested. You can always do more when building
     an async program like this. However, to avoid bloating this chapter, we will stick
     with our basic application. If you want to further your understanding of Redis,
@@ -379,136 +555,202 @@
     to push yourself, you could investigate Kubernetes controllers and have a main
     worker spin up and destroy worker pods, depending on the traffic. However, these
     projects will be beyond the scope of this book.
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: 这样，我们的工作进程就准备好进行测试了。在构建这样的异步程序时，你总是可以做更多的事情。然而，为了避免使本章内容膨胀，我们将坚持使用我们的基本应用程序。如果你想进一步了解Redis，你可以研究构建一个pub/sub系统，其中一个工作进程持续轮询队列，而其他工作进程通过监听通道上的消息的actor被关闭。当一个主要工作进程接收到一个新任务时，主要工作进程可以向通道发布一个消息，唤醒其他工作进程。如果你真的想挑战自己，你可以研究Kubernetes控制器，让主要工作进程启动和销毁工作进程pod，这取决于流量。然而，这些项目将超出本书的范围。
 - en: To get our application working within the scope of one chapter, we must move
     on to getting our application running with Redis.
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了在本章范围内使我们的应用程序工作，我们必须继续让我们的应用程序与Redis一起运行。
 - en: Getting our application running with Redis
+  id: totrans-83
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 让我们的应用程序与Redis一起运行
 - en: 'Running our application with Redis locally will require us to use Redis with
     Docker, export the `APP_TYPE` environment variable as `"worker"`, and then run
     our application with Cargo. For our Redis, our `docker-compose.yml` file takes
     the following form:'
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本地使用Redis运行我们的应用程序将需要我们使用带有Docker的Redis，导出`APP_TYPE`环境变量为`"worker"`，然后使用Cargo运行我们的应用程序。对于我们的Redis，我们的`docker-compose.yml`文件如下所示：
 - en: '[PRE16]'
+  id: totrans-85
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: 'We can then export our `APP_TYPE` environment variable with the following command:'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们可以使用以下命令导出我们的`APP_TYPE`环境变量：
 - en: '[PRE17]'
+  id: totrans-87
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: 'We can then run our application with the following command:'
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们可以使用以下命令运行我们的应用程序：
 - en: '[PRE18]'
+  id: totrans-89
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: 'When we run our application, we will get the following printout:'
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 当我们运行应用程序时，我们将得到以下输出：
 - en: '[PRE19]'
+  id: totrans-91
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: 'The printout of the `IncomingBody` struct will be infinite because we are running
     an infinite loop. However, what this shows is that the following mechanism is
     running and working:'
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
+  zh: '`IncomingBody`结构的输出将是无限的，因为我们正在运行一个无限循环。然而，这表明以下机制正在运行并正常工作：'
 - en: '![Figure 18.3 – Our process of how we insert and extract data from a Redis
     queue](img/Figure_18.3_B18722.jpg)'
+  id: totrans-93
   prefs: []
   type: TYPE_IMG
+  zh: '![图18.3 – 我们从Redis队列中插入和提取数据的过程](img/Figure_18.3_B18722.jpg)'
 - en: Figure 18.3 – Our process of how we insert and extract data from a Redis queue
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 图18.3 – 我们从Redis队列中插入和提取数据的过程
 - en: Although our worker is working with a Redis queue, it is merely printing out
     the struct that was put into the Redis queue. In the next section, we build functionality
     into the structs that we are inserting into the Redis queue so our worker can
     perform the tasks.
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: 虽然我们的工作进程正在与Redis队列交互，但它仅仅是在打印出放入Redis队列的结构体。在下一节中，我们将构建功能到我们插入Redis队列的结构体中，以便我们的工作进程可以执行任务。
 - en: Defining tasks for workers
+  id: totrans-96
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 定义工作进程的任务
 - en: 'When it comes to running our tasks, we need fields so we can pass them in as
     inputs to the task being run. Our tasks also need a `run` function so we can choose
     when to run tasks as running a task takes a long time. We can define a basic addition
     task in our `src/tasks/add.rs` file with the following code:'
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 当涉及到运行我们的任务时，我们需要字段以便我们可以将它们作为输入传递给正在运行的任务。我们的任务还需要一个`run`函数，这样我们就可以选择何时运行任务，因为运行任务需要很长时间。我们可以在`src/tasks/add.rs`文件中定义一个基本的加法任务，代码如下：
 - en: '[PRE20]'
+  id: totrans-98
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: 'None of this code should be a shock. We will implement the `Serialize` and
     `Deserialize` traits so we can insert the task into the Redis Queue. We can then
     use a `sleep` function to simulate a long task. Finally, we merely add the two
     numbers together. For our task in the `src/tasks/multiply.rs` file, the `run`
     function takes the following form:'
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 这段代码不应该让你感到惊讶。我们将实现`Serialize`和`Deserialize`特质，以便我们可以将任务插入到Redis队列中。然后，我们可以使用`sleep`函数模拟一个长时间的任务。最后，我们只是将两个数字相加。对于我们在`src/tasks/multiply.rs`文件中的任务，`run`函数的形式如下：
 - en: '[PRE21]'
+  id: totrans-100
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: 'It should not be a surprise to find out that the `run` function in the `src/tasks/subtract.rs`
     file has the following structure:'
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: 发现`src/tasks/subtract.rs`文件中的`run`函数具有以下结构体应该不会令人惊讶：
 - en: '[PRE22]'
+  id: totrans-102
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: 'Now, we want to implement one of our tasks to see whether we can pull a task
     struct out of a Redis queue and run it. We make the tasks accessible from the
     module with the following code in the `src/tasks/mod.rs` file:'
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，我们想要实现我们的一个任务，看看我们是否可以从Redis队列中拉出一个任务结构体并运行它。我们在`src/tasks/mod.rs`文件中使用以下代码使任务在模块中可访问：
 - en: '[PRE23]'
+  id: totrans-104
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: 'In our `src/main.rs` file, we initially import the tasks with the following
     code:'
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的`src/main.rs`文件中，我们最初使用以下代码导入任务：
 - en: '[PRE24]'
+  id: totrans-106
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: 'We can now implement one of our tasks in our worker block of code. At the start
     of this worker block of code, we will swap the `IncomingBody` struct with the
     `AddTask` struct using the following code:'
+  id: totrans-107
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在可以在我们的工作代码块中实现我们的一个任务。在这个工作代码块的开头，我们将使用以下代码将`IncomingBody`结构体与`AddTask`结构体交换：
 - en: '[PRE25]'
+  id: totrans-108
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: 'Nothing else needs to change apart from what we do with the `Some` part of
     the `outcome` `match` statement, which now takes the following form:'
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: 除了对`outcome` `match`语句中的`Some`部分的处理外，其他什么都不需要改变，该语句现在具有以下形式：
 - en: '[PRE26]'
+  id: totrans-110
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: Here, we can see that we deserialized the binary data into an `AddTask` struct,
     ran the `run` function, and then printed out the outcome. In a real application,
     we would be inserting the result to a database or sending the result to another
     server using HTTP. However, in this chapter, we are merely interested in seeing
     how queuing tasks are executed. We have covered database inserts and HTTP requests
     many times in the book.
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们可以看到我们已将二进制数据反序列化为`AddTask`结构体，运行了`run`函数，然后打印出了结果。在实际应用中，我们会将结果插入到数据库中或使用HTTP将结果发送到另一个服务器。然而，在本章中，我们只是想看看队列任务是如何执行的。我们在书中多次介绍了数据库插入和HTTP请求。
 - en: 'If we run our worker application now, we will get a 15-second delay and then
     the following printout:'
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们现在运行我们的工作应用程序，我们将得到15秒的延迟，然后出现以下打印输出：
 - en: '[PRE27]'
+  id: totrans-113
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: If we wait another 15 seconds, we will get another printout that is the same.
     This shows that our tasks are being pulled from the Redis queue, deserialized,
     and then ran in the exact same manner that we expect them to as one added to two
@@ -516,215 +758,316 @@
     struct. This is not useful as we have two other tasks and we would like to support
     all of them. Therefore, we must move on to defining messages that can support
     a range of tasks.
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们再等待15秒钟，我们会得到相同的打印输出。这表明我们的任务正在从Redis队列中拉取，反序列化，并以我们期望的方式运行，即一个加二等于三。然而，这里有一个问题。我们只能发送和接收`AddTask`结构体。这没有用，因为我们还有两个其他任务，我们希望支持所有这些任务。因此，我们必须继续定义可以支持一系列任务的消息。
 - en: Defining messages for the Redis queue
+  id: totrans-115
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 定义Redis队列的消息
 - en: 'To support multiple tasks, we must do a two-step approach to packaging our
     tasks to be inserted into the Redis queue. This means that we will serialize the
     task struct into `Vec<u8>`, then add this vector of bytes to another struct that
     has a field denoting what type of task is in the message. We can define this process
     by first importing the `Serialize` and `Deserialize` traits in the `src/tasks/mod.rs`
     file with the following code:'
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了支持多个任务，我们必须采取两步方法来打包我们的任务以插入到Redis队列中。这意味着我们将任务结构体序列化为`Vec<u8>`，然后将这个字节数组添加到另一个结构体中，该结构体有一个字段表示消息中的任务类型。我们可以通过首先在`src/tasks/mod.rs`文件中使用以下代码导入`Serialize`和`Deserialize`特性来定义此过程：
 - en: '[PRE28]'
+  id: totrans-117
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: 'We can then define the `enum` task type and message struct with the following
     code:'
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以使用以下代码定义`enum`任务类型和消息结构体：
 - en: '[PRE29]'
+  id: totrans-119
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: 'Our message struct is now ready to package a range of tasks to be inserted
     into the Redis queue. In our `src/main.rs` file, we can import the `TaskType`
     and `TaskMessage` structs with the following code:'
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经准备好将一系列任务打包，以便插入到Redis队列中。在我们的`src/main.rs`文件中，我们可以使用以下代码导入`TaskType`和`TaskMessage`结构体：
 - en: '[PRE30]'
+  id: totrans-121
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: 'We are now ready to rewrite our infinite loop in the worker block of code.
     We initially create `AddTask`, serialize `AddTask`, and then package this serialized
     task into the `TaskMessage` with the following code:'
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，我们已经准备好在工人代码块中重写我们的无限循环。我们最初创建`AddTask`，序列化`AddTask`，然后使用以下代码将序列化的任务打包到`TaskMessage`中：
 - en: '[PRE31]'
+  id: totrans-123
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: 'We will then establish a Redis connection, then push our serialized message
     to the Redis queue with the following code:'
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们将建立Redis连接，并使用以下代码将序列化的消息推送到Redis队列：
 - en: '[PRE32]'
+  id: totrans-125
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: 'We will then pop the task from the Redis queue and drop the connection with
     the following code:'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们将使用以下代码从Redis队列中弹出任务并断开连接：
 - en: '[PRE33]'
+  id: totrans-127
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: 'We are now moving our `TaskMessage` struct in and out of the Redis queue. We
     must process `TaskMessage` if there is one. Inside the `match` block of the `Some`
     statement of `outcome`, we must deserialize the bytes we got from the Redis queue,
     then match the task type with the following code:'
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在正在将`TaskMessage`结构体在Redis队列中进进出出。如果有`TaskMessage`，我们必须处理它。在`outcome`语句的`Some`块的`match`块中，我们必须反序列化我们从Redis队列中获得的字节，然后使用以下代码匹配任务类型：
 - en: '[PRE34]'
+  id: totrans-129
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: This now enables us to handle individual tasks that we have pulled from the
     Redis queue and ran.
+  id: totrans-130
   prefs: []
   type: TYPE_NORMAL
+  zh: 这现在使我们能够处理我们从Redis队列中提取并运行的单个任务。
 - en: Our worker now supports all three of our tasks! However, we are currently just
     creating messages and then directly consuming these messages in the worker. We
     need to enable the HTTP server to accept a range of different requests to send
     a range of different tasks to the Redis queue to be consumed by the workers.
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的工作者现在支持我们所有的三个任务！然而，我们目前只是创建消息，然后直接在工作者中消费这些消息。我们需要启用HTTP服务器以接受一系列不同的请求，以便将一系列不同的任务发送到Redis队列供工作者消费。
 - en: Integrating routing in the HTTP server
+  id: totrans-132
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 在HTTP服务器中集成路由
 - en: 'We are now at the stage of getting our HTTP server to accept incoming requests
     to create a range of tasks depending on what the URI is. To get our HTTP to support
     multiple tasks, we essentially must rewrite the `handle` function in the `src/main.rs`
     file. Before we rewrite the `main`  function, we must import what we need with
     the following code:'
+  id: totrans-133
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在处于使我们的HTTP服务器接受创建一系列任务的传入请求的阶段，这些任务取决于URI的内容。为了使我们的HTTP支持多个任务，我们本质上必须重写`src/main.rs`文件中的`handle`函数。在我们重写`main`函数之前，我们必须使用以下代码导入我们需要的内容：
 - en: '[PRE35]'
+  id: totrans-134
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: 'We are importing these things because we are going to return a `NOT_FOUND`
     status code if the wrong URI is passed. We also going to be extracting data from
     the body of the incoming request. Before we refactor our `handle` function, we
     need to change our `IncomingBody` struct to take in two integers taking the following
     form:'
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们导入这些内容是因为如果我们传递了错误的URI，我们将返回`NOT_FOUND`状态码。我们还将从传入请求的正文提取数据。在我们重构`handle`函数之前，我们需要将我们的`IncomingBody`结构体更改为接受两个整数，其形式如下：
 - en: '[PRE36]'
+  id: totrans-136
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: 'Inside our `handle` function, we can define our Redis client, clean our URI
     by removing trailing slashes, and extract the data from the incoming request with
     the following code:'
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的`handle`函数内部，我们可以定义我们的Redis客户端，通过删除尾随斜杠来清理我们的URI，并使用以下代码从传入的请求中提取数据：
 - en: '[PRE37]'
+  id: totrans-138
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: 'We can see that we can extract the task type from the URI. Right now, we will
     support `add`, `subtract`, and `multiply`. We now have everything we need from
     the incoming request; we can construct the appropriate task based on the URI with
     the following code:'
+  id: totrans-139
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以看到，我们可以从URI中提取任务类型。目前，我们将支持`add`、`subtract`和`multiply`。我们现在已经从传入的请求中获得了所有需要的信息；我们可以根据以下代码使用URI构建适当的任务：
 - en: '[PRE38]'
+  id: totrans-140
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE38]'
 - en: 'We can see that no matter what the task is, we need the task struct to be packed
     into our `TaskType` enum, which can be serialized into a binary vector for our
     message to be sent to the Redis queue. For the last part of the `match` statement,
     which catches all task requests that do not match with “add”, “multiply”, or “subtract”,
     we merely return a `NOT_FOUND` HTTP response with the following code:'
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以看到，无论任务是什么，我们都需要将任务结构体打包到我们的`TaskType`枚举中，它可以序列化为二进制向量，以便将消息发送到Redis队列。对于`match`语句的最后部分，它捕获所有与“add”、“multiply”或“subtract”不匹配的任务请求，我们只需返回以下代码的`NOT_FOUND`
+    HTTP响应：
 - en: '[PRE39]'
+  id: totrans-142
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE39]'
 - en: 'We now have everything we need to create a generic task message that can be
     inserted into a Redis queue. With this information, we can create our `TaskMessage`
     struct and serialize `TaskMessage` after the `match` statement that we have just
     covered with the following code:'
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经拥有了创建可以插入Redis队列的通用任务消息所需的一切。有了这些信息，我们可以在刚刚覆盖的`match`语句之后创建我们的`TaskMessage`结构体并序列化`TaskMessage`，以下代码如下：
 - en: '[PRE40]'
+  id: totrans-144
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE40]'
 - en: 'We will then make a Redis connection, push the serialized message to a Redis
     queue, and then drop the Redis connection with the following code:'
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们将建立Redis连接，将序列化的消息推送到Redis队列，然后断开Redis连接，以下代码如下：
 - en: '[PRE41]'
+  id: totrans-146
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE41]'
 - en: 'Finally, we return an `Ok` HTTP response stating that the task has been sent
     with the following code:'
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们返回一个表示任务已发送的`Ok` HTTP响应，以下代码如下：
 - en: '[PRE42]'
+  id: totrans-148
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE42]'
 - en: 'Our `handle` function is now complete. All we need to do now is remove the
     code that inserts an `AddTask` struct to the Redis queue in the worker code block.
     We are removing the task insertion code from the worker code block because we
     no longer need the worker to insert tasks. The removal of the insertion code takes
     the following form:'
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的`handle`函数现在已经完成。我们现在需要做的就是从工作代码块中移除插入`AddTask`结构到Redis队列的代码。我们之所以要从工作代码块中移除插入代码，是因为我们不再需要工作进程插入任务。移除插入代码的形式如下：
 - en: '[PRE43]'
+  id: totrans-150
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE43]'
 - en: We are now ready to package these workers and HTTP servers in Docker so we can
     run our application with as many workers as we want.
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在准备好将这些工作进程和HTTP服务器打包到Docker中，这样我们就可以运行我们想要那么多工作进程的应用程序。
 - en: Running it all in Docker
+  id: totrans-152
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 在Docker中运行所有内容
 - en: 'We are now at the stage where we can run our entire application in Docker.
     This enables us to have multiple workers pulling from the same Redis queue. First,
     we need to define the `Dockerfile` for the build of our worker/server image. We
     are going to have a distroless build for the Docker build with the following code:'
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在处于可以运行整个应用程序在Docker中的阶段。这使得我们可以有多个工作进程从同一个Redis队列中拉取。首先，我们需要定义构建我们的工作进程/服务器镜像的`Dockerfile`。我们将使用以下代码进行distroless构建：
 - en: '[PRE44]'
+  id: totrans-154
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE44]'
 - en: 'This distroless build should not be a surprise at this point in the book. We
     are merely compiling the application and then copying the static binary into the
     distroless image. Before we run the build in any way, we must ensure that we do
     not copy over excessive files from the `target` directory into our Docker build
     with the following code in the `.``dockerignore` file:'
+  id: totrans-155
   prefs: []
   type: TYPE_NORMAL
+  zh: 到目前为止，这本书中的这个distroless构建不应该令人惊讶。我们只是在编译应用程序，然后将静态二进制文件复制到distroless镜像中。在我们以任何方式运行构建之前，我们必须确保不要将`target`目录中的过多文件复制到我们的Docker构建中，以下是在`.dockerignore`文件中的代码：
 - en: '[PRE45]'
+  id: totrans-156
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE45]'
 - en: 'Our build is now ready. We can define the `docker-compose.yml` with the following
     outline:'
+  id: totrans-157
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的项目构建现在已经就绪。我们可以定义以下轮廓的`docker-compose.yml`：
 - en: '[PRE46]'
+  id: totrans-158
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE46]'
 - en: 'Here, we can see that we have three workers and one server. Our server takes
     the following form:'
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们可以看到我们有三个工作进程和一个服务器。我们的服务器形式如下：
 - en: '[PRE47]'
+  id: totrans-160
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE47]'
 - en: Here, we can see that we can expose the port, point out that the build context
     is in the current directory, and that our container should start once Redis has
     started.
+  id: totrans-161
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们可以看到我们可以暴露端口，指出构建上下文在当前目录，并且我们的容器应该在Redis启动后启动。
 - en: 'A standard worker takes the following form:'
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
+  zh: 标准工作进程的形式如下：
 - en: '[PRE48]'
+  id: totrans-163
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE48]'
 - en: 'We can imagine that other workers have the same structure as the preceding
     worker, which is true. If we want to add another worker, we can have the exact
     spec as `worker_1` except we just increase the number attached to the image and
@@ -734,52 +1077,79 @@
     container. Passing localhost into the Redis client will result in a failure to
     connect to Redis as a result. Therefore, we must get rid of all references to
     the Redis client and replace those references with the following code:'
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以想象其他工作进程具有与前面工作进程相同的结构，这是真的。如果我们想添加另一个工作进程，我们可以有与`worker_1`完全相同的规范，只是我们只增加了附加到镜像和容器名称的数字，从而使得新的工作进程被称为`worker_2`。你可能已经注意到我们添加了`REDIS_URL`到环境变量中。这是因为工作进程和服务器必须在其容器外访问Redis数据库。将localhost传递给Redis客户端将导致无法连接到Redis。因此，我们必须消除所有对Redis客户端的引用，并用以下代码替换这些引用：
 - en: '[PRE49]'
+  id: totrans-165
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE49]'
 - en: 'If we spin up `docker_compose` now and send a range of different HTTP requests
     to the server, we get the following printout:'
+  id: totrans-166
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们现在启动`docker_compose`并向服务器发送一系列不同的HTTP请求，我们会得到以下输出：
 - en: '[PRE50]'
+  id: totrans-167
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE50]'
 - en: 'It is a big printout, but we can see that Redis spins up and there are multiple
     workers polling the Redis queue. We can also see that multiple workers are processing
     multiple tasks at the same time. Examples of how to make the request to the server
     are depicted here:'
+  id: totrans-168
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一个很大的输出，但我们可以看到Redis启动了，并且有多个工作进程正在轮询Redis队列。我们还可以看到多个工作进程正在同时处理多个任务。如何向服务器发送请求的示例在这里展示：
 - en: '![Figure 18.4 – An example of sending a request to our server for multiply](img/Figure_18.4_B18722.jpg)'
+  id: totrans-169
   prefs: []
   type: TYPE_IMG
+  zh: '![图18.4 – 向我们的服务器发送乘法请求的示例](img/Figure_18.4_B18722.jpg)'
 - en: Figure 18.4 – An example of sending a request to our server for multiply
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: 图18.4 – 向我们的服务器发送乘法请求的示例
 - en: '![Figure 18.5 – An example of sending a request to our server for subtract](img/Figure_18.5_B18722.jpg)'
+  id: totrans-171
   prefs: []
   type: TYPE_IMG
+  zh: '![图18.5 – 向我们的服务器发送减法请求的示例](img/Figure_18.5_B18722.jpg)'
 - en: Figure 18.5 – An example of sending a request to our server for subtract
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 18.5 – 向我们的服务器发送减法请求的示例
 - en: '![Figure 18.6 – An example of sending a request to our server for add](img/Figure_18.6_B18722.jpg)'
+  id: totrans-173
   prefs: []
   type: TYPE_IMG
+  zh: '![图 18.6 – 向我们的服务器发送添加请求的示例](img/Figure_18.6_B18722.jpg)'
 - en: Figure 18.6 – An example of sending a request to our server for add
+  id: totrans-174
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 18.6 – 向我们的服务器发送添加请求的示例
 - en: Here we have it! We have a server that accepts requests. Depending on the URI,
     our server constructs a task, packages it into a message, and then sends it to
     a Redis queue. We then have multiple workers polling the Redis queue to process
     the long tasks.
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里就是它！我们有一个接受请求的服务器。根据 URI，我们的服务器构建一个任务，将其打包成一个消息，然后将其发送到 Redis 队列。然后我们有多个工作进程轮询
+    Redis 队列以处理长时间任务。
 - en: Summary
+  id: totrans-176
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 摘要
 - en: In this chapter, we built an application that could be run as either a worker
     or a server. We then built structs that could be serialized and inserted into
     a Redis queue. This allowed our workers to consume these tasks and then process
@@ -795,8 +1165,14 @@
     is given in the *Further reading* section. You will be shocked at what you can
     do, and I hope you get as excited as me thinking of all the solutions you can
     achieve with Redis when looking through the available commands.
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们构建了一个既可以作为工作进程也可以作为服务器的应用程序。然后我们构建了可以序列化并插入 Redis 队列的结构体。这使得我们的工作进程可以消费这些任务，并在自己的时间处理它们。现在，您有了构建无需阻塞
+    HTTP 服务器即可处理长时间任务的能力。序列化 Rust 结构体并将它们插入 Redis 的机制不仅限于处理大型任务。我们可以序列化 Rust 结构体并通过
+    Redis 的 pub/sub 通道将它们发送到其他 Rust 服务器，这在更大规模上本质上创建了一个演员模型的方法。借助我们的无元数据镜像，这些 Rust
+    服务器的大小仅约为 50 MB，这使得这个概念具有可扩展性。我们还探讨了将原始命令应用于 Redis，这为您提供了自由和信心，可以完全拥抱 Redis 提供的一切。所有可以用于
+    Redis 的命令的高级列表在 *进一步阅读* 部分给出。您将会对您能做什么感到震惊，我希望您在查看可用命令时，像我一样对使用 Redis 可以实现的所有解决方案感到兴奋。
 - en: We have come to the end of the book. I am grateful that you have gotten this
     far, and I am always happy when readers reach out. Rust is truly a revolutionary
     programming language. With Rust, we have been able to build and deploy fast tiny
@@ -805,21 +1181,31 @@
     However, I hope that I have exposed you to fundamental concepts in such a way
     that you can go forward and read further documentation, practice, and someday
     push the boundaries of web programming.
+  id: totrans-178
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们已经到达了本书的结尾。我很感激您能走到这一步，当读者们联系我时，我总是很高兴。Rust 真正是一种革命性的编程语言。有了 Rust，我们能够构建和部署快速小巧的服务器。我们探索了异步编程和演员模型。我们构建了部署管道。您的旅程还没有结束；总有更多东西可以学习。然而，我希望我已经以这种方式向您介绍了基本概念，这样您可以继续前进，阅读更多文档，实践，并有一天推动网络编程的边界。
 - en: Further reading
+  id: totrans-179
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 进一步阅读
 - en: 'The Redis documentation on pushing to queues: [https://redis.io/commands/lpush/](https://redis.io/commands/lpush/)'
+  id: totrans-180
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Redis 推送至队列的文档：[https://redis.io/commands/lpush/](https://redis.io/commands/lpush/)
 - en: 'A concise list of raw Redis commands: [https://www.tutorialspoint.com/redis/redis_lists.htm](https://www.tutorialspoint.com/redis/redis_lists.htm)'
+  id: totrans-181
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 原始 Redis 命令的简洁列表：[https://www.tutorialspoint.com/redis/redis_lists.htm](https://www.tutorialspoint.com/redis/redis_lists.htm)
 - en: 'The Redis Rust crate documentation: [https://docs.rs/redis/latest/redis/](https://docs.rs/redis/latest/redis/)'
+  id: totrans-182
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Redis Rust crate 文档：[https://docs.rs/redis/latest/redis/](https://docs.rs/redis/latest/redis/)
