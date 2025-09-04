@@ -1,0 +1,693 @@
+<html><head></head><body>
+		<div id="_idContainer021">
+			<h1 id="_idParaDest-41"><em class="italic">Chapter 2</em>: <a id="_idTextAnchor041"/>A Tour of the Rust Programming Language</h1>
+			<p>In the previous chapter, we looked at the Rust tooling ecosystem for build and dependency management, testing, and documentation. These are critical and highly developer-friendly tools that give us a strong foundation for starting to work on Rust projects. In this chapter, we will build a working example that will serve to act as a refresher, and also strengthen key Rust programming concepts.</p>
+			<p>The goal of this chapter is to get more proficient in core Rust concepts. This is essential before diving into the specifics of systems programming in Rust. We will achieve this by designing and developing a <strong class="bold">command-line interface </strong>(<strong class="bold">CLI</strong>) in Rust.</p>
+			<p>The application we will be building is an <strong class="bold">arithmetic expression evaluator</strong>. Since this is a mouthful, let's see an example.</p>
+			<p>Let's assume the user enters the following arithmetic expression on the command line:</p>
+			<p class="source-code">1+2*3.2+(4/2-3/2)-2.11+2^4</p>
+			<p>The tool will print out the result <strong class="bold">21.79</strong>.</p>
+			<p>For the user, it appears to be a calculator, but there is a lot involved to implement this. This example project will introduce you to the core computer science concepts used in parsers and compiler design. It is a non-trivial project that allows us to test the depths of core Rust programming, but is not so overly complex that it will intimidate you.</p>
+			<p>Before you continue reading, I would recommend that you clone the code repository, navigate to the <strong class="source-inline">chapter2</strong> folder, and execute the <strong class="source-inline">cargo run</strong> command. At the command-line prompt, enter a few arithmetic expressions and see the results returned by the tool. You can exit the tool with <em class="italic">Ctrl</em> + <em class="italic">C</em>. This would give you a better appreciation for what you are going to build in this chapter.</p>
+			<p>The following are the key learning steps for this chapter, which correspond to the various stages of building our project:</p>
+			<ul>
+				<li>Analyzing the problem domain</li>
+				<li>Modeling system behavior</li>
+				<li>Building the tokenizer</li>
+				<li>Building the parser</li>
+				<li>Building the evaluator</li>
+				<li>Dealing with errors </li>
+				<li>Building a command-line application</li>
+			</ul>
+			<h1 id="_idParaDest-42"><a id="_idTextAnchor042"/>Technical requirements</h1>
+			<p>You should have Rustup and Cargo installed in your local development environment.</p>
+			<p>The GitHub repository for the code in this chapter can be found at <a href="https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter02">https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter02</a>.</p>
+			<h1 id="_idParaDest-43"><a id="_idTextAnchor043"/>Analyzing the problem domain</h1>
+			<p>In <a id="_idIndexMarker118"/>this section, we will define the scope of the project and the technical challenges that we need to address.</p>
+			<p>Understanding and analyzing the problem domain is the first step in building any system. It is important to unambiguously articulate the problem we are trying to solve, and the boundaries of the system. These can be captured in the form of system requirements.</p>
+			<p>Let's look at the requirements for the CLI tool we are going to build. </p>
+			<p>The tool should accept an arithmetic expression as input, evaluate it, and provide the numerical output as a floating-point number. For example, the expression <em class="italic">1+2*3.2+(4/2-3/2)-2.11+2^4</em> should evaluate to <em class="italic">21.79</em>.</p>
+			<p>The arithmetic operations in scope are <strong class="bold">addition</strong> (<strong class="bold">+</strong>), <strong class="bold">subtraction</strong> (<strong class="bold">-</strong>), <strong class="bold">multiplication</strong> (<strong class="bold">*</strong>), <strong class="bold">division</strong> (<strong class="bold">/</strong>), <strong class="bold">power</strong> (<strong class="bold">^</strong>), the <strong class="bold">negative prefix</strong> (<strong class="bold">-</strong>), and expressions enclosed in <strong class="bold">parentheses</strong> <strong class="bold">()</strong>.</p>
+			<p>Mathematical functions such as trigonometric and logarithmic functions, absolute, square roots, and so on are <em class="italic">not</em> in scope.</p>
+			<p>With such an expression, the challenges that need to be resolved are as follows:</p>
+			<ul>
+				<li>The user should be able to input an arithmetic expression as <em class="italic">free text</em> on the command line. Numbers, arithmetic operators, and parentheses (if any) should be segregated and processed with different sets of rules.</li>
+				<li>The rules of <em class="italic">operator precedence</em> must be taken into account (for example, multiplication takes precedence over addition).</li>
+				<li>Expressions enclosed within <em class="italic">parentheses ()</em> must be given <em class="italic">higher precedence</em>.</li>
+				<li>The user <a id="_idIndexMarker119"/>may not give spaces between the number and operator, but still the program must be capable of <em class="italic">parsing inputs with or without spaces</em> between the characters.</li>
+				<li>If numbers contain a <em class="italic">decimal point</em>, continue reading the rest of the number until an operator or parenthesis is encountered.</li>
+				<li><em class="italic">Invalid inputs</em> should be dealt with and the program should abort with a suitable error message. Here are some examples of invalid input:<p><strong class="bold">Invalid input 1</strong>: Since we don't deal with variables in this program, if a character is entered, the program should exit with a suitable error message (for example, <em class="italic">2 *</em> <em class="italic">a</em> is invalid input).</p><p><strong class="bold">Invalid input 2</strong>: If only a single parenthesis is encountered (without a matching closing parenthesis), the program should exit with an error message.</p><p><strong class="bold">Invalid input 3</strong>: If the arithmetic operator is not recognized, the program should exit with an error message.</p></li>
+			</ul>
+			<p>There are clearly other types of edge cases that can cause errors. But we will focus only on these. The reader is encouraged to implement other error conditions as a further exercise.</p>
+			<p>Now that we know the scope of what we are going to build, let's design the system.</p>
+			<h1 id="_idParaDest-44"><a id="_idTextAnchor044"/>Modeling the system behavior</h1>
+			<p>In the last section, we<a id="_idIndexMarker120"/> confirmed the system requirements. Let's now design the logic for processing the arithmetic expression. The components of the system are shown in <em class="italic">Figure 2.1</em>:</p>
+			<div>
+				<div id="_idContainer009" class="IMG---Figure">
+					<img src="image/Figure_2.1_B16405.jpg" alt="Figure 2.1 – Design of an arithmetic expression evaluator"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.1 – Design of an arithmetic expression evaluator</p>
+			<p>The components shown in the preceding figure work together as follows:</p>
+			<ol>
+				<li>The user enters an arithmetic expression at the command-line input and presses the <em class="italic">Enter</em> key.</li>
+				<li>The user input is scanned in its entirety and stored in a local variable.</li>
+				<li>The arithmetic expression (from the user) is scanned. The numbers are stored as tokens of the <strong class="source-inline">Numeric</strong> type. Each arithmetic operator is stored as a token of that appropriate type. For example, the <strong class="source-inline">+</strong> symbol will be represented as a token of type <strong class="source-inline">Add</strong>, and the number <strong class="source-inline">1</strong> will be stored as a token of type <strong class="source-inline">Num</strong> with a value of <strong class="source-inline">1</strong>. This is done by the <strong class="source-inline">Lexer</strong> (or <strong class="source-inline">Tokenizer</strong>) module.</li>
+				<li>An <strong class="bold">Abstract Syntax Tree (AST</strong>) is constructed<a id="_idIndexMarker121"/> from the tokens in the previous step, taking <a id="_idIndexMarker122"/>into account the sequence in which the tokens have to be evaluated. For example, in the expression <strong class="source-inline">1+2*3</strong>, the product of <strong class="source-inline">2</strong> and <strong class="source-inline">3</strong> must be evaluated before the addition operator. Also, any sub-expressions enclosed within parentheses must be evaluated on a higher priority. The final AST will reflect all such processing rules. This is done by the <strong class="source-inline">Parser</strong> module.</li>
+				<li>From the constructed AST, the last step is to evaluate each node of the AST in the right sequence, and aggregate them to arrive at the final value of the complete expression. This is done by the <strong class="source-inline">Evaluator</strong> module.</li>
+				<li>The final computed value of the expression is displayed on the command line as a program output to the user. Alternatively, any error in processing is displayed as an error message.</li>
+			</ol>
+			<p>This is the broad sequence of steps for processing. We will now take a look at translating this design into Rust code.</p>
+			<p class="callout-heading">Differences between lexers, parsers, and ASTs</p>
+			<p class="callout"><em class="italic">Lexers</em> and <em class="italic">parsers</em> are <a id="_idIndexMarker123"/>concepts used in computer science to build <em class="italic">compilers</em> and <em class="italic">interpreters</em>. A <em class="italic">lexer</em> (also called a <em class="italic">tokenizer</em>) splits text (source code) into words and assigns a <em class="italic">lexical</em> meaning<a id="_idIndexMarker124"/> to it such as <em class="italic">keyword</em>, <em class="italic">expression</em>, <em class="italic">operator</em>, <em class="italic">function call</em>, and so on. <em class="italic">Lexers</em> generate tokens (hence the name <em class="italic">tokenizer</em>).</p>
+			<p class="callout">A <em class="italic">parser</em> takes the<a id="_idIndexMarker125"/> output of the <em class="italic">lexer</em> and<a id="_idIndexMarker126"/> arranges the tokens into a tree structure (a tree is a type of data structure). Such a tree structure is also called an <em class="italic">AST</em>. With the <em class="italic">AST</em>, the <a id="_idIndexMarker127"/>compiler can generate machine code and the interpreter can evaluate an instruction. <em class="italic">Figure 2.7</em> of this chapter shows an illustration of an <em class="italic">AST</em>.</p>
+			<p class="callout">The lexing and parsing phases are two different steps in the compilation process, but in some cases they are combined. Note that concepts such as <em class="italic">lexers</em>, <em class="italic">parsers</em>, and <em class="italic">ASTs</em> have a broader range of applications beyond just compilers or interpreters, such as to render HTML web pages or SVG images.</p>
+			<p>We've so far seen the <a id="_idIndexMarker128"/>high-level design of the system. Let's now understand how the code will be organized. A visual representation of the project structure is shown here:</p>
+			<div>
+				<div id="_idContainer010" class="IMG---Figure">
+					<img src="image/Figure_2.2_B16405.jpg" alt="Figure 2.2 – Code structure for the project"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.2 – Code structure for the project</p>
+			<p>Let's check each one of those paths:</p>
+			<ul>
+				<li><strong class="source-inline">src/parsemath</strong>: The module containing the core processing logic</li>
+				<li><strong class="source-inline">src/parsemath/ast.rs</strong>: Contains the AST code</li>
+				<li><strong class="source-inline">src/parsemath/parser.rs</strong>: Contains code for the parser</li>
+				<li><strong class="source-inline">src/parsemath/tokenizer.rs</strong>: Contains code for the tokenizer</li>
+				<li><strong class="source-inline">src/parsemath/token.rs</strong>: Contains the data structures for token and operator precedence</li>
+				<li><strong class="source-inline">src/main.rs</strong>: The main command-line application</li>
+			</ul>
+			<p>Let's now set up the project as follows:</p>
+			<ol>
+				<li value="1">Create a new project with <strong class="source-inline">cargo new chapter2 &amp;&amp; cd chapter2</strong>.</li>
+				<li>Create a folder <a id="_idIndexMarker129"/>named <strong class="source-inline">parsemath</strong> under the <strong class="source-inline">src</strong> folder.</li>
+				<li>Create the following files within the <strong class="source-inline">src/parsemath</strong> folder: <strong class="source-inline">ast.rs</strong>, <strong class="source-inline">token.rs</strong>, <strong class="source-inline">tokenizer.rs</strong>, <strong class="source-inline">parser.rs</strong>, and <strong class="source-inline">mod.rs</strong>.</li>
+				<li>Add the following to <strong class="source-inline">src/parsemath/mod.rs</strong>:<p class="source-code">pub mod ast;</p><p class="source-code">pub mod parser;</p><p class="source-code">pub mod token;</p><p class="source-code">pub mod tokenizer;</p></li>
+			</ol>
+			<p>Note that the Rust module system was used to structure this project. All functionality related to parsing is in the <strong class="source-inline">parsemath</strong> folder. The <strong class="source-inline">mod.rs</strong> file in this folder indicates this is a Rust module. The <strong class="source-inline">mod.rs</strong> file exports the functions in the various files contained in this folder and makes it available to the <strong class="source-inline">main()</strong> function. In the <strong class="source-inline">main()</strong> function, we then register the <strong class="source-inline">parsemath</strong> module so that the module tree is constructed by the Rust compiler. Overall, the Rust module structure helps us organize code in different files in a way that is flexible and maintainable.</p>
+			<p class="callout-heading">Important note on code snippets in this chapter</p>
+			<p class="callout">This chapter goes through the design of the command-line tool in detail, supplemented by illustrations with diagrams. The code snippets for all the key methods are also provided with explanations. However, in some places, a few elements to complete the code, such as module imports, test scripts, and definitions of <strong class="source-inline">impl</strong> blocks, are not included here but can be directly found in the GitHub repo. Please keep this in mind if you choose to code along. Otherwise, you can follow the explanations in this chapter in conjunction with the completed code in the code repository. </p>
+			<p class="callout">Also a heads-up that you will see usage of the <strong class="source-inline">?</strong> operator in the upcoming sections on building the tokenizer, parser, and evaluator. Just bear in mind that <em class="italic">?</em> is a shortcut for error handling, in order to propagate errors automatically from a given function to its calling function. This will be explained in the later <em class="italic">Dealing with errors</em> section.</p>
+			<p>We're set now. Let's get started.</p>
+			<h1 id="_idParaDest-45"><a id="_idTextAnchor045"/>Building the tokenizer</h1>
+			<p>The <strong class="bold">tokenizer</strong> is the <a id="_idIndexMarker130"/>module in our system design that reads one or more characters from an arithmetic expression and translates it into a <em class="italic">token</em>. In other words, <em class="italic">input</em> is a set of characters and <em class="italic">output</em> is a set of tokens. In case you are wondering, examples of tokens are <em class="italic">Add</em>, <em class="italic">Subtract</em>, and <em class="italic">Num(2.0)</em>.</p>
+			<p>We have to first create a data structure for two things:</p>
+			<ul>
+				<li>To store the <em class="italic">input</em> arithmetic expression from the user</li>
+				<li>To represent the <em class="italic">output</em> tokens</li>
+			</ul>
+			<p>In the following section, we will delve into how to determine the right data structures for the <strong class="source-inline">tokenizer</strong> module.</p>
+			<h2 id="_idParaDest-46"><a id="_idTextAnchor046"/>Tokenizer data structure</h2>
+			<p>To store the input arithmetic expression, we can<a id="_idIndexMarker131"/> choose among the following data types:</p>
+			<ul>
+				<li>String slice</li>
+				<li>String</li>
+			</ul>
+			<p>We will choose the <strong class="source-inline">&amp;str</strong> type, as we do not need to own the value or dynamically increase the size of the expression. This is because the user will provide the arithmetic expression once, and then the expression won't change for the duration of processing.</p>
+			<p>Here is one possible representation of the <strong class="source-inline">Tokenizer</strong> data structure:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/tokenizer.rs</p>
+			<p class="source-code">pub struct Tokenizer {</p>
+			<p class="source-code">expr: &amp;str </p>
+			<p class="source-code">}</p>
+			<p>If we took this approach, we may run into a problem. To understand the problem, let's understand how tokenization takes place.</p>
+			<p>For the expression <em class="italic">1+21*3.2</em>, the individual characters scanned will appear as eight separate values, <em class="italic">1, +, 2, 1, *, 3, ., 2</em>.</p>
+			<p>From this, we will have to extract the following five tokens:</p>
+			<p><em class="italic">Num(1.0)</em>, <em class="italic">Add</em>, <em class="italic">Num(21.0)</em>, <em class="italic">Multiply</em>, <em class="italic">Num(3.2)</em></p>
+			<p>In order to accomplish this, we not only need to read a character to convert it into a token, but also take a look at the character beyond the next one. For example, given the input expression <em class="italic">1+21*3.2</em>, to tokenize number <em class="italic">21</em> into <em class="italic">Num(21)</em>, we need to read character <em class="italic">2</em>, followed by <em class="italic">1</em>, followed by <em class="italic">*</em> in order to conclude that the second operand for the first addition operation has a value of <em class="italic">21</em>.</p>
+			<p>In order to accomplish this, we have to convert the string slice into an iterator, which not only allows us to iterate through the string slice to read each character, but also allows us to <em class="italic">peek</em> ahead<a id="_idIndexMarker132"/> and see value of the character following that.</p>
+			<p>Let's see how to implement an iterator over the string slice. Rust incidentally has a built-in type for this. It's a part of the <strong class="source-inline">str</strong> module in the standard library and the struct is called <strong class="source-inline">Chars</strong>.</p>
+			<p>So, the definition of our <strong class="source-inline">Tokenizer</strong> struct could look as follows:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/tokenizer.rs</p>
+			<p class="source-code">pub struct Tokenizer {</p>
+			<p class="source-code">expr: std::str::Chars</p>
+			<p class="source-code">}</p>
+			<p>Note that we have changed the type of the <strong class="source-inline">expr</strong> field from a string slice (<strong class="source-inline">&amp;str</strong>) to an iterator type (<strong class="source-inline">Chars</strong>). <strong class="source-inline">Chars</strong> is an iterator over the characters of a string slice. This will allow us to do iterations on <strong class="source-inline">expr</strong> such as <strong class="source-inline">expr.next()</strong>, which will give the value of the next character in the expression. But we also need to take a peek at the character following the next character in the input expression, for reasons we mentioned earlier.</p>
+			<p>For this, the Rust standard library has a struct called <strong class="source-inline">Peekable</strong> , which has a <strong class="source-inline">peek()</strong> method. The usage of <strong class="source-inline">peek()</strong> can be illustrated with an example. Let's take the arithmetic expression <strong class="source-inline">1+2</strong>:</p>
+			<p class="source-code">let expression = '1+2';</p>
+			<p>Because we will store this expression in the <strong class="source-inline">expr</strong> field of <strong class="source-inline">Tokenizer</strong>, which is of the <strong class="source-inline">peekable iterator</strong> type, we<a id="_idIndexMarker133"/> can perform <strong class="source-inline">next()</strong> and <strong class="source-inline">peek()</strong> methods on it in sequence, as shown here:</p>
+			<ol>
+				<li value="1"><strong class="source-inline">expression.next()</strong> returns <strong class="source-inline">1</strong>. The iterator now points to character <strong class="source-inline">1</strong>.</li>
+				<li>Then, <strong class="source-inline">expression.peek()</strong> returns <strong class="source-inline">+</strong> but does not consume it, and the iterator still points to character <strong class="source-inline">1</strong>.</li>
+				<li>Then, <strong class="source-inline">expression.next()</strong> returns <strong class="source-inline">+</strong>, and the iterator now points to character <strong class="source-inline">+</strong>.</li>
+				<li>Then, <strong class="source-inline">expression.next()</strong> returns <strong class="source-inline">2</strong>, and the iterator now points to character <strong class="source-inline">2</strong>.</li>
+			</ol>
+			<p>To enable such an iteration operation, we will define our <strong class="source-inline">Tokenizer</strong> struct as follows:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/tokenizer.rs</p>
+			<p class="source-code">use std::iter::Peekable;</p>
+			<p class="source-code">use std::str::Chars;</p>
+			<p class="source-code">pub struct Tokenizer {</p>
+			<p class="source-code">expr: Peekable&lt;Chars&gt; </p>
+			<p class="source-code">}</p>
+			<p>We are still not done with the <strong class="source-inline">Tokenizer</strong> struct. The earlier definition would throw a compiler error asking to add a lifetime parameter. <em class="italic">Why is this?,</em> you may ask.</p>
+			<p>Structs in Rust can hold references. But Rust needs explicit lifetimes to be specified when working with structs that contain references. That is the reason we get the compiler error on the <strong class="source-inline">Tokenizer</strong> struct. To fix this, let's add lifetime annotation:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/tokenizer.rs</p>
+			<p class="source-code">pub struct Tokenizer&lt;'a&gt; {</p>
+			<p class="source-code">expr: Peekable&lt;Chars&lt;'a&gt;&gt; </p>
+			<p class="source-code">}</p>
+			<p> You can see that the <strong class="source-inline">Tokenizer</strong> struct has been given a lifetime annotation of <strong class="source-inline">'a</strong>. We have done this by declaring the name of the generic lifetime parameter <strong class="source-inline">'a</strong> inside angle brackets after the name of the struct. This tells the Rust compiler that any reference to the Tokenizer<a id="_idIndexMarker134"/> struct cannot outlive the reference to the characters it contains.</p>
+			<p class="callout-heading">Lifetimes in Rust</p>
+			<p class="callout">In system languages such as C/C++, operations on references can lead to unpredictable results or failures, if the value associated with the reference has been freed in memory.</p>
+			<p class="callout">In Rust, every reference<a id="_idIndexMarker135"/> has a lifetime, which is the scope for which the lifetime is valid. The Rust compiler (specifically, the borrow checker) verifies that the lifetime of the reference is not longer than the lifetime of the underlying value pointed to by the reference.</p>
+			<p class="callout">How does the compiler know the lifetime of references? Most of the time, the compiler tries to infer the lifetime of<a id="_idIndexMarker136"/> references (called <strong class="bold">elision</strong>). But where this is not possible, the compiler expects the programmer to annotate the lifetime of the reference explicitly. Common situations where the compiler expects explicit lifetime annotations are in <em class="italic">function signatures</em> where two or more arguments are references, and in <em class="italic">structs</em> where one or more members of the struct are reference types.</p>
+			<p class="callout">More details can be found in the Rust documentation, at <a href="https://doc.rust-lang.org/1.9.0/book/lifetimes.html">https://doc.rust-lang.org/1.9.0/book/lifetimes.html</a>.</p>
+			<p>As explained, the <strong class="bold">lifetime</strong> annotation<a id="_idIndexMarker137"/> is to prevent the possibility of dangling references. When we instantiate the <strong class="source-inline">Tokenizer</strong> struct, we pass the string reference to it, which contains the arithmetic expression. As per the conventional rules of variable scoping (common to most programming languages), the <strong class="source-inline">expr</strong> variable needs to be valid for the duration that the <strong class="source-inline">Tokenizer</strong> object is in existence. If the value corresponding to the <strong class="source-inline">expr</strong> reference is deallocated while the <strong class="source-inline">Tokenizer</strong> object is in existence, then it constitutes a dangling (invalid) reference scenario. To prevent this, we tell the compiler through the lifetime annotation of <strong class="source-inline">&lt;'a&gt;</strong> that the <strong class="source-inline">Tokenizer</strong> object cannot outlive the reference it holds in the <strong class="source-inline">expr</strong> field.</p>
+			<p>The following<a id="_idIndexMarker138"/> screenshot shows the <strong class="source-inline">Tokenizer</strong> data struct:</p>
+			<div>
+				<div id="_idContainer011" class="IMG---Figure">
+					<img src="image/Figure_2.3_B16405.jpg" alt="Figure 2.3 – The Tokenizer struct"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.3 – The Tokenizer struct</p>
+			<p>We've seen so far how to define the <strong class="source-inline">Tokenizer</strong> struct, which contains the reference to input arithmetic expression. We will next take a look at how to represent the tokens generated as output from the <strong class="source-inline">Tokenizer</strong>.</p>
+			<p>To be able to represent the list of tokens that can be generated, we have to first consider the data type of these tokens. Since the tokens can be of the <strong class="source-inline">Num</strong> type or one of the operator types, we have to pick a data structure that can accommodate multiple data types. The data type options are tuples, HashMaps, structs, and enums. If we add the constraint that the type of data in a token can be one of many predefined <em class="italic">variants</em> (allowed values), that leaves us with just one option—<em class="italic">enums</em>. We will define the tokens using the <strong class="source-inline">enum</strong> data structure.</p>
+			<p>The representation of tokens in the <strong class="source-inline">enum</strong> data structure is shown in the following screenshot:</p>
+			<div>
+				<div id="_idContainer012" class="IMG---Figure">
+					<img src="image/Figure_2.4_B16405.jpg" alt="Figure 2.4 – Token enum"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.4 – Token enum</p>
+			<p>Here is the <a id="_idIndexMarker139"/>explanation for what value gets stored in the <strong class="source-inline">Token enum</strong>:</p>
+			<ul>
+				<li>If the <strong class="source-inline">+</strong> character is encountered, the <strong class="source-inline">Add</strong> token is generated.</li>
+				<li>If the <strong class="source-inline">-</strong> character is encountered, the <strong class="source-inline">Subtract</strong> token is generated.</li>
+				<li>If the <strong class="source-inline">*</strong> character is encountered, the <strong class="source-inline">Multiply</strong> token is generated.</li>
+				<li>If the <strong class="source-inline">/</strong> character is encountered, the <strong class="source-inline">Divide</strong> token is generated.</li>
+				<li>If the <strong class="source-inline">^</strong> character is encountered, the <strong class="source-inline">Caret</strong> token is generated.</li>
+				<li>If the <strong class="source-inline">(</strong> character is encountered, the <strong class="source-inline">LeftParen</strong> token is generated.</li>
+				<li>If the <strong class="source-inline">)</strong> character is encountered, the <strong class="source-inline">RightParen</strong> token is generated.</li>
+				<li>If any number <strong class="source-inline">x</strong> is encountered, the <strong class="source-inline">Num(x)</strong> token is generated.</li>
+				<li>If <strong class="source-inline">EOF</strong> is encountered (at the end of scanning the entire expression), the <strong class="source-inline">EOF</strong> token is generated.</li>
+			</ul>
+			<p>Now that we have defined the data structures to capture the <em class="italic">input </em>(arithmetic expression) and <em class="italic">outputs</em> (tokens) for the <strong class="source-inline">Tokenizer</strong> module, we now can write the code to do the actual processing.</p>
+			<h2 id="_idParaDest-47"><a id="_idTextAnchor047"/>Tokenizer data processing</h2>
+			<p>The following <a id="_idIndexMarker140"/>screenshot shows the <strong class="source-inline">Tokenizer</strong> with its data elements and methods:</p>
+			<div>
+				<div id="_idContainer013" class="IMG---Figure">
+					<img src="image/Figure_2.5_B16405.jpg" alt="Figure 2.5 – The Tokenizer with its methods"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.5 – The Tokenizer with its methods</p>
+			<p>The <strong class="source-inline">Tokenizer</strong> has two public methods:</p>
+			<ul>
+				<li><strong class="source-inline">new()</strong>: Creates a new tokenizer using the arithmetic expression provided by the user</li>
+				<li><strong class="source-inline">next()</strong>: Reads the characters in the expression and return the next token</li>
+			</ul>
+			<p>The following screenshot shows the full design of the <strong class="source-inline">Tokenizer</strong> module:</p>
+			<div>
+				<div id="_idContainer014" class="IMG---Figure">
+					<img src="image/Figure_2.6_B16405.jpg" alt="Figure 2.6 – Tokenizer module design"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.6 – Tokenizer module design</p>
+			<p>The <a id="_idIndexMarker141"/>code for the <strong class="source-inline">new()</strong> method is as follows:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/tokenizer.rs</p>
+			<p class="source-code">impl<strong class="bold">&lt;'a&gt;</strong> Tokenizer&lt;'a&gt; {</p>
+			<p class="source-code">    pub fn new(new_expr: &amp;'a str) -&gt; Self {</p>
+			<p class="source-code">        Tokenizer {</p>
+			<p class="source-code">            expr: new_expr.chars().peekable(),</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>You'll notice that we are declaring a lifetime for <strong class="source-inline">Tokenizer</strong> in the <strong class="source-inline">impl</strong> line. We are repeating <strong class="source-inline">'a</strong> twice. <strong class="source-inline">Impl&lt;'a&gt;</strong> declares the lifetime <strong class="source-inline">'a</strong>, and <strong class="source-inline">Tokenizer&lt;'a&gt;</strong> uses it.</p>
+			<p class="callout-heading">Observations on lifetimes</p>
+			<p class="callout"> You've seen that for <strong class="source-inline">Tokenizer</strong>, we declare its<a id="_idIndexMarker142"/> lifetime in three places:</p>
+			<p class="callout">1) The declaration of the <strong class="source-inline">Tokenizer</strong> struct</p>
+			<p class="callout">2) The declaration of the <strong class="source-inline">impl</strong> block for the <strong class="source-inline">Tokenizer</strong> struct</p>
+			<p class="callout">3) The method signature within the <strong class="source-inline">impl</strong> block</p>
+			<p class="callout">This may seem verbose, but Rust expects us to be specific about lifetimes because that's how we can avoid memory-safety issues such as <em class="italic">dangling pointers </em>or <em class="italic">use-after-free</em> errors.</p>
+			<p>The <strong class="source-inline">impl</strong> keyword<a id="_idIndexMarker143"/> allows us to add functionality to the <strong class="source-inline">Tokenizer</strong> struct. The <strong class="source-inline">new()</strong> method accepts a string slice as a parameter that contains a reference to the arithmetic expression input by the user. It constructs a new <strong class="source-inline">Tokenizer</strong> struct initialized with the supplied arithmetic expression, and returns it from the function.</p>
+			<p>Note that the arithmetic expression is not stored in the struct as a string slice, but as a  peekable iterator over the string slice.</p>
+			<p>In this code, <strong class="source-inline">new_expr</strong> represents the string slice, <strong class="source-inline">new_expr.chars()</strong> represents an iterator over the string slice, and <strong class="source-inline">new_expr.chars().peekable()</strong> creates a peekable iterator over the string slice.</p>
+			<p>The difference between a regular iterator and peekable iterator is that in the former, we can consume the next character in the string slice using the <strong class="source-inline">next()</strong> method, while in the latter we can also optionally peek into the next character in the slice <em class="italic">without consuming it</em>. You will see how this works as we write the code for the <strong class="source-inline">next()</strong> method of the <strong class="source-inline">Tokenizer</strong>.</p>
+			<p>We will write the code for the <strong class="source-inline">next()</strong> method on the <strong class="source-inline">Tokenizer</strong> by implementing the <strong class="source-inline">Iterator</strong> trait on the <strong class="source-inline">Tokenizer</strong> struct. Traits enable us to add behaviors to structs (and enums). The <strong class="source-inline">Iterator</strong> trait in the standard library (<strong class="source-inline">std::iter::Iterator</strong>) has a method that is required to be implemented with the following signature:</p>
+			<p class="source-code">fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;</p>
+			<p>The method signature <a id="_idIndexMarker144"/>specifies that this method can be called on an instance of the <strong class="source-inline">Tokenizer</strong> struct and it returns <strong class="source-inline">Option&lt;Token&gt;</strong>. This means that it either returns <strong class="source-inline">Some(Token)</strong> or <strong class="source-inline">None</strong>.</p>
+			<p>Here is the code to implement the <strong class="source-inline">Iterator</strong> trait on the <strong class="source-inline">Tokenizer</strong> struct:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/tokenizer.rs</p>
+			<p class="source-code">impl&lt;'a&gt; <strong class="bold">Iterator</strong> for Tokenizer&lt;'a&gt; {</p>
+			<p class="source-code">    type Item = Token;</p>
+			<p class="source-code"> </p>
+			<p class="source-code">    fn <strong class="bold">next</strong>(&amp;mut self) -&gt; Option&lt;Token&gt; {</p>
+			<p class="source-code">        let next_char = <strong class="bold">self.expr.next()</strong>;</p>
+			<p class="source-code"> </p>
+			<p class="source-code">        match next_char {</p>
+			<p class="source-code">            Some('0'..='9') =&gt; {</p>
+			<p class="source-code">                let mut number = next_char?.to_string();</p>
+			<p class="source-code"> </p>
+			<p class="source-code">                while let Some(next_char) = self.expr.peek() {</p>
+			<p class="source-code">                    if next_char.is_numeric() || next_char == </p>
+			<p class="source-code">                        &amp;'.' {</p>
+			<p class="source-code">                        number.push(self.expr.next()?);</p>
+			<p class="source-code">                    } else if next_char == &amp;'(' {</p>
+			<p class="source-code">                        return None;</p>
+			<p class="source-code">                    } else {</p>
+			<p class="source-code">                        break;</p>
+			<p class="source-code">                    }</p>
+			<p class="source-code">                }</p>
+			<p class="source-code"> </p>
+			<p class="source-code">                Some(Token::Num(number.parse::&lt;f64&gt;().                    unwrap()))</p>
+			<p class="source-code">            },</p>
+			<p class="source-code">            Some('+') =&gt; Some(Token::Add),</p>
+			<p class="source-code">            Some('-') =&gt; Some(Token::Subtract),</p>
+			<p class="source-code">            Some('*') =&gt; Some(Token::Multiply),</p>
+			<p class="source-code">            Some('/') =&gt; Some(Token::Divide),</p>
+			<p class="source-code">            Some('^') =&gt; Some(Token::Caret),</p>
+			<p class="source-code">            Some('(') =&gt; Some(Token::LeftParen),</p>
+			<p class="source-code">            Some(')') =&gt; Some(Token::RightParen),</p>
+			<p class="source-code">            None =&gt; Some(Token::EOF),</p>
+			<p class="source-code">            Some(_) =&gt; None,</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Notice how there are two<a id="_idIndexMarker145"/> iterators at play here:</p>
+			<ul>
+				<li>The <strong class="source-inline">next()</strong> method on <strong class="source-inline">expr</strong> (which is a field within the <strong class="source-inline">Tokenizer</strong> struct) returns the next character (we achieved this by assigning a type of <strong class="source-inline">Peekable&lt;Chars&gt;</strong> to the <strong class="source-inline">expr</strong> field ).</li>
+				<li>The <strong class="source-inline">next()</strong> method on the <strong class="source-inline">Tokenizer</strong> struct returns a token (we achieved this by implementing the <strong class="source-inline">Iterator</strong> trait on the <strong class="source-inline">Tokenizer</strong> struct).</li>
+			</ul>
+			<p>Let's understand stepwise <a id="_idIndexMarker146"/>what happens when the <strong class="source-inline">next()</strong> method is called on <strong class="source-inline">Tokenizer</strong>:</p>
+			<ul>
+				<li>The calling program instantiates the <strong class="source-inline">Tokenizer</strong> struct first by calling the <strong class="source-inline">new()</strong> method, and then invokes the <strong class="source-inline">next()</strong> method on it. The <strong class="source-inline">next()</strong> method on the <strong class="source-inline">Tokenizer</strong> struct reads the next character in the stored arithmetic expression by calling <strong class="source-inline">next()</strong> on the <strong class="source-inline">expr</strong> field, which returns the next character in the expression.</li>
+				<li>The returned character is then evaluated using a <strong class="source-inline">match</strong> statement. Pattern matching is used to determine what token to return, depending on what character is read from the string slice reference in the <strong class="source-inline">expr</strong> field.</li>
+				<li>If the character returned from string slice is an arithmetic operator (<em class="italic">+</em>, <em class="italic">-</em>, <em class="italic">*</em>, <em class="italic">/</em>, <em class="italic">^</em>) or if it is a parenthesis, the appropriate <strong class="source-inline">Token</strong> from the <strong class="source-inline">Token</strong> <strong class="source-inline">enum</strong> is returned. There is a one-to-one correspondence between the <em class="italic">character</em> and <strong class="source-inline">Token</strong> here.</li>
+				<li>If the character returned is a number, then there is some additional processing needed. The reason is, a number may have multiple digits. Also, a number may be decimal, in which case it could be of the form <em class="italic">xxx.xxx,</em> where the amounts of digits before and after the decimal are completely unpredictable. So, for numbers, we should use the <strong class="source-inline">peekable</strong> iterator on the arithmetic expression to consume the next character and <em class="italic">peek</em> into the character after that to determine whether to continue reading the number.</li>
+			</ul>
+			<p>The complete code for the <strong class="source-inline">Tokenizer</strong> can be found in the <strong class="source-inline">tokenizer.rs</strong> file in the code folder on GitHub.</p>
+			<h1 id="_idParaDest-48"><a id="_idTextAnchor048"/>Building the parser</h1>
+			<p>The <strong class="bold">parser</strong> is the <a id="_idIndexMarker147"/>module in our project that constructs the AST, which is a tree of nodes with each node representing a token (a number or an arithmetic operator). The AST is a recursive tree structure of token nodes, that is, the root node is a token, which contains child nodes that are also tokens.</p>
+			<h2 id="_idParaDest-49"><a id="_idTextAnchor049"/>Parser data structure</h2>
+			<p>The <strong class="source-inline">parser</strong> is a higher-level <a id="_idIndexMarker148"/>entity compared to the <strong class="source-inline">Tokenizer</strong>. While the <strong class="source-inline">Tokenizer</strong> converts user input into fine-grained tokens (for example, various arithmetic operators), the parser uses the <strong class="source-inline">Tokenizer</strong> outputs to construct an overall AST, which is a hierarchy of nodes. The structure of the <strong class="source-inline">AST</strong> constructed from the parser is illustrated in the following diagram:</p>
+			<div>
+				<div id="_idContainer015" class="IMG---Figure">
+					<img src="image/Figure_2.7_B16405.jpg" alt="Figure 2.7 – Our AST"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.7 – Our AST</p>
+			<p>In the preceding figure, each of the following are nodes:</p>
+			<ul>
+				<li><em class="italic">Number(2.0)</em></li>
+				<li><em class="italic">Number(3.0)</em></li>
+				<li><em class="italic">Multiply(Number(2.0),Number(3.0))</em></li>
+				<li><em class="italic">Number(6.0)</em></li>
+				<li><em class="italic">Add(Multiply(Number(2.0),Number(3.0)),Number(6.0))</em></li>
+			</ul>
+			<p>Each of these <a id="_idIndexMarker149"/>nodes is stored in a <strong class="bold">boxed</strong> data structure, which means the actual data value for each node is stored in the heap memory, while the pointer to each of the nodes is stored in a <strong class="source-inline">Box</strong> variable as part of the <strong class="source-inline">Node</strong> enum.</p>
+			<p>The overall design of the <strong class="source-inline">Parser</strong> struct is as follows:</p>
+			<div>
+				<div id="_idContainer016" class="IMG---Figure">
+					<img src="image/Figure_2.8_B16405.jpg" alt="Figure 2.8 – Design of the Parser struct"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.8 – Design of the Parser struct</p>
+			<p>As shown in the <a id="_idIndexMarker150"/>preceding figure, <strong class="source-inline">Parser</strong> will have two data elements: an instance of <strong class="source-inline">Tokenizer</strong> (that we built in the previous section), and the current token to indicate up to which point we have evaluated the arithmetic expression.</p>
+			<h2 id="_idParaDest-50"><a id="_idTextAnchor050"/>Parser methods</h2>
+			<p>The <strong class="source-inline">Parser</strong> struct will <a id="_idIndexMarker151"/>have two public methods:</p>
+			<ul>
+				<li><strong class="source-inline">new()</strong>: To create a new instance of the parser. This <strong class="source-inline">new()</strong> method will create a tokenizer instance passing in the arithmetic expression, and then stores the first token (returned from <strong class="source-inline">Tokenizer</strong>) in its <strong class="source-inline">current_token</strong> field.</li>
+				<li><strong class="source-inline">parse()</strong>: To generate the <strong class="source-inline">AST</strong> (the node tree) from the tokens, which is the main output of the parser.</li>
+			</ul>
+			<p>Here is the code for the <strong class="source-inline">new()</strong> method. The code is self-explanatory, it creates a new instance of <strong class="source-inline">Tokenizer</strong>, initializing it with the arithmetic expression, and then tries to retrieve the first token from the expression. If successful, the token is stored in the <strong class="source-inline">current_token</strong> field. If not, <strong class="source-inline">ParseError</strong> is returned:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">// Create a new instance of Parserpub fn <strong class="bold">new</strong>(expr: &amp;'a str) -&gt; Result&lt;Self, ParseError&gt; {</p>
+			<p class="source-code">    let mut lexer = Tokenizer::new(expr);</p>
+			<p class="source-code">    let cur_token = match lexer.next() {</p>
+			<p class="source-code">        Some(token) =&gt; token,</p>
+			<p class="source-code">        None =&gt; return Err(ParseError::InvalidOperator</p>
+			<p class="source-code">            ("Invalid character".into())),</p>
+			<p class="source-code">    };</p>
+			<p class="source-code">    Ok(Parser {</p>
+			<p class="source-code">        tokenizer: lexer,</p>
+			<p class="source-code">        current_token: cur_token,</p>
+			<p class="source-code">    })</p>
+			<p class="source-code">}</p>
+			<p>The following is the <a id="_idIndexMarker152"/>code for the public <strong class="source-inline">parse()</strong> method. It invokes a private <strong class="source-inline">generate_ast()</strong> method that does the processing recursively and returns an AST (a tree of nodes). If successful, it returns the Node tree; if not, it propagates the error received:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">// Take an arithmetic expression as input and return an AST</p>
+			<p class="source-code">pub fn parse(&amp;mut self) -&gt; Result&lt;Node, ParseError&gt; {</p>
+			<p class="source-code">    let ast = self.generate_ast(OperPrec::DefaultZero);</p>
+			<p class="source-code">    match ast {</p>
+			<p class="source-code">        Ok(ast) =&gt; Ok(ast),</p>
+			<p class="source-code">        Err(e) =&gt; Err(e),</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>The following image lists all <a id="_idIndexMarker153"/>the private and public methods in the <strong class="source-inline">Parser</strong> struct:</p>
+			<div>
+				<div id="_idContainer017" class="IMG---Figure">
+					<img src="image/Figure_2.9_B16405.jpg" alt="Figure 2.9 – Parser methods overview"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.9 – Parser methods overview</p>
+			<p>Let's now look at <a id="_idIndexMarker154"/>the code for the <strong class="source-inline">get_next_token()</strong> method. This method retrieves the next token from the arithmetic expression using the <strong class="source-inline">Tokenizer</strong> struct and updates the <strong class="source-inline">current_token</strong> field of the <strong class="source-inline">Parser</strong> struct. If unsuccessful, it returns <strong class="source-inline">ParseError</strong>:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">fn <strong class="bold">get_next_token</strong>(&amp;mut self) -&gt; Result&lt;(), ParseError&gt; {</p>
+			<p class="source-code">    let next_token = match self.tokenizer.next() {</p>
+			<p class="source-code">        Some(token) =&gt; token,</p>
+			<p class="source-code">        None =&gt; return Err(ParseError::InvalidOperator</p>
+			<p class="source-code">            ("Invalid character".into())),</p>
+			<p class="source-code">    };</p>
+			<p class="source-code">    self.current_token = next_token;</p>
+			<p class="source-code">    Ok(())</p>
+			<p class="source-code">}</p>
+			<p>Note the empty tuple <strong class="source-inline">()</strong> returned in <strong class="source-inline">Result&lt;(),</strong> <strong class="source-inline">ParseError&gt;</strong>. This means if nothing goes wrong, no concrete value is returned.</p>
+			<p>Here's the code<a id="_idIndexMarker155"/> for the <strong class="source-inline">check_paren()</strong> method. This is a helper method used to check whether there are matching pairs of parentheses in the expression. Otherwise, an error is returned:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">fn <strong class="bold">check_paren</strong>(&amp;mut self, expected: Token) -&gt; Result&lt;(), ParseError&gt; {</p>
+			<p class="source-code">    if expected == self.current_token {</p>
+			<p class="source-code">        self.get_next_token()?;</p>
+			<p class="source-code">        Ok(())</p>
+			<p class="source-code">    } else {</p>
+			<p class="source-code">        Err(ParseError::InvalidOperator(format!(</p>
+			<p class="source-code">            "Expected {:?}, got {:?}",</p>
+			<p class="source-code">            expected, self.current_token</p>
+			<p class="source-code">        )))</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Let's now look at the remaining three private methods that do the bulk of the parser processing.</p>
+			<p>The <strong class="source-inline">parse_number()</strong> method takes the current token, and checks for three things:</p>
+			<ul>
+				<li>Whether the token is a number of the form <em class="italic">Num(i)</em>.</li>
+				<li>Whether the token has a sign, in case it is a negative number. For example, the expression <em class="italic">-2.2 + 3.4</em> is parsed into AST as <em class="italic">Add(Negative(Number(2.2)), Number(3.4))</em>.</li>
+				<li>Pairs of parenthesis: If an expression is found within pairs of parenthesis, it treats it as a multiplication operation. For example, <em class="italic">1*(2+3)</em> is parsed as <em class="italic">Multiply(Number(1.0), Add(Number(2.0), Number(3.0)))</em>.</li>
+			</ul>
+			<p>In case of errors in <a id="_idIndexMarker156"/>any of the preceding operations, <strong class="source-inline">ParseError</strong> is returned.</p>
+			<p>Here is the code for the <strong class="source-inline">parse_number()</strong> method:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">// Construct AST node for numbers, taking into account </p>
+			<p class="source-code">// negative prefixes while handling parenthesis</p>
+			<p class="source-code">fn <strong class="bold">parse_number</strong>(&amp;mut self) -&gt; Result&lt;Node, ParseError&gt; {</p>
+			<p class="source-code">    let token = self.current_token.clone();</p>
+			<p class="source-code">    match token {</p>
+			<p class="source-code">        Token::Subtract =&gt; {</p>
+			<p class="source-code">            self.get_next_token()?;</p>
+			<p class="source-code">            let expr = self.generate_ast(OperPrec::Negative)?;</p>
+			<p class="source-code">            Ok(Node::Negative(Box::new(expr)))</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        Token::Num(i) =&gt; {</p>
+			<p class="source-code">            self.get_next_token()?;</p>
+			<p class="source-code">            Ok(Node::Number(i))</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        Token::LeftParen =&gt; {</p>
+			<p class="source-code">            self.get_next_token()?;</p>
+			<p class="source-code">            let expr = self.generate_ast</p>
+			<p class="source-code">                (OperPrec::DefaultZero)?;</p>
+			<p class="source-code">            self.check_paren(Token::RightParen)?;</p>
+			<p class="source-code">            if self.current_token == Token::LeftParen {</p>
+			<p class="source-code">                let right = self.generate_ast</p>
+			<p class="source-code">                    (OperPrec::MulDiv)?;</p>
+			<p class="source-code">                return Ok(Node::Multiply(Box::new(expr), </p>
+			<p class="source-code">                    Box::new(right)));</p>
+			<p class="source-code">            }</p>
+			<p class="source-code"> </p>
+			<p class="source-code">            Ok(expr)</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        _ =&gt; Err(ParseError::UnableToParse("Unable to </p>
+			<p class="source-code">            parse".to_string())),</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>The <strong class="source-inline">generate_ast()</strong> method <a id="_idIndexMarker157"/>is the main workhorse of the module and is invoked recursively. It does its processing in the following sequence:</p>
+			<ol>
+				<li value="1">It processes numeric tokens, negative number tokens, and expressions in parentheses using the <strong class="source-inline">parse_number()</strong> method.</li>
+				<li>It parses each token from the arithmetic expression in a sequence within a loop to check if the precedence of the next two operators encountered, and constructs <strong class="source-inline">AST</strong> by calling the <strong class="source-inline">convert_token_to_node()</strong> method in such a way that the expression containing an operator with higher precedence is executed before an expression containing an operator with lower precedence. For example, the expression <em class="italic">1+2*3</em> is evaluated as <em class="italic">Add(Number(1.0), Multiply(Number(2.0), Number(3.0)))</em>, whereas the expression <em class="italic">1*2+3</em> is evaluated as <em class="italic">Add(Multiply(Number(1.0), Number(2.0)), Number(3.0))</em>.</li>
+			</ol>
+			<p>Let's now<a id="_idIndexMarker158"/> look at the code for the <strong class="source-inline">generate_ast()</strong> method:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">fn <strong class="bold">generate_ast</strong>(&amp;mut self, oper_prec: OperPrec) -&gt; Result&lt;Node, ParseError&gt; {</p>
+			<p class="source-code">    let mut left_expr = self.parse_number()?;</p>
+			<p class="source-code"> </p>
+			<p class="source-code">    while oper_prec &lt; self.current_token.get_oper_prec() {</p>
+			<p class="source-code">        if self.current_token == Token::EOF {</p>
+			<p class="source-code">            break;</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        let right_expr = self.convert_token_to_node</p>
+			<p class="source-code">            (left_expr.clone())?;</p>
+			<p class="source-code">        left_expr = right_expr;</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    Ok(left_expr)</p>
+			<p class="source-code">}</p>
+			<p>We have seen the various methods associated with the parser. Let's now look at another key aspect when dealing with arithmetic operators—<em class="italic">operator precedence</em>.</p>
+			<h2 id="_idParaDest-51"><a id="_idTextAnchor051"/>Operator precedence</h2>
+			<p><strong class="bold">Operator precedence</strong> rules <a id="_idIndexMarker159"/>determine the order in which the arithmetic expression is processed. Without defining this correctly, we will not be able to calculate the right computed value of the arithmetic expression. The <strong class="source-inline">enum</strong> for operator precedence is as follows:</p>
+			<div>
+				<div id="_idContainer018" class="IMG---Figure">
+					<img src="image/Figure_2.10_B16405.jpg" alt="Figure 2.10 – Operator precedence enum"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.10 – Operator precedence enum</p>
+			<p>The operator precedence <strong class="source-inline">enum</strong> has the<a id="_idIndexMarker160"/> following values:</p>
+			<ul>
+				<li><strong class="source-inline">DefaultZero</strong>: The default precedence (lowest priority)</li>
+				<li><strong class="source-inline">AddSub</strong>: The precedence applied if the arithmetic operation is addition or subtraction</li>
+				<li><strong class="source-inline">MulDiv</strong>: The precedence applied if the arithmetic operation is multiplication or division</li>
+				<li><strong class="source-inline">Power</strong>: The precedence applied if the caret (<strong class="source-inline">^</strong>) operator is encountered</li>
+				<li><strong class="source-inline">Negative</strong>: The precedence applied for the negative (<strong class="source-inline">-</strong>) prefix before a number</li>
+			</ul>
+			<p>The precedence order <a id="_idIndexMarker161"/>increases from top to bottom, that is, <strong class="source-inline">DefaultZero</strong> &lt; <strong class="source-inline">AddSub</strong> &lt;<strong class="source-inline"> MulDiv</strong> &lt; <strong class="source-inline">Power</strong> &lt; <strong class="source-inline">Negative</strong>.</p>
+			<p>Define the operator precedence <strong class="source-inline">enum</strong> as shown:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/token.rs</p>
+			<p class="source-code">#[derive(Debug, PartialEq, PartialOrd)]</p>
+			<p class="source-code">/// Defines all the OperPrec levels, from lowest to highest.</p>
+			<p class="source-code">pub enum OperPrec {</p>
+			<p class="source-code">    DefaultZero,</p>
+			<p class="source-code">    AddSub,</p>
+			<p class="source-code">    MulDiv,</p>
+			<p class="source-code">    Power,</p>
+			<p class="source-code">    Negative,</p>
+			<p class="source-code">}</p>
+			<p>The <strong class="source-inline">get_oper_prec()</strong> method is used to get the operator precedence given an operator. The following is the code that shows this method in action. Define this method in the <strong class="source-inline">impl</strong> block of the <strong class="source-inline">Token</strong> struct:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/token.rs</p>
+			<p class="source-code">impl Token {</p>
+			<p class="source-code">    pub fn <strong class="bold">get_oper_prec</strong>(&amp;self) -&gt; OperPrec {</p>
+			<p class="source-code">        use self::OperPrec::*;</p>
+			<p class="source-code">        use self::Token::*;</p>
+			<p class="source-code">        match *self {</p>
+			<p class="source-code">            Add | Subtract =&gt; AddSub,</p>
+			<p class="source-code">            Multiply | Divide =&gt; MulDiv,</p>
+			<p class="source-code">            Caret =&gt; Power,</p>
+			<p class="source-code"> </p>
+			<p class="source-code">            _ =&gt; DefaultZero,</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Now, let's look at the<a id="_idIndexMarker162"/> code for <strong class="source-inline">convert_token_to_node()</strong>. This method basically constructs the operator-type <strong class="source-inline">AST</strong> nodes by checking whether the token is <strong class="source-inline">Add</strong>, <strong class="source-inline">Subtract</strong>, <strong class="source-inline">Multiply</strong>, <strong class="source-inline">Divide</strong>, or <strong class="source-inline">Caret</strong>. In the case of an error, <strong class="source-inline">ParseError</strong> is returned:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">fn <strong class="bold">convert_token_to_node</strong>(&amp;mut self, left_expr: Node) -&gt; Result&lt;Node, ParseError&gt; {</p>
+			<p class="source-code">    match self.current_token {</p>
+			<p class="source-code">        Token::Add =&gt; {</p>
+			<p class="source-code">            self.get_next_token()?;</p>
+			<p class="source-code">            //Get right-side expression</p>
+			<p class="source-code">            let right_expr = self.generate_ast</p>
+			<p class="source-code">                (OperPrec::AddSub)?;</p>
+			<p class="source-code">            Ok(Node::Add(Box::new(left_expr), </p>
+			<p class="source-code">                Box::new(right_expr)))</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        Token::Subtract =&gt; {</p>
+			<p class="source-code">            self.get_next_token()?;</p>
+			<p class="source-code">            //Get right-side expression</p>
+			<p class="source-code">            let right_expr = self.generate_ast</p>
+			<p class="source-code">                (OperPrec::AddSub)?;</p>
+			<p class="source-code">            Ok(Node::Subtract(Box::new(left_expr), </p>
+			<p class="source-code">                Box::new(right_expr)))</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        Token::Multiply =&gt; {</p>
+			<p class="source-code">            self.get_next_token()?;</p>
+			<p class="source-code">            //Get right-side expression</p>
+			<p class="source-code">            let right_expr = self.generate_ast</p>
+			<p class="source-code">                (OperPrec::MulDiv)?;</p>
+			<p class="source-code">            Ok(Node::Multiply(Box::new(left_expr), </p>
+			<p class="source-code">                Box::new(right_expr)))</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        Token::Divide =&gt; {</p>
+			<p class="source-code">            self.get_next_token()?;</p>
+			<p class="source-code">            //Get right-side expression</p>
+			<p class="source-code">            let right_expr = self.generate_ast</p>
+			<p class="source-code">                (OperPrec::MulDiv)?;</p>
+			<p class="source-code">            Ok(Node::Divide(Box::new(left_expr), </p>
+			<p class="source-code">                Box::new(right_expr)))</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        Token::Caret =&gt; {</p>
+			<p class="source-code">            self.get_next_token()?;</p>
+			<p class="source-code">            //Get right-side expression</p>
+			<p class="source-code">            let right_expr = self.generate_ast</p>
+			<p class="source-code">                (OperPrec::Power)?;</p>
+			<p class="source-code">            Ok(Node::Caret(Box::new(left_expr), </p>
+			<p class="source-code">                Box::new(right_expr)))</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        _ =&gt; Err(ParseError::InvalidOperator(format!(</p>
+			<p class="source-code">            "Please enter valid operator {:?}",</p>
+			<p class="source-code">            self.current_token</p>
+			<p class="source-code">        ))),</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>We will look in detail at error handling later in the chapter in the <em class="italic">Dealing with errors</em> section. The complete code for <strong class="source-inline">Parser</strong> can be found in the <strong class="source-inline">parser.rs</strong> file in the GitHub folder for the chapter.</p>
+			<h1 id="_idParaDest-52"><a id="_idTextAnchor052"/>Building the evaluator</h1>
+			<p>Once the <strong class="source-inline">AST</strong> (node tree) is constructed<a id="_idIndexMarker163"/> in the parser, evaluating the numeric value from <strong class="source-inline">AST</strong> is a straightforward operation. The evaluator function parses each node in the <strong class="source-inline">AST</strong> tree recursively and arrives at the final value.</p>
+			<p>For example, if the <strong class="source-inline">AST</strong> node is <em class="italic">Add(Number(1.0),Number(2.0))</em>, it evaluates to <em class="italic">3.0</em>. </p>
+			<p>If the <strong class="source-inline">AST</strong> node is <em class="italic">Add(Number(1.0),Multiply(Number(2.0),Number(3.0))</em>:</p>
+			<ul>
+				<li>It evaluates value of <em class="italic">Number(1.0)</em> to <em class="italic">1.0</em>.</li>
+				<li>Then it evaluates <em class="italic">Multiply(Number(2.0), Number(3.0))</em> to <em class="italic">6.0</em>. </li>
+				<li>It then adds <em class="italic">1.0</em> and <em class="italic">6.0</em> to get the final value of <em class="italic">7.0</em>.</li>
+			</ul>
+			<p>Let's now look at the code for the <strong class="source-inline">eval()</strong> function:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/ast.rs</p>
+			<p class="source-code">pub fn <strong class="bold">eval</strong>(expr: Node) -&gt; Result&lt;f64, Box&lt;dyn error::Error&gt;&gt; {</p>
+			<p class="source-code">    use self::Node::*;</p>
+			<p class="source-code">    match expr {</p>
+			<p class="source-code">        Number(i) =&gt; Ok(i),</p>
+			<p class="source-code">        Add(expr1, expr2) =&gt; Ok(eval(*expr1)? + </p>
+			<p class="source-code">            eval(*expr2)?),</p>
+			<p class="source-code">        Subtract(expr1, expr2) =&gt; Ok(eval(*expr1)? – </p>
+			<p class="source-code">            eval(*expr2)?),</p>
+			<p class="source-code">        Multiply(expr1, expr2) =&gt; Ok(eval(*expr1)? * </p>
+			<p class="source-code">            eval(*expr2)?),</p>
+			<p class="source-code">        Divide(expr1, expr2) =&gt; Ok(eval(*expr1)? / </p>
+			<p class="source-code">            eval(*expr2)?),</p>
+			<p class="source-code">        Negative(expr1) =&gt; Ok(-(eval(*expr1)?)),</p>
+			<p class="source-code">        Caret(expr1, expr2) =&gt; Ok(eval(*expr1)?</p>
+			<p class="source-code">            .powf(eval(*expr2)?)),</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p class="callout-heading">Trait objects</p>
+			<p class="callout">In the <strong class="source-inline">eval()</strong> method, you will notice that the<a id="_idIndexMarker164"/> method returns <strong class="source-inline">Box&lt;dyn error::Error&gt;</strong> in case of errors. This is an example of a <strong class="bold">trait object</strong>. We will explain this now.</p>
+			<p class="callout">In the Rust standard library, <strong class="source-inline">error:Error</strong> is a trait. Here, we are telling the compiler that the <strong class="source-inline">eval()</strong> method should return something that implements the <strong class="source-inline">Error</strong> trait. We don't know at compile time what the exact type being returned is; we just know that whatever is returned will implement the <strong class="source-inline">Error</strong> trait. The underlying error type is only known at runtime and is not statically determined. Here, <strong class="source-inline">dyn error::Error</strong> is a trait object. The use of the <strong class="source-inline">dyn</strong> keyword indicates it is a trait object.</p>
+			<p class="callout">When we use trait objects, the compiler does not know at compile time which method to call on which types. This is only known at runtime, hence it is called <em class="italic">dynamic-dispatch</em> (when the compiler knows what method to call at compile time, it is called <em class="italic">static dispatch</em>).</p>
+			<p class="callout">Note also that we are boxing the error with <strong class="source-inline">Box&lt;dyn error::Error&gt;</strong>. This is because we don't know the size of the error type at runtime, so boxing is a way to get around this problem (<strong class="source-inline">Box</strong> is a reference type that has a known size at compile time). The Rust standard library helps in boxing our errors by having <strong class="source-inline">Box</strong> implement conversion from any type that implements the <strong class="source-inline">Error</strong> trait into the trait object <strong class="source-inline">Box&lt;Error&gt;</strong>. </p>
+			<p class="callout">More details can be found in the Rust documentation, at <a href="https://doc.rust-lang.org/book/ch17-02-trait-objects.html">https://doc.rust-lang.org/book/ch17-02-trait-objects.html</a>.</p>
+			<h1 id="_idParaDest-53"><a id="_idTextAnchor053"/>Dealing with errors</h1>
+			<p>Error handling deals with<a id="_idIndexMarker165"/> the question: <em class="italic">how do we communicate program errors to users?</em></p>
+			<p>In our project, errors can occur due to two main reasons—there could be a programming error, or an error could occur due to invalid inputs. Let's first discuss the Rust approach to error handling.</p>
+			<p>In Rust, errors are first-class citizens in that an error is a data type in itself, just like an <strong class="source-inline">integer</strong>, <strong class="source-inline">string</strong>, or <strong class="source-inline">vector</strong>. Because <strong class="source-inline">error</strong> is a data type, type checking can happen at compile time. The Rust standard library has a <strong class="source-inline">std::error::Error</strong> trait implemented by all errors in the Rust standard library. Rust does not use exception handling, but a unique approach where a computation can return a <strong class="source-inline">Result</strong> type:</p>
+			<p class="source-code">enum Result&lt;T, E&gt; {   Ok(T),   Err(E),}</p>
+			<p><strong class="source-inline">Result&lt;T, E&gt;</strong> is an <strong class="source-inline">enum</strong> with two variants, where <strong class="source-inline">Ok(T)</strong> represents <em class="italic">success</em> and <strong class="source-inline">Err(E)</strong> represents the <em class="italic">error</em> returned. Pattern matching is used to handle the two types of return values from a function.</p>
+			<p>To gain greater control over error handling and to provide more user-friendly errors for application users, it is recommended to use a custom error type that implements the <strong class="source-inline">std::error::Error</strong> trait. All types of errors from different modules in the program can then be converted to this custom error type for uniform error handling. This is a very effective way to deal with errors in Rust.</p>
+			<p>A lightweight approach to error handling could be to use <strong class="source-inline">Option&lt;T&gt;</strong> as the return value from a function, where <strong class="source-inline">T</strong> is any generic type:</p>
+			<p class="source-code">pub enum Option&lt;T&gt; {    None,    Some(T),}</p>
+			<p>The <strong class="source-inline">Option</strong> type is an <strong class="source-inline">enum</strong> with two variants, <strong class="source-inline">Some(T)</strong> and <strong class="source-inline">None</strong>. If processing is successful, a <strong class="source-inline">Some(T)</strong> value is returned, otherwise, <strong class="source-inline">None</strong> is returned from the function.</p>
+			<p>We will use <a id="_idIndexMarker166"/>both the <strong class="source-inline">Result</strong> and <strong class="source-inline">Option</strong> types for error handling in our project.</p>
+			<p>The error handling approach chosen for our project is as follows:</p>
+			<div>
+				<div id="_idContainer019" class="IMG---Figure">
+					<img src="image/Figure_2.11_B16405.jpg" alt="Figure 2.11 – Error handling approach"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.11 – Error handling approach</p>
+			<p>For our project, the approach for <a id="_idIndexMarker167"/>the four modules that contain the core processing is as follows:</p>
+			<ul>
+				<li><strong class="bold">Tokenizer module</strong>: This has<a id="_idIndexMarker168"/> two public methods—<strong class="source-inline">new()</strong> and <strong class="source-inline">next()</strong>. The <strong class="source-inline">new()</strong> method is fairly simple and just creates a new instance of the <strong class="source-inline">Tokenizer</strong> struct and initializes it. No error will be returned in this method. However, the <strong class="source-inline">next()</strong> method returns a <strong class="source-inline">Token</strong>, and if there is any invalid character in the arithmetic expression, we need to deal with this situation and communicate it to the calling code. We will use a lightweight error handling approach here, with <strong class="source-inline">Option&lt;Token&gt;</strong> as the return value from the <strong class="source-inline">next()</strong> method. If a valid <strong class="source-inline">Token</strong> can be constructed from the arithmetic expression, <strong class="source-inline">Some(Token)</strong> will be returned. In the case of invalid input, <strong class="source-inline">None</strong> will be returned. The calling function can then interpret <strong class="source-inline">None</strong> as an error condition and take care of the necessary handling.</li>
+				<li><strong class="bold">AST module</strong>: This has<a id="_idIndexMarker169"/> one main <strong class="source-inline">eval()</strong> function that computes a numeric value given a node tree. We will return a vanilla <strong class="source-inline">std::error::Error</strong> in case of an error during processing, but it will be a <strong class="source-inline">Boxed</strong> value because otherwise, the Rust compiler will not know the size of the error value at compile time. The return type from this method is <strong class="source-inline">Result&lt;f64, Box&lt;dyn error::Error&gt;&gt;</strong>. If processing is successful, a numeric value (<strong class="source-inline">f64</strong>) is returned, else a <strong class="source-inline">Boxed</strong> error is returned. We could have defined a custom error type for this module to avoid the complex <strong class="source-inline">Boxed</strong> error signature, but this approach has been chosen to showcase the various ways to do error handling in Rust.</li>
+				<li><strong class="bold">Token module</strong>: This has <a id="_idIndexMarker170"/>one function, <strong class="source-inline">get_oper_prec()</strong>, which returns the operator precedence given an arithmetic operator as input. Since we do not see any possibility of errors in this simple method, there will be no error type defined in the return value of the method.</li>
+				<li><strong class="bold">Parser module</strong>: The <strong class="source-inline">Parser</strong> module<a id="_idIndexMarker171"/> contains the bulk of the processing logic. Here, a custom error type, <strong class="source-inline">ParseError,</strong> will be defined, which has the following structure:</li>
+			</ul>
+			<div>
+				<div id="_idContainer020" class="IMG---Figure">
+					<img src="image/Figure_2.12_B16405.jpg" alt="Figure 2.12 – Custom error type"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 2.12 – Custom error type</p>
+			<p>Our custom <a id="_idIndexMarker172"/>error type has two variants, <strong class="source-inline">UnableToParse(String)</strong> and <strong class="source-inline">InvalidOperator(String)</strong>.</p>
+			<p>The first variant will be a generic error for any type of error during processing, and the second variant will be used specifically if there is an invalid arithmetic operator provided by the user; for example, <em class="italic">2=3</em>.</p>
+			<p>Let's define a custom error type for the parser:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">#[derive(Debug)]</p>
+			<p class="source-code">pub enum ParseError {</p>
+			<p class="source-code">    UnableToParse(String),</p>
+			<p class="source-code">    InvalidOperator(String),</p>
+			<p class="source-code">}</p>
+			<p>To print errors, we also need to implement the <strong class="source-inline">Display</strong> trait:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">impl fmt::Display for ParseError {</p>
+			<p class="source-code">    fn fmt(&amp;self, f: &amp;mut fmt::Formatter) -&gt; fmt::Result {</p>
+			<p class="source-code">        match &amp;self {</p>
+			<p class="source-code">            self::ParseError::UnableToParse(e) =&gt; write!(f, </p>
+			<p class="source-code">                "Error in evaluating {}", e),</p>
+			<p class="source-code">            self::ParseError::InvalidOperator(e) =&gt; write!(f, </p>
+			<p class="source-code">                "Error in evaluating {}", e),</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Since <strong class="source-inline">ParseError</strong> will be<a id="_idIndexMarker173"/> the main error type returned from processing, and because the <strong class="source-inline">AST</strong> module returns a <strong class="source-inline">Boxed</strong> error, we can write code to automatically convert any <strong class="source-inline">Boxed</strong> error from the <strong class="source-inline">AST</strong> module into <strong class="source-inline">ParseError</strong> that gets returned by <strong class="source-inline">Parser</strong>. The code is as follows:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/parsemath/parser.rs</p>
+			<p class="source-code">impl std::convert::From&lt;std::boxed::Box&lt;dyn std::error::Error&gt;&gt; for ParseError {</p>
+			<p class="source-code">    fn from(_evalerr: std::boxed::Box&lt;dyn std::error::Error&gt;) </p>
+			<p class="source-code">        -&gt; Self {</p>
+			<p class="source-code">        return ParseError::UnableToParse("Unable to </p>
+			<p class="source-code">            parse".into());</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>This code allows us to write code such as the following: </p>
+			<p class="source-code">let num_value = eval(ast)?</p>
+			<p>Note in particular the <strong class="source-inline">?</strong> operator. It is a shortcut for the following:</p>
+			<ul>
+				<li>If <strong class="source-inline">eval()</strong> processing is successful, store the returned value in the <strong class="source-inline">num_value</strong> field.</li>
+				<li>If <a id="_idIndexMarker174"/>processing fails, convert the <strong class="source-inline">Boxed</strong> error returned by the <strong class="source-inline">eval()</strong> method into <strong class="source-inline">ParseError</strong> and propagate it further to the caller.</li>
+			</ul>
+			<p>This concludes the discussion on the arithmetic expression evaluator modules. In the next section, we will take a look at how to call this module from a <strong class="source-inline">main()</strong> function.</p>
+			<h1 id="_idParaDest-54"><a id="_idTextAnchor054"/>Putting it all together</h1>
+			<p>We have seen in previous sections how to design and write code for the various processing modules of our project. We will now tie all of them together in a <strong class="source-inline">main()</strong> function that serves as the command-line application. This <strong class="source-inline">main()</strong> function will do the following:</p>
+			<ol>
+				<li value="1">Display prompts with instructions for the user to enter an arithmetic expression.</li>
+				<li>Accept an arithmetic expression in the command-line input from the user.</li>
+				<li>Instantiate <strong class="source-inline">Parser</strong> (returns a <strong class="source-inline">Parser</strong> object instance).</li>
+				<li>Parse the expression (returns the AST representation of the expression).</li>
+				<li>Evaluate the expression (computes the mathematical value of the expression).</li>
+				<li>Display the result to the user in the command-line output.</li>
+				<li>Invoke <strong class="source-inline">Parser</strong> and evaluate the mathematical expression.</li>
+			</ol>
+			<p>The code for the <strong class="source-inline">main()</strong> function is as follows:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/main.rs</p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    println!("Hello! Welcome to Arithmetic expression </p>
+			<p class="source-code">        evaluator.");</p>
+			<p class="source-code">    println!("You can calculate value for expression such as </p>
+			<p class="source-code">        2*3+(4-5)+2^3/4. ");</p>
+			<p class="source-code">    println!("Allowed numbers: positive, negative and </p>
+			<p class="source-code">        decimals.");</p>
+			<p class="source-code">    println!("Supported operations: Add, Subtract, Multiply, </p>
+			<p class="source-code">        Divide, PowerOf(^). ");</p>
+			<p class="source-code">    println!("Enter your arithmetic expression below:");</p>
+			<p class="source-code">    loop {</p>
+			<p class="source-code">        let mut input = String::new();</p>
+			<p class="source-code">        match io::stdin().read_line(&amp;mut input) {</p>
+			<p class="source-code">            Ok(_) =&gt; {</p>
+			<p class="source-code">                match evaluate(input) {</p>
+			<p class="source-code">                    Ok(val) =&gt; println!("The computed number </p>
+			<p class="source-code">                        is {}\n", val),</p>
+			<p class="source-code">                    Err(_) =&gt; {</p>
+			<p class="source-code">                        println!("Error in evaluating </p>
+			<p class="source-code">                            expression. Please enter valid </p>
+			<p class="source-code">                            expression\n");</p>
+			<p class="source-code">                    }</p>
+			<p class="source-code">                };</p>
+			<p class="source-code">            }</p>
+			<p class="source-code"> </p>
+			<p class="source-code">            Err(error) =&gt; println!("error: {}", error),</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>The <strong class="source-inline">main()</strong> function displays a prompt to the user, reads a line from <strong class="source-inline">stdin</strong> (the command line), and invokes the <strong class="source-inline">evaluate()</strong> function. If the computation is successful, it displays the computed AST and the numerical value. If unsuccessful, it prints an error message.</p>
+			<p>The code for the <strong class="source-inline">evaluate()</strong> function is as follows:</p>
+			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/main.rs</p>
+			<p class="source-code">fn evaluate(expr: String) -&gt; Result&lt;f64, ParseError&gt; {</p>
+			<p class="source-code">    let expr = expr.split_whitespace().collect::&lt;String&gt;();</p>
+			<p class="source-code">    // remove whitespace chars</p>
+			<p class="source-code">    let mut math_parser = Parser::new(&amp;expr)?;</p>
+			<p class="source-code">    let ast = math_parser.parse()?;</p>
+			<p class="source-code">    println!("The generated AST is {:?}", ast);</p>
+			<p class="source-code"> </p>
+			<p class="source-code">    Ok(ast::eval(ast)?)</p>
+			<p class="source-code">}</p>
+			<p>The <strong class="source-inline">evaluate()</strong> function instantiates a new <strong class="source-inline">Parser</strong> with the provided arithmetic expression, parses it, and then invokes the <strong class="source-inline">eval()</strong> method on the <strong class="source-inline">AST</strong> module. Note the use of the <strong class="source-inline">?</strong> operator for automated propagation of any processing errors to the <strong class="source-inline">main()</strong> function, where they are handled with a <strong class="source-inline">println!</strong> statement.</p>
+			<p>Run the following command to compile and run the program:</p>
+			<p class="source-code">cargo run</p>
+			<p>You can try out various combinations of positive and negative numbers, decimals, arithmetic operators, and optional sub-expressions in parentheses. You can also check how an invalid input expression will produce an error message. </p>
+			<p>You can expand this project to add support for mathematical functions such as square roots, trigonometric functions, logarithmic functions, and so on. You can also add edge cases.</p>
+			<p>With this, we conclude the first full-length project in this book. I hope this project has given you an idea not just of how idiomatic Rust code is written, but also of how to think in Rust terms while designing a program.</p>
+			<p>The complete code for the <strong class="source-inline">main()</strong> function can be found in the <strong class="source-inline">main.rs</strong> file in the GitHub folder for this chapter.</p>
+			<h1 id="_idParaDest-55"><a id="_idTextAnchor055"/>Summary</h1>
+			<p>In this chapter, we built a command-line application from scratch in Rust, without using any third-party libraries, to compute the value of the arithmetic expressions. We covered many basic concepts in Rust, including data types, how to model and design an application domain with Rust data structures, how to split code across modules and integrate them, how to structure code within a module as functions, how to expose module functions to other modules, how to do pattern matching for elegant and safe code, how to add functionality to structs and enums, how to implement traits and annotate lifetimes, how to design and propagate custom error types, how to box types to make data sizes predictable for the compiler, how to construct a recursive node tree and navigate it, how to write code that recursively evaluates an expression, and how to specify lifetime parameters for structs.</p>
+			<p>Congratulations if you successfully followed along and got some working code! If you had any difficulties, you can refer to the final code in the GitHub repository. </p>
+			<p>This example project establishes a strong foundation from which to dig into the details of system programming in the upcoming chapters. If you haven't fully understood every detail of the code, there is no reason to fret. We will be writing a lot more code and reinforcing the concepts of idiomatic Rust code as we go along in the coming chapters.</p>
+			<p>In the next chapter, we will cover the Rust standard library, and see how it supports a rich set of built-in modules, types, traits, and functions to perform systems programming.</p>
+		</div>
+	</body></html>

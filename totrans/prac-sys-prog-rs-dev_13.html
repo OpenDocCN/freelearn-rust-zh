@@ -1,0 +1,318 @@
+<html><head></head><body>
+		<div id="_idContainer068">
+			<h1 id="_idParaDest-158"><em class="italic">Chapter 10</em>: <a id="_idTextAnchor165"/>Working with Device I/O</h1>
+			<p>In <a href="B16405_06_Final_NM_ePUB.xhtml#_idTextAnchor101"><em class="italic">Chapter 6</em></a>, <em class="italic">Working with Files and Directories in Rust</em>, we covered the details of how to perform file I/O operations (such as reading and writing to files) using the Rust Standard Library. In Unix-like operating systems, a file is an abstraction that is used to work not only with regular disk files (which are used to store data) but also with several types of devices that are connected to a machine. In this chapter, we will look at the features of the Rust Standard Library that enable us to perform reads and writes to any type of device (also called device I/O) in Rust. Device I/O is an essential aspect of system programming to monitor and control various types of devices attached to a computer, such as keyboards, USB cameras, printers, and sound cards. You may be curious to know what support Rust provides to a system programmer to handle all these different types of devices. We'll answer this question as we go through the chapter.</p>
+			<p>In this chapter, we will review the basics of  I/O management in Unix/Linux using the Rust Standard Library, including handling errors, and then write a program to detect and print details of connected USB devices.</p>
+			<p>We will cover these topics in the following order:</p>
+			<ul>
+				<li>Understanding device I/O fundamentals in Linux</li>
+				<li>Doing buffered reads and writes</li>
+				<li>Working with standard input and output</li>
+				<li>Chaining and iterators over I/O</li>
+				<li>Handling errors and returning values</li>
+				<li>Getting details of connected USB devices (project)</li>
+			</ul>
+			<p>By the end of this chapter, you will have learned how to work with standard readers and writers, which constitute the foundation of any I/O operation. You'll also learn how to optimize system calls through the use of buffered reads and writes. We'll cover reading and writing to standard I/O streams of a process and handling errors from I/O operations, as well as learning ways to iterate over I/O. These concepts will be reinforced through an example project.</p>
+			<h1 id="_idParaDest-159"><a id="_idTextAnchor166"/>Technical requirements</h1>
+			<p>Verify that <strong class="source-inline">rustup</strong>, <strong class="source-inline">rustc</strong>, and <strong class="source-inline">cargo</strong>  have been installed correctly with the following command:</p>
+			<p class="source-code">rustup --version</p>
+			<p class="source-code">rustc --version </p>
+			<p class="source-code">cargo --version</p>
+			<p>The Git repo for the code in this chapter can be found at <a href="https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter10/usb">https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter10/usb</a>.</p>
+			<p>For running and testing the project in this book, you must have the native libusb library installed where it can be found by <strong class="source-inline">pkg-config</strong>.</p>
+			<p>The project in this book has been tested on macOS Catalina 10.15.6.</p>
+			<p>For instructions on building and testing on Windows, refer: <a href="https://github.com/dcuddeback/libusb-rs/issues/20">https://github.com/dcuddeback/libusb-rs/issues/20</a></p>
+			<p>For general instructions on environmental setup of <strong class="source-inline">libusb</strong> crate, refer to: <a href="https://github.com/dcuddeback/libusb-rs">https://github.com/dcuddeback/libusb-rs</a></p>
+			<h1 id="_idParaDest-160"><a id="_idTextAnchor167"/>Understanding device I/O fundamentals in Linux</h1>
+			<p>In previous chapters, we <a id="_idIndexMarker706"/>saw how to schedule work on CPUs using <strong class="bold">processes and threads</strong>, and how to manage <strong class="bold">memory</strong> by controlling the <a id="_idIndexMarker707"/>memory layout of a program. In addition to the CPU and memory, the operating system also manages the system's hardware devices. Examples of hardware devices include keyboards, mice, hard disks, video adapters, audio cards, network adapters, scanners, cameras, and other USB devices. But the peculiarities of these physical hardware devices are hidden from the user programs by the operating system, using <a id="_idIndexMarker708"/>software modules called <strong class="bold">device drivers</strong>. Device drivers are indispensable software components for doing device I/O. Let's take a closer look at them.</p>
+			<h2 id="_idParaDest-161"><a id="_idTextAnchor168"/>What are device drivers?</h2>
+			<p><strong class="bold">Device drivers</strong> are shared libraries <a id="_idIndexMarker709"/>loaded into the kernel that contain functions to perform low-level hardware control. They communicate with the devices through the computer bus or communication subsystem to which the device is connected. They are specific to each device type (for example, a mouse or network adaptor) or class of devices (for example, IDE or SCSI disk controllers). They are also specific to an operating system (for example, a device driver for Windows doesn't work on Linux even for the same device type).</p>
+			<p>Device drivers handle the peculiarities of the devices (or device classes) for which they are written. For example, a device driver to control a hard disk receives requests to read or write some file data identified by a <strong class="bold">block number</strong>. The device driver translates the block number into track, sector, and cylinder numbers on the disk. It also initializes the device, checks whether the device is in use, validates input parameters to its function calls, determines the commands to be issued, and issues them to the device. It handles the interrupts from the device and communicates them back to the calling program. The device driver further implements the specific hardware protocols that the device supports, such as <strong class="bold">SCSI/ATA/SATA</strong> for disk access or <strong class="bold">UART</strong> for serial port communications. Device drivers thus abstract away a lot of the hardware-specific details of controlling devices.</p>
+			<p>The operating system (specifically the kernel) accepts system calls from the user programs for device <a id="_idIndexMarker710"/>access and control, and then uses the respective device driver to physically access and control the device. <em class="italic">Figure 10.1</em> illustrates how user space programs (for example, Rust programs that use the standard library to talk to the operating system kernel) use system calls to manage and control various types of devices:</p>
+			<div>
+				<div id="_idContainer066" class="IMG---Figure">
+					<img src="image/Figure_10.1_B16405.jpg" alt="Figure 10.1 – Device I/O in Linux"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.1 – Device I/O in Linux</p>
+			<p>In <a href="B16405_06_Final_NM_ePUB.xhtml#_idTextAnchor101"><em class="italic">Chapter 6</em></a>, <em class="italic">Working with Files and Directories in Rust</em>, we saw that Linux/Unix has the philosophy that <em class="italic">everything is a file</em>, characterized by the universality of I/O. The same system calls, such as <strong class="source-inline">open()</strong>, <strong class="source-inline">close()</strong>, <strong class="source-inline">read()</strong>, and <strong class="source-inline">write()</strong>, can be applied to all types of I/O whether it's a regular file (used to store text or binary data), a directory, device files, or network connections. What this means is that programmers of user space programs can write code to communicate with and control devices without worrying about the protocol and hardware specifics of the devices, thanks to the abstraction layers provided by <a id="_idIndexMarker711"/>the kernel (system calls) and device drivers. Furthermore, the Rust Standard Library adds another layer of abstraction to provide a device-independent software layer, which Rust programs can use for device I/O. This is the primary focus of this chapter.</p>
+			<h2 id="_idParaDest-162"><a id="_idTextAnchor169"/>Types of devices</h2>
+			<p>In Unix/Linux, devices are broadly classified into three types:</p>
+			<ul>
+				<li><strong class="bold">Character devices</strong> send or receive <a id="_idIndexMarker712"/>data as a serial stream of bytes. Examples are terminals, keyboards, mice, printers, and sound <a id="_idIndexMarker713"/>cards. Unlike regular files, data cannot be accessed at random but only sequentially.</li>
+				<li><strong class="bold">Block devices</strong> store information in <a id="_idIndexMarker714"/>fixed-size blocks and <a id="_idIndexMarker715"/>allow random access to these blocks. Filesystems, hard disks, tape drives, and USB cameras are examples of block devices. A filesystem is mounted on a block device.</li>
+				<li><strong class="bold">Network devices</strong> are similar to <a id="_idIndexMarker716"/>character devices as data is <a id="_idIndexMarker717"/>read serially, but there are some differences. Data is sent in variable-length packets using a network protocol, which the operating system and the user program have to deal with. A network adaptor is usually a hardware device (with some exceptions, such as the loopback interface, which is a software interface) that interfaces to a network (such as <strong class="bold">Ethernet</strong> or <strong class="bold">Wi-Fi</strong>).</li>
+			</ul>
+			<p>A hardware device is identified by its <em class="italic">type</em> (block or character) and a <em class="italic">device number</em>. The device number in turn is split into a major and minor device number.</p>
+			<p>When a new hardware is connected, the <a id="_idIndexMarker718"/>kernel needs a device driver that is compatible with the device and can operate the device controller hardware. A device driver, as discussed earlier, is essentially a shared library of low-level, hardware-handling functions that can operate in a privileged manner as part of the kernel. Without device drivers, the kernel does not know how to operate the device. When a program attempts to connect to a device, the kernel looks up associated information in its tables and transfers control to the device driver. There are separate tables for <em class="italic">block</em> and <em class="italic">character</em> devices. The device driver performs the required task on the device and returns control back to the operating system kernel.</p>
+			<p>As an example, let's look at a web server sending a page to a web browser. The data is structured as an <strong class="bold">HTTP response message</strong> with the <strong class="bold">web page (HTML)</strong> sent as part of its <strong class="bold">data payload</strong>. The data itself is stored in the kernel in a buffer (data structure), which is then passed to the <strong class="bold">TCP layer</strong>, then to the <strong class="bold">IP layer</strong>, on to the <strong class="bold">Ethernet device driver</strong>, then to the <strong class="bold">Ethernet adaptor</strong>, and onward to the <strong class="bold">network</strong>. The Ethernet device driver does not know anything about connections and only handles data packets. Similarly, when data needs to be stored to a file on the disk, the data is stored in a buffer, which is passed on to the <strong class="bold">filesystem device driver</strong> and then onward to the <strong class="bold">disk controller</strong>, which then saves it to the disk (for example, hard disk, SSD, and so on). Essentially, the <em class="italic">kernel</em> relies on a <em class="italic">device driver</em> to interface with the device.</p>
+			<p>Device drivers are usually part of the kernel (<strong class="bold">kernel device driver</strong>), but there are also <strong class="bold">user space device drivers</strong>, which <a id="_idIndexMarker719"/>abstract out the details of kernel access. Later in this chapter, we will be using one such user space device driver to detect USB devices.</p>
+			<p>We've discussed the basics of device I/O, including device drivers and types of devices in Unix-like systems, in this section. Starting from the next section, we'll focus on how to do device-independent I/O using features from the Rust Standard Library.</p>
+			<h1 id="_idParaDest-163"><a id="_idTextAnchor170"/>Doing buffered reads and writes</h1>
+			<p>Reads and <a id="_idIndexMarker720"/>writes are the fundamental operations performed on I/O types such as files and streams <a id="_idIndexMarker721"/>and are very crucial for working with many types of system resources. In this section, we'll discuss different ways to do <em class="italic">reads</em> and <em class="italic">writes</em> to I/O in Rust. We'll first cover the core traits – <strong class="source-inline">Read</strong> and <strong class="source-inline">Write</strong> – which allow Rust programs to perform read and write operations on objects that implement these <a id="_idIndexMarker722"/>traits (which are also called <strong class="bold">readers</strong> and <strong class="bold">writers</strong>). Then, we'll <a id="_idIndexMarker723"/>see how to do <em class="italic">buffered reads</em> and <em class="italic">buffered writes</em>, which are more efficient for certain types of read and write operations.</p>
+			<p>Let's start with the basic <strong class="source-inline">Read</strong> and <strong class="source-inline">Write</strong> traits.</p>
+			<p>In line with the <em class="italic">everything-is-a-file</em> philosophy, the Rust Standard Library provides two traits – <strong class="source-inline">Read</strong> and <strong class="source-inline">Write</strong> – which provide a general interface for reading and writing inputs and outputs. This trait is implemented for different types of I/O, such as files, <strong class="source-inline">TcpStream</strong>, standard input, and standard output streams of processes.</p>
+			<p>An example of using the <strong class="source-inline">Read</strong> trait is shown in the following code. Here, we are opening a <strong class="source-inline">records.txt</strong> file with the <strong class="source-inline">open()</strong> function in the <strong class="source-inline">std::fs::File</strong> module (which we learned earlier). We're then bringing the <strong class="source-inline">Read</strong> trait from the <strong class="source-inline">std::io</strong> module <a id="_idIndexMarker724"/>into scope, and using the <strong class="source-inline">read()</strong> method of this trait to read <a id="_idIndexMarker725"/>bytes from a file. The same <strong class="source-inline">read()</strong> method can also be used to read from any other entity implementing the <strong class="source-inline">Read</strong> trait, such as a <strong class="bold">network socket</strong> or a <strong class="bold">standard input</strong> stream:</p>
+			<p class="source-code">use std::fs::File;</p>
+			<p class="source-code">use std::io::Read;</p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    // Open a file</p>
+			<p class="source-code">    let mut f = File::open("records.txt").unwrap();</p>
+			<p class="source-code">    //Create a memory buffer to read from file</p>
+			<p class="source-code">    let mut buffer = [0; 1024];</p>
+			<p class="source-code">    // read from file into buffer</p>
+			<p class="source-code">    let _ = f.read(&amp;mut buffer[..]).unwrap();</p>
+			<p class="source-code">}</p>
+			<p>Create a file called <strong class="source-inline">records.txt</strong> in the project root and run the program with <strong class="source-inline">cargo run</strong>. You can optionally print out the value of the buffer, which will display the raw bytes.</p>
+			<p><strong class="source-inline">Read</strong> and <strong class="source-inline">Write</strong> are byte-based interfaces, which can get inefficient as they involve continual system calls to the operating system. To overcome this, Rust also provides two structs to enable doing buffered reads and writes – <strong class="source-inline">BufReader</strong> and <strong class="source-inline">BufWriter</strong>, which have a built-in buffer and reduce the number of calls to the operating system.</p>
+			<p>The previous example can be rewritten as shown here, to use <strong class="source-inline">BufReader</strong>:</p>
+			<p class="source-code">use std::fs::File;</p>
+			<p class="source-code"><strong class="bold">use std::io::{BufRead, BufReader};</strong></p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    // Open a file</p>
+			<p class="source-code">    let f = File::open("records.txt").unwrap();</p>
+			<p class="source-code">    // Create a BufReader, passing in the file handle</p>
+			<p class="source-code">   <strong class="bold"> let mut buf_reader = BufReader::new(f);</strong></p>
+			<p class="source-code">    //Create a memory buffer to read from file</p>
+			<p class="source-code">    let mut buffer = String::new();</p>
+			<p class="source-code">    // read a line into the buffer</p>
+			<p class="source-code">    <strong class="bold">buf_reader.read_line(&amp;mut buffer).unwrap();</strong></p>
+			<p class="source-code">    println!("Read the following: {}", buffer);</p>
+			<p class="source-code">}</p>
+			<p>The code changes (from the previous version) have been highlighted. <strong class="source-inline">BufReader</strong> uses the <strong class="source-inline">BufRead</strong> trait, which is <a id="_idIndexMarker726"/>brought into scope. Instead of reading <a id="_idIndexMarker727"/>directly from the file handle, we create a <strong class="source-inline">BufReader</strong> instance and read a line into this struct. The <strong class="source-inline">BufReader</strong> methods internally optimize calls to the operating system. Run the program and verify that the value from the file is printed correctly.</p>
+			<p><strong class="source-inline">BufWriter</strong> similarly buffers writes to the disk, thus minimizing system calls. It can be used in a similar manner as shown in the following code:</p>
+			<p class="source-code">use std::fs::File;</p>
+			<p class="source-code">use std::io::{BufWriter, Write};</p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    // Create a file</p>
+			<p class="source-code">    let f = File::create("file.txt").unwrap();</p>
+			<p class="source-code">    // Create a BufWriter, passing in the file handle</p>
+			<p class="source-code">    let mut buf_writer = BufWriter::new(f);</p>
+			<p class="source-code">    //Create a memory buffer</p>
+			<p class="source-code">    let buffer = String::from("Hello, testing");</p>
+			<p class="source-code">    // write into the buffer</p>
+			<p class="source-code">    buf_writer.write(buffer.as_bytes()).unwrap();</p>
+			<p class="source-code">    println!("wrote the following: {}", buffer);</p>
+			<p class="source-code">}</p>
+			<p>In the code shown, we're creating a new file to write into, and are also creating a new <strong class="source-inline">BufWriter</strong> instance. We then write a value from the buffer into the <strong class="source-inline">BufWriter</strong> instance. Run the <a id="_idIndexMarker728"/>program and verify that the specified string value has been <a id="_idIndexMarker729"/>written to a file with the name <strong class="source-inline">file.txt</strong> in the project root directory. Note that here, in addition to <strong class="source-inline">BufWriter</strong>, we also have to bring the <strong class="source-inline">Write</strong> trait into scope as this contains the <strong class="source-inline">write()</strong> method.</p>
+			<p>Note when to use and when not to use <strong class="source-inline">BufReader</strong> and <strong class="source-inline">BufWriter</strong>:</p>
+			<ul>
+				<li><strong class="source-inline">BufReader</strong> and <strong class="source-inline">BufWriter</strong> speed up programs that make small and frequent reads or writes to a disk. If the reads or writes only occasionally involve large-sized data, they do not offer any benefit.</li>
+				<li><strong class="source-inline">BufReader</strong> and <strong class="source-inline">BufWriter</strong> do not help while reading from or writing to in-memory data structures.</li>
+			</ul>
+			<p>In this section, we saw how to do both unbuffered and buffered reads and writes. In the next section, we'll learn how to work with standard inputs and outputs of a process.</p>
+			<h1 id="_idParaDest-164"><a id="_idTextAnchor171"/>Working with standard input and output</h1>
+			<p>In Linux/Unix, <strong class="bold">streams</strong> are <a id="_idIndexMarker730"/>communication channels between a <a id="_idIndexMarker731"/>process and its environment. By default, three standard streams are created for every running process: <strong class="bold">standard input</strong>, <strong class="bold">standard output</strong>, and <strong class="bold">standard error</strong>. A stream is a communication channel that has two ends. One end is connected to the process and the other end to another system resource. For example, a standard input can be used by a process to read characters or text from a keyboard or another process. Similarly, a standard output stream can be used by a process to send some characters to the terminal or to a file. In many modern programs, the standard error of a process is connected to a log file, which makes analyzing and debugging errors easier.</p>
+			<p>The Rust Standard Library provides methods to interact with standard input and output streams. The <strong class="source-inline">Stdin</strong> struct in the <strong class="source-inline">std::io</strong> module represents the handle to the input stream of a process. This handle implements the <strong class="source-inline">Read</strong> trait, which we covered in the previous section.</p>
+			<p>The code example here shows how to interact with the standard input and standard output streams of a process. In the code shown, we are reading a line from the standard input into a buffer. We're then writing back the contents of the buffer to the standard output of the process. Note that here, the word <em class="italic">process</em> refers to the running program that you have written. You are essentially <em class="italic">reading from</em> and <em class="italic">writing to</em> the <em class="italic">standard input</em> and <em class="italic">standard output</em>, respectively, of the running program:</p>
+			<p class="source-code">use std::io::{self, Write};</p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    //Create a memory buffer to read from file</p>
+			<p class="source-code">    let mut buffer = String::new();</p>
+			<p class="source-code">    // read a line into the buffer</p>
+			<p class="source-code">    let _ = io::stdin().read_line(&amp;mut buffer).unwrap();</p>
+			<p class="source-code">    // Write the buffer to standard output</p>
+			<p class="source-code">    io::stdout().write(&amp;mut buffer.as_bytes()).unwrap();</p>
+			<p class="source-code">}</p>
+			<p>Run the program with <strong class="source-inline">cargo run</strong>, enter some text, and hit the <em class="italic">Enter</em> key. You'll see the text echoed back on the terminal.</p>
+			<p><strong class="source-inline">Stdin</strong>, which is a handle to the input stream of a process, is a shared reference to a global buffer of input data. Likewise, <strong class="source-inline">Stdout</strong>, which is the output stream of a process, is a shared reference to a global data buffer. Since <strong class="source-inline">Stdin</strong> and <strong class="source-inline">Stdout</strong> are references to shared data, to ensure exclusive use of these data buffers, the handles can be locked. For example, the <strong class="source-inline">StdinLock</strong> struct in the <strong class="source-inline">std::io</strong> module represents a locked reference to <a id="_idIndexMarker732"/>the <strong class="source-inline">Stdin</strong> handle. Likewise, the <strong class="source-inline">StdoutLock</strong> struct <a id="_idIndexMarker733"/>in the <strong class="source-inline">std::io</strong> module represents a locked reference to the <strong class="source-inline">Stdout</strong> handle. Examples of how to use the locked reference are shown in the code example here:</p>
+			<p class="source-code">use std::io::{Read, Write};</p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    //Create a memory buffer</p>
+			<p class="source-code">    let mut buffer = [8; 1024];</p>
+			<p class="source-code">    // Get handle to input stream</p>
+			<p class="source-code">    let stdin_handle = std::io::stdin();</p>
+			<p class="source-code">    // Lock the handle to input stream</p>
+			<p class="source-code">    let mut locked_stdin_handle = stdin_handle.lock();</p>
+			<p class="source-code">    // read a line into the buffer</p>
+			<p class="source-code">    locked_stdin_handle.read(&amp;mut buffer).unwrap();</p>
+			<p class="source-code">    // Get handle to output stream</p>
+			<p class="source-code">    let stdout_handle = std::io::stdout();</p>
+			<p class="source-code">    // Lock the handle to output stream</p>
+			<p class="source-code">    let mut locked_stdout_handle = stdout_handle.lock();</p>
+			<p class="source-code">    // Write the buffer to standard output</p>
+			<p class="source-code">    locked_stdout_handle.write(&amp;mut buffer).unwrap();</p>
+			<p class="source-code">}</p>
+			<p>In the code shown, the standard input and output stream handles are locked before reading and writing to them. </p>
+			<p>We can similarly write to the <em class="italic">standard error</em> stream. A code example is shown here:</p>
+			<p class="source-code">use std::io::Write;</p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    //Create a memory buffer</p>
+			<p class="source-code">    let buffer = b"Hello, this is error message from </p>
+			<p class="source-code">        standard </p>
+			<p class="source-code">        error stream\n";</p>
+			<p class="source-code">    // Get handle to output error stream</p>
+			<p class="source-code">    let stderr_handle = std::io::stderr();</p>
+			<p class="source-code">    // Lock the handle to output error stream</p>
+			<p class="source-code">    let mut locked_stderr_handle = stderr_handle.lock();</p>
+			<p class="source-code">    // write into error stream from buffer</p>
+			<p class="source-code">    locked_stderr_handle.write(buffer).unwrap();</p>
+			<p class="source-code">}</p>
+			<p>In the code shown, we're <a id="_idIndexMarker734"/>constructing a handle to the standard <a id="_idIndexMarker735"/>error stream using the <strong class="source-inline">stderr()</strong> function. Then, we're locking this handle and then writing some text to it.</p>
+			<p>In this section, we've seen how to interact with the standard input, standard output, and standard error streams of a process using the Rust Standard Library. Recall that in the previous chapter on managing concurrency, we saw how, from a parent process, we can read from and write to the standard input and output streams of the child process.</p>
+			<p>In the next section, let's look at a couple of functional programming constructs that can be used for I/O in Rust.</p>
+			<h1 id="_idParaDest-165"><a id="_idTextAnchor172"/>Chaining and iterators over I/O</h1>
+			<p>In this section, we'll look at <a id="_idIndexMarker736"/>how to use iterators and chaining <a id="_idIndexMarker737"/>with the <strong class="source-inline">std::io</strong> module. </p>
+			<p>Many of the <a id="_idIndexMarker738"/>data structures provided by the <strong class="source-inline">std::io</strong> module have built-in <strong class="bold">iterators</strong>. Iterators let you <a id="_idIndexMarker739"/>process a series of items, such as lines in a file or incoming network connections on a port. They provide a nicer mechanism compared to <strong class="source-inline">while</strong> and <strong class="source-inline">for</strong> loops. Here is an example of using the <strong class="source-inline">lines()</strong> iterator with the <strong class="source-inline">BufReader</strong> struct, which is a part of the <strong class="source-inline">std::io</strong> module. This program reads lines from the <em class="italic">standard input</em> stream in a loop:</p>
+			<p class="source-code">use std::io::{BufRead, BufReader};</p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    // Create handle to standard input</p>
+			<p class="source-code">    let s = std::io::stdin();</p>
+			<p class="source-code">    //Create a BufReader instance to optimize sys calls</p>
+			<p class="source-code">    let file_reader = BufReader::new(s);</p>
+			<p class="source-code">    // Read from standard input line-by-line</p>
+			<p class="source-code">    for single_line in file_reader.lines() {</p>
+			<p class="source-code">        println!("You typed:{}", single_line.unwrap());</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>In the code shown, we have created a handle to the standard input stream and passed it to a <strong class="source-inline">BufReader</strong> struct. This struct implements the <strong class="source-inline">BufRead</strong> trait, which has a <strong class="source-inline">lines()</strong> method that returns an <em class="italic">iterator</em> over the lines of the reader. This helps us to type inputs on the terminal <em class="italic">line by line</em> and have it read by our running program. The text entered on the terminal is echoed back to the terminal. Execute <strong class="source-inline">cargo run</strong>, and type some text, and then hit the <em class="italic">Enter</em> key. Repeat this step as many times as you'd like. Exit from the program with <em class="italic">Ctrl</em> + <em class="italic">C</em>.</p>
+			<p>Likewise, the iterator can be used to read line by line from a <em class="italic">file</em> (instead of from standard input, which we saw in the previous example). A code snippet is shown here:</p>
+			<p class="source-code">use std::fs::File;</p>
+			<p class="source-code">use std::io::{BufRead, BufReader};</p>
+			<p class="source-code"> </p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    // Open a file for reading</p>
+			<p class="source-code">    let f = File::open("file.txt").unwrap();</p>
+			<p class="source-code">    //Create a BufReader instance to optimize sys calls</p>
+			<p class="source-code">    let file_reader = BufReader::new(f);</p>
+			<p class="source-code">    // Read from standard input line-by-line</p>
+			<p class="source-code">    for single_line in file_reader.lines() {</p>
+			<p class="source-code">        println!("Line read from file :{}", </p>
+			<p class="source-code">            single_line.unwrap());</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Create a file called <strong class="source-inline">file.txt</strong> in the project root directory. Enter a few lines of text in this file. Then, run the program using <strong class="source-inline">cargo run</strong>. You'll see the file contents printed out to the terminal.</p>
+			<p>We've so far seen how to use iterators from the <strong class="source-inline">std::io</strong> module. Let's now l<a id="_idTextAnchor173"/>ook at another concept: <strong class="bold">chaining</strong>.</p>
+			<p>The <strong class="source-inline">Read</strong> trait in the <strong class="source-inline">std::io</strong> module <a id="_idIndexMarker740"/>has a <strong class="source-inline">chain()</strong> method, which <a id="_idIndexMarker741"/>allows us to chain multiple <strong class="source-inline">BufReader</strong> together into one handle. Here is an example of how to create a single <strong class="bold">chained handle</strong> combining two files, and how to read from this handle:</p>
+			<p class="source-code">use std::fs::File;</p>
+			<p class="source-code">use std::io::Read; </p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    // Open two file handles for reading</p>
+			<p class="source-code">    let f1 = File::open("file1.txt").unwrap();</p>
+			<p class="source-code">    let f2 = File::open("file2.txt").unwrap();</p>
+			<p class="source-code">    //Chain the two file handles</p>
+			<p class="source-code">   <strong class="bold"> let mut chained_handle = f1.chain(f2);</strong></p>
+			<p class="source-code">    // Create a buffer to read into</p>
+			<p class="source-code">    let mut buffer = String::new();</p>
+			<p class="source-code">    // Read from chained handle into buffer</p>
+			<p class="source-code">    chained_handle.read_to_string(&amp;mut buffer).unwrap();</p>
+			<p class="source-code">    // Print out the value read into the buffer</p>
+			<p class="source-code">    println!("Read from chained handle:\n{}", buffer);</p>
+			<p class="source-code">}</p>
+			<p>The statement using the <strong class="source-inline">chain()</strong> method has been highlighted in the code. The rest of the code is fairly self-explanatory, as it is similar to what we've seen in previous examples. Ensure <a id="_idIndexMarker742"/>to create two files, <strong class="source-inline">file1.txt</strong> and <strong class="source-inline">file2.txt</strong>, under the <a id="_idIndexMarker743"/>project root folder and enter a few lines of text in each. Run the program with <strong class="source-inline">cargo run</strong>. You'll see the data from both files printed out line by line.</p>
+			<p>In this section, we've seen how to use iterators and how to chain readers together. In the next section, let's take a look at error handling for I/O operations.</p>
+			<h1 id="_idParaDest-166"><a id="_idTextAnchor174"/>Handling errors and returning values</h1>
+			<p>In this section, we'll learn <a id="_idIndexMarker744"/>about the built-in error handling <a id="_idIndexMarker745"/>support in the <strong class="source-inline">std::io</strong> module. Handling recoverable errors in an appropriate manner makes Rust programs more robust.</p>
+			<p>In the code examples we've seen so far, we've used the <strong class="source-inline">unwrap()</strong> function to extract the return value from the <strong class="source-inline">std::io</strong> module methods and associated functions, such as <strong class="source-inline">Read</strong>, <strong class="source-inline">Write</strong>, <strong class="source-inline">BufReader</strong>, and <strong class="source-inline">BufWriter</strong>. However, this is not the correct way to handle errors. The <strong class="source-inline">std::io</strong> module has a specialized <strong class="source-inline">Result</strong> type that is returned from any function or method in this module that may produce an error.</p>
+			<p>Let's rewrite the previous example (of chaining readers) using the <strong class="source-inline">io::Result</strong> type as the return value from <a id="_idIndexMarker746"/>the function. This allows us to use the <strong class="source-inline">?</strong> operator to directly pass errors back from the <strong class="source-inline">main()</strong> function, instead of using the <strong class="source-inline">unwrap()</strong> function:</p>
+			<p class="source-code">use std::fs::File;</p>
+			<p class="source-code">use std::io::Read;</p>
+			<p class="source-code">fn main() -&gt; <strong class="bold">std::io::Result&lt;()&gt;</strong> {</p>
+			<p class="source-code">    // Open two file handles for reading</p>
+			<p class="source-code">    let f1 = File::open("file1.txt")<strong class="bold">?</strong>;</p>
+			<p class="source-code">    let f2 = File::open("file3.txt")<strong class="bold">?</strong>;</p>
+			<p class="source-code">    //Chain the two file handles</p>
+			<p class="source-code">    let mut chained_handle = f1.chain(f2);</p>
+			<p class="source-code">    // Create a buffer to read into</p>
+			<p class="source-code">    let mut buffer = String::new();</p>
+			<p class="source-code">    // Read from chained handle into buffer</p>
+			<p class="source-code">    chained_handle.read_to_string(&amp;mut buffer)<strong class="bold">?</strong>;</p>
+			<p class="source-code">    println!("Read from chained handle: {}", buffer);</p>
+			<p class="source-code">    Ok(())</p>
+			<p class="source-code">}</p>
+			<p>Code related to <a id="_idIndexMarker747"/>error handling has <a id="_idIndexMarker748"/>been highlighted. Run the program with <strong class="source-inline">cargo run</strong>, this time making sure that neither <strong class="source-inline">file1.txt</strong> nor <strong class="source-inline">file3.txt</strong> exists in the project root folder.</p>
+			<p>You'll see the error message printed to the terminal.</p>
+			<p>In the code we've just seen, we're just propagating the error received from the operating system while <a id="_idIndexMarker749"/>making the calls. Let's now try to handle the <a id="_idIndexMarker750"/>errors in a more active manner. The code example here shows custom error handling for the same code:</p>
+			<p class="source-code">use std::fs::File;</p>
+			<p class="source-code">use std::io::Read;</p>
+			<p class="source-code">fn read_files(handle: &amp;mut impl Read) -&gt; </p>
+			<p class="source-code">std::io::Result&lt;String&gt; {</p>
+			<p class="source-code">    // Create a buffer to read into</p>
+			<p class="source-code">    let mut buffer = String::new();</p>
+			<p class="source-code">    // Read from chained handle into buffer</p>
+			<p class="source-code">    handle.read_to_string(&amp;mut buffer)?;</p>
+			<p class="source-code">    Ok(buffer)</p>
+			<p class="source-code">}</p>
+			<p class="source-code">fn main() {</p>
+			<p class="source-code">    let mut chained_handle;</p>
+			<p class="source-code">    // Open two file handles for reading</p>
+			<p class="source-code">    let file1 = "file1.txt";</p>
+			<p class="source-code">    let file2 = "file3.txt";</p>
+			<p class="source-code">    if let Ok(f1) = File::open(file1) {</p>
+			<p class="source-code">        if let Ok(f2) = File::open(file2) {</p>
+			<p class="source-code">            //Chain the two file handles</p>
+			<p class="source-code">            chained_handle = f1.chain(f2);</p>
+			<p class="source-code">            let content = read_files(&amp;mut chained_handle);</p>
+			<p class="source-code">            match content {</p>
+			<p class="source-code">                Ok(text) =&gt; println!("Read from chained </p>
+			<p class="source-code">                    handle:\n{}", text),</p>
+			<p class="source-code">                Err(e) =&gt; println!("Error occurred in </p>
+			<p class="source-code">                    reading files: {}", e),</p>
+			<p class="source-code">            }</p>
+			<p class="source-code">        } else {</p>
+			<p class="source-code">            println!("Unable to read {}", file2);</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    } else {</p>
+			<p class="source-code">        println!("Unable to read {}", file1);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>You'll notice that we've <a id="_idIndexMarker751"/>created a new function that returns <strong class="source-inline">std::io::Result</strong> to the <strong class="source-inline">main()</strong> function. We're handling errors in various operations, such as reading from a file and reading from the chained readers.</p>
+			<p>First, run the program with <strong class="source-inline">cargo run</strong>, ensuring that both <strong class="source-inline">file1.txt</strong> and <strong class="source-inline">file2.txt</strong> exist. You'll see the contents from both files printed to the terminal. Rerun the program by removing one of these files. You should see the custom error message from our code.</p>
+			<p>With this, we conclude the section on handling errors. Let's now move on to the last section of the chapter, where we will go through a project to detect and display details of USB devices connected to a computer.</p>
+			<h1 id="_idParaDest-167"><a id="_idTextAnchor175"/>Getting details of connected USB devices (project)</h1>
+			<p>In this <a id="_idIndexMarker752"/>section, we will demonstrate an example of working with devices in Rust. The example chosen is to display details of all connected USB devices of a computer. We'll be using <strong class="source-inline">libusb</strong>, a C library that helps to interact with USB devices. The <strong class="source-inline">libusb</strong> crate in Rust is a safe wrapper around the C <strong class="source-inline">libusb</strong> library. Let's first look at the design.</p>
+			<h2 id="_idParaDest-168"><a id="_idTextAnchor176"/>Designing the project</h2>
+			<p>Here is how this <a id="_idIndexMarker753"/>would work:</p>
+			<ul>
+				<li>When a USB device is plugged into a computer, the electrical signals on the computer bus trigger the <strong class="bold">USB controller</strong> (hardware device) on the computer.</li>
+				<li>The USB controller raises an interrupt on the CPU, which then executes the interrupt handler registered for that interrupt in the kernel.</li>
+				<li>When a call is made from the Rust program through the Rust <strong class="source-inline">libusb</strong> wrapper crate, the call is routed to the <strong class="source-inline">libusb</strong> C library, which in turn makes a system call on the kernel to read the device file corresponding to the USB device. We've seen earlier in this chapter how Unix/Linux enables standard <strong class="bold">syscalls</strong>, such as <strong class="source-inline">read()</strong> and <strong class="source-inline">write()</strong>, for I/O.</li>
+				<li>When the system call returns from the kernel, the <strong class="source-inline">libusb</strong> library returns the value from the syscall to our Rust program.</li>
+			</ul>
+			<p>We're using the <strong class="source-inline">libusb</strong> library because writing a USB device driver from scratch requires implementing the USB protocol specifications, and writing device drivers is the subject of a separate book in itself. Let's look at the design of our program:</p>
+			<div>
+				<div id="_idContainer067" class="IMG---Figure">
+					<img src="image/Figure_10.2_B16405.jpg" alt="Figure 10.2 – Design of the USB detector project"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.2 – Design of the USB detector project</p>
+			<p><em class="italic">Figure 10.2</em> shows the <a id="_idIndexMarker754"/>structs and functions in the program. Here is a description of the data structures:</p>
+			<ul>
+				<li><strong class="source-inline">USBList</strong>: List of USB devices detected.</li>
+				<li><strong class="source-inline">USBDetails</strong>: This contains the list of USB details that we want to retrieve through this program for each USB device.</li>
+				<li><strong class="source-inline">USBError</strong>: Custom error handling.</li>
+			</ul>
+			<p>These are the functions that we will write:</p>
+			<ul>
+				<li><strong class="source-inline">get_device_information()</strong>: Function to retrieve the required device details given a device reference and device handle.</li>
+				<li><strong class="source-inline">write_to_file()</strong>: Function to write device details to an output file.</li>
+				<li><strong class="source-inline">main()</strong>: This is the entry point to the program. It instantiates a new <strong class="source-inline">libusb::Context</strong>, retrieves a list of attached devices, and iterates through the list to call <strong class="source-inline">get_device_information()</strong> for each device. The retrieved details <a id="_idIndexMarker755"/>are printed to the terminal and also written to the file using the <strong class="source-inline">write_to_file()</strong> function.</li>
+			</ul>
+			<p>We can now begin to write the code.</p>
+			<h2 id="_idParaDest-169"><a id="_idTextAnchor177"/>Writing data structures and utility functions</h2>
+			<p>In this <a id="_idIndexMarker756"/>section, we'll write the <a id="_idIndexMarker757"/>data structures for storing the USB device list and USB details and for custom error handling. We'll also write a few utility functions:</p>
+			<ol>
+				<li>Let's begin by creating a new project:<p class="source-code"><strong class="bold">cargo new usb &amp;&amp; cd usb</strong></p></li>
+				<li>Let's add the <strong class="source-inline">libusb</strong> crate to <strong class="source-inline">Cargo.toml</strong>:<p class="source-code">[dependencies]</p><p class="source-code">libusb = "0.3.0"</p></li>
+				<li>We'll now look at the code in parts. Add all the code for this project in <strong class="source-inline">usb/src/main.rs</strong>.<p>Here are the module imports:</p><p class="source-code">use libusb::{Context, Device, DeviceHandle};</p><p class="source-code">use std::fs::File;</p><p class="source-code">use std::io::Write;</p><p class="source-code">use std::time::Duration;</p><p class="source-code">use std::fmt;</p><p>We're importing the <strong class="source-inline">libusb</strong> modules and a few modules from the Rust Standard Library. <strong class="source-inline">fs::File</strong> and <strong class="source-inline">io::Write</strong> are for writing to an output file, <strong class="source-inline">result::Result</strong> is the return value from the functions, and <strong class="source-inline">time::Duration</strong> is for working with the <strong class="source-inline">libusb</strong> library.</p></li>
+				<li>Let's <a id="_idIndexMarker758"/>look at the data <a id="_idIndexMarker759"/>structures now:<p class="source-code">#[derive(Debug)]</p><p class="source-code">struct USBError {</p><p class="source-code">    err: String,</p><p class="source-code">}</p><p class="source-code"> </p><p class="source-code">struct USBList {</p><p class="source-code">    list: Vec&lt;USBDetails&gt;,</p><p class="source-code">}</p><p class="source-code">#[derive(Debug)]</p><p class="source-code">struct USBDetails {</p><p class="source-code">    manufacturer: String,</p><p class="source-code">    product: String,</p><p class="source-code">    serial_number: String,</p><p class="source-code">    bus_number: u8,</p><p class="source-code">    device_address: u8,</p><p class="source-code">    vendor_id: u16,</p><p class="source-code">    product_id: u16,</p><p class="source-code">    maj_device_version: u8,</p><p class="source-code">    min_device_version: u8,</p><p class="source-code">}</p><p><strong class="source-inline">USBError</strong> is for custom error handling, <strong class="source-inline">USBList</strong> is to store a list of the USB devices detected, and <strong class="source-inline">USBDetails</strong> is to capture the list of details for each USB device.</p></li>
+				<li>Let's implement the <strong class="source-inline">Display</strong> trait <a id="_idIndexMarker760"/>for the <strong class="source-inline">USBList</strong> struct so that custom formatting can be done <a id="_idIndexMarker761"/>to print the contents of the struct:<p class="source-code">impl fmt::Display for USBList {</p><p class="source-code">    fn fmt(&amp;self, f: &amp;mut fmt::Formatter&lt;'_&gt;) -&gt; </p><p class="source-code">        fmt::Result {</p><p class="source-code">        Ok(for usb in &amp;self.list {</p><p class="source-code">            writeln!(f, "\nUSB Device details")?;</p><p class="source-code">            writeln!(f, "Manufacturer: {}", </p><p class="source-code">                usb.manufacturer)?;</p><p class="source-code">            writeln!(f, "Product: {}", usb.product)?;</p><p class="source-code">            writeln!(f, "Serial number: {}", </p><p class="source-code">                usb.serial_number)?;</p><p class="source-code">            writeln!(f, "Bus number: {}", </p><p class="source-code">                usb.bus_number)?;</p><p class="source-code">            writeln!(f, "Device address: {}", </p><p class="source-code">                usb.device_address)?;</p><p class="source-code">            writeln!(f, "Vendor Id: {}", </p><p class="source-code">                usb.vendor_id)?;</p><p class="source-code">            writeln!(f, "Product Id: {}", </p><p class="source-code">                usb.product_id)?;</p><p class="source-code">            writeln!(f, "Major device version: {}", </p><p class="source-code">                usb.maj_device_version)?;</p><p class="source-code">            writeln!(f, "Minor device version: {}", </p><p class="source-code">                usb.min_device_version)?;</p><p class="source-code">        })</p><p class="source-code">    }</p><p class="source-code">}</p></li>
+				<li>Next, we'll implement <strong class="source-inline">From</strong> traits for the <strong class="source-inline">USBError</strong> struct so that errors from the <strong class="source-inline">libusb</strong> crate and <a id="_idIndexMarker762"/>from the Rust Standard <a id="_idIndexMarker763"/>Library are automatically converted into the <strong class="source-inline">USBError</strong> type when we use the <strong class="source-inline">?</strong> operator:<p class="source-code">impl From&lt;libusb::Error&gt; for USBError {</p><p class="source-code">    fn from(_e: libusb::Error) -&gt; Self {</p><p class="source-code">        USBError {</p><p class="source-code">            err: "Error in accessing USB </p><p class="source-code">                device".to_string(),</p><p class="source-code">        }</p><p class="source-code">    }</p><p class="source-code">}</p><p class="source-code">impl From&lt;std::io::Error&gt; for USBError {</p><p class="source-code">    fn from(e: std::io::Error) -&gt; Self {</p><p class="source-code">        USBError { err: e.to_string() }</p><p class="source-code">    }</p><p class="source-code">}</p></li>
+				<li>Let's next look at <a id="_idIndexMarker764"/>the function to write the details <a id="_idIndexMarker765"/>retrieved for all the attached devices to an output file:<p class="source-code">//Function to write details to output file</p><p class="source-code">fn write_to_file(usb: USBList) -&gt; Result&lt;(), USBError&gt; {</p><p class="source-code">    let mut file_handle = File::create</p><p class="source-code">        ("usb_details.txt")?;</p><p class="source-code">    write!(file_handle, "{}\n", usb)?;</p><p class="source-code">    Ok(())</p><p class="source-code">}</p></li>
+			</ol>
+			<p>We can now move on to the <strong class="source-inline">main()</strong> function.</p>
+			<h2 id="_idParaDest-170"><a id="_idTextAnchor178"/>Writing the main() function</h2>
+			<p>In <a id="_idIndexMarker766"/>this section, we'll write the <strong class="source-inline">main()</strong> function, which sets up the device context, gets a list of connected USB devices, and then iterates through the list of devices to retrieve the details of each device. We'll also write a function to print out the device details:</p>
+			<ol>
+				<li value="1">We'll start with the <strong class="source-inline">main()</strong> function:<p class="source-code">fn main() -&gt; Result&lt;(), USBError&gt; {</p><p class="source-code">    // Get libusb context</p><p class="source-code">    let context = Context::new()?;</p><p class="source-code"> </p><p class="source-code">    //Get list of devices</p><p class="source-code">    let mut device_list = USBList { list: vec![] };</p><p class="source-code">    for device in context.devices()?.iter() {</p><p class="source-code">        let device_desc = device.device_descriptor()?;</p><p class="source-code">        let device_handle = context</p><p class="source-code">            .open_device_with_vid_pid(</p><p class="source-code">                device_desc.vendor_id(), </p><p class="source-code">                device_desc.product_id())</p><p class="source-code">            .unwrap();</p><p class="source-code"> </p><p class="source-code">        // For each USB device, get the information</p><p class="source-code">        let usb_details = get_device_information(</p><p class="source-code">            device, &amp;device_handle)?;</p><p class="source-code">        device_list.list.push(usb_details);</p><p class="source-code">    }</p><p class="source-code">    println!("\n{}", device_list);</p><p class="source-code">    write_to_file(device_list)?;</p><p class="source-code">    Ok(())</p><p class="source-code">}</p><p>In the <strong class="source-inline">main()</strong> function, we're <a id="_idIndexMarker767"/>first creating a new <strong class="source-inline">libusb Context</strong> that can return the list of connected devices. We are then iterating through the device list obtained from the <strong class="source-inline">Context</strong> struct, and calling the <strong class="source-inline">get_device_information()</strong> function for each USB device. The details are finally also printed out to an output file by calling the <strong class="source-inline">write_to_file()</strong> function that we saw earlier.</p></li>
+				<li>To wrap up the code, let's write the function to get the device details:<p class="source-code">// Function to print device information</p><p class="source-code">fn get_device_information(device: Device, handle: </p><p class="source-code">    &amp;DeviceHandle) -&gt; Result&lt;USBDetails, USBError&gt; {</p><p class="source-code">    let device_descriptor = </p><p class="source-code">        device.device_descriptor()?;</p><p class="source-code">    let timeout = Duration::from_secs(1);</p><p class="source-code">    let languages = handle.read_languages(timeout)?;</p><p class="source-code">    let language = languages[0];</p><p class="source-code">    // Get device manufacturer name</p><p class="source-code">    let manufacturer = </p><p class="source-code">        handle.read_manufacturer_string(</p><p class="source-code">            language, &amp;device_descriptor, timeout)?;</p><p class="source-code">    // Get device USB product name</p><p class="source-code">    let product = handle.read_product_string(</p><p class="source-code">        language, &amp;device_descriptor, timeout)?;</p><p class="source-code">    //Get product serial number</p><p class="source-code">    let product_serial_number =</p><p class="source-code">        match handle.read_serial_number_string(</p><p class="source-code">            language, &amp;device_descriptor, timeout) {</p><p class="source-code">            Ok(s) =&gt; s,</p><p class="source-code">            Err(_) =&gt; "Not available".into(),</p><p class="source-code">        };</p><p class="source-code">    // Populate the USBDetails struct</p><p class="source-code">    Ok(USBDetails {</p><p class="source-code">        manufacturer,</p><p class="source-code">        product,</p><p class="source-code">        serial_number: product_serial_number,</p><p class="source-code">        bus_number: device.bus_number(),</p><p class="source-code">        device_address: device.address(),</p><p class="source-code">        vendor_id: device_descriptor.vendor_id(),</p><p class="source-code">        product_id: device_descriptor.product_id(),</p><p class="source-code">        maj_device_version: </p><p class="source-code">            device_descriptor.device_version().0,</p><p class="source-code">        min_device_version: </p><p class="source-code">            device_descriptor.device_version().1,</p><p class="source-code">    })</p><p class="source-code">}</p></li>
+			</ol>
+			<p>This concludes the code. Make <a id="_idIndexMarker768"/>sure to plug in a USB device (such as a thumb drive) to the computer. Run the code with <strong class="source-inline">cargo run</strong>. You should see the list of attached USB devices printed to the terminal, and also written to the output <strong class="source-inline">usb_details.txt</strong> file.</p>
+			<p>Note that in this example, we have demonstrated how to do file I/O using both an external crate (for retrieving USB device details) and the standard library (for writing to an output file). We've unified error handling using a common error handling struct, and automated conversions of error types to this custom error type.</p>
+			<p>The Rust crates ecosystem (<strong class="source-inline">crates.io</strong>) has similar crates to interact with other types of devices and filesystems. You can experiment with them.</p>
+			<p>This concludes the section on writing a program to retrieve USB details.</p>
+			<h1 id="_idParaDest-171"><a id="_idTextAnchor179"/>Summary</h1>
+			<p>In this chapter, we reviewed the foundational concepts of device management in Unix/Linux. We looked at how to do buffered reads and writes using the <strong class="source-inline">std::io</strong> module. We then learned how to interact with the standard input, standard output, and standard error streams of a process. We also saw how to chain readers together and use iterators for reading from devices. We then looked at the error handling features with the <strong class="source-inline">std::io</strong> module. We concluded with a project to detect the list of connected USB devices and printed out the details of each USB device both to the terminal and to an output file.</p>
+			<p>The Rust Standard Library provides a clean layer of abstraction for doing I/O operations on any type of device. This encourages the Rust ecosystem to implement these standard interfaces for any type of device, enabling Rust system programmers to interact with different devices in a uniform manner. Continuing on the topic of I/O, in the next chapter, we will learn how to do network I/O operations using the Rust Standard Library.</p>
+		</div>
+	</body></html>
