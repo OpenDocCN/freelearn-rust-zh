@@ -1,0 +1,779 @@
+- en: '*Chapter 10*: Working with Device I/O'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In [*Chapter 6*](B16405_06_Final_NM_ePUB.xhtml#_idTextAnchor101), *Working with
+    Files and Directories in Rust*, we covered the details of how to perform file
+    I/O operations (such as reading and writing to files) using the Rust Standard
+    Library. In Unix-like operating systems, a file is an abstraction that is used
+    to work not only with regular disk files (which are used to store data) but also
+    with several types of devices that are connected to a machine. In this chapter,
+    we will look at the features of the Rust Standard Library that enable us to perform
+    reads and writes to any type of device (also called device I/O) in Rust. Device
+    I/O is an essential aspect of system programming to monitor and control various
+    types of devices attached to a computer, such as keyboards, USB cameras, printers,
+    and sound cards. You may be curious to know what support Rust provides to a system
+    programmer to handle all these different types of devices. We'll answer this question
+    as we go through the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will review the basics of I/O management in Unix/Linux using
+    the Rust Standard Library, including handling errors, and then write a program
+    to detect and print details of connected USB devices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover these topics in the following order:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding device I/O fundamentals in Linux
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Doing buffered reads and writes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Working with standard input and output
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Chaining and iterators over I/O
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Handling errors and returning values
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Getting details of connected USB devices (project)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will have learned how to work with standard
+    readers and writers, which constitute the foundation of any I/O operation. You'll
+    also learn how to optimize system calls through the use of buffered reads and
+    writes. We'll cover reading and writing to standard I/O streams of a process and
+    handling errors from I/O operations, as well as learning ways to iterate over
+    I/O. These concepts will be reinforced through an example project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Verify that `rustup`, `rustc`, and `cargo` have been installed correctly with
+    the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Git repo for the code in this chapter can be found at [https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter10/usb](https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter10/usb).
+  prefs: []
+  type: TYPE_NORMAL
+- en: For running and testing the project in this book, you must have the native libusb
+    library installed where it can be found by `pkg-config`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The project in this book has been tested on macOS Catalina 10.15.6.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For instructions on building and testing on Windows, refer: [https://github.com/dcuddeback/libusb-rs/issues/20](https://github.com/dcuddeback/libusb-rs/issues/20)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For general instructions on environmental setup of `libusb` crate, refer to:
+    [https://github.com/dcuddeback/libusb-rs](https://github.com/dcuddeback/libusb-rs)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding device I/O fundamentals in Linux
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In previous chapters, we saw how to schedule work on CPUs using **processes
+    and threads**, and how to manage **memory** by controlling the memory layout of
+    a program. In addition to the CPU and memory, the operating system also manages
+    the system's hardware devices. Examples of hardware devices include keyboards,
+    mice, hard disks, video adapters, audio cards, network adapters, scanners, cameras,
+    and other USB devices. But the peculiarities of these physical hardware devices
+    are hidden from the user programs by the operating system, using software modules
+    called **device drivers**. Device drivers are indispensable software components
+    for doing device I/O. Let's take a closer look at them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What are device drivers?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Device drivers** are shared libraries loaded into the kernel that contain
+    functions to perform low-level hardware control. They communicate with the devices
+    through the computer bus or communication subsystem to which the device is connected.
+    They are specific to each device type (for example, a mouse or network adaptor)
+    or class of devices (for example, IDE or SCSI disk controllers). They are also
+    specific to an operating system (for example, a device driver for Windows doesn''t
+    work on Linux even for the same device type).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Device drivers handle the peculiarities of the devices (or device classes) for
+    which they are written. For example, a device driver to control a hard disk receives
+    requests to read or write some file data identified by a **block number**. The
+    device driver translates the block number into track, sector, and cylinder numbers
+    on the disk. It also initializes the device, checks whether the device is in use,
+    validates input parameters to its function calls, determines the commands to be
+    issued, and issues them to the device. It handles the interrupts from the device
+    and communicates them back to the calling program. The device driver further implements
+    the specific hardware protocols that the device supports, such as **SCSI/ATA/SATA**
+    for disk access or **UART** for serial port communications. Device drivers thus
+    abstract away a lot of the hardware-specific details of controlling devices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The operating system (specifically the kernel) accepts system calls from the
+    user programs for device access and control, and then uses the respective device
+    driver to physically access and control the device. *Figure 10.1* illustrates
+    how user space programs (for example, Rust programs that use the standard library
+    to talk to the operating system kernel) use system calls to manage and control
+    various types of devices:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.1 – Device I/O in Linux](img/Figure_10.1_B16405.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.1 – Device I/O in Linux
+  prefs: []
+  type: TYPE_NORMAL
+- en: In [*Chapter 6*](B16405_06_Final_NM_ePUB.xhtml#_idTextAnchor101), *Working with
+    Files and Directories in Rust*, we saw that Linux/Unix has the philosophy that
+    *everything is a file*, characterized by the universality of I/O. The same system
+    calls, such as `open()`, `close()`, `read()`, and `write()`, can be applied to
+    all types of I/O whether it's a regular file (used to store text or binary data),
+    a directory, device files, or network connections. What this means is that programmers
+    of user space programs can write code to communicate with and control devices
+    without worrying about the protocol and hardware specifics of the devices, thanks
+    to the abstraction layers provided by the kernel (system calls) and device drivers.
+    Furthermore, the Rust Standard Library adds another layer of abstraction to provide
+    a device-independent software layer, which Rust programs can use for device I/O.
+    This is the primary focus of this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Types of devices
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In Unix/Linux, devices are broadly classified into three types:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Character devices** send or receive data as a serial stream of bytes. Examples
+    are terminals, keyboards, mice, printers, and sound cards. Unlike regular files,
+    data cannot be accessed at random but only sequentially.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Block devices** store information in fixed-size blocks and allow random access
+    to these blocks. Filesystems, hard disks, tape drives, and USB cameras are examples
+    of block devices. A filesystem is mounted on a block device.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Network devices** are similar to character devices as data is read serially,
+    but there are some differences. Data is sent in variable-length packets using
+    a network protocol, which the operating system and the user program have to deal
+    with. A network adaptor is usually a hardware device (with some exceptions, such
+    as the loopback interface, which is a software interface) that interfaces to a
+    network (such as **Ethernet** or **Wi-Fi**).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A hardware device is identified by its *type* (block or character) and a *device
+    number*. The device number in turn is split into a major and minor device number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When a new hardware is connected, the kernel needs a device driver that is compatible
+    with the device and can operate the device controller hardware. A device driver,
+    as discussed earlier, is essentially a shared library of low-level, hardware-handling
+    functions that can operate in a privileged manner as part of the kernel. Without
+    device drivers, the kernel does not know how to operate the device. When a program
+    attempts to connect to a device, the kernel looks up associated information in
+    its tables and transfers control to the device driver. There are separate tables
+    for *block* and *character* devices. The device driver performs the required task
+    on the device and returns control back to the operating system kernel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As an example, let's look at a web server sending a page to a web browser. The
+    data is structured as an **HTTP response message** with the **web page (HTML)**
+    sent as part of its **data payload**. The data itself is stored in the kernel
+    in a buffer (data structure), which is then passed to the **TCP layer**, then
+    to the **IP layer**, on to the **Ethernet device driver**, then to the **Ethernet
+    adaptor**, and onward to the **network**. The Ethernet device driver does not
+    know anything about connections and only handles data packets. Similarly, when
+    data needs to be stored to a file on the disk, the data is stored in a buffer,
+    which is passed on to the **filesystem device driver** and then onward to the
+    **disk controller**, which then saves it to the disk (for example, hard disk,
+    SSD, and so on). Essentially, the *kernel* relies on a *device driver* to interface
+    with the device.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Device drivers are usually part of the kernel (**kernel device driver**), but
+    there are also **user space device drivers**, which abstract out the details of
+    kernel access. Later in this chapter, we will be using one such user space device
+    driver to detect USB devices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've discussed the basics of device I/O, including device drivers and types
+    of devices in Unix-like systems, in this section. Starting from the next section,
+    we'll focus on how to do device-independent I/O using features from the Rust Standard
+    Library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Doing buffered reads and writes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Reads and writes are the fundamental operations performed on I/O types such
+    as files and streams and are very crucial for working with many types of system
+    resources. In this section, we'll discuss different ways to do *reads* and *writes*
+    to I/O in Rust. We'll first cover the core traits – `Read` and `Write` – which
+    allow Rust programs to perform read and write operations on objects that implement
+    these traits (which are also called **readers** and **writers**). Then, we'll
+    see how to do *buffered reads* and *buffered writes*, which are more efficient
+    for certain types of read and write operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's start with the basic `Read` and `Write` traits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In line with the *everything-is-a-file* philosophy, the Rust Standard Library
+    provides two traits – `Read` and `Write` – which provide a general interface for
+    reading and writing inputs and outputs. This trait is implemented for different
+    types of I/O, such as files, `TcpStream`, standard input, and standard output
+    streams of processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An example of using the `Read` trait is shown in the following code. Here,
+    we are opening a `records.txt` file with the `open()` function in the `std::fs::File`
+    module (which we learned earlier). We''re then bringing the `Read` trait from
+    the `std::io` module into scope, and using the `read()` method of this trait to
+    read bytes from a file. The same `read()` method can also be used to read from
+    any other entity implementing the `Read` trait, such as a **network socket** or
+    a **standard input** stream:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Create a file called `records.txt` in the project root and run the program with
+    `cargo run`. You can optionally print out the value of the buffer, which will
+    display the raw bytes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Read` and `Write` are byte-based interfaces, which can get inefficient as
+    they involve continual system calls to the operating system. To overcome this,
+    Rust also provides two structs to enable doing buffered reads and writes – `BufReader`
+    and `BufWriter`, which have a built-in buffer and reduce the number of calls to
+    the operating system.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The previous example can be rewritten as shown here, to use `BufReader`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code changes (from the previous version) have been highlighted. `BufReader`
+    uses the `BufRead` trait, which is brought into scope. Instead of reading directly
+    from the file handle, we create a `BufReader` instance and read a line into this
+    struct. The `BufReader` methods internally optimize calls to the operating system.
+    Run the program and verify that the value from the file is printed correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`BufWriter` similarly buffers writes to the disk, thus minimizing system calls.
+    It can be used in a similar manner as shown in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the code shown, we're creating a new file to write into, and are also creating
+    a new `BufWriter` instance. We then write a value from the buffer into the `BufWriter`
+    instance. Run the program and verify that the specified string value has been
+    written to a file with the name `file.txt` in the project root directory. Note
+    that here, in addition to `BufWriter`, we also have to bring the `Write` trait
+    into scope as this contains the `write()` method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note when to use and when not to use `BufReader` and `BufWriter`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`BufReader` and `BufWriter` speed up programs that make small and frequent
+    reads or writes to a disk. If the reads or writes only occasionally involve large-sized
+    data, they do not offer any benefit.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`BufReader` and `BufWriter` do not help while reading from or writing to in-memory
+    data structures.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In this section, we saw how to do both unbuffered and buffered reads and writes.
+    In the next section, we'll learn how to work with standard inputs and outputs
+    of a process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Working with standard input and output
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In Linux/Unix, **streams** are communication channels between a process and
+    its environment. By default, three standard streams are created for every running
+    process: **standard input**, **standard output**, and **standard error**. A stream
+    is a communication channel that has two ends. One end is connected to the process
+    and the other end to another system resource. For example, a standard input can
+    be used by a process to read characters or text from a keyboard or another process.
+    Similarly, a standard output stream can be used by a process to send some characters
+    to the terminal or to a file. In many modern programs, the standard error of a
+    process is connected to a log file, which makes analyzing and debugging errors
+    easier.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Rust Standard Library provides methods to interact with standard input and
+    output streams. The `Stdin` struct in the `std::io` module represents the handle
+    to the input stream of a process. This handle implements the `Read` trait, which
+    we covered in the previous section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The code example here shows how to interact with the standard input and standard
+    output streams of a process. In the code shown, we are reading a line from the
+    standard input into a buffer. We''re then writing back the contents of the buffer
+    to the standard output of the process. Note that here, the word *process* refers
+    to the running program that you have written. You are essentially *reading from*
+    and *writing to* the *standard input* and *standard output*, respectively, of
+    the running program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Run the program with `cargo run`, enter some text, and hit the *Enter* key.
+    You'll see the text echoed back on the terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Stdin`, which is a handle to the input stream of a process, is a shared reference
+    to a global buffer of input data. Likewise, `Stdout`, which is the output stream
+    of a process, is a shared reference to a global data buffer. Since `Stdin` and
+    `Stdout` are references to shared data, to ensure exclusive use of these data
+    buffers, the handles can be locked. For example, the `StdinLock` struct in the
+    `std::io` module represents a locked reference to the `Stdin` handle. Likewise,
+    the `StdoutLock` struct in the `std::io` module represents a locked reference
+    to the `Stdout` handle. Examples of how to use the locked reference are shown
+    in the code example here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the code shown, the standard input and output stream handles are locked before
+    reading and writing to them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can similarly write to the *standard error* stream. A code example is shown
+    here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the code shown, we're constructing a handle to the standard error stream
+    using the `stderr()` function. Then, we're locking this handle and then writing
+    some text to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we've seen how to interact with the standard input, standard
+    output, and standard error streams of a process using the Rust Standard Library.
+    Recall that in the previous chapter on managing concurrency, we saw how, from
+    a parent process, we can read from and write to the standard input and output
+    streams of the child process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, let's look at a couple of functional programming constructs
+    that can be used for I/O in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Chaining and iterators over I/O
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll look at how to use iterators and chaining with the `std::io`
+    module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Many of the data structures provided by the `std::io` module have built-in
+    `while` and `for` loops. Here is an example of using the `lines()` iterator with
+    the `BufReader` struct, which is a part of the `std::io` module. This program
+    reads lines from the *standard input* stream in a loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the code shown, we have created a handle to the standard input stream and
+    passed it to a `BufReader` struct. This struct implements the `BufRead` trait,
+    which has a `lines()` method that returns an *iterator* over the lines of the
+    reader. This helps us to type inputs on the terminal *line by line* and have it
+    read by our running program. The text entered on the terminal is echoed back to
+    the terminal. Execute `cargo run`, and type some text, and then hit the *Enter*
+    key. Repeat this step as many times as you'd like. Exit from the program with
+    *Ctrl* + *C*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Likewise, the iterator can be used to read line by line from a *file* (instead
+    of from standard input, which we saw in the previous example). A code snippet
+    is shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Create a file called `file.txt` in the project root directory. Enter a few lines
+    of text in this file. Then, run the program using `cargo run`. You'll see the
+    file contents printed out to the terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ve so far seen how to use iterators from the `std::io` module. Let''s now
+    look at another concept: **chaining**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Read` trait in the `std::io` module has a `chain()` method, which allows
+    us to chain multiple `BufReader` together into one handle. Here is an example
+    of how to create a single **chained handle** combining two files, and how to read
+    from this handle:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: The statement using the `chain()` method has been highlighted in the code. The
+    rest of the code is fairly self-explanatory, as it is similar to what we've seen
+    in previous examples. Ensure to create two files, `file1.txt` and `file2.txt`,
+    under the project root folder and enter a few lines of text in each. Run the program
+    with `cargo run`. You'll see the data from both files printed out line by line.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we've seen how to use iterators and how to chain readers together.
+    In the next section, let's take a look at error handling for I/O operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handling errors and returning values
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll learn about the built-in error handling support in the
+    `std::io` module. Handling recoverable errors in an appropriate manner makes Rust
+    programs more robust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the code examples we've seen so far, we've used the `unwrap()` function to
+    extract the return value from the `std::io` module methods and associated functions,
+    such as `Read`, `Write`, `BufReader`, and `BufWriter`. However, this is not the
+    correct way to handle errors. The `std::io` module has a specialized `Result`
+    type that is returned from any function or method in this module that may produce
+    an error.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s rewrite the previous example (of chaining readers) using the `io::Result`
+    type as the return value from the function. This allows us to use the `?` operator
+    to directly pass errors back from the `main()` function, instead of using the
+    `unwrap()` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Code related to error handling has been highlighted. Run the program with `cargo
+    run`, this time making sure that neither `file1.txt` nor `file3.txt` exists in
+    the project root folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You'll see the error message printed to the terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the code we''ve just seen, we''re just propagating the error received from
+    the operating system while making the calls. Let''s now try to handle the errors
+    in a more active manner. The code example here shows custom error handling for
+    the same code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll notice that we've created a new function that returns `std::io::Result`
+    to the `main()` function. We're handling errors in various operations, such as
+    reading from a file and reading from the chained readers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, run the program with `cargo run`, ensuring that both `file1.txt` and
+    `file2.txt` exist. You'll see the contents from both files printed to the terminal.
+    Rerun the program by removing one of these files. You should see the custom error
+    message from our code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we conclude the section on handling errors. Let's now move on to
+    the last section of the chapter, where we will go through a project to detect
+    and display details of USB devices connected to a computer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Getting details of connected USB devices (project)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we will demonstrate an example of working with devices in Rust.
+    The example chosen is to display details of all connected USB devices of a computer.
+    We'll be using `libusb`, a C library that helps to interact with USB devices.
+    The `libusb` crate in Rust is a safe wrapper around the C `libusb` library. Let's
+    first look at the design.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Designing the project
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Here is how this would work:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When a USB device is plugged into a computer, the electrical signals on the
+    computer bus trigger the **USB controller** (hardware device) on the computer.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The USB controller raises an interrupt on the CPU, which then executes the interrupt
+    handler registered for that interrupt in the kernel.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When a call is made from the Rust program through the Rust `libusb` wrapper
+    crate, the call is routed to the `libusb` C library, which in turn makes a system
+    call on the kernel to read the device file corresponding to the USB device. We've
+    seen earlier in this chapter how Unix/Linux enables standard `read()` and `write()`,
+    for I/O.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When the system call returns from the kernel, the `libusb` library returns the
+    value from the syscall to our Rust program.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We''re using the `libusb` library because writing a USB device driver from
+    scratch requires implementing the USB protocol specifications, and writing device
+    drivers is the subject of a separate book in itself. Let''s look at the design
+    of our program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.2 – Design of the USB detector project](img/Figure_10.2_B16405.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.2 – Design of the USB detector project
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Figure 10.2* shows the structs and functions in the program. Here is a description
+    of the data structures:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`USBList`: List of USB devices detected.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`USBDetails`: This contains the list of USB details that we want to retrieve
+    through this program for each USB device.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`USBError`: Custom error handling.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'These are the functions that we will write:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`get_device_information()`: Function to retrieve the required device details
+    given a device reference and device handle.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`write_to_file()`: Function to write device details to an output file.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`main()`: This is the entry point to the program. It instantiates a new `libusb::Context`,
+    retrieves a list of attached devices, and iterates through the list to call `get_device_information()`
+    for each device. The retrieved details are printed to the terminal and also written
+    to the file using the `write_to_file()` function.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We can now begin to write the code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing data structures and utility functions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this section, we''ll write the data structures for storing the USB device
+    list and USB details and for custom error handling. We''ll also write a few utility
+    functions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s begin by creating a new project:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let''s add the `libusb` crate to `Cargo.toml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: We'll now look at the code in parts. Add all the code for this project in `usb/src/main.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Here are the module imports:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: We're importing the `libusb` modules and a few modules from the Rust Standard
+    Library. `fs::File` and `io::Write` are for writing to an output file, `result::Result`
+    is the return value from the functions, and `time::Duration` is for working with
+    the `libusb` library.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Let''s look at the data structures now:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '`USBError` is for custom error handling, `USBList` is to store a list of the
+    USB devices detected, and `USBDetails` is to capture the list of details for each
+    USB device.'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Let''s implement the `Display` trait for the `USBList` struct so that custom
+    formatting can be done to print the contents of the struct:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Next, we''ll implement `From` traits for the `USBError` struct so that errors
+    from the `libusb` crate and from the Rust Standard Library are automatically converted
+    into the `USBError` type when we use the `?` operator:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let''s next look at the function to write the details retrieved for all the
+    attached devices to an output file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: We can now move on to the `main()` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing the main() function
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this section, we''ll write the `main()` function, which sets up the device
+    context, gets a list of connected USB devices, and then iterates through the list
+    of devices to retrieve the details of each device. We''ll also write a function
+    to print out the device details:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll start with the `main()` function:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In the `main()` function, we're first creating a new `libusb Context` that can
+    return the list of connected devices. We are then iterating through the device
+    list obtained from the `Context` struct, and calling the `get_device_information()`
+    function for each USB device. The details are finally also printed out to an output
+    file by calling the `write_to_file()` function that we saw earlier.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'To wrap up the code, let''s write the function to get the device details:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This concludes the code. Make sure to plug in a USB device (such as a thumb
+    drive) to the computer. Run the code with `cargo run`. You should see the list
+    of attached USB devices printed to the terminal, and also written to the output
+    `usb_details.txt` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that in this example, we have demonstrated how to do file I/O using both
+    an external crate (for retrieving USB device details) and the standard library
+    (for writing to an output file). We've unified error handling using a common error
+    handling struct, and automated conversions of error types to this custom error
+    type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Rust crates ecosystem (`crates.io`) has similar crates to interact with
+    other types of devices and filesystems. You can experiment with them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This concludes the section on writing a program to retrieve USB details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we reviewed the foundational concepts of device management
+    in Unix/Linux. We looked at how to do buffered reads and writes using the `std::io`
+    module. We then learned how to interact with the standard input, standard output,
+    and standard error streams of a process. We also saw how to chain readers together
+    and use iterators for reading from devices. We then looked at the error handling
+    features with the `std::io` module. We concluded with a project to detect the
+    list of connected USB devices and printed out the details of each USB device both
+    to the terminal and to an output file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Rust Standard Library provides a clean layer of abstraction for doing I/O
+    operations on any type of device. This encourages the Rust ecosystem to implement
+    these standard interfaces for any type of device, enabling Rust system programmers
+    to interact with different devices in a uniform manner. Continuing on the topic
+    of I/O, in the next chapter, we will learn how to do network I/O operations using
+    the Rust Standard Library.
+  prefs: []
+  type: TYPE_NORMAL

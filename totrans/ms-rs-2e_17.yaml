@@ -1,0 +1,624 @@
+- en: Debugging
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter will cover various approaches to debugging Rust programs. Rust
+    programs, at the binary level, are very similar to C programs. This means that
+    we can leverage the strong legacy of industry standard debuggers such as gdb and
+    lldb that are used for debugging C/C++ programs and use the same tools to debug
+    Rust code as well. In this chapter, we'll interactively walk through some basic
+    debugging workflow and commands with gdb. We'll also cover integrating the gdb
+    debugger with **Visual Studio Code** (**vscode**) editor and, later, give a quick
+    overview of another debugger, called **rr**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction to debugging
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The gdb basics and debugging a Rust program
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The gdb integration with Visual Studio Code
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RR debugger—a quick overview
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Introduction to debugging
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '"If debugging is the process of removing bugs, then programming must be the
+    process of putting them in."                                                 
+                                                                                 
+                                                                                 
+                                                                             - Edsger
+    W. Dijkstra'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s the situation: your program doesn''t work, and you have no idea why.
+    To fix this mysterious issue in your code, you have added several print statements
+    and enabled trace logging, too. Still no luck. Worry not, for you are not alone!
+    Every programmer has been there and has spent countless hours finding that one
+    nasty bug that brought havoc into production.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Errors and deviations in software are referred to as bugs, and the act of removing
+    them is termed debugging. Debugging is a controlled and systematic approach to
+    examining the cause and effect of a fault in software. It''s an essential skill
+    to learn for anybody that''s interested in gaining more insight into how their
+    program behaves and runs. However, debugging is often not an easy task without
+    the right tools, and the developer can lose track of what the actual bug is or
+    might even be looking for bugs in the wrong place. The approaches we use to identify
+    bugs in software can greatly affect the time taken to squash them and continue
+    on a happy path. Depending on how complex a bug is, debugging is usually approached
+    in one of the following ways:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Print-line debugging**: In this method, we sprinkle print statements in the
+    required places in the code, where we suspect the bug may possibly modify application
+    state, and monitor the output when the program is run. This is simple, crude,
+    and often effective, but it''s not possible in every situation. This technique
+    requires no extra tools, and everybody knows how to do it. It''s actually the
+    starting point of debugging for most bugs. To aid with print-line debugging, Rust
+    provides the `Debug` trait, which we have already used many times before, and
+    the `dbg!`, `println!`, and `eprintln!` family of macros.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Read-Evaluate-Print-Loop-based debugging**: Languages that are interpreted,
+    such as Python, often come with their own interpreter. An interpreter provides
+    you with a **Read-Evaluate-Print-Loop (REPL)** interface, where you can load your
+    program in an interactive session and examine the state of variables step by step.
+    It is very useful in debugging, especially if you''ve managed to properly modularize
+    your code so that it can be invoked independently as functions. Unfortunately,
+    Rust does not have an official REPL, and its overall design doesn''t really support
+    one. However, there have been some efforts on this with the miri project, which
+    can be found at [https://github.com/solson/miri](https://github.com/solson/miri).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Debuggers**: With this approach, we compile our program with special debugging
+    symbols in the resulting binary and use an external program to monitor its execution.
+    These external programs are called debuggers and the most popular ones are gdb
+    and lldb. They are the most powerful and efficient methods of debugging, allowing
+    you to inspect a lot of details about your program at runtime. Debuggers give
+    you the ability to pause a running program and examine its state in memory to
+    find out the specific line of code that introduced the bug.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The first two approaches are quite obvious, and so we don''t need to go through
+    them here. This leaves us with the third approach: debuggers. Debuggers as a tool
+    are very simple to use, but they are not easy to understand and are often not
+    introduced properly to programmers early in their careers. In the next section,
+    we''ll go through a step-by-step process of debugging a program written in Rust
+    with gdb. But before that, let''s get to know a little about debuggers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Debuggers in general
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Debuggers are programs that can inspect a program's internal state at runtime,
+    provided that the program has been compiled – debug symbols included. They rely
+    on process introspection system calls such as **ptrace** in Linux. They allow
+    you to pause the execution of a program at runtime. To achieve this, they provide
+    a feature called a breakpoint. A breakpoint represents a suspension point in a
+    running program. A breakpoint can be put on any function or line of code in the
+    program. Once the debugger hits the breakpoint, it pauses and waits for the user
+    to input further instructions. At this point, the program is not running and is
+    in the middle of its execution. Here, you can examine the state of variables,
+    the active stack frames of a program, and other things such as the program counter
+    and the assembly instructions. Debuggers also come with watchpoints, which are
+    similar to breakpoints but work on variables. They trigger and stop the execution
+    when the variable is read or written to.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To use a debugger on a program, we need some prerequisites, though. Let's discuss
+    them next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prerequisites for debugging
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A compiled program or object file is a sequence of zeros and ones that has no
+    mapping of the original source from which it was compiled. To enable a program
+    to be inspected by a debugger, we need to map the compiled binary instructions
+    to the source file somehow. This is done by injecting extra bookkeeping symbols
+    and instrumentation code during compilation, which the debugger can then latch
+    onto. These symbols are maintained in a symbol table that contains information
+    about the elements of the program, such as the names of variables, functions,
+    and types. They follow a standard format called **Debugging With Attributed Record
+    Format** (**DWARF**), which most standard debuggers know how to parse and understand.
+    These symbols give developers the capability to examine the program, such as the
+    ability to match the source code to the running binary, keeping information on
+    call frames, register values the memory map of the program, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To debug our program, we need to compile it in debug mode. In debug mode, a
+    compiled binary will include debugging symbols in the DWARF debugging format.
+    Here, the binary gains a bit of size and runs more slowly because it has to update
+    the debugging symbol table as it runs. When compiling C programs, you need to
+    compile with the `-g` flag to tell the compiler to compile with debug symbols
+    included. With Cargo, a debug build of the project is compiled by default in the
+    `target/debug/` directory, with debugging symbols included.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Note**: You can also pass a `-g` flag to `rustc` when using a package manager
+    other than Cargo.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Running the debugger is possible against a release build too, but the selection
+    of operations is very limited. If you want to enable `DWARF` debugging symbols,
+    even in release builds, you can configure that in `Cargo.toml` by modifying the
+    `profile.release` section, like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: With that said, let's dive into setting up gdb.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up gdb
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To get started with gdb, we first need to install it. Usually, it is installed
+    by default on Linux systems, but if it isn't, refer to guides on the internet
+    for setting it up on your machine. On Ubuntu, it's just a matter of running an
+    installation command such as `apt-get install gdb`. We'll be using gdb version
+    `7.11.1` for our demo here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While gdb has amazing support for Rust programs, there are some Rust-specific
+    things that it doesn't handle correctly, such as getting tidier output. The Rust
+    toolchain, rustup, also installs wrappers for both gdb and lldb debuggers, `rust-gdb`
+    and `rust-lldb`. It does this to account for some of the limitations in handling
+    Rust code such as getting tidier output for mangled types and some pretty printing
+    of user-defined types. Let's explore debugging a Rust program with gdb.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A sample program – buggie
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''ll need a program to debug to experience gdb. Let''s create a new project
+    by running `cargo new buggie`. Our program will have a single function, `fibonacci`,
+    which takes a position of `n` as `usize`, and gives us the *nth* Fibonacci number.
+    This function assumes that the initial values of the Fibonacci numbers are `0`
+    and `1`. The following code is the program in its entirety:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s take this program for a spin:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/655ea2ad-b1da-4292-94dd-4089ff58dd2e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We ran the program with `4` as the argument, but we can see a `0` as the output,
+    which should have been `3`. We have a bug here. While we could use the `println!`
+    or `dbg!` macro to easily tackle this bug, we'll use gdb this time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we run gdb, we need to plan our debugging session. This includes deciding
+    where to look inside our program and what to look for. As a starting point, we'll
+    examine the contents of the `main` function and then step into the `fibonacci`
+    function. We'll set two breakpoints, one at `main` and another within `fibonacci`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The gdb basics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''ll run our program again, this time with gdb using the `rust-gdb` wrapper
+    by running `rust-gdb --args target/debug/buggie 4`. The `--args` flags are used
+    to pass arguments to the program. Here, we pass the number `4`. Here''s the output
+    from gdb:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/f3b532f6-1453-4e4d-a53c-6b3438e7319a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'After loading our program, gdb throws us into the `(gdb)` prompt. At this point,
+    the program is not running—it''s just been loaded. Let''s take a quick look at
+    the scope of gdb''s features. Try using the `help` command (which displays high-level
+    sections of commands) and the `help all` command(which displays a help message
+    for all available commands):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ce3e6048-7f4a-43e9-9812-636eb0a4ff29.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Okay, so it seems that gdb can do a lot: there are `32` pages of these commands.
+    Next, let''s run the program and see the outcome by invoking `run` on the gdb
+    prompt:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/84e23af9-a02d-4f37-80c2-746d56e20078.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: That's how our program runs within the context of gdb. As you can see, in the
+    middle, we have the same faulty output of `0` for the fourth Fibonacci number.
+    We'll debug this now. Let's clear the screen by pressing *Ctrl* + *L*. Let's also
+    quit gdb by invoking `q` and start afresh by running `rust-gdb --args target/debug/buggie
+    4`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As a starting point in our debugging session, and to see whether we are passing
+    the correct number to our Fibonacci function, we''ll add a breakpoint at the start
+    of `main`, which is line `18` in our program. To add a breakpoint on that line,
+    we''ll run the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This gives us the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The gdb has now set a breakpoint on the same line that we requested, that is, `18`.
+    Let''s run our program by invoking `run`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This gives us the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our program is now paused at the breakpoint, awaiting its next instruction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You''ll see that the symbols from Rust are prefixed with their module and suffixed
+    by some random IDs, for example, `buggie::main::h8018d7420dbab31`. Now, to view
+    where we are in our program, we can run the `list` command to view the source
+    code, or we can use a more visual TUI mode by running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This opens gdb with some nice feedback, along with our Command Prompt still
+    on the bottom half:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/341bd30a-1ad4-4a5f-8392-e7cfdad9e198.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see, the TUI indicates that we have a breakpoint on the left, with
+    the `B+>` symbol on line 18\. We can scroll through the code listing in the TUI
+    panel to view our entire source code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Note**: If the TUI screen renders incorrectly, you can type in `refresh`
+    and it will redraw the panels and code listing afresh.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we''ll go through our program line by line. To do that, we have two available
+    commands: `next` and `step`. The first is for running through the program line
+    by line, while `step` allows you to jump within a function and go through the
+    instructions within it line by line. We want to use `next`, which will take us
+    to the next line 19, instead of stepping inside the details of Rust''s standard
+    library API calls. Run the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have to do this two more times before we reach the Fibonacci function. We
+    can run the last command by just pressing *Enter* on the keyboard. In this case,
+    pressing *Enter* two times will run the next two lines of code. Now, we''re right
+    before the Fibonacci invocation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/b9b705eb-db3d-42ea-8d03-d91d22b353b2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Before we step inside the Fibonacci function, let''s examine the `pos` variable
+    to check that it''s not some garbage or a `0`. We can do this with the `print`
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Okay, our `pos` is correct. Now, we are at line 20, which is right before our
+    `fibonacci` invocation. Now, use the `step` command to walk inside the `fibonacci`
+    function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are now at line 6:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/51897497-e5fb-4cc6-b9ef-a56533d39b0c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Next, let''s step through the code line by line. While we are stepping through
+    code in our Fibonacci function, we can examine the variables by using the `info
+    locals` and `info args` commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding output shows the `iter` variable in the third iteration. The next
+    line shows all the other variables being used in our function. We can see that,
+    on every iteration, the `c` variable is being reassigned `0`. This is because
+    we have `let c = a + b;`, which shadows the `c` variable that was declared outside
+    of the loop. Rust allows you to redeclare a variable with the same name. We have
+    found our bug here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll remove our bug by removing the redeclaration of `c`. The Fibonacci function
+    changes to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With that, let''s take the program for another spin. This time, we''ll run
+    it without the gdb debugger:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/334ac92a-d281-48bc-bfc4-2ac17048ea79.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We now have the correct output, that is, `2`, for the fourth Fibonacci number.
+    Those are the basics of using gdb to debug Rust code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Similar to gdb, lldb is another debugger that is compatible with Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's look at how to integrate gdb with a code editor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Debugger integration with Visual Studio Code
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Using debuggers from the command line is the usual way to debug your program.
+    This is also an important skill, as you could easily wind up in a situation where
+    your more advanced coding platform is not available. For instance, you may need
+    to debug a program that is already running in production. Attaching to a running
+    process is possible with both `gdb` and `lldb`, but you may not be able to attach
+    to the running program from within your editor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Nevertheless, in a typical development environment setting, you would use a
+    code editor or an IDE, which is convenient if you can debug your program from
+    the editor right away, without leaving your editor. In this way, you get a much
+    smoother debugging experience and a faster feedback loop with editors that are
+    properly integrated with debuggers. In this section, we'll look at how to integrate
+    gdb with **vscode**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To set up gdb with vscode, we need to install the **Native Debug** extension.
+    With our vscode editor open, we''ll press *Ctrl* + *Shift* + *P* and type `install
+    extension`. Alternatively, you can select the extension icon at the bottom left,
+    as shown in the following screenshot, and type `native debug`. By doing this,
+    we get the page for the Native Debug extension:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/6e65e9ec-80b0-49d4-ab17-5bdde34a90b9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We''ll click on Install and wait for the installation to complete. Once the
+    extension has been installed, we''ll click on reload to restart Visual Studio
+    Code. This enables any newly installed extension. Next up, we''ll open our `buggie`
+    directory inside vscode, click on the **Debug** menu at the top, and select **Start
+    Debugging**, as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/f68dd9ef-df43-4207-87fa-727fe6f24c73.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'From here, we''ll be asked to choose an environment, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/f0deef13-5c32-4c8c-bb0a-6e4a1d1881ae.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The `NativeDebug` extension supports both gdb and lldb. We''ll choose gdb from
+    this menu. This will open up a new `launch.json` configuration file for configuring
+    our debug session for this project. It''s created in the same project root, under
+    a directory called `.vscode/`. If it doesn''t open, we can manually create the
+    `.vscode/` directory with a `launch.json` inside it. We''ll fill this `launch.json`
+    with the following configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `launch.json` file sets up important details for gdb and vscode, such as
+    the target to invoke and the arguments to use. The other fields will be automatically
+    populated for you in most cases. The only configuration that''s specific to our
+    project is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We added a name to our configuration, that is, `"Buggie demo"`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We added a `gdbpath` variable pointing to `rust-gdb`. This will launch `gdb`
+    via the `rust-gdb` wrapper, which knows how to pretty-print complex data types
+    in Rust.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We pointed the `target` field to our debugging binary, that is, `target/debug/buggie`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We''ll save this file. Next, let''s add a breakpoint to our program in the
+    editor. We can do this by clicking on the left-hand side of the text area in vscode,
+    as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2f3acd8e-479c-494b-92ee-75fc725e7419.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'In the preceding screenshot, if you hover over the left-hand side, you will
+    see a faded red mark appear. We can click to the left of this to set our breakpoint,
+    which will then show up as a red blip. Once we''ve done that, we''ll press *F5*
+    to start gdb inside vscode. Once gdb runs and hits our breakpoint, our code editor
+    will look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0d6b967c-c135-4946-9989-ea8790bd49e4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: At the top center, we can see the usual controls, such as step over, step into,
+    or to pause/stop the debugging in our code. On the left-hand pane, we can get
+    information about the variables in the current stack frame. At the bottom left,
+    we have information about our call stack. In the middle on the left, we can watch
+    for any variable. In the preceding code, I added a watch to our `c` variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The program is now paused at line 9\. We can also hover over our variables
+    in the code to view their values, as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/17996914-cf81-4a50-a5c3-dc9239d74b78.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This is quite helpful. Those were the basics of using gdb with vscode. Next,
+    let''s go through a brief overview of another debugger that is very helpful in
+    debugging multi-threaded code: the RR debugger.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: RR debugger – a quick overview
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Apart from gdb and lldb, rr is another powerful debugger that is quite helpful
+    in debugging multi-threaded code which is harder to debug due to its non-determinism. Often,
+    when debugging multi-threaded code, a certain section of code triggers a bug but
+    fails to reproduce in subsequent executions of the program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Bugs arising due to multi-threaded code are also referred to as heisenbugs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rr debugger can perform a reproducible debugging session for non-deterministic,
+    multi-threaded code. It does this by recording the debugging session, which you
+    can replay and track incrementally to close in on the issue. It does this by first
+    saving the trace of the program to disk with all the required information to reproduce
+    the program execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One of the limitations of rr is that it is only supported on Linux and on Intel
+    CPUs as of now. To set up the rr debugger on Ubuntu 16.04, we''ll pull the latest
+    `.deb` package from [https://github.com/mozilla/rr/releases](https://github.com/mozilla/rr/releases).
+    At the time of writing, the rr version is at `5.2.0`. Having downloaded the `deb`
+    package, we can then install rr by running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Note**: It''s a prerequisite to install perf tools. You can install them
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Replace linux-tools-(version) as applicable for your kernel version. You can
+    get the kernel version with the `uname -a` command on Linux. Another prerequisite
+    is to set the `sysctl` flag in `perf_event_paranoid` from `3` to `-1`. It''s recommended
+    that you set this temporarily by running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With that done, let''s quickly create a new project by running `cargo new rr_demo`
+    and go through a debugging session with rr. We''ll explore how to use the rr debugger
+    for a sample program which demonstrates non-determinism. We''ll depend on the
+    `rand` crate, which we can add to the `Cargo.toml` file by running `cargo add
+    rand`. We have the following code in our `main.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is a minimal, non-deterministic program that spawns `10` threads and prints
+    them to stdout. To highlight the reproducibility aspect of rr, we'll spawn threads
+    and sleep for a random duration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we need to record the program''s execution with rr. This is done by
+    running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This gives us the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/13721b87-e2d2-4c9e-a94b-fa2db2030ac4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'On my machine, this records and stores the program execution trace at the following
+    location:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The recorded file, `rr_demo-15`, might be named differently on your machine.
+    We can now replay the recorded program by running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following is the session with gdb running under rr:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/c4c6279b-155f-47d8-b1ff-9f65d0a5de8d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see, the same sequence of numbers gets printed every time, as the
+    program is being run from the recorded session in the previous run. This helps
+    to debug a multi-threaded program where threads run out of order and might not
+    reproduce the bug when you run your program next time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we took a hands-on approach to debugging Rust code using existing
+    debuggers with GNU's `gdb`. We also configured gdb with vscode, giving us a convenient
+    click-based UI for debugging our code. Finally, we got a glimpse of how the rr
+    debugger can make debugging multi-threaded code deterministic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we have come to the end of our programming journey with Rust.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,2309 @@
+- en: High-Level Parallelism – Threadpools, Parallel Iterators and Processes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In previous chapters, we introduced the basic mechanisms of concurrency in the
+    Rust—programming language. In [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml),
+    *Sync and Send – the Foundation of Rust Concurrency*, we discussed the interplay
+    of the type system of Rust with concurrent programs, how Rust ensures memory safety
+    in this most difficult of circumstances. In [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+    *Locks – Mutex, Condvar, Barriers and RWLock*, we discussed the higher, so-called
+    coarse, synchronization mechanisms available to us, common among many languages.
+    In [Chapter 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml), *Atomics – the Primitives
+    of Synchronization*, and [Chapter 7](2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml),
+    *Atomics – Safely Reclaiming Memory*, we discussed the finer synchronization primitives
+    available on modern machines, exposed through Rust's concurrent memory model.
+    This has all been well and good but, though we've done deep-dives into select
+    libraries or data structures, we have yet to see the *consequences* of all of
+    these tools on the structure of programs, or how you might choose to split up
+    your workloads across CPUs depending on need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will explore higher-level techniques for exploiting concurrent
+    machines without dipping into manual locking or atomic synchronization. We'll
+    examine thread pooling, a technique common in other programming languages, data
+    parallelism with the rayon library, and demonstrate multiprocessing in the context
+    of a genetic programming project that will carry us into the next chapter, as
+    well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By the end of this chapter, we will have:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Explored the implementation of thread pool
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understood how thread pooling relates to the operation of rayon
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Explored rayon's internal mechanism in-depth
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Demonstrated the use of rayon in a non-trivial exercise
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter requires a working Rust installation. The details of verifying
+    your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust. *A pMARS
+    executable is required and must be on your PATH. Please follow the instructions
+    in the pMARS ([http://www.koth.org/pmars/](http://www.koth.org/pmars/)) source
+    tree for building instructions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can find the source code for this book''s projects on GitHub: [https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust).
+    The source code for this chapter is under `Chapter08`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thread pooling
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To this point in the book, whenever we have needed a thread, we've simply called
+    `thread::spawn`. This is not necessarily a safe thing to do. Let's inspect two
+    projects that suffer from a common defect—potential over-consumption of OS threads.
+    The first will be obviously deficient, the second less so.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Slowloris – attacking thread-per-connection servers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The thread-per-connection architecture is a networking architecture that allocates
+    one OS thread per inbound connection. This works well for servers that will receive
+    a total number of connections relatively similar to the number of CPUs available
+    to the server. Depending on the operating system, this architecture tends to reduce
+    time-to-response latency of network transactions, as a nice bonus. The major defect
+    with thread-per-connection systems has to do with slowloris attacks. In this style
+    of attack, a malicious user opens a connection to the server–a relatively cheap
+    operation, requiring only a single file-handler and simply holds it. Thread-per-connection
+    systems can mitigate the slowloris attack by aggressively timing out idle connections,
+    which the attacker can then mitigate by sending data through the connection at
+    a very slow rate, say one byte per 100 milliseconds. The attacker, which could
+    easily be just buggy software if you're deploying solely inside a trusted network,
+    spends very little resources to carry out their attack. Meanwhile, for every new
+    connection into the system, the server is forced to allocate a full stack frame
+    and forced to cram another thread into the OS scheduler. That's not cheap.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s put together a vulnerable server, then blow it up. Lay out your `Cargo.toml`
+    like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The library slog ([https://crates.io/crates/slog](https://crates.io/crates/slog))
+    is a structured logging library that I highly recommend in production systems.
+    Slog itself is very flexible, being more of a framework for composing a logging
+    system rather than a set thing. Here we''ll be logging to terminal, which is what
+    slog-term is for. The `slog-async` dependency defers actual writing to the terminal,
+    in our case, to a dedicated thread. This dedication is more important when slog
+    is emitting logs over a network, rather than quickly to terminal. We won''t go
+    in-depth on slog in this book but the documentation is comprehensive and I imagine
+    you''ll appreciate slog if you aren''t already using it. The library clap ([https://crates.io/crates/clap](https://crates.io/crates/clap))
+    is a command-line parsing library, which I also highly recommend for use in production
+    systems. Note, finally, that we produce two binaries in this project, called `server`
+    and `client`. Let''s dig into `server` first. As usual, our projects start with
+    a preamble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'By this point in the book, there''s nothing surprising here. We import the
+    external libraries we''ve just discussed as well as a host of standard library
+    material. The networking-related imports are unfamiliar, with regard to the previous
+    content of this book, but we''ll go into that briefly below. We finally create
+    a static `TOTAL_STREAMS` at the top of the program that the `server` will use
+    to track the total number of TCP streams it has connected. The `main` function
+    starts off setting up slog:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The exact details here are left to the reader to discover in slog''s documentation.
+    Next, we set up the clap and `parse` program arguments:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The details here are also left to the reader to discover in clap''s documentation,
+    but hopefully the intent is clear enough. We''re setting up two arguments, `host`
+    and `port`, which the server will listen for connections on. Speaking of:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that we''re unwrapping if it''s not possible for the server to establish
+    a connection. This is user-hostile and in a production-worthy application you
+    should match on the error and print out a nice, helpful message to explain the
+    error. Now that the server is listening for new connections, we make a server-specific
+    logger and start handling incoming connections:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The key thing here is `handle_client(log, reader, writer)`. This function accepts
+    the newly created `stream :: TcpStream`– in its buffered reader and writer guise—and
+    returns `std::io::Result<JoinHandler<()>`. We''ll see the implementation of this
+    function directly. Before that and somewhat as an aside, it''s very important
+    to remember to add buffering to your IO. If we did not have `BufWriter` and `BufReader`
+    in place here, every read and write to `TcpStream` would result in a system call
+    on most systems doing per-byte transmissions over the network. It is *significantly*
+    more efficient for everyone involved to do reading and writing in batches, which
+    the `BufReader` and `BufWriter` implementations take care of. I have lost count
+    of how many overly slow programs I''ve seen fixed with a judicious application
+    of buffered-IO. Unfortunately, we won''t dig into the implementations of `BufReader`
+    and `BufWriter` here as they''re outside the scope of this book. If you''ve read
+    this far and I''ve done alright job explaining, then you''ve learned everything
+    you need to understand the implementations and you are encouraged to dig in at
+    your convenience. Note that here we''re also allocating a vector for `JoinHandler<()>`s
+    returned by `handle_client`. This is not necessarily ideal. Consider if the first
+    connection were to be long-lived and every subsequent connection short. None of
+    the handlers would be cleared out, though they were completed, and the program
+    would gradually grow in memory consumption. The resolution to this problem is
+    going to be program-specific but, at least here, it''ll be sufficient to ignore
+    the handles and force mid-transaction exits on worker threads. Why? Because the
+    server is only echoing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: A network protocol must, anyway, be resilient to hangups on either end, owing
+    to the unreliable nature of networks. In fact, the reader who has enjoyed this
+    book and especially [Chapter 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml), *Atomics – the
+    Primitives of Synchronization*, and [Chapter 7](2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml),
+    *Atomics – Safely Reclaiming Memory*, will be delighted to learn that distributed
+    systems face many of the same difficulties with the added bonus of unreliable
+    transmission. Anyway, note that `handle_client` isn't doing all that much, merely
+    using the `thread::Builder` API to construct threads, which we discussed in [Chapter
+    5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml), *Locks – Mutex, Condvar, Barriers
+    and RWLock*. Otherwise, it's a fairly standard TCP echo.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see the server in operation. In the top of the project, run `cargo run
+    --release --bin server` and you should be rewarded with something much like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'So far so good. This server is listening on localhost, port 1987\. In some
+    other terminal, you can run a telnet to the server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: I've sent `hello server` to my running instance and have yet to receive a response
+    because of the behavior of the write buffer. An explicit flush would correct this,
+    at the expense of worse performance. Whether a flush should or should not be placed
+    will depend entirely on setting. Here? Meh.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The server dutifully logs the interaction:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The client
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The real challenge for our server comes with a specially constructed client.
+    Let''s go through it before we see the client in action. The preamble is typical:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In fact, this client preamble hews fairly close to that of the server. So,
+    too, the `main` function, as we''ll see shortly. As with many other programs in
+    this book, we dedicate a thread to reporting on the behavior of the program. In
+    this client, this thread runs the long-lived `report`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Every second `report` swaps `TOTAL_STREAMS`, maintaining its own `total_streams`,
+    and uses the reset value as a per-second gauge. Nothing we haven''t seen before
+    in this book. Now, in the `main` function, we set up the logger and parse the
+    same command options as in the server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In `main,` we start the reporter thread and ignore its handle:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That leaves only committing the slowloris attack, which is disappointingly
+    easy for the client to do:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Yep, that's it, one simple loop connecting as quickly as possible. A more sophisticated
+    setup would send a trickle of data through the socket to defeat aggressive timeouts
+    or limit the total number of connections made to avoid suspicion, coordinating
+    with other machines to do the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mischief on networks is an arms race that nobody really wins, is the moral.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Anyway, let''s see this client in action. If you run `cargo run --release --bin
+    client`, you should be rewarded with:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll find a spew of errors in the server log as well as high-CPU load due
+    to the OS scheduler thrash. It's not a good time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ultimate problem here is that we've allowed an external party, the client,
+    to decide the allocation patterns of our program. Fixed sizes make for safer software.
+    In this case, we'll need to fix the total number of threads at startup, thereby
+    capping the number of connections the server is able to sustain to a relatively
+    low number. Though, it will be a safe low number. Note that the deficiency of
+    allocating a whole OS thread to a single network connection is what inspired C10K
+    Problem in the late 1990s, leading to more efficient polling capabilities in modern
+    operating systems. These polling syscalls are the basis of Mio and thereby Tokio,
+    though the discussion of either is well outside the scope of this book. Look them
+    up. It's the future of Rust networking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What this program needs is a way of fixing the number of threads available for
+    connections. That's exactly what a thread pool is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A thread-pooling server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s adapt our overwhelmed TCP server to use a fixed number of threads. We''ll
+    start a new project whose `Cargo.toml` looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is almost exactly the same as the unbounded thread project, save that the
+    name has been changed from `overwhelmed_tpc_server` to `fixed_threads_tcp_server`
+    and we've added a new dependency–threadpool. There are a few different, stable
+    thread-pool libraries available in crates, each with a slightly different feature
+    set or focus. The workerpool project ([https://crates.io/crates/workerpool](https://crates.io/crates/workerpool)),
+    for example, sports almost the same API as threadpool, save that it comes rigged
+    up so in/out communication with the worker thread is enforced at the type-level,
+    where threadpool requires the user to establish this themselves if they want.
+    In this project, we don't have a need to communicate with the worker thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The server preamble is only slightly altered from the previous project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The only changes here are the introduction of the thread-pooling library and
+    the removal of some unused imports. Our `handle_client` implementation is also
+    basically the same, but is notably not spawning a thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our main function, likewise, is very similar. We set up the logger and parse
+    application options, adding in a new `max_connections` option:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that `max_connections` is `u16`. This is arbitrary and will under-consume
+    some of the larger machines available in special circumstances. But this is a
+    reasonable range for most hardware today. Just the same as before, we adapt the
+    logger to include the host and port information:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'So far, so good. Before the server can start accepting incoming connections,
+    it needs a thread pool. Like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Exactly what `threadpool::Builder` does and how it works we defer to the next
+    section, relying only on documentation to guide us. As such, we now have `ThreadPool`
+    with `max_connection` possible active threads. This pool implementation does not
+    bound the total number of jobs that can be run against the pool, collecting them
+    in a queue, instead. This is not ideal for our purposes, where we aim to reject
+    connections that can''t be serviced. This is something we can address:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The accept loop is more or less the same as in the previous server, except
+    at the top of the loop we check `pool.active_count()` against the configured `max_connections`,
+    reject the connection if the number of running workers is at capacity; otherwise
+    we accept the connection and execute it against the pool. Finally, much as before,
+    the server drains connections when the incoming socket is closed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: The client presented in the previous section can be applied to this server without
+    any changes. If the reader inspects the book's source repository, they will find
+    that the clients are identical between projects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This server implementation does not suffer from an ever-growing `JoinHandle`
+    vector, as the last server did. The pool takes care to remove panicked threads
+    from its internal buffers and we take care to never allow more workers than there
+    are threads available to work them. Let's find out how that works!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Looking into thread pool
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's look into threadpool and understand its implementation. Hopefully by this
+    point in the book, you have a sense of how you'd go about building your own thread-pooling
+    library. Consider that for a moment, before we continue, and see how well your
+    idea stacks up against this particular approach. We'll inspect the library ([https://crates.io/crates/threadpool](https://crates.io/crates/threadpool))
+    at SHA `a982e060ea2e3e85113982656014b212c5b88ba2`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The thread pool crate is not listed in its entirety. You can find the full listing
+    in the book's source repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look first at the project''s `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: Fairly minimal. The only dependency is `num_cpus`, a little library to determine
+    the number of logical and physical cores available on the machine. On linux, this
+    reads `/proc/cpuinfo`. On other operating systems, such as the BSDs or Windows,
+    the library makes system calls. It's a clever little library and well worth reading
+    if you need to learn how to target distinct function implementations across OSes.
+    The key thing to take away from the threadpool's `Cargo.toml` is that it is almost
+    entirely built from the tools available in the standard library. In fact, there's
+    only a single implementation file in the library, `src/lib.rs`. All the code we'll
+    discuss from this point can be found in that file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let''s understand the builder pattern we saw in the previous section.
+    The `Builder` type is defined like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: We only populated `num_threads` in the previous section. `thread_stack_size`
+    is used to control the stack size of pool threads. As of writing, thread stack
+    sizes are by default two megabytes. Standard library's `std::thread::Builder::stack_size`
+    allows us to manually set this value. We could have, for instance, in our thread-per-connection
+    example, set the stack size significantly lower, netting us more threads on the
+    same hardware. After all, each thread allocated very little storage, especially
+    if we had taken steps to read only into a fixed buffer. The `thread_name` field,
+    like the stack size, is a toggle for `std::thread::Builder::name`. That is, it
+    allows the user to set the thread name for all threads in the pool, a name they
+    will all share. In my experience, naming threads is a relatively rare thing to
+    do, especially in a pool, but it can sometimes be useful for logging purposes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The pool builder works mostly as you''d expect, with the public functions setting
+    the fields in the `Builder` struct. Where the implementation gets interesting
+    is `Builder::build`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There''s a lot going on here. Let''s take it a bit at a time. First, that channel
+    is the `std::sync::mpsc::channel` we discussed at length in [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml),
+    *Sync and Send – the Foundation of Rust Concurrency*. What is unfamiliar there
+    is `Thunk`. Turns out, it''s a type synonym:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, what is `FnBox`? It''s a small trait:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It is the `FnOnce` trait we encountered in [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml),
+    *The Rust Memory Model – Ownership, References and Manipulation*, so if you read
+    that chapter, you know that `F` will only be called once. The boxing of the function
+    closure means its captured variables are available on the heap and don''t get
+    deallocated when the pool caller moves the closure out of scope. Great. Now, let''s
+    jump back to build and look at `shared_data`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Alright, several atomic usizes, a condvar, a mutex to protect the receiver
+    side of the thunk channel, and a mutex that''ll be paired with the condvar. There''s
+    a fair bit you can tell from reading the population of a struct, with a little
+    bit of background information. The implementation of `ThreadPoolSharedData` is
+    brief:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `has_work` function does a sequentially consistent read of the two indicators
+    of work, an operation that is not exactly cheap considering the two sequentially
+    consistent reads, but implies a need for accuracy in the response. The `no_work_notify_all` function
+    is more complicated and mysterious. Happily, the function is used in the implementation
+    of the next chunk of `Build::build` and will help clear up that mystery. The next
+    chunk of `build` is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For each of the `num_threads`, the `spawn_in_pool` function is called over
+    a clone of the `Arc`ed `ThreadPoolSharedData`. Let''s inspect `spawn_in_pool`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you might have expected, the function creates `std::thread::Builder` and
+    pulls references to the name and stack size embedded in the `ThreadPoolSharedData`
+    shared data. With these variables handy, the `builder.spawn` is called, passing
+    in a closure in the usual fashion:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Well, let's take a look at `Sentinel:`
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It holds a reference to `Arc<ThreadPoolSharedData>`—avoiding increasing the
+    reference counter—and an `active` boolean. The implementation is likewise brief:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The real key here is the `Drop` implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Recall how in the previous section, our join vector grew without bound, even
+    though threads in that vector had panicked and were no longer working. There is
+    an interface available to determine whether the current thread is in a panicked
+    state, `std::thread::panicking()`, in use here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When a thread panics, it drops its storage, which, in this pool, includes the
+    allocated `Sentinel`.  `drop` then checks the `active` flag on the `Sentinel,`
+    decrements the `active_count` of the `ThreadPoolSharedData,` increases its `panic_count,`
+    calls the as-yet mysterious `no_work_notify_all` and then adds an additional thread
+    to the pool. In this way, the pool maintains its appropriate size and there is
+    no need for any additional monitoring of threads to determine when they need to
+    be recycled: the type system does all the work.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's hop back into `spawn_in_pool:`
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we see the start of the infinite loop of the `builder.spawn` function,
+    plus a check to shut down threads if the pool size has decreased since the last
+    iteration of the loop. `ThreadPool` exposes the `set_num_threads` function to
+    allow changes to the pool''s size at runtime. Now, why an infinite loop? Spawning
+    a new thread is not an entirely fast operation on some systems and, besides, it''s
+    not a free operation. If you can avoid the cost, you may as well. Some pool implementations
+    in other languages spawn a new thread for every bit of work that comes in, fearing
+    memory pollution. This is less a problem in Rust, where unsafe memory access has
+    to be done intentionally and `FnBox` is effectively a trap for such behavior anyway,
+    owing to the fact that the closure will have no pointers to the pool''s private
+    memory. The loop exists to pull `Thunks` from the receiver channel side in `ThreadPoolSharedData`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The message may be an error, implying that the `ThreadPool` was dropped, closing
+    the sender channel side. But, should the message be `Ok`, we''ll have our `FnBox`
+    to call:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The final bit of `spawn_in_pool` is uneventful:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `FnBox` called job is called via `call_box` and if this panics, killing
+    the thread, the `Sentinel` cleans up the atomic references as appropriate and
+    starts a new thread in the pool. By leaning on Rust's type system and memory model,
+    we get a cheap thread-pool implementation that spawns threads only when needed,
+    with no fears of accidentally polluting memory between jobs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`ThreadPool::execute` is a quick boxing of `FnOnce`, pushed into the sender
+    side of the `Thunk` channel:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last piece here is `ThreadPool::join`. This is where `ThreadPoolSharedData::no_work_notify_all`
+    comes into focus. Let''s look at `join`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: The function calls first to `has_work`, bailing out early if there are no active
+    or queued threads in the pool. No reason to block the caller there. Then, `generation`
+    is set up to act as a condition variable in the loop surrounding `empty_condvar`.
+    Every thread that joins to the pool checks that the pool `generation` has not
+    shifted, implying some other thread has unjoined, and that there's work yet to
+    do. Recall that it's `no_work_notify_all` that calls `notify_all` on condvar,
+    this function in turn being called when either a `Sentinel` drops or the inner-loop
+    of `spawn_in_pool` returns from a job. Any joined thread waking on those two conditions—a
+    job being completed or crashing—checks their condition, incrementing the `generation`
+    on their the way to becoming unjoined.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's it! That's a thread pool, a thing built out of the pieces we've discussed
+    so far in this book. If you wanted to make a thread pool without queuing, you'd
+    push an additional check into `execute`. Some of the sequentially consistent atomic
+    operations could likely be relaxed, as well, as potentially the consequence of
+    making a simple implementation more challenging to reason with. It's potentially
+    worth it for the performance gain if your executed jobs are very brief. In fact,
+    we'll discuss a library later in this chapter that ships an alternative thread
+    pool implementation for just such a use case, though it is quite a bit more complex
+    than the one we've just discussed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Ethernet sniffer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Of equal importance to understanding a technique in-depth is understanding
+    when not to apply it. Let''s consider another thread-per-unit-of-work system,
+    but this time we''ll be echoing Ethernet packets rather than lines received over
+    a TCP socket. Our project''s `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: Like the TCP example, we'll create two binaries, one that is susceptible to
+    thread overload–`poor_threading`–and another–`sniffer`–that is not. The premise
+    here is that we want to sniff a network interface for Ethernet packets, reverse
+    the source and destination headers on that packet, and send the modified packet
+    back to the original source. Simultaneously, we'll collect summary statistics
+    of the packets we collect. On a saturated network, our little programs will be
+    very busy and there will have to be trade-offs made somewhere in terms of packet
+    loss and receipt.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The only dependency we''re pulling in here is [pnet](https://github.com/libpnet/libpnet).
+    libpnet is a low-level packet manipulation library, useful for building network
+    utilities or for prototyping transport protocols. I think it''s pretty fun to
+    fuzz-test transport implementations with libpnet on commodity network devices.
+    Mostly, though, the reward is a crashed home router, but I find that amusing.
+    Anyhow, let''s look into `poor_threading`. It''s preamble is fairly ho-hum:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We pull in a fair bit of pnet''s facilities, which we''ll discuss in due time.
+    We don''t pull in clap or similar argument-parsing libraries, instead requiring
+    that the user pass in the interface name as the first argument to the program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: The user-supplied interface name is checked against the interfaces pnet is able
+    to find, via its `datalink::interfaces()` function. We haven't done much yet in
+    this book with iterators, though they've been omnipresent and assumed knowledge,
+    at least minimally. We'll discuss iteration in Rust in detail after this. Note
+    here, though, that `filter(interface_names_match)` is applying a boolean function,
+    `interface_names_match(&NetworkInterface) -> bool`, to each member of the determined
+    interfaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the function returns true, the member passes through the filter, otherwise
+    it doesn't. The call to `next().unwrap()` cranks the filtered iterator forward
+    one item, crashing if there are no items in the filtered iterator. This is a somewhat
+    user-hostile way to determine whether the passed interface is, in fact, an interface
+    that pnet could discover. That's alright here in our demonstration program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we establish a communication channel for the concurrent actors of this
+    program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `timer` function pushes a time pulse through the channel we just established
+    at regular intervals, as similarly is done in cernan, discussed previously in
+    this book. The function is small:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Payload` type is an enum with only two variants:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `Pulse(u64)` variant is the timer pulse, sent periodically by the `timer`
+    thread. It's very useful to divorce time in a concurrent system from the actual
+    wall-clock, especially with regard to testing individual components of the system.
+    It's also helpful for the program structure to unify different message variants
+    in a union. At the time of writing, Rust's MPSC implementation does not have a
+    stable select capability, and so you'll have to manually implement that with `mpsc::Receiver::recv_timeout`
+    and careful multiplexing. It's much better to unify it into one union type. Additionally,
+    this gets the type system on your side, confirming that all incoming variants
+    are handled in a single match, which likely optimizes better, too. This last benefit
+    should be measured.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look at `gather` now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: Straightforward receiver loop, pulling off `Payload` enums. The `Payload::Packet`
+    variant is deconstructed and its contents stored into three `HashMap`s, mapping
+    MAC addresses to a counter or an EtherType to a counter. MAC addresses are the
+    unique identifiers of network interfaces—or, ideally unique, as there have been
+    goofs—and get used at the data-link layer of the OSI model. (This is not a book
+    about networking but it is, I promise, a really fun domain.) EtherType maps to
+    the two octet fields at the start of every Ethernet packet, defining the packet's,
+    well, type. There's a standard list of types, which pnet helpfully encodes for
+    us. When `gather` prints the EtherType, there's no special work needed to get
+    human-readable output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we know how `gather` and `timer` work, we can wrap up the `main` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `datalink::channel` function establishes an MPSC-like channel for bi-directional
+    packet reading and writing on the given interface. We only care about Ethernet
+    packets here and match only on that variant. We spawn a new thread for `watch_interface,`
+    which receives both read/write sides of the channel and the MPSC we made for `Payload.`
+    In this way, we have one thread reading Ethernet packets from the network, stripping
+    them into a normalized `Payload::Packet` and pushing them to the `gather` thread.
+    Meanwhile, we have another `timer` thread pushing `Payload::Pulse` at regular
+    intervals to the `gather` thread to force user reporting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The sharp-eyed reader will have noticed that our `Payload` channel is actually
+    `sync_channel(10)`, meaning that this program is not meant to store much transient
+    information in memory. On a busy Ethernet network, this will mean it's entirely
+    possible that `watch_interface` will be unable to push a normalized Ethernet packet
+    into the channel. Something will have to be done and it all depends on how willing
+    we are to lose information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look and see how this implementation goes about addressing this problem:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'So far, so good. We see the sides of `datalink::Channel` that we discussed
+    earlier, plus our internal MPSC. The infinite loop reads `&[u8]` off the receive
+    side of the channel and our implementation has to convert this into a proper EthernetPacket.
+    If we were being very thorough, we''d guard against malformed Ethernet packets
+    but, since we aren''t, the creation is unwrapped. Now, how about that normalization
+    into `Payload::Packet` and transmission to `gather`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: Uh oh. The EthernetPacket has normalized into `Payload::Packet` just fine, but
+    when we send the packet down the channel to `gather` we do so by spawning a thread.
+    The decision being made here is that no incoming packet should be lost—implying
+    we have to read them off the network interface as quickly as possible—and if the
+    channel blocks, we'll need to store that packet in some pool, somewhere.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The *pool* is, in fact, a thread stack. Or, a bunch of them. Even if we were
+    to drop the thread''s stack size to a sensible low size on a saturated network,
+    we''re still going to overwhelm the operating system at some point. If we absolutely
+    could not stand to lose packets, we could use something such as hopper ([https://github.com/postmates/hopper](https://github.com/postmates/hopper)),
+    discussed in detail in [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+    *Locks – Mutex, Condvar, Barriers and RWLock*, which was designed for just this
+    use case. Or, we could defer these sends to threadpool, allow it to queue the
+    jobs, and run them on a finite number of threads. Anyway, let''s set this aside
+    for just a second and wrap up `watch_interface`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: The implementation takes the newly created EthernetPacket, swaps the source
+    and destination of the original in a new EthernetPacket, and sends it back across
+    the network at the original source. Now, let's ask ourselves, is it *really* important
+    that we tally every Ethernet packet we can pull off the network? We could speed
+    up the `HashMap`s in the `gather` thread in the fashion described in [Chapter
+    02](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml), *Sequential Rust Performance
+    and Testing*, by inserting a faster hasher. Or, we could buffer in the `watch_interface`
+    thread when the synchronous channel is full, in addition to using threadpool or
+    hopper. Only speeding up `gather` and using hopper don't potentially incur unbounded
+    storage requirements. But hopper will require a filesystem and may still not be
+    able to accept all incoming packets, only making it less likely that there won't
+    be sufficient storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It''s a tough problem. Given the nature of the network at layer 2, you might
+    as well just shed the packets. The network card itself is going to be shedding
+    packets. With that in mind, the implementation of `watch_interface` in the other
+    binary in this project—`sniffer`—differs only marginally:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Payload::Packet` is created and rather than calling `snd.send`, this implementation
+    calls `snd.try_send`, ticking up a `SKIPPED_PACKETS` static `AtomicUsize` in the
+    event a packet has to be shed. The gather implementation is likewise only slightly
+    adjusted to report on this new `SKIPPED_PACKETS`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: This program will use a moderate amount of storage for the `Payload` channel,
+    no matter how busy the network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In high-traffic domains or long-lived deployments, the `HashMap`s in the `gather`
+    thread are going to be a concern, but this is a detail the intrepid reader is
+    invited to address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When you run `sniffer`, you should be rewarded with output very much like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: This report came from the sixth second of my sniffer run and 75 packets were
+    dropped for lack of storage. That's better than 75 threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Iterators
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So far, we've assumed that the reader has been at least passingly familiar with
+    Rust iterators. It's possible that you've used them extensively but have never
+    written your own iterator implementation. That knowledge is important for what
+    follows and we'll discuss Rust's iteration facility now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A Rust iterator is any type that implements `std::iter::Iterator`. The `Iterator`
+    trait has an interior `Item` type that allows the familiar iterator functions,
+    such as `next(&mut self) -> Option<Self::Item>`, to be defined in terms of that
+    generic `Item`. Many of the iterator functions are, well, functional in nature:
+    `map`, `filter`, and `fold` are all higher-order functions on a stream of `Item`.
+    Many of the iterator functions are searches on that stream of `Item`: `max`, `min`,
+    `position`, and `find`. It is a versatile trait. If you find it limited in some
+    manner, the community has put together a crate with more capability: itertools
+    ([https://crates.io/crates/itertools](https://crates.io/crates/itertools)). Here,
+    we''re less concerned with the interface of `Iterator` than how to implement it
+    for our own types.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Smallcheck iteration
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In [Chapters 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml), *Sequential Rust
+    Performance and Testing*, [Chapters 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),* Locks – Mutex,
+    Condvar, Barriers and RWLock*, and [Chapters 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml),
+    *Atomics – the Primitives of Synchronization*, we've discussed the QuickCheck
+    testing methodology, a structured way of inserting random, type-driven input into
+    a function to search function property failures. Inspired by the work done by
+    Claessen and Hughes in their QuickCheck paper, Runciman, Naylor and Lindblad observed
+    that, in their experience, most failures were on small input and put forward the
+    observation that a library that tested from small output to big first might find
+    failures faster than purely random methods. Their hypothesis was more or less
+    correct, for a certain domain of function, but the approach suffers from duplication
+    of effort, resolved somewhat by the authors in the same paper with Lazy Smallcheck.
+    We won't go into further detail here, but the paper is included in the *Further
+    reading* section of this chapter and the reader is encouraged to check out the
+    paper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Anyway, producing all values of a *small* to *big* type sounds like iteration.
+    In fact, it is. Let''s walk through producing iterators for signed and unsigned
+    integers. The project''s `Cargo.toml` is minimal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'No dependencies, just the default that `cargo new` lays down. The project has
+    only one file, `src/lib.rs`. The rest of our discussion will take place in the
+    context of this file. First, the preamble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We pull in `Iterator`, as you might expect, and then `std::mem`, which we''ve
+    seen throughout this book. Nothing unusual here. What is unusual for this book
+    is this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A macro! We''ve been using macros throughout the entire book but have not written
+    one yet. Macros in Rust are kind of a dark art and a touch on the fidgety side
+    to get working. Our ambitions here are simple. The iterators for the Rust integer
+    types are mostly the same, varying by signed/unsigned and total bit size of the
+    type, hence `std::mem`. `($name:ident, $int:ty, and $max:expr)` declares three
+    macro variables: `$name`, which is an identifier, `$int`, which is a type, and
+    `$max`, which is an expression. Here is how we''ll use the `unsigned_iter!` macro:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That''s an identifier, followed by a type, followed by an expression. OK, now
+    back to the macro definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The first step in defining a small iterator for integer types is to produce
+    some struct to store whatever data the Iterator implementation needs. We require
+    two things, the current integer and a boolean flag to tell us when we''re done
+    iterating. When the macros expand, there will be structs called `SmallU8`, `SmallU16`,
+    and so on in the expanded source code, like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Iterator` implementation for unsigned types is straightforward: keep incrementing
+    until you hit the maximum value for the type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Technically, `saturating_add` is not needed and could be replaced with `+=`,
+    but it''s helpful to have to avoid wrap-around bugs. Finally, we also provide
+    an `Iterator::size_hint` implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function is an optional implementation, but it is neighborly to provide
+    one. The return tuple estimates how many items remain in the iteration, the first
+    element being a lower estimate and the second being an optional upper bound. We
+    happen to know exactly how many elements remain to be iterated because our domain
+    is finite. Implementing `Iterator::size_hint` will help out code with pre-allocating
+    buffers, which includes other functions on `Iterator`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The sized integer types have a similar implementation. Their macro, `sized_iter!`,
+    in use:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The macro itself starts out in the same way as its unsigned counterpart:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Only the inner part of `next` is different:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This warrants some explanation. We take inspiration from the SmallCheck paper
+    and iterate values out like so: 0, -1, 1, -2, 2, and so on. The implementation
+    could follow the same method as the unsigned variant, proceeding up from `min_value()`
+    to `max_value()`, but this would not be small to big, at least in terms of byte
+    representation. Finally, `size_hint`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If these implementations work correctly, the `Iterator::count` for our new
+    iterators ought to be equal to the two-power of the bit size of the type, `count`
+    being a function that keeps a tally of elements iterated out. The tests also rely
+    on macros to cut down on duplication. First, the signed variants:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And now the unsigned variants:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you run the tests, you should find that they pass. It'll take a minute for
+    the larger types. But, that's iterators. All they are is some kind of base type—in
+    this case, the built-in integers—plus a state-tracking type—our `Small*` structs—and
+    an implementation of `Iterator` for that state-tracking type. Remarkably useful,
+    and the optimizer is reasonably good at turning iterator chains into loops and
+    getting better at it all the time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: rayon – parallel iterators
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous section, we built an iterator over Rust integer types. The essential
+    computation of each `next` call was small—some branch checks, and possibly a negation
+    or an addition. If we were to try to parallelize this, we'd drown out any potential
+    performance bump with the time it takes to allocate a new thread from the operating
+    systems. No matter how fast that becomes, it will still be slower than an addition.
+    But, say we've gone all-in on writing in iteration style and do have computations
+    that would benefit from being run in parallel. How do you make `std::iter::Iterator`
+    parallel?
+  prefs: []
+  type: TYPE_NORMAL
+- en: You use rayon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rayon crate is a *data-parallelism* library for Rust. That is, it extends
+    Rust's basic `Iterator` concept to include a notion of implicit parallelism. Yep,
+    implicit. Rust's memory safety means we can pull some pretty fun tricks on modern
+    machines. Consider that the thread pool implementation we investigated previously
+    in the chapter, which had no concerns for memory pollution. Well, it's the same
+    deal with rayon. Every element in an iterator is isolated from each other, an
+    invariant enforced by the type system. Which means, the rayon developers can focus
+    on building a data-parallelism library to be as fast as possible while we, the
+    end users, can focus on structuring out code in an iterator style.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll examine rayon ([https://crates.io/crates/rayon](https://crates.io/crates/rayon))
+    at SHA `5f98c019abc4d40697e83271c072cb2b92966f46`. The rayon project is split
+    into sub-crates:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: rayon-core
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: rayon-futures
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We'll discuss rayon—the top-level crate—and rayon-core in this chapter, touching
+    on the fundamental technology behind rayon-futures in [Chapter 10](2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml), *Futurism – Near-Term*
+    *Rus**t*. The interested reader can flag rayon-futures on to play with that interface
+    but please do refer to the `README` at the top of that sub-crate for details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rayon crate is not listed in its entirety. You can find the full listing
+    in this book's source repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The dependencies of rayon are minimal, being that rayon-core is the sole dependency
+    by default. The rayon-core dependencies are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ve seen these dependencies before, except `libc`. This library exposes
+    the `libc` platform in a stable interface. From the project''s documentation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"This crate does not strive to have any form of compatibility across platforms,
+    but rather it is simply a straight binding to the system libraries on the platform
+    in question."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It''s quite useful. Now, rayon is a large library and it can be a challenge
+    to navigate. That''s okay, though, because it''s simple to use. To give ourselves
+    an in, let''s pull the example code from rayon''s `README` and do an exploration
+    from that point. The example is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Okay, so what''s going on here? Well, let''s first compare it against the sequential
+    version of this example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Spot the key difference? The sequential version is `input.iter()`, the parallel
+    version is `input.par_iter()`. Okay, first, we have to understand that every slice
+    exposes `iter(&self) -> std::slice::Iter`. This `Iter` implements `std::iter::Iterator`,
+    which we recently discussed. rayon implements something similar, so that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`input.iter() :: std::slice::Iter<''_, u32>`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`input.par_iter() :: rayon::slice::Iter<''_, i32>`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Let''s look at `rayon::slice::Iter`, in `src/slice/mod.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Okay, nothing we haven''t seen so far. There''s a lifetime data, and every
+    `T` has to be part of that lifetime plus `Sync`. Now, what is the type of rayon''s
+    `map`? By inspection, we can see it''s `ParallelIterator::map<F, R>(self, map_op:
+    F) -> Map<Self, F>` where `F: Fn(Self::Item) -> R + Sync + Send` and `R: Send`.
+    Alright, `ParallelIterator`. That is new. There''s an implementation for `Iter`
+    just under the struct definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Clearly, we need to understand `ParallelIterator`. This trait is defined in
+    `src/iter/mod.rs` and is declared to be the parallel version of the standard iterator
+    trait. Well, good! That gives us a pretty good anchor into its semantics. Now,
+    we just have to figure out its implementation. The implementation of `ParallelIterator`
+    for `Iter` defined two functions: `drive_unindexed` and `opt_len`. The latter
+    function returns the optional length of the underlying structure, much like `Iterator::size_hint`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The rayon documentation notes that some of their functions can trigger fast-paths
+    when `opt_len` returns a value: always a win. `drive_unindexed` is more complicated
+    and introduces two unknowns. Let''s figure out what `consumer: UnindexedConsumer`
+    is first. The trait definition, in `src/iter/plumbing/mod.rs`, is very brief:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Okay, we''re missing some key pieces of information here. What is `Consumer`?
+    This trait is defined in the same file, like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There are some key unknowns here, but the picture is getting a little clearer.
+    `Consumer` is able to take in `Item` and subdivide it at an `index`. rayon is
+    performing a divide and conquer, taking small chunks of the stream and dividing
+    them over *something*. What are `Folder` and `Reducer`? This trait *folds* into
+    itself, like the higher-order fold function. The trait definition is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE79]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The important function here is `consume_iter`. Note that it calls `consume`
+    for each element in the `iter` variable, folding the previous `self` into a new
+    `self`, only stopping once the implementor of `Folder` signals that it is *full*.
+    Note as well that a `Folder`, once complete is called on it, is turned into a  `Result`.
+    Recall that `Result` is set in `Consumer`. Now, what is `Reducer`? It is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE80]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Reducer` combines two `Result`s into one single `Result`. `Consumer` is then
+    a type that can take an `Item`, apply `Folder` over chunks of the `Item`, and
+    then reduce the many `Result`s down into a single `Result`. If you squint, `Consumer`
+    *is* a fold. `UnindexedConsumer` is a specialization of `Consumer` that splits
+    at an arbitrary point, where the plain `Consumer` requires an index. We understand,
+    then, that the parallel iterator for the slice iterator is being driven by `drive_unindexed`.
+    This function is passed *some* `consumer: C`, which is minimally `UnindexedConsumer`
+    and the function entirely defers to `bridge` to do its work. Two questions: *what*
+    is calling `drive_unindexed` and what is `bridge`? Let''s look into the `bridge`
+    function, defined in `src/iter/plumbing/mod.rs`. The header of the function immediately
+    presents new information:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE81]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What is `IndexedParallelIterator`? I''ll spare you the exploration, but it''s
+    a further specialization of `ParallelIterator` that can be *split at arbitrary
+    indices*. This specialization has more functions than the `ParallelIterator` trait,
+    and `rayon::slice::Iter` implements both. The definition is brief and something
+    we''ll need to know to understand bridge:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE82]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We see `bridge` backing a function `drive` and a new `with_producer` function
+    with an unknown purpose. Back to `bridge`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE83]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We see `bridge` calculate the length of the underlying slice and then call
+    `with_producer` on some `Callback` struct. We know from the trait implementation
+    on `Iter` that `Callback: ProducerCallback`, which is itself an analogue to `FnOnce`,
+    is taking some `T`, a `Producer<T>`, and emitting an `Output` from `ProducerCallback::callback`.
+    If you squint hard enough, that''s a closure. A `Producer` is more or less an
+    `std::iter::IntoIterator`, but one that can be split at an index into two `Producer`s.
+    Again, we see that rayon is dividing work into sub-pieces and that this method
+    of operation extends through multiple types. But what is `Callback`? It turns
+    out, this struct is defined inline with the function body of `bridge`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE84]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'I admit, that''s pretty weird! The `producer: P` that is passed in the interior
+    callback is an `IterProducer`, a type defined in `src/slice/mod.rs`, which holds
+    a reference to the slice. The interesting thing is the implementation of `Producer`
+    for `IterProducer`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE85]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Look at that `split_at`! Whenever rayon needs to split a slice Producer, it
+    calls `std::slice::split_at` and makes two new `Producer`s. Alright, so now we
+    know *how* rayon is splitting things up but still not *to what*. Let''s look further
+    into the implementation of `bridge_producer_consumer`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE86]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Okay, we are mostly familiar with these types. `LengthSplitter` is new and
+    is a type that informs us whether a split of a certain length is valid for some
+    minimum size. This is where rayon is able to decide how small to make split work
+    and whether or not to split a workload further. The `helper` function rounds things
+    out:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE87]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is dense. Most of this is to do with splitting the current `Producer`
+    into appropriately sized chunks, but especially this block of code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE88]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here we see newly split `Producers` that lazily make a recursive call to `helper`
+    when executed by `join_context`. This function is defined in `rayon-core/src/join/mod.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE89]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The new type here, `FnContext`, is a `Send + Sync` disabling boolean. The boolean
+    interior to `FnContext` is called `migrated`, an interesting clue to the context''s
+    purpose. Let''s continue in `join_context`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE90]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Well hey, it''s a thread pool! We *know* thread pools! There''s a lot more
+    detail to rayon''s thread pool implementation compared to the one we investigated
+    earlier in this chapter, but it''s a known concept. Each thread in rayon''s pool
+    maintains its own queue of work. Every thread queues up two new jobs—in this case,
+    calls to helper with a specific `FnContext`—that may execute the function that
+    `Consumer` and `Producer` combined represent, or split the work up into small
+    chunks, pushing onto the thread''s queue. Each thread in the pool is able to steal
+    jobs from the others in the pool, spreading the load around the pool. In fact,
+    what we''ve seen so far is that the caller of `join_context` immediately constructs
+    `StackJob` out of `oper_b` and calls `worker_thread.push`. This function is defined
+    in `rayon-core/src/registry.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE91]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`sleep.tickle`, in addition to being amusingly named, is meant to notify threads
+    waiting on condvar. This condvar is tracking whether or not there''s work available,
+    saving power when there''s none, rather than have threads in the pool spin-looping.
+    What happens when `self.worker.push` is called? It turns out, the `WorkerThread::worker`
+    field is of the `crossbeam_deque::Deque<job::JobRef>` type. We discussed crossbeam
+    in the previous chapter! Things are starting to come together for us. Let''s look
+    at the definition of `WorkerThread`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE92]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What is `Registry`? What''s creating these `WorkerThread`s? Recall that in
+    `join_context`, we''re inside a call to `registry::in_worker`. That function is
+    defined in `rayon-core/src/registry.rs` and is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE93]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `WorkerThread::current()` call is polling a thread-local static variable
+    called `WORKER_THREAD_STATE`, a `Cell<*const WorkerThread>` that may or may not
+    be null in the event that no `WorkerThread` has been created inside the current
+    operating system thread or has ceased to exist for some reason. If the `WorkerThread`
+    does exist as thread-local, the passed `op` function is called, which is what
+    we''re investigating inside `join_context`. But, if the thread-local is null,
+    `global_registry().in_worker_cold(op)` is called. The `global_registry` is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE94]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That is, once `global_registry()` is called at least once, we''ve established
+    a static `Registry` populated by the return of `init_registry`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE95]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That function further defers to `Registry::new` after having populated some
+    builders for configuration purposes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE96]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, finally, we see threads being built:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE97]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Woo! Okay, a `Registry` is a static which, once created, spawns a number of
+    threads and enters them into `main_loop`. This loop creates `WorkerThread`, notifies
+    the `Registry` of `WorkerThread` being started, which marks the thread as alive.
+    This is the `thread_infos` of the `Registry` and is why `WorkerThread` carries
+    an index in itself. `main_thread` calls `WorkerThread::wait_until`, a function
+    whose purpose is to probe the `Registry` for termination notice and, without that
+    notice, calls `WorkerThread::wait_until_cold`. That cold condition is the status
+    of `WorkerThread` when `take_local_job` or steal fail to return any items. Taking
+    a local job looks like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE98]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `self.worker` here is the deque from crossbeam and the breadth first option
+    simply controls which end of the deque work is retrieved from. Stealing is a little
+    more complicated, using the random number generator of `WorkerThread` to choose
+    arbitrary threads—indexed through the `Registry`—to steal work from, seeking forward
+    through the threads until work can be stolen from another thread's deque or until
+    no work is found.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'No more mysteries! As we descend further into rayon, we understand that it''s
+    got quite a bit of machinery for representing split workloads that then gradually
+    transition into the execution of those chunks of work on a thread pool. That thread
+    pool performs work-stealing to keep the CPUs saturated. This understanding helps
+    make the remainder of `join_context` more understandable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE99]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The caller of `join_context` has packaged `oper_b` up, pushed it to the worker''s
+    queue, and executes `oper_a` in the hopes that the other operation will be executed
+    as well. The remainder of the function is a loop, either pulling `oper_b` from
+    the local deque or stealing from some other thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE100]'
+  prefs: []
+  type: TYPE_PRE
+- en: Ordering is maintained through the latch mechanism, defined in `rayon-core/src/latch.rs`.
+    You are encouraged to study this mechanism. It's very clever and well within the
+    capabilities of the reader who has gotten this far in the book, bless you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That is *almost* it. We still have yet to discuss `map(|&i| i * i).sum()`.
+    The `map` there is defined on `ParallelIterator`, `IndexedParallelIterator`, and
+    is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE101]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Map` is, in turn, a `ParallelIterator` that consumes the individual `map_op`
+    functions, producing `MapConsumer`s out of them, the details of which we''ll skip
+    as we are already familiar enough with rayon''s `Consumer` concept. Finally, sum:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE102]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is, in turn, defined in `src/iter/sum.rs` as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE103]'
+  prefs: []
+  type: TYPE_PRE
+- en: The producer is driven into a `SumConsumer` that splits the summation work up
+    over the thread pool and then eventually folds it into a single value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And *that* is that. That's rayon. It's a thread pool that can automatically
+    split workloads over the threads plus a series of `Iterator` adaptations that
+    greatly reduce the effort required to exploit the thread-pooling model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now you know! That's not all that rayon can do—it's a *very* useful library—but
+    that's the central idea. I warmly encourage you to read through rayon's documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data parallelism and OS processes – evolving corewars players
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this final section of the chapter, I''d like to introduce a project that
+    will carry us over into the next chapter. This project will tie together the concepts
+    we''ve introduced so far in this chapter and introduce a new one: processes. Compared
+    to threads, processes have a lot to recommend them: memory isolation, independent
+    priority scheduling, convenient integration of existing programs into your own,
+    and a long history of standardized syscalls (in Unix) to deal with them. But,
+    memory isolation is less ideal when your aim is to fiddle with the same memory
+    from multiple concurrent actors—as in atomic programming—or when you otherwise
+    have to set up expensive IPC channels. Worse, some operating systems are not fast
+    to spawn new processes, limiting a multi-processesing program''s ability to exploit
+    CPUs on a few fronts. All that said, knowing how to spawn and manipulate OS processes
+    *is* very useful and we''d be remiss not to cover it in this book.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Corewars
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Corewars is a computer programmer game from the 1980s. Introduced in a 1984
+    Scientific American article, the game is a competition between two or more programs—or
+    warriors—that are written in an obscure assembly language called Redcode. Realistically,
+    there are effectively two variants of Redcode, one of which has nice features,
+    such as labels or pseudo-opcodes for variable assignments. This is usually referred
+    to as Redcode. The other variant is referred to as *load file Redcode* or simply
+    *load file* and is a straight listening of opcodes. The machine that Redcode targets
+    is the Memory Array Redcode Simulator (MARS). It is… peculiar. Memory is bounded
+    and circular, the maximum address prior to wrap-around is `core_size-1`. Most
+    players set `core_size` to 8000 but any value is valid. Each memory location is
+    an instruction. There is no distinction between instruction cache and data storage.
+    In fact, there''s not *really* data storage per se, though you can store information
+    in unused sections of an instruction. There is no such thing as absolute memory
+    addressing in the MARS machine: every address is relative in the ring of memory
+    to the current instruction. For instance, the following instruction will tell
+    MARS to jump backward two spots in memory and continue execution from there:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE104]'
+  prefs: []
+  type: TYPE_PRE
+- en: MARS executes one instruction from each warrior in turn, in the order that the
+    MARS loaded the warrior into memory. Warriors start at some offset from one another
+    and are guaranteed not to overlap. A warrior may spawn sub-warriors and this sub-warrior
+    will get executed like all the others. A single opcode `DAT` will cause a warrior
+    to exit. The objective of the game is force opposing warriors to execute `DAT.`
+    The last warrior—plus any spawned warriors—under simulation wins the game.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There's quite a bit more detail to Corewars than has been presented here, in
+    terms of opcode listing and memory modes and what not, but this is not a Corewars
+    tutorial. There are many fine tutorials online and I suggest some in the *Further
+    reading* section. What's important to understand is that Corewars is a game played
+    between programmers with programs. There are many MARS simulators but the most
+    commonly used as the *MARS* is pMARS ([http://www.koth.org/pmars/](http://www.koth.org/pmars/)),
+    or Portable MARS. It'll build pretty easily even under a modern GCC, though I
+    can't say I've managed to build it under clang.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s a pretty fun bomber from pmars 0.9.2''s source distribution, to give
+    you a sense of how these programs look:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE105]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A bomber tosses a bomb at offset intervals into memory. Some toss `DAT`s, which
+    force warriors to exit if executed. This one tosses an imp. An imp is a Corewars
+    program that creeps forward in memory some number of instructions at a time. The
+    Imp, introduced in the 1984 article, is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE106]'
+  prefs: []
+  type: TYPE_PRE
+- en: The opcode here is `MOV` with modifier `I`, source address 0, and destination
+    address 1\. `MOV` moves instructions at the source address, also traditionally
+    called the *a-field*, to the destination address, also called the *b-field*. The
+    opcode modifier—the `.I`—defines how the opcode interprets its mandate. Here,
+    we're specifying that MOV moves the whole instruction from the current cell to
+    the next one up the ring. `MOV.A` would have only moved the a-field of the current
+    instruction into the a-field of the destination instruction. The bomber's imp
+    `mov.i incr,<count` relies on previously computed values to drop imps in memory
+    that advance at different rates with different offsets. The `<` on the b-field
+    is an indirect with predecrement operator on the address but, like I said, this
+    is not a Corewars tutorial.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The pMARS simulator can read in both load files and Redcode, will drop the
+    warriors into the simulator, and report the results. Here we run the bomber against
+    the imp for 100 simulated rounds:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE107]'
+  prefs: []
+  type: TYPE_PRE
+- en: The imp does not fare too well. It wins 0 times but does manage to tie 537 times.
+    An imp is hard to kill.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing warriors is fun, but teaching a computer to write warriors is even more
+    fun and so that's what we're going to set out to do. Specifically, we'll write
+    an *evolver,* a program that uses a simulated evolution of a population of warriors
+    to produce ever more fit specimens. We'll call out to the pMARS executable to
+    evaluate our population and, with enough time, hopefully pop out something pretty
+    impressive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feruscore – a Corewars evolver
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: I want to make sure we're all on the same page, before we start digging through
+    source code. The way simulated evolution works is you make a population—maybe
+    totally random, maybe not—and call it generation `0`. You then run some `fitness`
+    function on the members of the population. Fitness may be defined in terms of
+    some known absolute or as a relative value between members of the population.
+    The fittest members of the population are then taken to form a subset of parents.
+    Many algorithms take two members, but the sky's the limit and your species could
+    well require six individuals for reproduction. That's what we're after—reproduction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The individuals of the population are non-destructively recombined to form
+    children. The population is then mutated, changing genes in an individual''s genomes
+    with some domain-specific probability. This may be *all* members of the population
+    or just children, or just parents, or whatever you''d like. There''s no perfect
+    answer here. After mutation, the parents, their children, and any non-reproducing
+    members of the population that did not die during fitness evaluation are then
+    promoted to generation 2\. The cycle continues:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fitness evaluation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Parents reproduce
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Population is mutated
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Exactly when the cycle stops is up to the programmer: perhaps when a fixed
+    number of generations have passed, perhaps when an individual that meets some
+    minimum threshold of fitness has evolved.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Simulated evolution is not magic. Much like QuickCheck, which uses randomness
+    to probe programs for property violations, this algorithm is probing a problem
+    space for the most fit solution. It's an optimization strategy, mimicking the
+    biological process. As you can probably infer from the description I just gave,
+    there are a lot of knobs and alternatives to the basic approach. We'll be putting
+    together a straightforward approach here but the you are warmly encouraged to
+    make your own modifications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Representing the domain
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we can start evolving anything, we have to figure out how to represent
+    the individuals; we need to decide how to structure their chromosome. Many genetic
+    algorithm implementations represent these as a [u8], serializing and deserializing
+    as appropriate. There's a lot to recommend this representation. For one, modern
+    computers have instructions specifically tailored to operate on many bytes in
+    parallel—a topic we'll touch on in [Chapter 10](2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml),
+    *Futurism – Near-Term Rust,*—which is especially helpful in the mutation and reproduction
+    stages of a genetic algorithm. You see, one of the key things to a successful
+    simulation of evolution is *speed*. We need a large population and many, many
+    generations to discover fit individuals. `[u8]` is a convenient representation
+    for serialization and deserialization, especially with something such as serde
+    [(https://crates.io/crates/serde](https://crates.io/crates/serde)) and bincode
+    ([https://crates.io/crates/bincode](https://crates.io/crates/bincode)) at hand.
+    The downside to a `[u8]` representation is creating individuals that don't deserialize
+    into something valid, in addition to eating up CPU time moving back and forth
+    between `[u8]` and structs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Program optimization comes down to carefully structuring one's computation to
+    suit the computer or finding clever ways to avoid computation altogether. In this
+    particular project, we do have a trick we can play. A valid individual is a finite
+    list of instructions—feruscore targets producing *load files*—and all we have
+    to do, then, is represent an instruction as a Rust struct and pop it into a vector.
+    Not bad! This will save us a significant amount of CPU time, though our mutation
+    step will be a tad slower. That's okay, though, as fitness evaluation will be
+    the biggest time sink, as we'll see that shortly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring the source
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s look at feruscore''s `Cargo.toml` first. It is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE108]'
+  prefs: []
+  type: TYPE_PRE
+- en: We saw the tempdir crate back in [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+    *Locks – Mutex, Condvar, Barriers and RWLock*; its purpose is to create temporary
+    directories that get deleted when the directory handler is dropped. We discussed
+    rayon earlier in the chapter. The rand crate is new, though we did mention it
+    in passing in both [Chapter 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml), *Sequential
+    Rust Performance and Testing*,  and [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+    *Locks – Mutex, Condvar, Barriers and RWLock*, when we produced our own XorShift.
+    The rand crate implements many different pseudo-random algorithms, in addition
+    to providing a convenient interface to OS facilities for randomness. We'll be
+    putting rand to good use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The project is a standard library/executable bundle. Unlike many other projects
+    in this book, we are not creating multiple executables and so there''s only a
+    single `src/main.rs`. We''ll talk through that in due course. The library root,
+    in `src/lib.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE109]'
+  prefs: []
+  type: TYPE_PRE
+- en: Instructions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'No surprises here. We import the project dependencies and expose two public
+    modules: instruction and individual. The instruction module at `src/instruction.rs`
+    is feruscore''s version of `[u8]`, or, rather, the `u8` in the array. Let''s take
+    a look. The structure at the root is `Instruction`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE110]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'An instruction in Redcode is an opcode, a modifier for that opcode, an a-offset
+    plus modifier and a b-offset plus modifier. (The a-field and b-field are the combination
+    of offset and mode.) That''s exactly what we have here. No need to deserialize
+    from a byte array; we''ll work on a direct representation. The implementation
+    of `Instruction` is small. To start, we need some way of creating random `Instruction`s:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE111]'
+  prefs: []
+  type: TYPE_PRE
+- en: This sets up a pattern we'll use through the rest of this module. Every type
+    exposes `random() -> Self` or some variant thereof. Note that the offset is restricted
+    to 1/32 the passed `core_size`. Why? Well, we're trying to cut down the cardinality
+    of the domain being explored. Say the core size is 8,000\. If all possible  instances
+    of core size values were tried in an offset, there'd be 64,000,000 possible `Instruction`,
+    not including any of the other valid combinations with the other structure fields.
+    Based on what I know about high-scoring warriors, the explicit offsets are usually
+    small numbers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By cutting down the offset domain, we''ve eliminated 62,000,000 potential instructions,
+    saving CPU time. This could well be a pessimistic restriction—forcing the population
+    right into a bottleneck—but I doubt it. Every struct in this module also has a
+    `serialize(&self, w: &mut Write) -> io::Result<usize>` function. Here''s the one
+    for `Instruction`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE112]'
+  prefs: []
+  type: TYPE_PRE
+- en: We're going to be calling out to the local system's pmars executable when we
+    run feruscore and that program needs to find files on-disk. Every `Instruction`
+    in every individual will be serialized to disk each time we check fitness. That
+    load file will be deserialized by pmars, run in simulation and the results issued
+    back to feruscore from pmars' stdout. That's not a fast process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The remainder of the instruction module follows this general outline. Here,
+    for instance, is the `Modifier` struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE113]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s the implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE114]'
+  prefs: []
+  type: TYPE_PRE
+- en: Individuals
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Nothing special, especially by this point in the book. The `random() -> Self`
+    functions are a touch fragile because you can't query an enumeration for its total
+    number of fields, meaning that if we add or remove a field from `Modifier`, for
+    instance, we also have to remember to update `gen_range(0, 7)` appropriately.
+    Removal is not so bad, the compiler will complain some, but addition is easy to
+    forget and overlook.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s now look at the individual module. The bulk of the code is in src/individual/mod.rs.
+    The struct for Individual is very short:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE115]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'An `Individual` is a chromosome and little else, a vector of instructions just
+    as we discussed. The functions on the `Individual` provide what you might expect,
+    given the discussion of the evolution algorithm. Firstly, we have to be able to
+    make a new `Individual`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE116]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Ah! Here now we''ve run into something new. What in the world is `par_extend`?
+    It''s a rayon function, short for parallel extend. Let''s work inside out. The
+    interior map ignores its argument and produces a `None` with 1/28 chance—14 being
+    the total number of `OpCode` variants—and some other random `Instruction` with
+    27/28th chance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE117]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The input that the interior map is so studiously ignoring is `(0..(chromosome_size
+    as usize)).into_par_iter()`. That''s a `ParallelIterator` over a range of numbers,
+    from 0 to the maximum number of chromosomes an Individual is allowed to have.
+    One creative solution in early Corewars was to submit a `MOV 0 1` imp followed
+    by 7999 `DAT` instructions. If the MARS loaded your warrior and wasn''t programmed
+    to carefully check warrior offsets, your opponent would lose by being immediately
+    overwritten. `Instruction` length limits were quickly put into place and we obey
+    that here, too. Serialization of an `Individual` follows the pattern we''re familiar
+    with:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE118]'
+  prefs: []
+  type: TYPE_PRE
+- en: Mutation and reproduction
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before we discuss competition between two `Individual`s, let''s talk about
+    mutation and reproduction. Mutation is the easier of the two to understand, in
+    my opinion, because it operates on one `Individual` at a time. Our implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE119]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The call to `par_iter_mut` creates a `ParallelIterator` in which the elements
+    of the iterator are mutable, much like `iter_mut` from the standard library. The
+    `for_each` operator applies the closure to each. The `for_each` operator  is similar
+    in purpose to `map`, except it''s going to necessarily consume the input but will
+    be able to avoid allocating a new underlying collection. Modifying a thing in-place?
+    Use `for_each`. Creating a new thing from an existing bit of storage? Use `map`.
+    Anyway, the mutation strategy that feruscore uses is simple enough. Every `Instruction`
+    in the chromosome is going to be changed with probability `1/mutation_chance`
+    and may be disabled with 1/2 probability, that is, be set to None. The careful
+    reader will have noticed that the serializer stops serializing instructions when
+    a `None` is found in the chromosome, making everything after that point junk DNA.
+    The junk still comes into play during reproduction:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE120]'
+  prefs: []
+  type: TYPE_PRE
+- en: Feruscore uses a reproduction strategy called half-uniform crossover. Each gene
+    from a parent has even odds of finding its way into the child. The child is passed
+    as a mutable reference, which is creepy if you think about it too hard. I'm not
+    sure of any real species that takes over the body of a less fit individual and
+    hot-swaps DNA into it to form a child in order to save on energy (or computation,
+    in our case) but here we are. Note that, unlike mutation, reproduction is done
+    serially. Remember that rayon is chunking work and distributing it through a threadpool.
+    If we were to make this parallel, there'd have to be a mechanism in place to rectify
+    the choices made from the zipper of the parents' chromosomes into the child. If
+    the chromosomes were many multiple megabytes, this would be a good thing to tinker
+    with. As is, the chromosomes are very small. Most Corewars games limit a warrior
+    to 100 instructions. rayon is impressive but it is not *free*, either in runtime
+    cost or programming effort.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Competition – calling out to pMARS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'It''s now time to consider how each `Individual` competes. Earlier, we discussed
+    calling out to pmars on-system, which requires on-disk representations of the
+    two competing Individual warriors. True to that, competition first serializes
+    both warriors to temporary locations on the disk:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE121]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We haven''t interacted much with the filesystem in this book but, suffice it
+    to say, Rust has an *excellent* filesystem setup in the standard library, most
+    of it under `std::fs`. You are warmly encouraged to take a gander at the documentation
+    for any of the functions here if they are not already familiar with them. Anyway,
+    with both warriors written to disk, we can run pmars on them:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE122]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s break down what''s happening here. `std::process::Command` is a builder
+    struct for running an OS process. If we did nothing but call `Command::output(&mut
+    self)` on the new `Command` then:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: pmars would be run without arguments
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The working directory and environment of feruscore would become pmars
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The stdout of pmars will be piped back to the feruscore process
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Each of these can be changed. The actual execution of pmars does not take place
+    until the output is called: or, spawn, which is intended for long-lived processes.
+    The `Command::stdin`, `Command::stderr`, and `Command::stdout` functions control
+    the IO behavior of the process, whether feruscore''s descriptors are inherited
+    by the child-process—which is the case with spawn—or piped back to feruscore,
+    the default for output. We *don''t* want pmars to write to feruscore''s stdout/sterr,
+    so the defaults of `output` are ideal for our needs. The call to `args` adds a
+    new argument to the `Command` and a new call is required even for arguments that
+    associate. We write `.arg("-r").arg(format("{}", ROUNDS))` rather than `.arg(format!("-r
+    {}", ROUNDS))`. Here, we''re crashing the program if pmars fails to make appropriate
+    output, which might happen if the executable can''t be found or we trigger a crash-bug
+    in pmars and don''t have permissions to run the program. Crashing is a bit user-hostile,
+    but good enough for our purposes here.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, `output: std::process::Output`, a struct with three members. We''ve ignored
+    the exit status in favor of pulling the last stdio line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE123]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If there was output on stdio, then pmars successfully ran the passed warriors,
+    if not, then the warriors were invalid. The parser in pmars is very forgiving
+    if the warriors failed to load the serializer in Individual or Instruction is
+    faulty. Note that `result_line` is the last line of output. The last line is always
+    of the form `Results: 10 55 32`, meaning that the left program won 10 times, the
+    right program won 55 times, and they tied 32 times. A tie happens when neither
+    warrior is able to force the other out of the game by some pre-determined number
+    of executions, often around 10,000\. Parsing that last line is a rugged affair:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE124]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note the assertion. `ROUNDS` is a constant set in the module, set to 100\.
+    Our `Command` informed pmars to play 100 rounds with the passed warriors, if the
+    result doesn''t add up to 100, we''ve got a real problem. Placing these sanity
+    checks in code sometimes feels a bit silly but, lo and behold, they do turn up
+    bugs. Likewise, it''s rarely a wasted effort to invest in diagnostics. For instance,
+    in genetic algorithms, it''s hard to know how things are going in your population.
+    Is every generation getting fitter? Has the population bottlenecked somewhere?
+    To that end, the next step of compete is to tally the fitness of the left and
+    right warriors:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE125]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `tally_fitness` function is defined like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE126]'
+  prefs: []
+  type: TYPE_PRE
+- en: What is this, you ask? Well, I'll tell you! `tally_fitness` takes the input
+    score—the wins of the warrior—and buckets that score into a histogram. Usually
+    this is done with a modulo operation but we're stuck here. The implementation
+    has to assume that `tally_fitness` will be run by multiple threads at once. So,
+    we've constructed a histogram from several discrete `AtomicUsize`s with names
+    suggestive of their bucket purpose. The declaration of the statics is as repetitive
+    as you'd imagine and we'll spare repeating it here. Maintaining this structure
+    by hand is a real pain but it *does* get you an atomic histogram, so long as you're
+    fine with that histogram also being static. This implementation is. The histogram
+    is not used for decision making so much as it's meant for diagnostic display.
+    We'll come to that when we discuss the main loop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The final lines of `compete` are underwhelming:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE127]'
+  prefs: []
+  type: TYPE_PRE
+- en: The win counts of each warrior are compared and the winner is declared to be
+    the one with the higher score, or neither wins and a tie is declared. Depending
+    on your problem domain, this fitness' rubric might be too coarse. From the output,
+    we don't know how much fitter an individual was compared to its competitor, only
+    that it was. The warriors may have tied at 0 wins each, or gone 50/50\. We believe
+    this simple signal is enough, at least for our purposes now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'At least as far as creating an `Individual`, mutating it, reproducing it, and
+    competing it, that''s it! Now all that''s left is to simulate evolution and for
+    that we have to jump to `main.rs`. Before we do, though, I want to point out briefly
+    that there''s a submodule here, `individuals::ringers`. This module has functions
+    such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE128]'
+  prefs: []
+  type: TYPE_PRE
+- en: Sometimes it's wise to nudge evolution along by sprinkling a little starter
+    into the random mixture. Feruscore has no parser—at least, not until some kind
+    reader contributes one—so the ringers are written out long-form.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, on to `main`!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Main
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The preamble to `src/main.rs` is typical for the programs we''ve seen so far
+    in this book:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE129]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The program does start, however, with an abnormally large block of constants
+    and statics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE130]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Realistically, the configuration constants could be adjusted into actual configuration,
+    via clap or some configuration-parsing library. The toml ([https://crates.io/crates/toml](https://crates.io/crates/toml))
+    crate paired with serde is very useful for parsing straightforward configuration,
+    where the validation steps are a few checks we now encode as comments. The reporting
+    statics are the same static `AtomicUsize`s we''ve seen through the book. In fact,
+    starting the reporting thread is the first thing that the `main` function does:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE131]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `report` thread works in a similar fashion to the threads that fill a comparable
+    role elsewhere in the book: the global statics—including `FITNESS_*` from `feruscore::individuals`—are
+    swapped for zero, a little bit of computation happens, then there''s a block that
+    prints to stdout, and finally the thread sleeps for a bit before looping around
+    again, forever. It''s a well-worn technique by this point.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With the reporting thread online, feruscore creates its initial population:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE132]'
+  prefs: []
+  type: TYPE_PRE
+- en: rayon's `par_extend` makes an appearance again, useful when `POPULATION_SIZE`
+    is a large number but not harmful with its current value. As we saw, rayon will
+    decline to split a parallel collection too small to be effectively parallelized,
+    the distribution to threads overwhelming the time to compute. `Individual::new`
+    is called with the actual chromosome and core sizes, and two unlucky, random members
+    of the population are ejected and deallocated in favor of ringers from `individual::ringers`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are many ways to decide the fitness of individuals in a population. The
+    method that feruscore takes is to run individuals in a tournament. The winner
+    of the first tournament becomes the first parent, the winner of the second becomes
+    the second parent, and so forth until each parent is filled up. That implementation
+    is brief but contains multitudes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE133]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What''s going on here? The population is shuffled at the start to avoid pairing
+    up the same individuals in each tournament. Indeterminacy in thread makes this
+    somewhat unnecessary and the speed-obsessed evolver might do well to remove this.
+    The main show is the fold and reduce of the population. Readers familiar with
+    functional programming will be surprised to learn that rayon''s `fold` and `reduce`
+    are not synonymous. The type of `ParallelIterator::fold` is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE134]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Readers familiar with functional programming will not be surprised to learn
+    that `fold`''s type is somewhat involved. Jokes aside, note that the function
+    does not return an instance of `T` but `Fold<Self, ID, F>` where `Fold: ParallelIterator`.
+    rayon''s `fold` does not produce a single `T` but, instead, a parallel iterator
+    over chunks that will have `Fn(T, Self::Item) -> T` applied: an iterator over
+    folded chunks. `ParallelIterator::reduce` has the following type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE135]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `OP` takes two `Item`s and combines them into one `Item`. `Reduce`, then,
+    takes a `ParallelIterator` of `Item`s and reduces them down into a single instance
+    of `Item` type. Our tournament implementation folds `regional_tournament` over
+    the population, producing a `Fold` over `(Option<Individual>, Vec<Individual>)`,
+    the first element of the tuple being the fittest individual in that subchunk of
+    the population, the second element being the remainder of the population. The
+    `reduce` step, then, takes the winners of the regional tournaments and reduces
+    them into one final winner. The implementation of these two functions is similar.
+    First, `regional_tournament`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE136]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note the call to compete and the choice to promote the existing `chmp`—champion—to
+    the next tournament round in the event of a tie. `REGIONAL_BATTLES` sees an update,
+    feeding the report thread information. The less fit individual is pushed back
+    into the population. `finals_tournament` is a little more complicated but built
+    along the same lines:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE137]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function is responsible for rerunning competitions and for joining up the
+    previously split parts of the population. Note the call to `lpop.extend`. The
+    right population—`rpop`—is always merged into the left population, as are less
+    fit individuals. There's no special reason for this, we could equally have merged
+    right and returned right.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, take a minute to look at these two functions. They are sequential. We are
+    able to reason about them as sequential functions, we are able to program them
+    like sequential functions. We can test them like sequential functions. rayon's
+    internal model doesn't leak into this code. We have to understand only the types
+    and, once that's done, rayon's able to do its thing. This sequential inside, parallel
+    outside model is unique, compared to all the techniques we've discussed in the
+    book so far. rayon's implementation is undoubtedly complicated, but the programming
+    model it admits is quite straightforward, once you get the hang of iterator style.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the tournament selection is completed, the parents vector is filled with
+    `PARENTS`, number of `Individual`s and the population has members who are all
+    suitable for being turned into children. Why draw from the population? Well, the
+    upside is we avoid having to reallocate a new `Individual` for each reproduction.
+    Many small allocations can get expensive fast. The downside is, by drawing from
+    the population, we''re not able to easily turn a direct loop into a parallel iterator.
+    Given that the total number of reproductions is small, the implementation does
+    not attempt anything but a serial loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE138]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Two parents are popped off, a child is popped off, reproduction happens, and
+    everyone is pushed into their respective collection. Children exist to avoid reproducing
+    into the same `Individual` multiple times. Once reproduction is completed, `children` is
+    merged back into the population, but not before some sanity-checks take place:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE139]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once `children` is integrated into the population, mutation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE140]'
+  prefs: []
+  type: TYPE_PRE
+- en: The careful reader will note that the parents are not included in the mutation
+    step. This is intentional. Some implementations do mutate the parents in a given
+    generation, and whether or not this is a good thing to do depends very much on
+    domain. Here, the difference between a fit `Individual` and an unfit one is so
+    small that I deemed it best to leave parents alone. A matter for experimentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, we bump the `generation`, potentially `checkpoint`, and re-integrate
+    the parents into the population:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE141]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There is no stop condition in feruscore. Instead, every 100 generations, the
+    program will write out its best warriors—the parents—to disk. The user can use
+    this information as they want. It would be reasonable to stop simulation after
+    a fixed number of generations or compare the parents against a host of known best-of-breed
+    warriors, exiting when a warrior had been evolved that could beat them all. That
+    last would be especially nifty but would require either a parser or a fair deal
+    of hand-assembly. Checkpointing looks the way you may imagine it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE142]'
+  prefs: []
+  type: TYPE_PRE
+- en: Okay! Let's evolve some warriors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running feruscore
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before you attempt to run feruscore, please make sure pmars is available on
+    your PATH. Some operating systems bundle pmars in their package distribution,
+    others, such as OS X, require gcc to compile the program. The pMARS project is
+    *venerable* C code and getting it compiled can be a bit fiddly. On my Debian system,
+    I had to tweak the makefile some, but on OS X I found a helpful brew cask to get
+    pMARS installed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once you''ve got pMARS installed, you should be able to run `cargo run --release`
+    at the head of the project and receive output like the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE143]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Woo! Look at it go. This instance of feruscore has been running for 4 seconds—RUNTIME
+    (sec): 4—and has computed two parents so far. This generation has gone through
+    660 battles: 131 regional and 25 final. The fitness histogram shows that the population
+    is pretty evenly bad, otherwise we''d expect to see a clump at the 0 end and a
+    clump at the 100 end. You should see something similar. I bet you''ll also find
+    that your CPUs are pegged. But, there''s a problem. This is *slow*. It gets worse.
+    Once I evolved more fit warriors, the generations took longer and longer to compute:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE144]'
+  prefs: []
+  type: TYPE_PRE
+- en: That makes sense though. The better the population is, the longer members will
+    hold out in a round. It's not uncommon to run a genetic algorithm for *thousands*
+    of generations before it settles on a really excellent solution. A generation
+    in the present implementation takes, generously, 30 seconds at least. By the time
+    we're able to evolve a halfway-decent warrior, it'll be the 30th anniversary of
+    the '94 ICWS Corewars standard! That's no good.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Turns out, serializing an `Individual` to disk, spawning a pMARS process, and
+    forcing it to parse the serialized format—the load file—is not a fast operation.
+    We could also compact our `Individual` representation significantly, improving
+    cache locality of simulation. There's also something fishy about performing a
+    *regional* and then a *finals* tournament just to fit the iterator style rayon
+    requires. We can fix all of these things, but it'll have to wait until the next
+    chapter. We're going to embed a MARS written in C into feruscore and all sorts
+    of changes will fall out as a result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Should be fun!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we set the lower-level details of concurrency in Rust as a
+    foundation. We discussed thread pools, which, it turns out, we had all the pieces
+    in-hand from previous chapters, to understand a fairly sophisticated one. Then
+    we looked into rayon and discovered that we could also understand an *extremely*
+    sophisticated threadpool, hidden behind the type system to enable data parallelism
+    in the programming model. We discussed architectural concerns with the thread-per-connection
+    model and the challenges of splitting small datasets up into data parallel iterators.
+    Finally, we did a walkthrough of a rayon and multi-processing-based genetics algorithm
+    project. The `std::process` interface is lean compared to that exposed by some
+    operating systems, but well-thought-out and quite useful, as demonstrated in the
+    feruscore project that closed out the chapter. We'll pick up feruscore in the
+    next chapter when we integrate C code into it, in lieu of calling out to a process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The notes for the chapter are a bit unusual for the book. Rather than call out
+    papers the reader could look to for further research these notes are, overwhelmingly,
+    suggestions of codebases to read. Data parallel iterators are *amazing* but take
+    a little getting used to.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Nothing helps more than reading existing projects. Me, I figure every thousand
+    lines of source code takes an hour to understand well. Makes for a peaceful afternoon:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*rayon*, available at [https://github.com/rayon-rs/rayon](https://github.com/rayon-rs/rayon). We
+    discussed this crate quite a bit in the chapter but only skimmed the surface of
+    it. I highly, highly recommend that the motivated reader go through ParallelIterator
+    and work to understand the operators exposed there.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*xsv*, available at [https://github.com/BurntSushi/xsv](https://github.com/BurntSushi/xsv).
+    Andrew Gallant is responsible for some of the fastest text-focused Rust code right
+    now and xsv is no exception. This crate implements a toolkit for very fast, parallel
+    CSV querying and manipulation. The threadpool crate discussed earlier drives the
+    whole thing. Well worth reading if you''ve got ambitions for fast text processing
+    and want to see the application of thread pooling to such.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*ripgrep*, available at [https://github.com/BurntSushi/xsv](https://github.com/BurntSushi/xsv).
+    Andrew Gallant''s ripgrep is one of the fastest grep implementations in the world.
+    The reader will be interested to know that the implementation does not use any
+    off-the-shelf threadpool crates nor rayon. Ripgrep spawns a result printing thread
+    for every search, then a bounded many threads to perform actual searches on files.
+    Each search thread communicates results to the print thread via an MPSC, thereby
+    ensuring that printed results are not torn and search can exploit the available
+    machine CPUs.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*tokei*, available at [https://github.com/Aaronepower/tokei](https://github.com/Aaronepower/tokei).
+    There are many source-code line-counting programs in the world, but few cover
+    as many languages or are as fast as Aaron Power''s tokei. The implementation is
+    well worth reading if you''re interested in parsing alone. But, tokei also notably
+    makes use of rayon. Where the project has chosen sequential std iterators over
+    rayon''s parallel iterators is something readers should discover for themselves.
+    Then, they should ponder through the reasons why such choices were made.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*i8080*, available at [https://github.com/Aaronepower/i8080](https://github.com/Aaronepower/i8080).
+    In addition to tokei, Aaron Power wrote an impressive Intel 8080 emulator in Rust.
+    MARS is a deeply odd machine and the reader will probably have an excellent time
+    discovering how an actual, simple CPU is emulated.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*QuickCheck: Lightweight Tool for Random Testing of Haskell Programs*, 2000,
+    Koen Claessen and John Hughes. This paper introduces the QuickCheck tool for Haskell
+    and introduces property-based testing to the world. The research here builds on
+    previous work into randomized testing, but is novel for realizing that computers
+    had got fast enough to support type-directed generation as well as shipping with
+    the implementation in a single-page appendix. Many, many subsequent papers have
+    built on this one to improve the probing ability of property testers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Smallcheck and Lazy Smallcheck: Automatic Exhaustive Testing for Small Values*,
+    2008, Colin Runciman, Matthew Naylor, and Fredrik Lindblad. This paper takes direct
+    inspiration from Claessen and Hughes work but works the hypothesis that many program
+    defects are to be found on s*mall* input first. The Lazy Smallcheck discussion
+    in the second half of the paper is especially interesting. I found myself reading
+    this with a growing ambition to implement a Prolog.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Macros: The Rust Reference*, available at [https://doc.rust-lang.org/reference/macros.html](https://doc.rust-lang.org/reference/macros.html).
+    Macro use in Rust is in a weird state. It''s clearly useful but the current macro
+    implementation is unloved and a new macro system is coming, gradually, to replace
+    it. Meanwhile, if you want to build macros to use in code, you''re going to need
+    this reference.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*The C10K Problem*, available at [http://www.kegel.com/c10k.html](http://www.kegel.com/c10k.html).
+    This page was much discussed when it first hit the internet. The problem discussed
+    was that of getting 10,000 active connections to a single network server, processing
+    them in a non-failing fashion. The author notes several resources for further
+    reading, all of which are still useful today, and discusses the state-of-the-art
+    operating systems at that time, in terms of kernal versions and the inclusion
+    of new, better polling APIs. Though old—the many-connection problem is often now
+    stated as C1M—it''s still an excellent and informative read.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Annotated Draft of the Proposed 1994 Core War Standard*, available at [http://corewar.co.uk/standards/icws94.htm](http://corewar.co.uk/standards/icws94.htm).
+    Corewars is a subtle game, in terms of the effect of the assembly language, Redcode,
+    on the machine and the function of the machine itself. This document is the attempt
+    to standardize the behavior of both in 1994\. The standard was not accepted—the
+    standard body was dying—but the proposal document is very clear and even comes
+    with a brief C implementation of a MARS.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

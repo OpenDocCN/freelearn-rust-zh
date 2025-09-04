@@ -1,0 +1,825 @@
+- en: '18'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Queuing Tasks with Redis
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Receiving requests, performing an action, and then returning a response to the
+    user can solve a lot of problems in web programming. However, there are times
+    when this simple approach will simply not cut it. For instance, when I was working
+    at MonolithAi, we had a functionality where the user would be able to put in data
+    and parameters and then train a machine learning model on that data at a click
+    of a button. However, trying to train a machine learning model before sending
+    a response to the user would simply take too long. The connection would probably
+    time out. To solve this, we had a **Redis** queue and a pool of workers consuming
+    tasks. The training task would be put into the queue and one of the workers would
+    work on training the model when they got round to it. The HTTP server would accept
+    the request from the user, post the training task to the queue, and respond to
+    the user that the task was posted. When the model was trained, the user would
+    get an update. Another example could be a food ordering application where the
+    food order goes through a series of steps such as confirming the order, processing
+    the order, and then delivering the order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Considering the MonolithAi example, it is not hard to see why learning how to
+    implement queuing in web programming is not only useful but also gives the developer
+    another solution, increasing the number of problems they can solve.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Laying out the queuing project, describing the components and approach needed
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building an HTTP server
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building a polling worker
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Getting our application running with Redis
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Defining tasks for workers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Defining messages for the Redis queue
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Integrating routing in the HTTP server
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Running all servers and workers in Docker
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will be able to build a single Rust program
+    that can either be a worker or server depending on the environment variable passed
+    into it. You will also be able to serialize a range of tasks in the form of different
+    structs and insert them into the Redis queue, enabling these structs to be queued
+    and transported across different servers. This will not only give you the skillset
+    to implement queues but also utilize Redis to implement many other solutions,
+    such as multiple servers receiving messages through a broadcast via a Redis pub/sub
+    channel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we will be purely focusing on how to build workers using Tokio
+    and Hyper on a Redis queue. Therefore, we will not be relying on any previous
+    code as we are building our own new server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code for this chapter can be found at [https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter18](https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter18).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Breaking down our project
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In our system, we have a series of tasks that need to be executed. However,
+    these tasks take a long time to complete. If we were to just have a normal server
+    handling the tasks, the server will end up being choked and multiple users will
+    receive a delayed experience. If the task is too long, then the users’ connection
+    might time out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To avoid degrading users’ experience when long tasks are needed, we utilize
+    a queuing system. This is where an HTTP server receives a request from the user.
+    The long task associated with the request is then sent to a first-in-first-out
+    queue to be processed by a pool of workers. Because the task is in the queue,
+    there is nothing more the HTTP server can do apart from respond to the user that
+    the task has been sent and that their request has been processed. Due to the ebbs
+    and flows of traffic, we will not need all our workers and HTTP servers when the
+    traffic is low. However, we will need to create and connect extra HTTP servers
+    and workers when the traffic increases, as seen in the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.1 – Our approach to processing lengthy tasks](img/Figure_18.1_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.1 – Our approach to processing lengthy tasks
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Considering the preceding diagram, we will need the following infrastructure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Redis database**: To store the tasks in the queue'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**HTTP server**: To send tasks to the queue to be processed'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Worker**: To pull/pop/poll/process tasks from the queue'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We could build individual applications for the worker and the HTTP server. However,
+    this would increase complexity for no gain. With two separate applications, we
+    would have to maintain two separate Docker images. We would also duplicate a lot
+    of code as the tasks that the HTTP server sends to the Redis queue must be the
+    same tasks that the worker picks up and processes. There could end up being a
+    mismatch between the fields passed from the HTTP server to the worker for a particular
+    task. We can prevent this mismatch by having task structs that have a range of
+    fields for the input and a run function to execute the task with those fields.
+    Serialization traits for these task structs can enable us to pass the fields over
+    the queue and receive them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When it comes to building an HTTP server and worker, we can build the server
+    so that environment variables are checked once the program is started. If the
+    environment variable states that the application is a worker, the application
+    can then spin up an actor that polls the queue. If the environment variable states
+    that the application is an HTTP server, the application can then run an HTTP server
+    and listen for requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For our task queue project, we have the following outline:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will define the server entry point in the `src/main.rs` file. We will then
+    define our task structs in the `src/tasks/` directory. In terms of our dependencies
+    in our `Cargo.toml` file, we have the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: None of these dependencies should be new to you apart from the `bytes` and `bincode`
+    crates. We will use `bytes` to convert our struct into HTTP responses and `bincode`
+    to serialize structs into binary to be stored in Redis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the approach that we have just laid out in this section, we will be able
+    to build a simple task-processing queue where we can assure that the task definitions
+    between the servers and workers are always in sync. With our approach defined,
+    we can move on to the first part of a task’s journey, which is the HTTP server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building the HTTP server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For our HTTP server, we need to carry out the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Define a struct that deserializes the HTTP request body.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Define a function that handles the incoming request.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Define pathways for the program to run based on environment variables.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Run a server that listens for incoming requests.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'We are not going to section off individual sections for each step as we have
+    covered all of these steps/processes in the previous chapter. Before we carry
+    out all the steps, we must import the following into the `src/main.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You should be familiar with all these imports apart from the `bytes` import,
+    which we will cover when defining the HTTP handle function. First, we will define
+    a trivial struct to serialize the incoming HTTP request bodies with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is the same approach to our Actix Web applications. We will be able to
+    annotate our task structs with the `Serialize` and `Deserialize` traits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have defined the `IncomingBody` struct, we can define our `handle`
+    function with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: It must be noted that we are calling the `freeze` function when returning our
+    body. This `freeze` function converts the mutable bytes to immutable, preventing
+    any buffer modifications. Here, we can see that we are accepting a generic body
+    with the request. We can then use `serde` to serialize the body and the `BytesMut`
+    struct (which is essentially just a contiguous slice of memory) to return the
+    body to the user, essentially creating an echo server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now define the `main` function, which is the entry point with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here we can see that the environment variable `"APP_TYPE"` is extracted. Depending
+    on what the app type is, we have different blocks of code being executed. For
+    now, we will just print out a statement that the worker is not defined if the
+    app type is a `"worker"`. We also state that the program is going to panic if
+    the app type is neither a `"server"` nor a `"worker"` type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our server block, we defined `addr` and `server` with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is very similar to our server code in the previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We then run the server with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then send the following request:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.2 – A request to our HTTP server](img/Figure_18.2_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.2 – A request to our HTTP server
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, we can see that our server works and echoes the same body that was sent
+    to the server. We can now move on to building our worker application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building the polling worker
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Our worker is essentially looping and polling a queue in Redis. If there is
+    a message in the queue, the worker will then execute the task that has been extracted
+    from the queue. For building the polling worker section, the worker will be creating
+    a struct, inserting the struct into the Redis queue, and then extracting that
+    inserted struct from the queue to print out. This is not our desired behavior
+    but this does mean that we can test to see how our queue insertion works quickly.
+    By the end of the chapter, our HTTP servers will be inserting tasks and our workers
+    will be consuming tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We do not want the worker to be polling the Redis queue constantly without
+    any rest. To reduce the polling to a reasonable rate, we will need to make the
+    worker sleep during each loop. Therefore, we must import the following in the
+    `src/main.rs` file to enable us to get our worker sleeping:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now move to the section where the worker is run to define our worker
+    code in the following section in the `main` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our worker code takes the following general outline:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we can see that we define the Redis client and then run the worker on
+    an infinite loop. In this loop, we will be establishing a connection with Redis,
+    polling the queue in Redis, and then removing the connection. We can establish
+    and remove the connection in the loop because the task will take a long time.
+    There is no point in holding onto a Redis connection throughout the duration of
+    a task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unfortunately, at the point of writing this book, the Rust Redis crate does
+    not have a simple implementation of queues. However, this should not hold us back.
+    If we know the raw commands needed to get Redis to implement our queue, we can
+    implement our own queues. Redis performs like a SQL database. If you know the
+    commands, you can implement your own logic like in SQL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Inside our infinite loop, we are going to create a generic struct that has
+    the `Serialize` and `Deserialize` traits implemented, then serialize the struct
+    into binary with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our struct is now a vector of bytes. We will then establish a connection with
+    Redis and push `"some_queue"` with the `"LPUSH"` command to the queue, which inserts
+    the value at the head of the queue, with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have `Option<Vec<u8>>` because there may not be anything in the queue. If
+    there is nothing in the queue, then the outcome will be none. Right now, we will
+    never get a none because we are directly inserting tasks into the queue before
+    we extract a task from the queue. However, in periods of low traffic, our workers
+    will be polling queues that could be empty for a while.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have our outcome, we can process it with the following `match`
+    statement:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we have some data, we will merely deserialize the binary data and print
+    out the struct with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If there is nothing in the queue, the `outcome` is `None`, and we can just
+    sleep for five seconds before running the loop again with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: With this, our worker is ready to be tested. You can always do more when building
+    an async program like this. However, to avoid bloating this chapter, we will stick
+    with our basic application. If you want to further your understanding of Redis,
+    you could investigate building a pub/sub system where one worker continuously
+    polls the queue and the other workers are switched off with an actor listening
+    for a message on a channel. When a main worker gets a new task, the main worker
+    can publish a message to a channel, waking up other workers. If you really want
+    to push yourself, you could investigate Kubernetes controllers and have a main
+    worker spin up and destroy worker pods, depending on the traffic. However, these
+    projects will be beyond the scope of this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To get our application working within the scope of one chapter, we must move
+    on to getting our application running with Redis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Getting our application running with Redis
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Running our application with Redis locally will require us to use Redis with
+    Docker, export the `APP_TYPE` environment variable as `"worker"`, and then run
+    our application with Cargo. For our Redis, our `docker-compose.yml` file takes
+    the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then export our `APP_TYPE` environment variable with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then run our application with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When we run our application, we will get the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The printout of the `IncomingBody` struct will be infinite because we are running
+    an infinite loop. However, what this shows is that the following mechanism is
+    running and working:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.3 – Our process of how we insert and extract data from a Redis
+    queue](img/Figure_18.3_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.3 – Our process of how we insert and extract data from a Redis queue
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although our worker is working with a Redis queue, it is merely printing out
+    the struct that was put into the Redis queue. In the next section, we build functionality
+    into the structs that we are inserting into the Redis queue so our worker can
+    perform the tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining tasks for workers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When it comes to running our tasks, we need fields so we can pass them in as
+    inputs to the task being run. Our tasks also need a `run` function so we can choose
+    when to run tasks as running a task takes a long time. We can define a basic addition
+    task in our `src/tasks/add.rs` file with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'None of this code should be a shock. We will implement the `Serialize` and
+    `Deserialize` traits so we can insert the task into the Redis Queue. We can then
+    use a `sleep` function to simulate a long task. Finally, we merely add the two
+    numbers together. For our task in the `src/tasks/multiply.rs` file, the `run`
+    function takes the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It should not be a surprise to find out that the `run` function in the `src/tasks/subtract.rs`
+    file has the following structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we want to implement one of our tasks to see whether we can pull a task
+    struct out of a Redis queue and run it. We make the tasks accessible from the
+    module with the following code in the `src/tasks/mod.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In our `src/main.rs` file, we initially import the tasks with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now implement one of our tasks in our worker block of code. At the start
+    of this worker block of code, we will swap the `IncomingBody` struct with the
+    `AddTask` struct using the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Nothing else needs to change apart from what we do with the `Some` part of
+    the `outcome` `match` statement, which now takes the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we can see that we deserialized the binary data into an `AddTask` struct,
+    ran the `run` function, and then printed out the outcome. In a real application,
+    we would be inserting the result to a database or sending the result to another
+    server using HTTP. However, in this chapter, we are merely interested in seeing
+    how queuing tasks are executed. We have covered database inserts and HTTP requests
+    many times in the book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we run our worker application now, we will get a 15-second delay and then
+    the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we wait another 15 seconds, we will get another printout that is the same.
+    This shows that our tasks are being pulled from the Redis queue, deserialized,
+    and then ran in the exact same manner that we expect them to as one added to two
+    is three. However, there is a problem here. We can only send and receive the `AddTask`
+    struct. This is not useful as we have two other tasks and we would like to support
+    all of them. Therefore, we must move on to defining messages that can support
+    a range of tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining messages for the Redis queue
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To support multiple tasks, we must do a two-step approach to packaging our
+    tasks to be inserted into the Redis queue. This means that we will serialize the
+    task struct into `Vec<u8>`, then add this vector of bytes to another struct that
+    has a field denoting what type of task is in the message. We can define this process
+    by first importing the `Serialize` and `Deserialize` traits in the `src/tasks/mod.rs`
+    file with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then define the `enum` task type and message struct with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our message struct is now ready to package a range of tasks to be inserted
+    into the Redis queue. In our `src/main.rs` file, we can import the `TaskType`
+    and `TaskMessage` structs with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are now ready to rewrite our infinite loop in the worker block of code.
+    We initially create `AddTask`, serialize `AddTask`, and then package this serialized
+    task into the `TaskMessage` with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will then establish a Redis connection, then push our serialized message
+    to the Redis queue with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will then pop the task from the Redis queue and drop the connection with
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are now moving our `TaskMessage` struct in and out of the Redis queue. We
+    must process `TaskMessage` if there is one. Inside the `match` block of the `Some`
+    statement of `outcome`, we must deserialize the bytes we got from the Redis queue,
+    then match the task type with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: This now enables us to handle individual tasks that we have pulled from the
+    Redis queue and ran.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our worker now supports all three of our tasks! However, we are currently just
+    creating messages and then directly consuming these messages in the worker. We
+    need to enable the HTTP server to accept a range of different requests to send
+    a range of different tasks to the Redis queue to be consumed by the workers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating routing in the HTTP server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We are now at the stage of getting our HTTP server to accept incoming requests
+    to create a range of tasks depending on what the URI is. To get our HTTP to support
+    multiple tasks, we essentially must rewrite the `handle` function in the `src/main.rs`
+    file. Before we rewrite the `main`  function, we must import what we need with
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are importing these things because we are going to return a `NOT_FOUND`
+    status code if the wrong URI is passed. We also going to be extracting data from
+    the body of the incoming request. Before we refactor our `handle` function, we
+    need to change our `IncomingBody` struct to take in two integers taking the following
+    form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Inside our `handle` function, we can define our Redis client, clean our URI
+    by removing trailing slashes, and extract the data from the incoming request with
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that we can extract the task type from the URI. Right now, we will
+    support `add`, `subtract`, and `multiply`. We now have everything we need from
+    the incoming request; we can construct the appropriate task based on the URI with
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that no matter what the task is, we need the task struct to be packed
+    into our `TaskType` enum, which can be serialized into a binary vector for our
+    message to be sent to the Redis queue. For the last part of the `match` statement,
+    which catches all task requests that do not match with “add”, “multiply”, or “subtract”,
+    we merely return a `NOT_FOUND` HTTP response with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We now have everything we need to create a generic task message that can be
+    inserted into a Redis queue. With this information, we can create our `TaskMessage`
+    struct and serialize `TaskMessage` after the `match` statement that we have just
+    covered with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will then make a Redis connection, push the serialized message to a Redis
+    queue, and then drop the Redis connection with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we return an `Ok` HTTP response stating that the task has been sent
+    with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our `handle` function is now complete. All we need to do now is remove the
+    code that inserts an `AddTask` struct to the Redis queue in the worker code block.
+    We are removing the task insertion code from the worker code block because we
+    no longer need the worker to insert tasks. The removal of the insertion code takes
+    the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: We are now ready to package these workers and HTTP servers in Docker so we can
+    run our application with as many workers as we want.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running it all in Docker
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We are now at the stage where we can run our entire application in Docker.
+    This enables us to have multiple workers pulling from the same Redis queue. First,
+    we need to define the `Dockerfile` for the build of our worker/server image. We
+    are going to have a distroless build for the Docker build with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This distroless build should not be a surprise at this point in the book. We
+    are merely compiling the application and then copying the static binary into the
+    distroless image. Before we run the build in any way, we must ensure that we do
+    not copy over excessive files from the `target` directory into our Docker build
+    with the following code in the `.``dockerignore` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our build is now ready. We can define the `docker-compose.yml` with the following
+    outline:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we can see that we have three workers and one server. Our server takes
+    the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we can see that we can expose the port, point out that the build context
+    is in the current directory, and that our container should start once Redis has
+    started.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A standard worker takes the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can imagine that other workers have the same structure as the preceding
+    worker, which is true. If we want to add another worker, we can have the exact
+    spec as `worker_1` except we just increase the number attached to the image and
+    container name resulting in the new worker being called  `worker_2`. You may have
+    noticed that we have added `REDIS_URL` to the environment variables. This is because
+    the workers and servers are having to access the Redis database outside of their
+    container. Passing localhost into the Redis client will result in a failure to
+    connect to Redis as a result. Therefore, we must get rid of all references to
+    the Redis client and replace those references with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we spin up `docker_compose` now and send a range of different HTTP requests
+    to the server, we get the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It is a big printout, but we can see that Redis spins up and there are multiple
+    workers polling the Redis queue. We can also see that multiple workers are processing
+    multiple tasks at the same time. Examples of how to make the request to the server
+    are depicted here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.4 – An example of sending a request to our server for multiply](img/Figure_18.4_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.4 – An example of sending a request to our server for multiply
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.5 – An example of sending a request to our server for subtract](img/Figure_18.5_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.5 – An example of sending a request to our server for subtract
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.6 – An example of sending a request to our server for add](img/Figure_18.6_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.6 – An example of sending a request to our server for add
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here we have it! We have a server that accepts requests. Depending on the URI,
+    our server constructs a task, packages it into a message, and then sends it to
+    a Redis queue. We then have multiple workers polling the Redis queue to process
+    the long tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we built an application that could be run as either a worker
+    or a server. We then built structs that could be serialized and inserted into
+    a Redis queue. This allowed our workers to consume these tasks and then process
+    them in their own time. You now have the power to build systems that process long
+    tasks without having to hold up the HTTP server. The mechanism of serializing
+    Rust structs and inserting them into Redis does not just stop at processing large
+    tasks. We could serialize Rust structs and send them over pub/sub channels in
+    Redis to other Rust servers, essentially creating an actor model approach on a
+    bigger scale. With our distroless images, these Rust servers are only roughly
+    the size of 50 MB, making this concept scalable. We also explored applying raw
+    commands to Redis, which gives you the freedom and confidence to fully embrace
+    what Redis has to offer. A high-level list of all the commands you can do to Redis
+    is given in the *Further reading* section. You will be shocked at what you can
+    do, and I hope you get as excited as me thinking of all the solutions you can
+    achieve with Redis when looking through the available commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have come to the end of the book. I am grateful that you have gotten this
+    far, and I am always happy when readers reach out. Rust is truly a revolutionary
+    programming language. With Rust, we have been able to build and deploy fast tiny
+    servers. We have explored async programming and the actor model. We have built
+    deployment pipelines. Your journey is not over; there is always more to learn.
+    However, I hope that I have exposed you to fundamental concepts in such a way
+    that you can go forward and read further documentation, practice, and someday
+    push the boundaries of web programming.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The Redis documentation on pushing to queues: [https://redis.io/commands/lpush/](https://redis.io/commands/lpush/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A concise list of raw Redis commands: [https://www.tutorialspoint.com/redis/redis_lists.htm](https://www.tutorialspoint.com/redis/redis_lists.htm)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The Redis Rust crate documentation: [https://docs.rs/redis/latest/redis/](https://docs.rs/redis/latest/redis/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

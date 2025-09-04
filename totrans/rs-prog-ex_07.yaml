@@ -1,0 +1,1468 @@
+- en: Music Player in a More Rusty Way with Relm
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we finished our music player. It is completely fine,
+    but using `gtk-rs` directly in Rust can be error-prone. That's why we'll rewrite
+    our music player using `relm`, an idiomatic GUI library for Rust. `Relm` is based
+    on `gtk-rs`, so the application will look the same at the end. However, the code
+    will be cleaner and more declarative.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Relm
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Relm widgets
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Model-view-controller
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Declarative view
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Message passing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reasons to use relm instead of gtk-rs directly
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As you have seen in the previous chapters, we used concepts that were not really
+    obvious, and doing certain things that would normally be easy to do aren't that
+    easy when using GTK+ with Rust. These are some of the many reasons to use `relm`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: State mutation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'It might not be clear from the previous chapter, but we indirectly used `Rc<RefCell<T>>`
+    to do state mutation. Indeed, our `Playlist` type contains a `RefCell<Option<String>>`
+    and we wrapped our `Playlist` inside a reference-counted pointer. This was to
+    be able to mutate the state in reaction to events, for instance playing the song
+    when clicking the play button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Having to use all these calls to `clone()` is cumbersome and using the `RefCell<T>` type
+    can lead to issues that are hard to debug in complex applications. The issue with
+    this type is that the borrow checking happens at runtime. For instance, the following
+    application:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Will panic:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Even though it is obvious why it panics in this example (we called `borrow_mut()`
+    when the borrow was still alive in `borrowed_cell`), in more complex applications,
+    it will be harder to understand why the panic happens, especially if we wrap the
+    `RefCell<T>` in an `Rc` and clone it everywhere. This brings us to the second
+    issue with this type: using `Rc<T>` encourages us to clone our data and share
+    it too much which increases the coupling between our modules.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `relm` crate takes a different approach: widgets owns their data and the
+    different widgets communicate between them using message passing.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Asynchronous user interface
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Another common issue when creating user interfaces is that we might want to
+    perform an action that might take time (such as a network request) without freezing
+    the UI. By being based on `tokio`, an asynchronous I/O framework for Rust, `relm`
+    allows you to easily program graphical user interfaces that can perform network
+    requests without freezing the interface itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating custom widgets
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In object-oriented languages, it is very easy to create new widgets and use
+    them like built-in widgets. In this paradigm, you only need to create a new class
+    that inherits from a widget and that's it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In [Chapter 5](part0117.html#3FIHQ0-13a27bdc411a4c2eaad1cc3a71f7fca7), *Creating
+    a Music Player*, we created custom widgets, such as `Playlist` and `MusicToolbar`,
+    but we needed to create a function to get the real GTK+ widget:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'An alternative would have been to implement the `Deref` trait:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That implementation would allow us to add the widget to its `parent` like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: (Note the leading `*` in front of `playlist` which is the call to `deref()`.)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Instead of adding it in the following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: But it is still different than when using normal `gtk` widgets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Relm` solves all of these issues. Let''s start using this crate.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a window with relm
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: First of all, we'll use the nightly version of the Rust compiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While using this nightly version is not strictly necessary to use `relm`, it
+    provides a syntax that is a bit nicer using a feature that is only available on
+    this version.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That will be a good opportunity to learn how to install a different version
+    of the compiler. Nightly is the unstable version of Rust; it's a version that
+    is compiled almost every day. Some unstable features of Rust are only available
+    on nightly. But, don't worry, we'll also see how to use `relm` on the stable version
+    of Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Rust nightly
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'With `rustup`, the tool we installed in [Chapter 1](part0020.html#J2B80-13a27bdc411a4c2eaad1cc3a71f7fca7),
+    *Basics of Rust*, it is very easy to install nightly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Running this command will install the nightly version of the tools (`cargo`,
+    `rustc`, and so on). Also, it will switch the corresponding commands to use the
+    nightly version.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you want to go back to the stable version, issue the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The nightly version is updated very frequently, so you might want to update
+    it every week or more often. To do so, you need to run this command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will also update the stable version if a new version was released (one
+    stable version is released every 6 weeks).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we are using Rust nightly, we''re ready to create a `new` project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Add the following dependencies in the `Cargo.toml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We still need `gtk` because `relm` is based on it. Let''s add the corresponding
+    `extern crate` statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`relm` provides some macros, that''s why we needed to add `#[macro_use]`. We''ll
+    start slowly by creating a simple window with `relm`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Widget
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This crate is centered around the concept of widgets, which are different than
+    the `gtk` widgets. In `relm`, a widget is composed of a view, a model, and a method
+    to update the model in reaction to events. The concept of widget is implemented
+    by a trait in `relm`: the `Widget` trait.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Model
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''ll start with an empty model and we''ll populate it later in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, a model can be a simple structure. It could also be `()` if
+    your widget don't need a model. Actually, it can be any type you want.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Besides the model, a widget needs to know the initial value of its model. To
+    specify what it is, we need to implement the `model()` method of the `Widget`
+    trait:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we use the `#[widget]` attribute provided by the `relm_attributes` crate.
+    Attributes are currently an unstable feature of the language, that's why we use
+    nightly. We'll see in the section about the declarative view why this attribute
+    is needed. So, let's go back to our `model()` model, we only return `Model {}`
+    for now as our model does not contain any data. Other methods are needed for this
+    trait, so this implementation is incomplete for now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Messages
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Relm` widgets communicate by sending messages to other widgets, but also to
+    themselves. For instance, when the `delete_event` signal is emitted, we can emit
+    the `Quit` message to our widget and take appropriate action when we receive this
+    message. A message is modeled as an `enum` using the custom derive `Msg` that
+    is specific to `relm`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: This custom derive is provided by the `relm_derive` crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: View
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Views are created in a declarative way in `relm` as a part of the `Widget`
+    trait:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We first imported some stuff from the `gtk` crate. Then we imported the `Widget`
+    trait from `relm` and the `widget` attribute. Later, we imported the variant of
+    our `enum Msg` because we use it in this code. To declare the view, we use the
+    `view!` macro. This macro is very particular, it is not a macro that is declared
+    as `macro_rules!`, as we saw in [Chapter 1](part0020.html#J2B80-13a27bdc411a4c2eaad1cc3a71f7fca7),
+    *Basics of Rust*. Instead, it is parsed by the procedural macro implementing the
+    `#[widget]` attribute in order to provide a syntax that is not allowed in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To declare our view, we first specify the name of the `gtk::Window` widget.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We cannot import `gtk::Window` to be able to use only `Window` in the declaration
+    of the view.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After that, we use curly brackets and inside them, we specify the properties
+    and events handled by the widget.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Properties
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Here, we declare that the `title` property is `"Rusic"`. So we transformed
+    the `set_title()` call from `gtk` to the `title` property, only the part after
+    `set_` is needed. Actually, `relm` will convert the property (`title: "Rusic"`)
+    to the `set_title("Rusic")` call, as we''ll see later.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Events
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The syntax of the event handler is a bit special:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we only need to write `delete_event(_, _) =>` instead of `connect_delete_event(move
+    |_, _| { })`. If we needed the arguments of the signal, we could have written
+    the name of an identifier instead of using underscores (`_`). On the right side
+    of the fat arrow (`=>`), we specify two things between parentheses and separated
+    by a comma. First, there's `Quit`, which is the message that will be sent to the
+    current widget when the event is emitted. And second is the value to return to
+    the `gtk` callback. Here, we return `Inhibit(false)` to specify that we don't
+    want to prevent the default event handler from running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Code generation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The code generated by the attribute is a normal Rust method that looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: Update function
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The only remaining required method of the `Widget` trait is `update()`. In
+    this method, we''ll manage the `Quit` message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we specify that when we receive the `Quit` message, we call `gtk::main_quit()`,
+    which is a function similar to `Application::quit()` that we used in [Chapter
+    5](part0117.html#3FIHQ0-13a27bdc411a4c2eaad1cc3a71f7fca7), *Creating a Music Player*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It should be noted that the `#[widget]` attribute will also generate the `App` structure
+    that will contain the widgets and the model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can finally show this window by calling its `run()` method in the `main`
+    function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: Later, we'll see why we need to specify `()` as a parameter to `run()`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding child widgets
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We saw the basics of how to create a widget with relm. Now, let''s continue
+    the creation of our user interface. We''ll start by adding the toolbar. Besides
+    specifying properties and signals in the `view!` macro, we can also nest widgets
+    in order to add a child to a container. So, to add `gtk::Box` as a child of our
+    window, we simply need to nest the former inside the latter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And to add a toolbar to the `gtk::Box`, we create a new level of nesting:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we can see that there''s an attribute: the `#[name]` attribute gives
+    a name to a widget which will allow us to access this widget by the specified
+    identifier, as we''ll see later. We''ll encounter other attributes in the rest
+    of this chapter.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll add an attribute to our model to keep the image to be shown on the play/pause
+    button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We also added the constants for the name of the images representing the state
+    of the button. We need to update the `model()` method to specify this new field:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This uses the following function to create an image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s add the items to the toolbar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, there''s no new syntax shown. Take note that we can specify function
+    calls as well as model attributes in the value of a property. We needed to put
+    a `&` before `new_icon()` because the code is translated as such:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: And this `set_icon_widget()` method requires something that can be converted
+    into an `Option<&P>` where `P` is a widget. It requires a reference, so we give
+    it a reference.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One-way data binding
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Setting a property from a model attribute is very frequent in relm and it actually
+    creates a one-way bond between the model attribute and the property. This means
+    that when the attribute is updated, the widget property will be updated as well.
+    There are some restrictions to this feature though:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Only an assignment to a model attribute will update the property.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This assignment *must* be inside an implementation decorated with the `#[widget]`
+    attribute.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These restrictions come from the fact that `relm` only analyzes the source code
+    decorated by this attribute. And it only considers assignment to be an update
+    of the model data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This might require changing some code. For instance, the following code will
+    not trigger a property update:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can rewrite it this way in order for  `relm` to consider it an update:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, `relm` recognizes not only the `=` assignment, but also the
+    assignments using an operator such as `+=`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We used many new messages in the previous code, so let''s update our enumeration
+    accordingly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We also need to change the `update()` method to consider these new messages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: For now, since we only code the interface, we do nothing when we receive these
+    messages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Post-initialization of the view
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'If you run the application, you''ll see that the images are not shown on the
+    toolbar buttons. This is because of the way `relm` works. When it generates the
+    code, it calls the `show()` method on every widget, instead of `show_all()`. So,
+    the toolbar and the tool buttons will be shown, but not the images, as they are
+    only attributes of the buttons, they are not created using the widget syntax.
+    To solve this issue, we''ll call `show_all()` on the toolbar in the `init_view()`
+    method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That''s why we gave a name to the toolbar widget earlier: we needed to call
+    a method on this widget here. The `init_view()` method is called after the `view`
+    is created. This is useful to execute some code to customize the view when it''s
+    not possible to do so using the `view!` syntax. If you run the application again,
+    you''ll see that the buttons now have an image.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s now add the cover image widget and the cursor widget. For the image,
+    we''ll need to add a new crate to `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s also add the corresponding `extern crate` statement:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We also need new import statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s add a couple of new fields to our `Model`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Most of the new fields existed in the application we developed in the two previous
+    chapters. The `cover_visible` attribute is new, though. We''ll use it to know
+    whether we should show the image of the cover. Don''t forget to update the initialization
+    of the model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now add the `Image` after the `Toolbar` widget:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we call `as_ref()` on the `cover_pixbuf` attribute, because, once again,
+    the method (`set_from_pixbuf()`) requires something that can be converted into
+    a `Option<&Pixbuf>`. We also specify that the `visible` property of the image
+    is bound to the `cover_visible` model attribute. This means that we'll be able
+    to hide the image by setting this attribute to `false`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll then add the cursor, which will give us the following view:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This require the following method, which we saw in the previous chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We used another way to create a widget:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This syntax will call the constructor of the widget, like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We could also have used the traditional syntax to create a widget:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: These are just two ways to do the same thing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Dialogs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For the open and save dialog, we''ll use the same functions as in the previous
+    chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'But this time, we''ll put the code for the open action in a method on the `App`
+    widget:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then call these functions in the `update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let's manage some of the other actions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Other methods
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This will require two new methods in the `impl Widget`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: But these methods have nothing to do with a `Widget`, so why are we allowed
+    to add `custom` methods in a trait implementation? Well, the `#[widget]` attribute
+    will take these methods and move them to a separate `impl App` where they belong.
+    But why do we want to do this instead of placing them ourselves? That's because
+    `relm` analyzes the assignments to the model attributes in the methods in the
+    implementation decorated by the `#[widget]` attribute. As we saw earlier, an assignment
+    to a model field will automatically update the view. If we placed these methods
+    in a separate `impl App`, `relm` would have been unable to analyze these methods
+    and generate the code to automatically update the view.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is a frequent mistake, if your view is not updating when you're assigning
+    to a model attribute, it's probably because your assignment is not within an implementation
+    decorated by the `#[widget]` attribute.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also need a new attribute for our model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We added a `stopped` attribute that we also need to add in the model initialization:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now change the `update()` method to use these new methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `update()` method receives `self` by a mutable reference, which allows us
+    to update the model attributes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Playlist
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''re now ready to create a new widget: the playlist. We''ll need the following
+    new `dependencies`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Add their corresponding `extern crate` statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s create a new module for our `playlist`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the `src/playlist.rs` file, we start by creating our model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Relm` type comes from the `relm` crate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It is useful to send messages to a widget. We''ll learn more about that in
+    the section about widget communication. Let''s add the model initialization function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we notice that we use a different signature for the `model()` method.
+    How is this possible? The method of the trait cannot change, right? It is another
+    convenience brought by the `#[widget]` crate. In many cases, we don't need these
+    parameters, so they are automatically added if they are needed. The first parameter
+    is `relm` and we save a copy of it in the model. The second parameter is the model
+    initialization parameter. The `ListStore` is the same as in [Chapter 5](part0117.html#3FIHQ0-13a27bdc411a4c2eaad1cc3a71f7fca7),
+    *Creating a Music Player*, we only save it in our model because we'll need it
+    later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Model parameter
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s talk more about this second parameter. It could be used to send data
+    to the widget when we create it. Remember when we called `run()`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we specified `()` as the model parameter because we don't need one. But
+    we could have used a different value, such as `42`, and this value would have
+    been received in the second parameter of the `model()` method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''re now ready to create the view:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It is really simple: we give it a name and set both the `hexpand` and `vexpand`
+    properties to `true` and we bind the `model` property with our `ListStore`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create an empty `update()` method for now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll see the `Msg` type later. We''ll now add the columns exactly like we
+    did it in  [Chapter 5](https://cdp.packtpub.com/rust_by_example/wp-admin/post.php?post=121&action=edit#post_86), *Creating
+    a Music Player*. Let''s copy the following enumeration and constants:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And let''s add new methods to the `Paylist`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The difference from these functions in  [Chapter 5](https://cdp.packtpub.com/rust_by_example/wp-admin/post.php?post=121&action=edit#post_86), *Creating
+    a Music Player* is that here, we have direct access to the `treeview` as an attribute.
+    This requires new import statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll now call the `create_columns()` method in the `init_view()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s start interacting with the playlist. We''ll create a method to add a
+    song to the playlist:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This calls the `set_pixbuf()` method, so let''s define it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It is very similar to the one created in  [Chapter 5](https://cdp.packtpub.com/rust_by_example/wp-admin/post.php?post=121&action=edit#post_86), *Creating
+    a Music Player*. This method will be called when we receive the `AddSong(path)`
+    message, so let''s now create our message type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And let''s modify the `update()` method accordingly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we call the method `add()` when we receive the `AddSong` message. But
+    where is this message emitted? Well, it will be emitted by the `App` type, when
+    the user requests to open a file. It is time we go back to the main module and
+    use this new `relm` widget.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding a relm widget
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'First, we''ll need these new import statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And then, add the `Playlist` widget below the toolbar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There''s something different with using `relm` widgets and `gtk` widgets. `Relm`
+    widgets must not contain a module prefix, while `gtk` widget must contain one.
+    This is why we imported `Playlist`, but now `gtk::Toolbar`, for instance. But
+    why is it needed? Well, `relm` widgets are different than `gtk` widgets, so they
+    are not created or added to another widget in the same way. Thus, `relm` can distinguish
+    them this way: if there''s a prefix, this is a built-in `gtk` widget, otherwise
+    it is a custom `relm` widget. When I say `gtk` widgets, this even includes `gtk`
+    widgets from other crates, such as `webkit2gtk::WebView`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Communicating between widgets
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll now communicate between the widgets to indicate we want to add a song
+    to the playlist. But before we do so, we'll look in more detail at how a widget
+    can communicate with itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Communicating with the same widget
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We previously saw how to communicate with the same widget. To send a message
+    to the same widget from an event handler in the view, we simply need to specify
+    the message to be sent on the right side of `=>`, like in the following example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, the `Quit` message is sent to the same widget (that is, `App`) when the
+    user clicks this tool button. But this is syntax sugar for a call to the `emit()`
+    method on the stream of events of a `relm` widget.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Emit
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'So, let''s see how to send a message to the same widget without using this
+    syntax: this is useful in more complex cases, such as when we want to conditionally
+    send a message. Let''s go back to our `Playlist` and add a `play()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This line sends a message to the current widget:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We first get the event stream from the `relm` widget and then call `emit()`
+    on it with a message. This `play()` method requires two new methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'These are very similar to the ones we wrote in the previous chapters. We can
+    now call the `play()` method in the `update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: I also added a comment before `SongStarted` to indicate that this message will
+    not be handled by the `Paylist` widget, but by the `App` widget. Now, let's see
+    how to communicate between different widgets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With different widgets
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s update the `open()` method to communicate with the playlist:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'So, we call the same `emit()` method to send a message to another widget:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we sent a message that is not yet handled by the `Playlist` (`LoadSong`),
+    so let''s fix that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This method is called in the `update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: Handle messages from a relm widget
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s now see how to handle the `SongStarted` message. To do so, we use a
+    syntax similar to the one for handling `gtk` events. The message is on the left
+    side of `=>` while the handler is on the right side of it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE79]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see here that when we receive the `SongStarted` message from the playlist,
+    we emit the `Started` message on the same widget (`App`). We needed to use `ref`
+    and then `clone()` the value contained in the message here because we do not own
+    the message. Indeed, multiple widgets can listen to the same message, the widget
+    that emitted the message and its parent. Before we handle this new message, we''ll
+    add it to our `Msg` enumeration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE80]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This variant takes an optional `pixbuf` because some MP3 files do not have
+    a cover image inside them. And here''s how we handle this message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE81]'
+  prefs: []
+  type: TYPE_PRE
+- en: When the song starts playing, we show the pause icon and the cover.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Syntax sugar to send a message to another relm widget
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Sending a message to another widget with `emit()` is a bit verbose, so `relm`
+    provides syntactic sugar for this case. Let''s send a message to the playlist
+    when the user clicks the remove button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE82]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we used the `@` syntax to specify that the message will be sent to another
+    widget. The part before the `@` is the receiver widget, while the part after this
+    character is the message. So, this code means that whenever the user clicks the
+    remove button, send the `RemoveSong` message to the `playlist` widget.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s handle this message in the `Paylist::update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE83]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This calls the `remove_selection()` method, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE84]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is the same method as the one from  [Chapter 5](https://cdp.packtpub.com/rust_by_example/wp-admin/post.php?post=121&action=edit#post_86), *Creating
+    a Music Player*. Now, let''s send the remaining messages. The `PlaySong`, `PauseSong`,
+    `SaveSong`, and `StopSong` messages are emitted in the `update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE85]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The other messages are sent using the `@` syntax in the view:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE86]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll handle these messages in the `Paylist::update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE87]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This requires some new methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE88]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE89]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE90]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And function `stop`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE91]'
+  prefs: []
+  type: TYPE_PRE
+- en: These methods are all similar to the ones we created in the previous chapters.
+    You can run the application to see that we can open and remove songs, but we cannot
+    play them yet. So let's fix this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Playing music
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'First, add the `mp3` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE92]'
+  prefs: []
+  type: TYPE_PRE
+- en: Copy the `src/mp3.rs` file from the previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also need the following dependencies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE93]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And add these statements to the `main` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE94]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll now add a `player` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE95]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This new module will start with a bunch of import statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE96]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We imported a new `PlayerMsg` type from the `playlist` module, so let''s add
+    it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE97]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll define some constants:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE98]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And let''s create the types that we''ll need:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE99]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `Action` and `EventLoop` are the same as in the previous chapter, but the
+    `Player` type is a bit different. Instead of having a field with the state of
+    the application, it contains a sender that will be used to send messages to the
+    playlist and ultimately to the application itself. So, instead of using a shared
+    state and a timeout like we did in the previous chapter, we'll use message passing,
+    which is more efficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll need a constructor for `EventLoop`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE100]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s create the constructor for `Player`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE101]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It is similar to the one we wrote in the previous chapter, but instead of using
+    the shared state, we send messages back to the playlist. Here''s an example of
+    how we send these messages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE102]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This sends the current time back to the UI so that it can display it. This
+    requires the `send()` function to be defined:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE103]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This code uses the `future` crate to send the message and it shows an error
+    in case it fails. The `iter_to_buffer()` function is the same as the one from
+    the previous chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE104]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll now add the methods to play and pause a song:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE105]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'They''re very similar to the ones from the previous chapter, but we send a
+    message instead of modifying a state. They require the following methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE106]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `emit()` and `set_playing()` methods are the same as in the previous chapter.
+    The `send()` method simply calls the `send()` function we defined earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll also need these two methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE107]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `is_paused()` method has not changed. And the `stop()` method is similar,
+    but again, it sends messages instead of updating the application state directly.
+    Let''s go back to our `Paylist` to use this new player. The model will now contain
+    the player itself:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE108]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Msg` type will contain a new variant called `PlayerMsgRecv` that will
+    be emitted whenever the player sends a message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE109]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''re now ready to update the model initialization:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE110]'
+  prefs: []
+  type: TYPE_PRE
+- en: It now creates a sender and receiver pair from the `mpsc` type of the `future`
+    crate. **MPSC** stands for **Multiple-Producers-Single-Consumer**. We now call
+    the `Relm::connect_exec_ignore_err()` method, this method connects a `Future`
+    or a `Stream` to a message. This means that whenever a value is produced in the
+    `Stream`, a message will be emitted. The message needs to take a parameter of
+    the same type as the value produced by the `Stream`. A `Future` represents a value
+    that is possibly not yet available, but will be available in the future, unless
+    an error happens. A `Stream` is similar, but can produce multiple values that
+    will be available at different times in the future. Similar to the `connect_exec_ignore_err()`
+    method, there's also the `connect_exec()` method, which takes another message
+    variant as a parameter, this second message will be emitted when there's an error.
+    Here, we simply ignore the errors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the `update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE111]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have nothing to do with this message because it will be handled by the `App`
+    widget. We''ll now add a method to pause the player:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE112]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next we need to update the `play()` and `stop()` methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE113]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `stop()` method is the same, except that we can update the model directly,
+    because we don't need to use the `RefCell` type anymore. The `play()` method will
+    now load or resume the song depending on the state of the player.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `play()` method requires a `path()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE114]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s go back to the `main` module to manage the messages sent by the player.
+    First, we need a new variant for our `enum Msg`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE115]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will handle this in the `update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE116]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This requires a new method to be added in `impl Widget for App`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE117]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is also a `custom` method, that is, a method that is not part of the `Widget`
+    trait, but is analyzed by the `#[widget]` attribute. We put it there instead of
+    a separate `impl App` because we updated the model. In this method, we either
+    update the icon to display the play button or the current time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Computing the song duration
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The only remaining feature that needs to be implemented in order to be on par
+    with the music player of the previous chapter is to compute and display the song
+    duration. First, we will copy the `compute_duration()` method from the previous
+    chapter and paste it in our `Player`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE118]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll now call this method in the `Playlist`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE119]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we use `oneshot` which is also a channel, similar to `mpsc`, but `oneshot`
+    can only send a message once. The message sent is a tuple, so we convert it to
+    our `Msg` type by using a new `DurationComputed` variant that we''ll add to the
+    type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE120]'
+  prefs: []
+  type: TYPE_PRE
+- en: We've also added a `SongDuration` message that we'll use soon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We need to call this method in `Playlist::add()`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE121]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We then need to handle the new `DurationComputed` message in `Playlist::update()`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE122]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we insert the computed duration in the model. And if the song is the one
+    currently being played, we send the `SongDuration` message so that the `App` widget
+    can update itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This requires a new field for the durations in the model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE123]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Add the new model initialization:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE124]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This also requires the `to_millis()` function to be added in the `main` module,
+    which is the same as in the previous chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE125]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Since the duration is only computed once, we also need to send it when we start
+    playing the song, so let''s update the `Playlist::play()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE126]'
+  prefs: []
+  type: TYPE_PRE
+- en: We send the `SongDuration` message if we found it in the `HashMap` (it is possible
+    that the song starts playing before the duration is computed).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, we need to handle the following message in the `App` view:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE127]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When we receive the `SongDuration` message from the playlist, we send the `Duration`
+    message to `App`, so we need to add this variant to its `Msg` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE128]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll simply handle it in the `update()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE129]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can now run the application and see that it works exactly the same as the
+    one from the previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using relm on stable Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this whole chapter, we used Rust nightly to be able to use `custom` attributes,
+    which are currently unstable. The `#[widget]` attribute provided by `relm` provides
+    many advantages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Declarative view
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Data bindings
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Less typing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'So it would be nice to be able to use a similar syntax on stable that provides
+    the same advantages. And it is possible to do so, by using the `relm_widget!`
+    macro. We''ll rewrite the `App` widget to use this macro:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE130]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, we moved the external `open()` method inside the implementation
+    decorated by the `relm_widget!` macro. This is due to a limitation of this macro,
+    while it allows us to use the nice syntax provided by relm on stable Rust, we
+    cannot access the fields of the model from outside the macro. The rest is exactly
+    the same as the previous versions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Relm widgets data binding
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'There are many other features available in relm and I wanted to show you the
+    most important of them: the syntax that is provided to simulate property binding.
+    As you may have noticed by now, there''s no property in `relm` widgets, but you
+    can use message passing to update the internal state of a `relm` widget. To make
+    it more convenient, the `#[widget]` attribute also allows you to bind a model
+    attribute to a message, this means that whenever the attribute is updated, the
+    message will be emitted with this new value.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll add a toggle button to be able to switch between a simple and a detailed
+    view for the playlist. The simple view will only show the cover and the title
+    while the detailed view will show all the columns. First, let''s add an attribute
+    to the `App` model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE131]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This field specifies whether we''re in the detailed view mode or not. We''ll
+    also need a message that will be emitted when we click the toggle button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE132]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we add the toggle button to the toolbar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE133]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When we receive this message, we''ll set the `model` attribute accordingly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE134]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, let''s a message to the `Playlist`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE135]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is the message we''ll use for the binding. Let''s handle it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE136]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The latter method toggles the visible of all columns except the first two.
+    We can now create the binding in the `App` view:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE137]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code will send the `DetailedView` message with the specified attribute
+    as the value whenever it changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we used `relm` to create a music player. We saw how simple
+    it is to use rust nightly with `rustup`. We learned how to declaratively create
+    views and use message passing to communicate between widgets. We also learned
+    how to structure GUI applications by separating the model, the view, and the function
+    to update the model in reaction to events. In the next chapter, we''ll switch
+    to another project: an FTP server.'
+  prefs: []
+  type: TYPE_NORMAL

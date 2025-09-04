@@ -1,0 +1,539 @@
+- en: Chapter 8. Concurrency and Parallelism
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As a modern systems-level programming language, Rust has to have a good story
+    for executing code concurrently and parallely on many processors simultaneously.
+    And indeed, it does; Rust provides a wide selection of concurrency and parallel
+    tools. Its type system is strong enough to write concurrent primitives that have
+    properties unlike anything that existed before. Particularly, it can encode a
+    wide selection of memory safe parallel abstractions that are also guaranteed to
+    be data-race free while not employing a garbage collector. This is mind blowing
+    as no other language can do this. All these features are not ingrained in the
+    language itself, but they are provided by libraries, so improved or new versions
+    can always be built. Developers should choose the tool that is right for the job
+    at hand, or they can improve on or develop new tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will discuss the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Concurrency and threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Shared mutable state
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Communication through channels
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Synchronous and asynchronous communication
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Concurrency and threads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A system is concurrent when several computations are being executed at the same
+    time and are potentially interacting with each other. The computations can only
+    run in parallel (that is, simultaneously) when they are being executed on different
+    cores or processors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An executing Rust program consists of a collection of native operating system
+    (OS) threads; the OS is also responsible for their scheduling. The unit of computation
+    in Rust is called a `thread`, which is a type that is defined in the `std::thread`
+    module. Each thread has its own stack and local state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Until now, our Rust programs only had one thread, the `main` thread, corresponding
+    with the execution of the `main()` function. However, a Rust program can create
+    lots of threads to work simultaneously when this is needed. Each thread (not only
+    `main()`) can act as a parent and generate any number of child threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following action can be done on the data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It can be shared across threads (refer to the *Shared mutable state through
+    atomic types* section)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It can be sent between threads (refer to the *Communication through channels*
+    section)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating threads
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'A `thread` can be created by spawning it; this creates an independent detached
+    child thread that can generally outlive its parent. This is demonstrated in the
+    following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `spawn` argument is a closure (here without parameters, so `||`), which
+    is scheduled to execute independently from the parent (here, this is the `main()`)
+    thread. Note that this is a moving closure, which takes ownership of the variables
+    in context. Our closure here is a simple print statement, but in a real example,
+    this could be replaced by a heavy and/or time-consuming operation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, when we execute this code, we normally don''t see any output; why
+    does this happen? It turns out that `main()` is a bad parent (as far as threading
+    is concerned) and doesn''t wait for its children to end properly; when the end
+    of `main()` shuts down the program, it terminates other threads even if they are
+    still running. The output of the spawned thread becomes visible if we let `main()`
+    pause for a brief moment before it terminates. This can be done with the `thread::sleep_ms`
+    method, which takes an unsigned 32-bit integer in milliseconds:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This now prints out: `Hello from the goblin in the spawned thread!`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In general, this period of pause is not needed; children threads that are spawned
+    can live longer than their parent thread and continue to execute when their parent
+    has already stopped.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A better practice in this case, however, is to capture the join handle that
+    `spawn` returns in a variable. Calling the `join()` method on `handle` will block
+    the parent thread and make it wait until the child thread has finished its execution.
+    It returns a `Result` instance; `unwrap()` will take the value from `Ok` and return
+    the result of the child thread (which is `()` in this case because it is a print
+    statement) or panic in the `Err` case:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If no other work has to be done while the child thread is executing, we can
+    also write this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this case, we are waiting synchronously for the child thread to finish, so
+    there is no good reason to start a new thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Starting a number of threads
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Each thread has its own stack and local state, and by default, no data is shared
+    between threads unless it is immutable data. Generating threads is a very lightweight
+    process since starting tens of thousands of threads only takes a few seconds.
+    The following program does just that and prints out the numbers from 0 to 9,999:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Since the numbers are printed in independent threads, the order is not preserved
+    in the output; so, for example, it could start with:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A question that often arises is: how many threads do I have to spawn? The basic
+    rule is that CPU-intensive tasks have the same number of threads as CPU cores.
+    This number can be retrieved in Rust by using the `num_cpus` crate. Let''s make
+    a new project with `cargo new many_threads --bin`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add the crate dependency to `Cargo.toml`:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Then, change `main.rs` to the following code:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'From within the `many_threads` folder, do a cargo build to install the crate
+    and compile the code. Executing the program with cargo run gives the following
+    output (dependent on the computer): `The number of cpus in this machine is: 8`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Now, you can start this (or any other) number of threads in a pool. This functionality
+    is provided by the `threadpool` crate, which we can get by adding the `threadpool
+    = "*"` to the `Cargo.toml` dependency and doing a cargo build. Add the following
+    code to the start of the file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And, this code to the `main()` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When executed, the preceding code yields the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: A thread pool is used for running a number of jobs on a fixed set of parallel
+    worker threads; it creates the given number of worker threads and replenishes
+    the pool if any thread panics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Panicking threads
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'What happens when one of the spawned threads gets into a panic? This causes
+    no problem as the threads are isolated from each other; only the panicking thread
+    will crash after it frees its resources, but the parent thread is not affected.
+    In fact, the parent can test the `is_err` return value from spawn as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding code prints out:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Otherwise, to put it another way, the thread is the unit of failure isolation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thread-safety
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Traditional programming with threads is very difficult to get right if you
+    allow the different threads to work on the same mutable data, the so-called shared
+    memory. When two or more threads simultaneously change data, then data corruption
+    (also called data racing) can occur due to the unpredictability of the threads''
+    scheduling. In general, data (or a type) is said to be thread-safe when its contents
+    will not be corrupted by the execution of different threads. Other languages offer
+    no such help, but the Rust compiler simply forbids non thread-safe situations
+    to occur. The same ownership strategy that pervades Rust to prevent memory safety
+    errors also makes you write safe concurrent programs. Consider the following program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our initial `health` is 12, but there are 3 fairies who can double, triple,
+    and quadruple our health. We let each of them do this in a different thread, and
+    after the threads are finished, we expect a `health` of 288 (which equates to
+    12 * 2 * 3 * 4). However, after their magical actions, our `health` is still at
+    12, even if we wait long enough to ensure that the threads are finished. Clearly,
+    the three threads worked on a copy of our variable and not on the variable itself.
+    Rust does not allow the `health` variable to be shared among the threads to prevent
+    data corruption. In the next section, we will explore how we can use mutable variables
+    that are shared between threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The shared mutable state
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So, how can we make the `not_shared.rs` program give us the correct result?
+    Rust provides tools, the so-called atomic types from the `std::sync::atomic` submodule,
+    to handle shared mutable state safely. In order to share data, you need to wrap
+    the data in some of the sync primitives, such as `Arc`, `Mutex`, `RwLock`, `AtomicUSize`,
+    and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Basically, the principle of locking is used, which is similar to that used
+    by operating systems and database systems—exclusive access to a resource is given
+    to the thread that has obtained a lock (which is also called a `mutex` and comes
+    from mutually exclusive) on the resource. A lock can only be obtained by one thread
+    at a time. In this way, two threads cannot change this resource at the same time,
+    so no data races can occur; locking atomicity is enforced when required. When
+    the thread that has acquired the lock has done its work, the lock is removed and
+    another thread can then work with the data. In Rust, this is done with the generic
+    `Mutex<T>` type from the `std::sync` module; `sync` comes from synchronize, which
+    is exactly what we want to do with our threads. The `Mutex` ensures that only
+    one thread can change the contents of our data at a time. We must make an instance
+    of this type by wrapping our data as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, within the `for` loop, immediately after we spawn the new thread, we place
+    a lock on the `health` object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The call to `lock()` will return a reference to the value inside the `Mutex`
+    and block any other calls to `lock()` until that reference goes out of scope,
+    which will happen at the end of the thread closure. Then, the thread does its
+    work and the lock is automatically removed. However, we still get an error: `capture
+    of moved value: ''data''` message. This means that data cannot be moved to another
+    thread multiple times.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This problem can be solved by using an equivalent of the `Rc` pointer from
+    the *Reference counting* section of [Chapter 6](part0056.xhtml#aid-1LCVG2 "Chapter 6. Pointers
+    and Memory Safety"), *Pointers and Memory Safety*. Indeed, the situation here
+    is very similar; all the threads need a reference to the same data, which is our
+    health variable. So, we apply the same techniques from [Chapter 6](part0056.xhtml#aid-1LCVG2
+    "Chapter 6. Pointers and Memory Safety"), *Pointers and Memory Safety* here—we
+    make an `Rc` pointer to our data, and then we make a `clone()` of the pointer
+    for each reference that is needed. However, a simple `Rc` pointer is not thread-safe;
+    therefore, we need a special version of it that is thread-safe, the so called
+    atomic reference counted pointer or `Arc<T>`. Atomic means that it is safe across
+    threads, and it is also generic. So, we envelop our health variable inside an
+    `Arc` pointer as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And, in the `for` loop, we make a new pointer to the `Mutex` with `clone`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, each thread now works with a copy of the pointer obtained by `clone()`.
+    The `Arc` instance will keep track of the number of references to `health`. A
+    call to `clone()` will increment the reference count on health. The `mutex` reference
+    goes out of scope at the end of the thread closure, which will decrement the reference
+    count. `Arc` will free the associated health resource when that reference count
+    becomes zero.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Calling `lock()` gives the active thread exclusive access to the data. In principle,
+    acquiring the lock might fail, so it returns a `Result<T, E>` object. In the preceding
+    code, we assume that everything is okay. The `unwrap()` function is a quick means
+    to return a reference to the data, but in the case of a failure, it panics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Quite a few steps were involved here. So, we will repeat the code in its entirety
+    again, but this time, we will provide robust error handling by replacing `unwrap()`.
+    Digest each line with the explanations explained earlier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This prints out:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '( 288 is indeed equal to 12 * 2 * 3 * 4 ). We join the threads to give them
+    time to do their work; data is a reference, so we need to dereference it to obtain
+    the `health` value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: The mechanism outlined in the preceding section using a combined `Mutex` and
+    `Arc` is advisable when the shared data occupies a significant amount of memory;
+    this is because with an `Arc`, the data will no longer be copied for each thread.
+    The `Arc` acts as a reference to the shared data and only this reference is shared
+    and cloned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Sync trait
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: An `Arc<T>` object implements the `Sync` trait (while `Rc` does not), which
+    indicates to the compiler that it is safe to use concurrently with multiple threads.
+    Any data that has to be shared simultaneously among threads must implement the
+    `Sync` trait. A `T` type is `Sync` if there is no possibility of data races when
+    the `&T` references are passed between threads; in short `&T` is thread-safe.
+    All simple types such as the integer and floating point types are `Sync`, as well
+    as all composite types (such as structs, enums, and tuples) built with simple
+    types; any type that only contains things that implement `Sync` is automatically
+    `Sync`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Communication through channels
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Data can also be exchanged between threads by passing messages among them.
+    This is implemented in Rust by channels, which are like unidirectional pipes that
+    connect two threads—data is processed first-in, first-out. Data flows over this
+    channel between two end-points, from the `Sender<T>` to the `Receiver<T>`; both
+    are generic and take the `T` type of the message to transfer (which obviously
+    must be the same for the `Sender` and `Receiver` channels). In this mechanism,
+    a copy of the data to be shared is made for the receiving thread, so you shouldn''t
+    use this for very large data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Communication through channels](img/image00184.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'To create a channel, we need to import the `mpsc` submodule from `std::sync`
+    (`mpsc` stands for **multi-producer, single-consumer communication** **primitives**)
+    and then use the `channel()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: This creates a tuple of endpoints; `tx` (`t` from transmission) is the `Sender`
+    and `rx` (`r` from receiver) is the `Receiver`. We have indicated that we will
+    send `i32` integers over the channel, but the type annotations are not needed
+    if the compiler can deduce the channel's data type from the rest of the code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sending and receiving data
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'So, which data types can be sent over a channel? Rust imposes the requirement
+    that data to be sent over a channel must implement the `Send` trait, which guarantees
+    the safe transfer of ownership between threads. Data that does not implement `Send`
+    cannot leave the current thread. An `i32` is `Send` because we can make a copy,
+    so let''s do that in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: This, of course, prints `10`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here, `tx` is moved inside the closure. A better way to write `tx.send(10).unwrap()`
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will ensure that, in case of a problem, a message is sent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `send()` is executed by the child thread; it queues a message (a data value;
+    here, it is 10) in the channel and does not block. The `recv()` is done by the
+    parent thread; it picks a message from the channel and blocks the current thread
+    if there are no messages available. (If you need to do this in a non-blocking
+    fashion, use `try_recv()`.) If you don''t process the received value, this blocking
+    can be written as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `send()` and `recv()` operations return a `Result`, which can be of the
+    `Ok(value)` type or an `Err` error. Full error-handling is omitted here because
+    in the case of `Err`, the channel does not work anymore, and it is better for
+    the thread to fail (panic) and stop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In a general scenario, we could make a child thread execute a long computation
+    and then receive the result in the parent thread as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `result` function here has the `Ok(1)` value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An elegant code pattern is shown in the following code snippet where the channel
+    is created in a `make_chan()` function, which returns the receiving endpoint for
+    the calling code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This prints out: `received message 7`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Perform the following exercise:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Construct a `shared_channel.rs` program that lets any number of threads share
+    a channel to send in a value and has one receiver that collects all the values.
+    As a hint, use `clone()` to give each thread access to the sending `tx` endpoint.
+    (Refer to the example code in `Chapter 8/exercises/shared_channel.rs`.)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Synchronous and asynchronous communication
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The kind of sending channel we used until now is asynchronous; this means that
+    it does not block the executing code. Rust also has a synchronous channel type
+    called `sync_channel` where the `send()` blocks if its internal buffer becomes
+    full—it waits until the parent thread starts receiving the data. In the following
+    code, this type of channel is used to send a value of the `Msg` struct over the
+    channel:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Which prints:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, after 3 seconds, prints:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: This clearly shows that the second message could only be sent when the buffer
+    was emptied by receiving the first message.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Perform the following exercise:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Explain what happens when the second message is also sent from within the main
+    thread and not in a separate thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we explored Rust's lightweight thread processes—how to create
+    them, how to let them share data, and how to let them pass data through channels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the following chapter, we will have a look at the boundaries—we will see
+    how a Rust program can take arguments to work with them. We will also examine
+    what we have to do in Rust when we go to so such a low level that the compiler
+    cannot guarantee safety anymore and how we can interface with other languages
+    such as C.
+  prefs: []
+  type: TYPE_NORMAL

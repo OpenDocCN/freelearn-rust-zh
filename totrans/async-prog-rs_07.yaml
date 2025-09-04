@@ -1,0 +1,1467 @@
+- en: '7'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Coroutines and async/await
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that you’ve gotten a brief introduction to Rust’s async model, it’s time
+    to take a look at how this fits in the context of everything else we’ve covered
+    in this book so far.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust’s futures are an example of an asynchronous model based on stackless coroutines,
+    and in this chapter, we’ll take a look at what that really means and how it differs
+    from stackful coroutines (fibers/green threads).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll center everything around an example based on a simplified model of futures
+    and `async/await` and see how we can use that to create suspendable and resumable
+    tasks just like we did when creating our own fibers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The good news is that this is a lot easier than implementing our own fibers/green
+    threads since we can stay in Rust, which is safer. The flip side is that it’s
+    a little more abstract and ties into programming language theory as much as it
+    does computer science.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we’ll cover the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction to stackless coroutines
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An example of hand-written coroutines
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`async/await`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The examples in this chapter will all be cross-platform, so the only thing you
+    need is Rust installed and the repository that belongs to the book downloaded
+    locally. All the code in this chapter will be found in the `ch07` folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll use `delayserver` in this example as well, so you need to open a terminal,
+    enter the `delayserver` folder at the root of the repository, and write `cargo
+    run` so it’s ready and available for the examples going forward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember to change the ports in the code if you for some reason have to change
+    what port `delayserver` listens on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction to stackless coroutines
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So, we’ve finally arrived at the point where we introduce the last method of
+    modeling asynchronous operations in this book. You probably remember that we gave
+    a high-level overview of stackful and stackless coroutines in [*Chapter 2*](B20892_02.xhtml#_idTextAnchor043).
+    In [*Chapter 5*](B20892_05.xhtml#_idTextAnchor092), we implemented an example
+    of stackful coroutines when writing our own fibers/green threads, so now it’s
+    time to take a closer look at how stackless coroutines are implemented and used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A stackless coroutine is a way of representing a task that can be interrupted
+    and resumed. If you remember all the way back in [*Chapter 1*](B20892_01.xhtml#_idTextAnchor014),
+    we mentioned that if we want tasks to run concurrently (be *in progress* at the
+    same time) but not necessarily in parallel, we need to be able to **pause and
+    resume** the task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In its simplest form, a coroutine is just a task that can stop and resume by
+    yielding control to either its caller, another coroutine, or a scheduler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many languages will have a coroutine implementation that also provides a runtime
+    that handles scheduling and non-blocking I/O for you, but it’s helpful to make
+    a distinction between what a coroutine is and the rest of the machinery involved
+    in creating an asynchronous system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is especially true in Rust, since Rust doesn’t come with a runtime and
+    only provides the infrastructure you need to create coroutines that have native
+    support in the language. Rust makes sure that everyone programming in Rust uses
+    the same abstraction for tasks that can be paused and resumed, but it leaves all
+    the other details of getting an asynchronous system up and running for the programmer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Stackless coroutines or just coroutines?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most often you’ll see *stackless coroutines* simply referred to as *coroutines*.
+    To try to keep some consistency (you remember I don’t like to introduce terms
+    that mean different things based on the context), I’ve consistently referred to
+    coroutines as either *stackless* or *stackful*, but going forward, I’ll simply
+    refer to stackless coroutines as **coroutines**. This is also what you’ll have
+    to expect when reading about them in other sources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fibers/green threads represent this kind of resumable task in a very similar
+    way to how an operating system does. A task has a stack where it stores/restores
+    its current execution state, making it possible to pause and resume the task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A state machine in its simplest form is a data structure that has a predetermined
+    set of states it can be in. In the case of coroutines, each state represents a
+    possible pause/resume point. We don’t store the state needed to pause/resume the
+    task in a separate stack. We save it in a data structure instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This has some advantages, which I’ve covered before, but the most prominent
+    ones are that they’re very efficient and flexible. The downside is that you’d
+    never want to write these state machines by hand (you’ll see why in this chapter),
+    so you need some kind of support from the compiler or another mechanism for rewriting
+    your code to state machines instead of normal function calls.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The result is that you get something that looks very simple. It looks like a
+    function/subroutine that you can easily map to something that you can run using
+    a simple `call` instruction in assembly, but what you actually get is something
+    pretty complex and different from this, and it doesn’t look anything like what
+    you’d expect.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Generators vs coroutines
+  prefs: []
+  type: TYPE_NORMAL
+- en: Generators are state machines as well, exactly the kind we’ll cover in this
+    chapter. They’re usually implemented in a language to create state machines that
+    yield values to the calling function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Theoretically, you could make a distinction between coroutines and generators
+    based on what they yield to. Generators are usually limited to yielding to the
+    calling function. Coroutines can yield to another coroutine, a scheduler, or simply
+    the caller, in which case they’re just like generators.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In my eyes, there is really no point in making a distinction between them. They
+    represent the same underlying mechanism for creating tasks that can pause and
+    resume their executions, so in this book, we’ll treat them as basically the same
+    thing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve covered what coroutines are in text, we can start looking at
+    what they look like in code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An example of hand-written coroutines
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The example we’ll use going forward is a simplified version of Rust’s asynchronous
+    model. We’ll create and implement the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our own simplified `Future` trait
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A simple HTTP client that can only make GET requests
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A task we can pause and resume implemented as a state machine
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Our own simplified `async/await` syntax called `coroutine/wait`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A homemade preprocessor to transform our `coroutine/wait` functions into state
+    machines the same way `async/await` is transformed
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: So, to actually demystify coroutines, futures, and `async/await`, we will have
+    to make some compromises. If we didn’t, we’d end up re-implementing everything
+    that is `async/await` and futures in Rust today, which is too much for just understanding
+    the underlying techniques and concepts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Therefore, our example will do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Avoid error handling. If anything fails, we panic.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Be specific and not generic. Creating generic solutions introduces a lot of
+    complexity and makes the underlying concepts harder to reason about since we consequently
+    have to create extra abstraction levels. Our solution will have some generic aspects
+    where needed, though.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Be limited in what it can do. You are of course free to expand, change, and
+    play with all the examples (I encourage you to do so), but in the example, we
+    only cover what we need and not anything more.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Avoid macros.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: So, with that out of the way, let’s get started on our example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first thing you need to do is to create a new folder. This first example
+    can be found in `ch07/a-coroutine` in the repository, so I suggest you name the
+    folder `a-coroutine` as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, initialize a new crate by entering the folder and write `cargo init`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have a new project up and running, we can create the modules and
+    folders we need:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, in `main.rs`, declare two modules as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, create two new files in the `src` folder:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`future.rs`, which will hold our future-related code'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`http.rs`, which will be the code related to our HTTP client'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'One last thing we need to do is to add a dependency on `mio`. We’ll be using
+    `TcpStream` from `mio`, as we’ll build on this example in the following chapters
+    and use `mio` as our non-blocking I/O library since we’re already familiar with
+    it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/Cargo.toml
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s start in `future.rs` and implement our future-related code first.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Futures module
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In `futures.rs`, the first thing we’ll do is define a `Future` trait. It looks
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/future.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we contrast this with the `Future` trait in Rust’s standard library, you’ll
+    see it’s very similar, except that we don’t take `cx: &mut Context<''_>` as an
+    argument and we return an `enum` with a slightly different name just to differentiate
+    it so we don’t mix them up:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next thing we do is to define a `PollState<T>` `enum`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/future.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Again, if we compare this to the `Poll` `enum` in Rust’s standard library,
+    we see that they’re practically the same:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For now, this is all we need to get the first iteration of our example up and
+    running. Let’s move on to the next file: `http.rs`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP module
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this module, we’ll implement a very simple HTTP client. This client can only
+    make GET requests to our `delayserver` since we just use this as a representation
+    of a typical I/O operation and don’t care specifically about being able to do
+    more than we need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first thing we’ll do is import some types and traits from the standard
+    library as well as our `Futures` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we create a small helper function to write our HTTP requests. We’ve used
+    this exact bit of code before in this book, so I’ll not spend time explaining
+    it again here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'So, now we can start writing our HTTP client. The implementation is very short
+    and simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: We don’t really need a struct here, but we add one since we might want to add
+    some state at a later point. It’s also a good way to group functions belonging
+    to the HTTP client together.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our HTTP client only has one function, `get`, which, eventually, will send
+    a GET request to our `delayserver` with the path we specify (remember that the
+    path is everything in bold in this example URL: `http://127.0.0.1:8080`**/1000/HelloWorld)**,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first thing you’ll notice in the function body is that there is not much
+    happening here. We only return `HttpGetFuture` and that’s it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the function signature, you see that it returns an object implementing the
+    `Future` trait that outputs a `String` when it’s resolved. The string we return
+    from this function will be the response we get from the server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we could have implemented the future trait directly on the `Http` struct,
+    but I think it’s a better design to allow one `Http` instance to give out multiple
+    `Futures` instead of making the `Http` implement `Future` itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s take a closer look at `HttpGetFuture` since there is much more happening
+    there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Just to point this out so that there is no doubt going forward, `HttpGetFuture`
+    is an example of a **leaf future**, and it will be the only leaf future we’ll
+    use in this example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s add the struct declaration to the file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This data structure will hold onto some data for us:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`stream`: This holds an `Option<mio::net::TcpStream>`. This will be an `Option`
+    since we won’t connect to the stream at the same point as we create this structure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`buffer`: We’ll read the data from the `TcpStream` and put it all in this buffer
+    until we’ve read all the data returned from the server.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`path`: This simply stores the path for our GET request so we can use it later.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The next thing we’ll take a look at is the `impl` block for our `HttpGetFuture`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `impl` block defines two functions. The first is `new`, which simply sets
+    the initial state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next function is `write_requst`, which sends the GET request to the server.
+    You’ve seen this code before in the example in [*Chapter 4*](B20892_04.xhtml#_idTextAnchor081),
+    so this should look familiar.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: When *creating* `HttpGetFuture`, we don’t actually *do* anything related to
+    the GET request, which means that the call to `Http::get` returns immediately
+    with just a simple data structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In contrast to earlier examples, we pass in the *IP address* for `localhost`
+    instead of the DNS name. We take the same shortcut as before and let `connect`
+    be blocking and everything else be non-blocking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next step is to write the GET request to the server. This will be non-blocking,
+    and we don’t have to wait for it to finish since we’ll be waiting for the response
+    anyway.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The last part of this file is the most important one—the implementation of
+    the `Future` trait we defined:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Okay, so this is where everything happens. The first thing we do is set the
+    associated type called `Output` to `String`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next thing we do is to check whether this is the first time `poll` was called
+    or not. We do this by checking if `self.stream` is `None`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If it’s the first time we call `poll`, we print a message (just so we can see
+    the first time this future was polled), and then we write the GET request to the
+    server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the first poll, we return `PollState::NotReady`, so `HttpGetFuture` will
+    have to be polled at least once more to actually return any results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next part of the function is trying to read data from our `TcpStream`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We’ve covered this before, so I’ll make this brief, but there are basically
+    five things that can happen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The call successfully returns with `0` bytes read. We’ve read all the data from
+    the stream and have received the entire GET response. We create a `String` from
+    the data we’ve read and wrap it in `PollState::Ready` before we return.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The call successfully returns with `n > 0` bytes read. If that’s the case, we
+    read the data into our buffer, append the data into `self.buffer`, and immediately
+    try to read more data from the stream.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We get an error of kind `WouldBlock`. If that’s the case, we know that since
+    we set the stream to non-blocking, the data isn’t ready yet or there is more data
+    but we haven’t received it yet. In that case, we return `PollState::NotReady`
+    to communicate that more calls to the poll are needed to finish the operation.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We get an error of kind `Interrupted`. This is a bit of a special case since
+    reads can be interrupted by a signal. If it does, the usual way to handle the
+    error is to simply try reading once more.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We get an error that we can’t handle, and since our example does no error handling,
+    we simply `panic!`
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'There is one subtle thing I want to point out. We can view this as a very simple
+    state machine with three states:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Not started, indicated by `self.stream` being `None`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pending, indicated by `self.stream` being `Some` and a read to `stream.read`
+    returning `WouldBlock`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Resolved, indicated by `self.stream` being `Some` and a call to `stream.read`
+    returning `0` bytes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As you see, this model maps nicely to the states reported by the OS when trying
+    to read our `TcpStream`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most leaf futures such as this will be quite simple, and although we didn’t
+    make the states explicit here, it still fits in the state machine model that we’re
+    basing our coroutines around.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do all futures have to be lazy?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: A lazy future is one where no work happens before it’s polled the first time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will come up a lot if you read about futures in Rust, and since our own
+    `Future` trait is based on that exact same model, the same question will arise
+    here. The simple answer to this question is no!
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is nothing that forces leaf futures, such as the one we wrote here, to
+    be lazy. We could have sent the HTTP request when we called the `Http::get` function
+    if we wanted to. If you think about it, if we did just that, it would have caused
+    a potentially big change that would impact how we achieve concurrency in our program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The way it works now is that someone has to call `poll` at least one time to
+    actually send the request. The consequence is that whoever calls `poll` on this
+    future will have to call `poll` on many futures to kick off the operation if they
+    want them to run concurrently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we kicked off the operation immediately when the future was created, you
+    could create many futures and they would all run concurrently even though you
+    polled them to completion one by one. If you poll them to completion one by one
+    in the current design, the futures would *not* progress concurrently. Let that
+    sink in for a moment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Languages such as JavaScript start the operation when the coroutine is created,
+    so there is no “one way” to do this. Every time you encounter a coroutine implementation,
+    you should find out whether they’re lazy or eager since this impacts how you program
+    with them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though we could make our future eager in this case, we really shouldn’t.
+    Since programmers in Rust expect futures to be lazy, they might depend on nothing
+    happening before you call `poll` on them, and there may be unexpected side effects
+    if the futures you write behave differently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, when you read that Rust’s futures are always lazy, a claim that I see very
+    often, it refers to the compiler-generated state machines resulting from using
+    `async/await`. As we’ll see later, when your async functions are rewritten by
+    the compiler, they’re constructed in a way so that nothing you write in the body
+    of an `async` function will execute before the first call to `Future::poll`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Okay, so we’ve covered the `Future` trait and the leaf future we named `HttpGetFuture`.
+    The next step is to create a task that we can stop and resume at predefined points.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating coroutines
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We’ll continue to build our knowledge and understanding from the ground up.
+    The first thing we’ll do is create a task that we can stop and resume by modeling
+    it as a state machine by hand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once we’ve done that, we’ll take a look at how this way of modeling pausable
+    tasks enables us to write a syntax much like `async/await` and rely on code transformations
+    to create these state machines instead of writing them by hand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We’ll create a simple program that does the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prints a message when our pausable task is starting.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Makes a GET request to our `delayserver`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Waits for the GET request.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Prints the response from the server.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Makes a second GET request to our `delayserver`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Waits for the second response from the server.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Prints the response from the server.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Exits the program.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In addition, we’ll execute our program by calling `Future::poll` on our hand-crafted
+    coroutine as many times as required to run it to completion. There’s no runtime,
+    reactor, or executor yet since we’ll cover those in the next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we wrote our program as an `async` function, it would look as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In `main.rs`, start by making the necessary imports and module declarations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next thing we write is our stoppable/resumable task called `Coroutine`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once that’s done, we write the different states this task could be in:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This specific coroutine can be in four states:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Coroutine` has been created but it hasn’t been polled yet'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Http::get`, we get a `HttpGetFuture` returned that we store in the `State`
+    `enum`. At this point, we return control back to the calling function so it can
+    do other things if needed. We chose to make this generic over all `Future` functions
+    that output a `String`, but since we only have one kind of future right now, we
+    could have made it simply hold a `HttpGetFuture` and it would work the same way.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Http::get` is the second place where we’ll pass control back to the calling
+    function.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Resolved**: The future is resolved and there is no more work to do.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: We could have simply defined `Coroutine` as an `enum` since the only state it
+    holds is an `enum` indicating its state. But, we’ll set up this example so we
+    can add some state to `Coroutine` later on in this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next is the implementation of `Coroutine`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: So far, this is pretty simple. When creating a new `Coroutine`, we simply set
+    it to `State::Start` and that’s it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we come to the part where the work is actually done in the `Future` implementation
+    for `Coroutine`. I’ll walk you through the code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let’s start from the top:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first thing we do is set the `Output` type to `()`. Since we won’t be returning
+    anything, it just makes our example simpler.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Next up is the implementation of the `poll` method. The first thing you notice
+    is that we write a `loop` instance that matches `self.state`. We do this so we
+    can drive the state machine forward until we reach a point where we can’t progress
+    any further without getting `PollState::NotReady` from one of our child futures.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the state is `State::Start`, we know that this is the first time it was polled,
+    so we run whatever instructions we need until we reach the point where we get
+    a new future that we need to resolve.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: When we call `Http::get`, we receive a future in return that we need to poll
+    to completion before we progress any further.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: At this point, we change the state to `State::Wait1` and we store the future
+    we want to resolve so we can access it in the next state.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Our state machine has now changed its state from `Start` to `Wait1`. Since we’re
+    looping on the `match` statement, we immediately progress to the next state and
+    will reach the match arm in `State::Wait1` on the next iteration.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The first thing we do in `Wait1` to call `poll` on the `Future` instance we’re
+    waiting on.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the future returns `PollState::NotReady`, we simply bubble that up to the
+    caller by breaking out of the loop and returning `NotReady`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the future returns `PollState::Ready` together with our data, we know that
+    we can execute the instructions that rely on the data from the first future and
+    advance to the next state. In our case, we only print out the returned data, so
+    that’s only one line of code.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Next, we get to the point where we get a new future by calling `Http::get`.
+    We set the state to `Wait2`, just like we did when going from `State::Start` to
+    `State::Wait1`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Like we did the first time we got a future that we needed to resolve before
+    we continue, we save it so we can access it in `State::Wait2`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Since we’re in a loop, the next thing that happens is that we reach the matching
+    arm for `Wait2`, and here, we repeat the same steps as we did for `State::Wait1`
+    but on a different future.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If it returns `Ready` with our data, we act on it and we set the final state
+    of our `Coroutine` to `State::Resolved`. There is one more important change: this
+    time, we want to communicate to the caller that this future is done, so we break
+    out of the loop and return `PollState::Ready`.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If anyone tries to call `poll` on our `Coroutine` again, we will panic, so
+    the caller must make sure to keep track of when the future returns `PollState::Ready`
+    and make sure to not call `poll` on it ever again. The last thing we do before
+    we get to our `main` function is create a new `Coroutine` in a function we call
+    `async_main`. This way, we can keep the changes to a minimum when we start talking
+    about `async/await` in the last part of this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, at this point, we’re finished writing our coroutine and the only thing left
+    is to write some logic to drive our state machine through its different stages
+    of the `main` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One thing to note here is that our main function is just a regular main function.
+    The loop in our main function is what drives the asynchronous operations to completion:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/a-coroutine/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function is very simple. We first get the future returned from `async_main`
+    and then we call `poll` on it in a loop until it returns `PollState::Ready`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every time we receive a `PollState::NotReady` in return, the control is yielded
+    back to us. we could do other work here, such as scheduling another task, if we
+    want to, but in our case, we just print `Schedule` `other tasks`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also limit how often the loop is run by sleeping for 100 milliseconds on
+    every call. This way we won’t be overwhelmed with printouts and we can assume
+    that there are roughly 100 milliseconds between every time we see `"Schedule other
+    tasks"` printed to the console.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we run the example, we get this output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: By looking at the printouts, you can get an idea of the program flow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, we see `Program starting`, which executes at the start of our coroutine.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We then see that we immediately move on to the `FIRST POLL – START OPERATION`
+    message that we only print when the future returned from our HTTP client is polled
+    the first time.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Next, we can see that we’re back in our `main` function, and at this point,
+    we could theoretically go ahead and run other tasks if we had any
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Every 100 ms, we check if the task is finished and get the same message telling
+    us that we can schedule other tasks
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Then, after roughly 600 milliseconds, we receive a response that’s printed out
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We repeat the process once more until we receive and print out the second response
+    from the server
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Congratulations, you’ve now created a task that can be paused and resumed at
+    different points, allowing it to be in progress.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Who on earth wants to write code like this to accomplish a simple task?
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The answer is no one!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Yes, it’s a bit bombastic, but I dare guess that very few programmers prefer
+    writing a 55-line state machine when you compare it to the 7 lines of normal sequential
+    code you’d have to write to accomplish the same thing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we recall the goals of most userland abstractions over concurrent operations,
+    we’ll see that this way of doing it only checks one of the three boxes that we’re
+    aiming for:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Efficient
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Expressive
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Easy to use and hard to misuse
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Our state machine will be efficient, but that’s pretty much it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, you might also notice that there is a system to the craziness. This
+    might not come as a surprise, but the code we wrote could be much simpler if we
+    tagged the start of each function and each point we wanted to yield control back
+    to the caller with a few keywords and had our state machine generated for us.
+    And that’s the basic idea behind `async/await`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s go and see how this would work in our example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: async/await
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The previous example could simply be written as the following using `async/await`
+    keywords:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: That’s seven lines of code, and it looks very familiar to code you’d write in
+    a normal subroutine/function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It turns out that we can let the compiler write these state machines for us
+    instead of writing them ourselves. Not only that, we could get very far just using
+    simple macros to help us, which is exactly how the current `async/await` syntax
+    was prototyped before it became a part of the language. You can see an example
+    of that at [https://github.com/alexcrichton/futures-await](https://github.com/alexcrichton/futures-await).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The downside is of course that these functions look like normal subroutines
+    but are in fact very different in nature. With a strongly typed language such
+    as Rust, which borrow semantics instead of using a garbage collector, it’s impossible
+    to hide the fact that these functions are different. This can cause a bit of confusion
+    for programmers, who expect everything to behave the same way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Coroutine bonus example
+  prefs: []
+  type: TYPE_NORMAL
+- en: To show how close our example is to the behavior we get using the `std::future:::Future`
+    trait and `async/await` in Rust, I created the exact same example as we just did
+    in `a-coroutines` using “proper” futures and the `async/await` syntax instead.
+    The first thing you’ll notice is that it only required very minor changes to the
+    code. Secondly, you can see for yourself that the output shows the exact same
+    program flow as it did in the example where we hand-wrote the state machine ourselves.
+    You will find this example in the `ch07/a-coroutines-bonus` folder in the repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, let’s take this a step further. To avoid confusion, and since our coroutines
+    only yield to the calling function right now (there is no scheduler, event loop,
+    or anything like that yet), we use a slightly different syntax called `coroutine/wait`
+    and create a way to have these state machines generated for us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: coroutine/wait
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The `coroutine/wait` syntax will have clear similarities to the `async/await`
+    syntax, although it’s a lot more limited.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The basic rules are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every function prefixed with `coroutine` will be rewritten to a state machine
+    like the one we wrote.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The return type of functions marked with `coroutine` will be rewritten so they
+    return `-> impl Future<Output = String>` (yes, our syntax will only deal with
+    futures that output a `String`).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only objects implementing the `Future` trait can be postfixed with `.wait`.
+    These points will be represented as separate stages in our state machine.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Functions prefixed with `coroutine` can call normal functions, but normal functions
+    can’t call `coroutine` functions and expect anything to happen unless they call
+    `poll` on them repeatedly until they return `PollState::Ready`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Our implementation will make sure that if we write the following code, it will
+    compile to the same state machine we wrote at the start of this chapter(with the
+    exception that all coroutines will return a String):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: But wait. `coroutine/wait` aren’t valid keywords in Rust. I would get a compilation
+    error if I wrote that!
+  prefs: []
+  type: TYPE_NORMAL
+- en: You’re right. So, I created a small program called `corofy` that rewrites the
+    `coroutine/wait` functions into these state machines for us. Let’s explain that
+    quickly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: corofy—the coroutine preprocessor
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The best way of rewriting code in Rust is using the macro system. The downside
+    is that it’s not clear exactly what it compiles down to, and expanding the macros
+    is not optimal for our use case since one of the main goals is to take a look
+    at the differences between the code we write and what it transforms into. In addition
+    to that, macros can get quite complex to read and understand unless you work a
+    lot with them on a regular basis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead, corofy is a normal Rust program you can find in the repository under
+    `ch07/corofy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you enter that folder, you can install the tool globally by writing the
+    following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now you can use the tool from anywhere. It works by providing it with an input
+    file containing the `coroutine/wait` syntax, such as `corofy ./src/main.rs [optional
+    output file]`. If you don’t specify an output file, it will create a file in the
+    same folder postfixed with `_corofied`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The tool is extremely limited. The honest reason why is that I want to finish
+    this example before we reach the year 2300, and I finished rewriting the entire
+    Rust compiler from scratch just to give a robust experience using the `coroutine/wait`
+    keywords.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It turns out that writing transformations like this without access to Rust’s
+    type system is very difficult. The main use case for this tool will be to transform
+    the examples we write here, but it would probably work for slight variations of
+    the same examples as well (like adding more wait points or doing more interesting
+    tasks in between each wait point). Take a look at the README for `corofy` for
+    more information about its limitations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One more thing: I assume that you specified no explicit output file going forward
+    so the output file will have the same name as the input file postfixed with `_corofied`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The program reads the file you give it and searches for usages of the `coroutine`
+    keyword. It takes these functions, comments them out (so they’re still in the
+    file), puts them last in the file, and writes out the state machine implementation
+    directly below, indicating what parts of the state machine are the code you actually
+    wrote between the `wait` points.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that I’ve introduced our new tool, it’s time to put it to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: b-async-await—an example of a coroutine/wait transformation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s start by expanding our example slightly. Now that we have a program that
+    writes out our state machines, it’s easier for us to create some examples and
+    cover some more complex parts of our coroutine implementation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll base the following examples on the exact same code as we did in the first
+    one. In the repository, you’ll find this example under `ch07/b-async-await`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you write every example from the book and don’t rely on the existing code
+    in the repository, you can do one of two things:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Keep changing the code in the first example
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Create a new cargo project called `b-async-await` and copy everything in the
+    `src` folder and the `dependencies` section from `Cargo.toml` from the previous
+    example over to the new one.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No matter what you choose, you should have the same code in front of you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s simply change the code in `main.rs` to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/b-async-await/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code contains a few changes. First, we add a convenience function for creating
+    new paths for our GET request called `get_path` to create a path we can use in
+    our GET request with a delay and a message based on the integer we pass in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, in our `async_main` function, we create five requests with delays varying
+    from `0` to `4` seconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last change we’ve made is in our `main` function. We no longer print out
+    a message on every call to poll, and therefore, we don’t use `thread::sleep` to
+    limit the number of calls. Instead, we measure the time from when we enter the
+    `main` function to when we exit it because we can use that as a way to prove whether
+    our code runs concurrently or not.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that our `main.rs` looks like the preceding example, we can use `corofy`
+    to rewrite it into a state machine, so assuming we’re in the root folder of `ch07/b-async-await`,
+    we can write the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: That should output a file called `main_corofied.rs` in the `src` folder that
+    you can open and inspect.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, you can copy all the contents of `main_corofied.rs` in this file and paste
+    it into `main.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: For convenience, there is a file called `original_main.rs` in the root of the
+    project that contains the code for `main.rs` that we presented, so you don’t need
+    to save the original content of `main.rs`. If you write out every example yourself
+    by copying it from the book in your own project, it would be smart to store the
+    original contents of `main.rs` somewhere before you overwrite it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I won’t show the entire state machine here since the 39 lines of code using
+    `coroutine/wait` end up being 170 lines of code when written as a state machine,
+    but our `State` `enum` now looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you run the program using `cargo run`, you now get the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, you see that our code runs as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we called `wait` on every call to `Http::get`, the code ran sequentially,
+    which is evident when we look at the elapsed time of 10 seconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That makes sense since the delays we asked for were `0 + 1 + 2 + 3 + 4`, which
+    equals 10 seconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What if we want our futures to run concurrently?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do you remember we talked about these futures being *lazy*? Good. So, you know
+    that we won’t get concurrency just by creating a future. We need to poll them
+    to start the operation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To solve this, we take some inspiration from `join_all`. It takes a collection
+    of futures and drives them all to completion concurrently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s create the last example for this chapter where we do just this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: c-async-await—concurrent futures
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Okay, so we’ll build on the last example and do just the same thing. Create
+    a new project called `c-async-await` and copy `Cargo.toml` and everything in the
+    `src` folder over.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first thing we’ll do is go to `future.rs` and add a `join_all` function
+    below our existing code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/c-async-await/src/future.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function takes a collection of futures as an argument and returns a `JoinAll<F>`
+    future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The function simply creates a new collection. In this collection, we will have
+    tuples consisting of the original futures we received and a `bool` value indicating
+    whether the future is resolved or not.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we have the definition of our `JoinAll` struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch07/c-async-await/src/future.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: This struct will simply store the collection we created and a `finished_count`.
+    The last field will make it a little bit easier to keep track of how many futures
+    have been resolved.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As we’re getting used to by now, most of the interesting parts happen in the
+    `Future` implementation for `JoinAll`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: We set `Output` to `String`. This might strike you as strange since we don’t
+    actually return anything from this implementation. The reason is that `corofy`
+    will only work with futures that return a `String` (it’s one of its many, many
+    shortcomings), so we just accept that and return an empty string on completion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next up is our `poll` implementation. The first thing we do is to loop over
+    each (flag, future) tuple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: Inside the loop, we first check if the flag for this future is set to `finished`.
+    If it is, we simply go to the next item in the collection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If it’s not finished, we `poll` the future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we get `PollState::Ready` back, we set the flag for this future to `true`
+    so that we won’t poll it again and we increase the finished count.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s worth noting that the `join_all` implementation we create here will not
+    work in any meaningful way with futures that return a value. In our case, we simply
+    throw the value away, but remember, we’re trying to keep this as simple as possible
+    for now and the only thing we want to show is the concurrency aspect of calling
+    `join_all`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tokio’s `join_all` implementation puts all the returned values in a `Vec<T>`
+    and returns them when the `JoinAll` future resolves.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we get `PollState::NotReady`, we simply continue to the next future in the
+    collection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After iterating through the entire collection, we check if we’ve resolved all
+    the futures we originally received in `if self.finished_count ==` `self.futures.len()`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If all our futures have been resolved, we return `PollState::Ready` with an
+    empty string (to make `corofy` happy). If there are still unresolved futures,
+    we return `PollState::NotReady`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is one subtle point to make a note of here. The first time `JoinAll::poll`
+    is called, it will call `poll` on each future in the collection. Polling each
+    future will kick off whatever operation they represent and allow them to *progress
+    concurrently*. This is one way to achieve concurrency with lazy coroutines, such
+    as the ones we’re dealing with here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next up are the changes we’ll make in `main.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `main` function will be the same, as well as the imports and declarations
+    at the start of the file, so I’ll only present the `coroutine/await` functions
+    that we’ve changed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the repository, you’ll find the correct code to put in `main.rs` in `ch07/c-async-await/original_main.rs`
+    if you ever lose track of it with all the copy/pasting we’re doing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we have two `coroutine/wait` functions. `async_main` stores a set of coroutines
+    created by `read_request` in a `Vec<T: Future>`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then it creates a `JoinAll` future and calls `wait` on it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next `coroutine/wait` function is `read_requests`, which takes an integer
+    as input and uses that to create GET requests. This coroutine will in turn wait
+    for the response and print out the result once it arrives.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we create the requests with delays of `0, 1, 2, 3, 4` seconds, we should
+    expect the entire program to finish in just over four seconds because all the
+    tasks will be in progress *concurrently*. The ones with short delays will be finished
+    by the time the task with a four-second delay finishes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can now transform our `coroutine/await` functions into state machines by
+    making sure we’re in the folder `ch07/c-async-await` and writing `corofy ./src/main.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You should now see a file called `main_corofied.rs` in the `src` folder. Copy
+    its contents and replace what’s in `main.rs` with it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you run the program by writing `cargo run`, you should get the following
+    output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: The thing to make a note of here is the elapsed time. It’s now just over four
+    seconds, just like we expected it would be when our futures run concurrently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we take a look at how `coroutine/await` changed the experience of writing
+    coroutines from a programmer’s perspective, we’ll see that we’re much closer to
+    our goal now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Efficient**: State machines require no context switches and only save/restore
+    the data associated with that specific task. We have no growing vs segmented stack
+    issues, as they all use the same OS-provided stack.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Expressive**: We can write code the same way as we do in “normal” Rust, and
+    with compiler support, we can get the same error messages and use the same tooling'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`async` function from a normal function and expect anything meaningful to happen;
+    you have to actively poll it to completion somehow, which gets more complex as
+    we start adding runtimes into the mix. However, for the most part, we can write
+    programs just the way we’re used to.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Final thoughts
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we round off this chapter, I want to point out that it should now be
+    clear to us why coroutines aren’t really **pre-emptable**. If you remember back
+    in [*Chapter 2*](B20892_02.xhtml#_idTextAnchor043), we said that a *stackful*
+    coroutine (such as our fibers/green threads example) could be *pre-empted* and
+    its execution could be paused at any point. That’s because they have a stack,
+    and pausing a task is as simple as storing the current execution state to the
+    stack and jumping to another task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That’s not possible here. The only places we can stop and resume execution are
+    at the pre-defined suspension points that we manually tagged with `wait`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In theory, if you have a tightly integrated system where you control the compiler,
+    the coroutine definition, the scheduler, and the I/O primitives, you could add
+    additional states to the state machine and create additional points where the
+    task could be suspended/resumed. These suspension points could be opaque to the
+    user and treated differently than normal wait/suspension points.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, every time you encounter a normal function call, you could add
+    a suspension point (a new state to our state machine) where you check in with
+    the scheduler if the current task has used up its time budget or something like
+    that. If it has, you could schedule another task to run and resume the task at
+    a later point even though this didn’t happen in a cooperative manner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, even though this would be invisible to the user, it’s not the same
+    as being able to stop/resume execution from any point in your code. It would also
+    go against the usually implied cooperative nature of coroutines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Good job! In this chapter, we introduced quite a bit of code and set up an example
+    that we’ll continue using in the following chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, we’ve focused on futures and `async/await` to model and create tasks
+    that can be paused and resumed at specific points. We know this is a prerequisite
+    to having tasks that are in progress at the same time. We did this by introducing
+    our own simplified `Future` trait and our own `coroutine/wait` syntax that’s way
+    more limited than Rust’s futures and `async/await` syntax, but it’s easier to
+    understand and get a mental idea of how this works in contrast to fibers/green
+    threads (at least I hope so).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have also discussed the difference between eager and lazy coroutines and
+    how they impact how you achieve concurrency. We took inspiration from Tokio’s
+    `join_all` function and implemented our own version of it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we simply created tasks that could be paused and resumed. There
+    are no event loops, scheduling, or anything like that yet, but don’t worry. They’re
+    exactly what we’ll go through in the next chapter. The good news is that getting
+    a clear idea of coroutines, like we did in this chapter, is one of the most difficult
+    things to do.
+  prefs: []
+  type: TYPE_NORMAL

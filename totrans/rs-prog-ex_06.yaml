@@ -1,0 +1,1379 @@
+- en: Implementing the Engine of the Music Player
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we implemented the user interface of the music player,
+    but it is unable to play any music. We'll tackle that challenge in this chapter.
+    We'll create the engine of the music player so that it can play MP3 files. To
+    do this, we'll need to use threads so that playing a song does not freeze the
+    interface, so it will be a good opportunity to learn about concurrency in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: MP3 decoder
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Mutex and Mutex guards
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Send/Sync traits
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RAII
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Thread safety
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interior mutability
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing the dependencies
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For this chapter, we''ll need two libraries: `pulseaudio` and `libmad`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The former will be used to play the music, while the latter is for decoding
+    MP3 files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing dependencies on Linux
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: On Linux, these dependencies can be installed through the package manager of
+    your distribution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On Ubuntu (or other Debian derivatives):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Installing dependencies on Mac
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'On OSX, the required dependencies can be installed through the system package
+    manager, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Installing dependencies on Windows
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'On Windows, run the following command in a MSYS2 shell:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Think, click the link to download the zip file from this page: [https://www.freedesktop.org/wiki/Software/PulseAudio/Ports/Windows/Support/](https://www.freedesktop.org/wiki/Software/PulseAudio/Ports/Windows/Support/)
+    (When the book was written, the link for the current version was [http://bosmans.ch/pulseaudio/pulseaudio-1.1.zip](http://bosmans.ch/pulseaudio/pulseaudio-1.1.zip)).
+    Then, follow the same instructions as the ones from [Chapter 2](part0063.html#1S2JE0-13a27bdc411a4c2eaad1cc3a71f7fca7),
+    *Starting with SDL*, to use the library from Rust.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Decoding MP3 files
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll start this chapter by learning how to decode an MP3 file to a format suitable
+    to be played by the operating system using the `simplemad` crate, a binding for
+    `libmad`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding dependencies
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s add the following to `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: We also added the `pulse-simple` and `crossbeam` crates because we'll need them
+    later. The former will be used to play the songs with `pulseaudio` and the latter
+    will be used to implement the event loop of the music player engine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also need to add the following statements in `main.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: In addition to the `extern crate` statements, we have a `mod` statement since
+    we'll create a new module for the MP3 decoder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementing an MP3 decoder
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''re now ready to create this new module. Create a new `mp3.rs` file with
+    the following content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We start this module with some import statements as usual. The important one
+    is `simplemad`, which will be used to decode the frames of an MP3 file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We saw in [Chapter 1](part0020.html#J2B80-13a27bdc411a4c2eaad1cc3a71f7fca7),
+    *Basics of Rust*, that we can add trait bounds to generic parameters in a function.
+    We can also add them to the generic parameters of a type. Here we see an alternative
+    syntax using a `where` clause. The previous structure declaration is the same
+    as the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `where` clause is useful when we have a lot a generic parameters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This structure contains information about the current frame and time as well
+    as the decoder itself, which comes from the `simplemad` crate. This `Decoder`
+    also requires a generic parameter that implements the `Read` trait, so we just
+    use our own `R` parameter since we specified that it must implement this trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we move on to the constructor of this type, we''ll implement a couple
+    of `utility` functions. Let''s start with a function that converts `Duration`
+    to a number of milliseconds (this function will go in the `main.rs` file since
+    we''ll use it in another module):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we simply multiply the number of seconds by `1,000` and divide the number
+    of nanoseconds by `1,000,000`. This function requires you to add an import statement
+    for `Duration`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we''ll write a function to check whether a stream of data is an MP3 file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: To do so, we try to decode the stream and if the result is `Ok`, then the data
+    is an MP3 file. We then go back to the beginning of the file before returning
+    whether it is an MP3 file or not.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next function we''ll need is one to decode the next frame of an MP3 file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we simply get the next frame from the decoder and flatten the `Option<Result<Frame>>`
+    to `Option<Frame>` by calling `and_then(Result::ok)`. If there's no frame, we
+    return a default frame.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let''s implement the constructor of our MP3 decoder:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You need to add an import statement at the top of this file to be able to use
+    the `to_millis` function, which is in the `main` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since the `use` statements are relative to the root of the crate, we only need
+    to write the function name because this function is at the crate's root.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The constructor first checks whether the stream contains MP3 data, if not, we
+    return an error. Otherwise, we create a `Decoder` from the `simplemad` crate.
+    Then, we read the first frame and get its time in milliseconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we write two methods to get the current time and the rate of the MP3
+    file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'These methods are to be added in the `impl Mp3Decoder` block. The last method
+    to be added to this structure is a method to compute the duration of a song:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here we create an associated function: it first checks whether it is MP3 data.
+    Here, instead of using `Decoder::decode()`, we use `Decoder::decode_headers()`
+    because we only need the frame duration and it is faster to only decode the headers.
+    The `decoder` is an iterator and we call `filter_map()` on it. As you saw in [Chapter
+    2](part0063.html#1S2JE0-13a27bdc411a4c2eaad1cc3a71f7fca7), *Starting with SDL*,
+    `filter_map()` transforms and filters the elements of an iterator. Transforming
+    a value is done by returning `Some(new_value)`, while filtering out a value is
+    done by returning `None`. After that, we call `sum()` on the resulting iterator
+    to get the sum of all the durations.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Getting the frame samples
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The only remaining feature needed for our MP3 decoder is to be able to iterate
+    over the samples. We''ll first write a function to get the next sample:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This function is doing some bit shifting to get the sample and then fetch the
+    next frame. We''re now ready to implement an iterator that will use this function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, we can implement our own iterator by implementing the `Iterator`
+    trait. The only required method is `next()`. By implementing this simple method,
+    we get a whole bunch of features because this trait has a lot of default methods.
+    The `type Item` is also required. We implement the `size_hint()` method, even
+    though it is an optional one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Playing music
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'With the MP3 decoder done, we''re now ready to play some music. We''ll create
+    a new module, called player, which we will add at the top of `main.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll start this module by creating a new `player.rs` file with the following
+    import statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll also create some constants:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: The buffer size is the number of samples we'll decode and play to avoid having
+    slowdowns when playing the song and also to avoid using 100% of the CPU by constantly
+    reading and decoding the data at the same time as playing. The default rate will
+    be used when we cannot find one in the MP3 file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Event loop
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To simplify the development of our playing engine, we'll use the concept of
+    an event loop. Some actions will be sent to the thread playing the music through
+    this event loop. For instance, we will be able to emit a `Load("file.mp3")` event,
+    the thread will decode this MP3 file, and start playing it. Another example of
+    an event is `Stop`, which will stop playing and unload the data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create an enumeration for the possible actions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''re now ready to create the structure of the event loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's a lot of unknown stuff in this structure, so let's break it down.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Atomic reference counting
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'First of all, we use the `Arc` type. It is similar to the `Rc` type that we
+    used in the previous chapter, in that it is a type providing reference counting.
+    The difference between these two types is that `Arc` uses atomic operations to
+    increment its counter. By being atomic, it is safe to be used by multiple threads
+    while `Rc` cannot be safely used across threads (and the compiler prevents us
+    from trying to do so). The standard library provides these two types so that you
+    can choose the cost you want to pay. If you don''t need to share a reference-counted
+    value with multiple threads, choose `Rc` as it is more efficient than `Arc`. If
+    you try to send an `Rc` to another thread, the compiler will trigger an error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this case, you'll need to switch to an `Arc`. This error will make more sense
+    when we see what the `Send` trait is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mutual exclusion
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the `playing` field, the `Arc` contains a `Mutex`. A mutex provides mutual
+    exclusion, meaning that it allows us to lock its inner value (in this case, a
+    `bool`) preventing other threads from manipulating the same value at the same
+    time. It prevents data races, which is a cause of undefined behavior, by preventing
+    concurrent reads and writes on a value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Send trait
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: But how can the compiler prevent us from doing data races? This is thanks to
+    the `Send` and `Sync` marker traits. A type that implements the `Send` trait is
+    safe to be sent to another thread. As you may have guessed, `Rc` does not implement
+    `Send`. Since it does not use atomic operations to increment its counter, if two
+    threads were to increment it at the same time, that would be a data race.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sync trait
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s discuss the second of these marker traits: `Sync`. A type that implements
+    the `Sync` trait is safe to be shared with multiple threads. An example of a `Sync`
+    type is `Mutex`. It is safe because the only way to get a value from `Mutex` is
+    to lock it, which is mutually exclusive (another thread cannot access the same
+    value at the same time).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lock-free data structures
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The only remaining type to explain is `SegQueue`, from the `crossbeam` crate.
+    This type is a lock-free queue, meaning that it can be used concurrently by multiple
+    threads without a lock. The implementation of lock-free data structures is beyond
+    the scope of this book, but it suffices to say that it uses atomic operations
+    behind the scenes so that we don't need to use a `Mutex` to mutate this value
+    in mutable threads at the same time. We still need to wrap this queue in an `Arc`
+    to be able to share it with multiple threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We're using a lock-free data structure because we'll be constantly checking
+    whether there's a new element in this queue while possibly adding new elements
+    to this queue from another thread. If we were to use `Mutex<VecDeque<Action>>`,
+    it would be less efficient because calling `lock()` on `Mutex` waits if the lock
+    is held by another thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s get back to our event loop. Let''s add a constructor for `EventLoop`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: This constructor simply creates the queue and the Boolean wrapped in a `Mutex`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we use it, we''ll create a `State` structure that will contain various
+    data shared between the GUI thread and the music player thread, put this code
+    in the `main` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Also, add a `state` field in the `App` structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This requires a new import statement:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Since this value will be shared with another thread, we need to wrap it in
+    `Arc<Mutex>`. Then, in the constructor, create this value and assign it to this
+    new field, while also sending it to the `Playlist` constructor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s update the `Playlist` constructor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The structure requires a new field, so let''s add it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This also needs new import statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: We use the `pub(crate)` syntax to silent an error. Since we're using a private
+    type (`State`) in a public method, the compiler throws an error. This syntax means
+    that the function is public to the other modules of the crate, but other crates
+    cannot access it. Here, we only send the `state` to the `Player` constructor,
+    which we will implement right away.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Playing music
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''ll create a new `Player` structure to wrap the event loop. The player will
+    be usable from the main thread to control the music. Here''s the structure itself:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And here''s the start of its constructor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: We start by creating a new event loop. Then, we start a new thread. We used
+    a new scope to avoid having to rename the variables that will be sent to the thread
+    because these variables are used in the initialization of the structure at the
+    end of the constructor. Again, we need to use a `move` closure because we're sending
+    a copy of the event loop and the application state to the thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see the first part of the thread''s closure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We start by creating a buffer to contain the samples to be played. Then we''ll
+    create a `Playback`, which is an object that will allow us to play music on the
+    hardware. We''ll also create a `source` variable that will contain an `Mp3Decoder`.
+    We then start an infinite loop and try to get the first element in the queue:
+    if there''s an element in the queue, `Some(action)` is returned. That''s why we
+    used `if let` to pattern match against the result of this method call. We then
+    match against the action to see which action it is: if it is a `Load` action,
+    we open the file with the specified path and create an `Mp3Decoder` with a buffered
+    reader of this file. We then try to get the sample rate of the song and create
+    a new `Playback` with this rate. We''ll handle the `Stop` action later.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, we see our first use of `Mutex`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s rewrite it in another way to see what''s going on:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: We first call `lock()`, which returns a `Result<MutexGuard<T>, PoisonError<MutexGuard<T>>>`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mutex guard
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'A mutex guard is a scoped lock: this means that the mutex will be automatically
+    unlocked when going out of scope. It is a nice way to ensure that users will use
+    a `Mutex` and won''t forget to unlock it.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: RAII
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: But how does it work behind the scene? Rust uses the idiom of **Resource Acquisition
+    Is Initialization**(**RAII)** for short. With this idiom, a resource is allocated
+    in the constructor and released in its destructor. In Rust, destructors are implemented
+    by the `Drop` trait. So, to get back to mutex guards, the mutex is unlocked when
+    the destructor of `MutexGuard` is called, so, as in the previous example, when
+    the `guard` variable goes out of scope.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s get back to our infinite loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we check whether the playing value is true (again using the `lock().unwrap()`
+    trick). We must use a `*` to access the value of a `MutexGuard` because it implements
+    `Deref`. That means we don't have direct access to the underlying value. But since
+    it implements the `Deref` trait, we can access it by dereferencing the guard (with
+    a `*`). We didn't need this trick before because we accessed a field and Rust
+    automatically dereferences fields.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We then create a `written` variable that will be `true` if the player was able
+    to play a sample. If it was unable to play one, this means the song came to an
+    end. In this case, we set the `stopped` value to `true` and `playing` to `false`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To play the samples, we call `iter_to_buffer`, which will take the value from
+    the decoder (which is an `Iterator`) and write them to the buffer. Afterward,
+    it will write the buffer to the `playback` in order to play the samples on your
+    sound card.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look at this `iter_to_buffer` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: We start by taking `BUFFER_SIZE` elements from the iterator and add them to
+    the buffer two at a time (for two channels). We then return the number of elements
+    written to the buffer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the music player
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We're now ready to use our music engine. Let's add a couple of new methods to
+    `Playlist`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s start with a method to get the path of the selection:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We start by getting the selection, then we get the iterator for the selection.
+    From the iterator, we can get the value at the specified column to get the path.
+    We can now add a method to load the selected song:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: If there's a selected song, we load it into the music engine. We return true
+    if a song was loaded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll now use this method in the event handler of the play button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: We create a copy of the `playlist` variable because it is moved into the closure.
+    In the latter, we then call the `play()` method we created just before. We only
+    change the image of the button and show the cover if a song starts to play.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can now try the music player: open an MP3 file, click play, and you should
+    hear the song. Let''s continue to develop the software since many features are
+    missing.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pausing and resuming the song
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll start by adding a field indicating whether the player is in pause or not.
+    This field will be changed by methods such as `play` or `resume`. However, remember
+    that our `Playlist` is wrapped in an `Rc`, so that we can use it in different
+    places, namely in the event handlers. Also, remember that Rust forbids mutation
+    when there are mutable references to a value. How can we update this field while
+    still using a reference-counted pointer? One way is to use interior mutability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interior mutability
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Interior mutability is a concept granting mutable an inner value of a type
+    with an immutable reference. Is this safe to do? Yes, totally, because we need
+    to respect certain constraints. One way to have interior mutability is to wrap
+    our `Cell` type. The constraint of this type is that if we want to get the value
+    from the `Cell` from an immutable reference, the wrapped type must implement the
+    `Copy` trait. We''ll see the other commonly-used type for interior mutability
+    later in this chapter. For now, let''s add our field to the `Player` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s update the construction of the structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now add a method to check whether the music is paused or not:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we need to call `Cell::get()` to get a copy of the inner value. We can
+    now add methods to play and resume the song:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here we see that we need to call `Cell::set()` to update the value of the `Cell`.
+    We can do that even though we only have an immutable reference and, once again,
+    it is completely safe to do so. Then, we update the `stopped` field of the application
+    state because the click handler for the play button will use it to decide whether
+    we want to play or resume the music. We also call `set_playing()` to indicate
+    to the player thread whether it needs to continue playing the song or not. This
+    method is defined as such:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: It sets the `playing` variable and then notifies the player thread to wake it
+    up if `playing` is `true`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll now add a `pause()` method to our `Playlist` type that will call the
+    `pause()` method we''ve just created when the user clicks pause:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To use it, we''ll update the click handler of the play button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added the call to pause in the `else` block.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We now want to update the `play()` method. Now that we can pause the song,
+    there are two new cases to consider for this method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the song is playing, we want to pause it.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the song is paused, we either want to resume the song if the same one is
+    selected or start a new song if another one is selected.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'That''s why we need a new field in our `Playlist` structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We added a field that will contain the path of the currently playing song.
+    Here we wrap the `Option<String>` into a `RefCell`, which is another way to have
+    interior mutability. We cannot use a `Cell` because the `String` type does not
+    implement the `Copy` trait. So, what is the difference between `Cell` and `RefCell`?
+    The `RefCell` type will check the borrowing rules at runtime: if two borrows happen
+    at the same time, it will panic. We have to be careful when using `RefCell`: it
+    is better to have compile-time borrowing checks if possible. But when using `gtk-rs`,
+    we sometimes need to share a mutable state with the event handler and the best
+    way to do that is to use `RefCell`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the next chapter, we''ll learn how to use a library that abstracts the state
+    management so that you won''t need to use `RefCell` and you won''t get any `panic`
+    at runtime. This requires a new import statement:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We need to update the constructor to initialize this value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There''s one more method to add in `Playlist` before we move on to update the
+    `play()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This method returns a copy of the current song path. Since the field is a `RefCell`,
+    we need to call `borrow()` in order to get access to the inner value. This method
+    returns the equivalent of an immutable reference. We''ll soon see how to have
+    a mutable reference. As with `Mutex`, the borrow is lexical and the borrow will
+    end at the end of the function. We''re now ready to update the `play()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: We call `resume()` if the song was paused and if the selected path is the same
+    as the currently playing song path. If this condition is `false`, we load the
+    specified path and save this path in our field. To do so, we call `borrow_mut()`
+    to get a mutable reference. Once again, we need to prefix the expression with
+    `*` so that `DerefMut::deref_mut()` gets called. Run the project and you'll see
+    that you can pause and resume the song.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s now add a way to stop the song. We''ll start by adding a method to the
+    `Player`, as usual:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: We first set the `paused` field to `false` so that the playlist won't try to
+    resume the song the next time the play button is clicked. We then set the `stopped`
+    field to `true`, this will cause the next click of this button to play the song
+    instead of trying to pause it. We then emit the `Stop` action to the event loop
+    and indicate to the engine thread that it should not play music anymore.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `emit` method is very simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: It simply pushes the `action` in the queue of the event loop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s now handle this `Stop` event:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: We only reset the source to `None` because we won't need it anymore.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, we''re ready to add a `stop()` method to the `Playlist`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: We first reset the `current_song` field to `None` in such a way that the next
+    call to `play()` won't attempt to resume the song. We then call the `stop()` method
+    we created earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''re now ready to use this new method by creating a new event handler for
+    the stop button, add this code to the `connect_toolbar_events()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, when we click stop, we call the `Playlist::stop()` method in order to stop
+    playing the music. We also hide the cover and set back the play button to show
+    the play icon. You can now try again in the music player to see this new feature
+    in action.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let''s add the actions for the two remaining buttons: previous and next.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We first need to create a new method in the `Playlist`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We start by getting the selection. Then we check whether an item is selected:
+    in this case, we try to get the item after the selection. Otherwise, we get the
+    first item on the list. Then, if we were able to get an item, we select it and
+    start playing the song. We return whether we changed the selection or not.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `previous()` method is similar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: However, there's no `get_iter_last()` method, so we get the last element with
+    `iter_nth_child()`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This requires a new import statement to be added at the top of the file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With these new methods, we''re ready to handle the click events for the buttons.
+    Let''s start with the next button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We simply call the `next()` method we just created and if a new song was selected,
+    we update the icon of the play button and show the new cover. The previous button
+    handler is exactly the same except that we call `previous()` instead:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: Showing the progression of the song
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It would be nice to see the cursor moving when the song plays. Let's tackle
+    this challenge right now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll start by adding a method to our `Player` to get the duration of a song:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We simply call the `compute_duration()` method we created earlier. Next, we''ll
+    modify the `Playlist` to call this function. But before we do so, we''ll modify
+    the `State` type from the `main` module to include additional information:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We added a `current_time` field, which will contain how much time elapsed since
+    the song started playing. We also store the duration of the songs in a `HashMap`
+    so that we only compute it once for each path. We now need to update the initialization
+    of the `State` in the `App` constructor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s go back to the `Playlist`. It will now contain the `State` in its structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This should be reflected in its constructor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, the `state` field was added. We''ll now add a method that will compute
+    the duration in another thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the thread''s closure, we compute the duration and when it''s done, we lock
+    the state to insert the duration in the `HashMap`. We compute the duration in
+    another thread because it can take time and we don''t want to block the user interface
+    during this computation. We now call this method in `Playlist::add()`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll update the `Adjustment` so that its upper value is `0.0` in the beginning:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is to avoid seeing the cursor moving too quickly when the duration is not
+    yet computed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, we''ll add the code to update the UI in the `App::connect_events()`
+    method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `gtk::timeout_add()` method will be run every 100 milliseconds as long as
+    its closure returns `Continue(false)`. This closure starts by checking whether
+    the duration is in the `HashMap`, and sets the upper value of the cursor as this
+    duration. If the value is not in the `HashMap`, it means it wasn't computed yet.
+    After that, we check whether the `stopped` field is true, that means the song
+    ended and the engine thread is no longer playing it. In this case, we want to
+    show the play icon. If the song is still playing, we show the pause icon. Finally,
+    we set the current value of the cursor from the `current_time` field.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The cursor will now move automatically as the song plays. Here''s how the player
+    looks now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00038.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*Figure 6.1*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Improving CPU usage
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One issue you may have noticed is that when no song is playing, the software
+    will use 100% of the CPU. This is because of the infinite loop in the music engine
+    thread. It will do nothing except loop when the song is paused or when there's
+    no song to play. Let's now fix this issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Condition variable
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'What we want to do is to make the thread sleep when it has nothing to do. We
+    also want to be able to wake the thread up from the main thread. This is exactly
+    what condition variables are for. So, let''s add one to our engine. We''ll start
+    by adding a `condition_variable` field to the `EventLoop`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A condition variable is usually used together with a Boolean value (wrapped
+    in a `Mutex`). We need to rewrite the constructor of `EventLoop` to initialize
+    this new field:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we need to block the thread when it has nothing to do. Here''s the start
+    of the new code of the thread in `Player::new()`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We create a copy of the condition variable and we move this copy into the thread.
+    Then, in the beginning of the closure, we lock the Boolean value associated with
+    the condition variable to set it to `false`. Afterward, we loop: while this value
+    is `false`, we block the current thread. We created a closure instead of a normal
+    function because normal functions cannot capture values. The following code is
+    the same as before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'But the rest of the closure is a bit different:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: If the player was unable to play song (that is, the song came into an end),
+    we call the closure to block the thread. We also block the thread if the player
+    is paused. With the condition variable, the software stopped using 100% CPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Showing the song's current time
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Currently, we only display the progression of the song. The user has no way
+    to know the duration and for how many seconds the song has been playing. Let's
+    fix that by adding labels that will show the current time and the duration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll need two new import statements in the `main` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll also add two `label` in our `App` structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE79]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'One `label` for the current time and the other for the duration. Since we want
+    to show the different `label` on the right of the cursor, we''ll create a horizontal
+    box, this code should be added in `App::new()`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE80]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `Scale` widget is now added to `hbox` instead of `vbox`. And we call `set_hexpand()`
+    so that the widget takes as much horizontal space as possible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''re now ready to create our `label`''s:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE81]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We create three `label`; the third one being a separator. We set a right margin
+    to the last `label` so that it is not too close to the border of the window. Further,
+    in the `App` constructor, we need to update the initialization of the structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE82]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added the two `label`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll create a function to convert a number of milliseconds to a `String`
+    of the `minute:second` format:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE83]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this function, we first convert the milliseconds to seconds by dividing by
+    one thousand. We then get the number of minutes by dividing the seconds by `60`.
+    Afterward, we compute the number of seconds that are not included in the minutes
+    with the modulo operation. Finally, we format the minutes and seconds as a `String`.
+    As you can see, we used a special `{:02}` formatter. The `2` means that we want
+    to print the number as two characters, even if the number is less than 0\. The
+    `0` after the colon indicates that we want to prepend `0` instead of spaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With this new function, we can rewrite the timer to update (in the method `App::connect_events()`)
+    the `label`''s:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE84]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here are the changes from the previous version. When we get the duration, we
+    update the duration `label`. And when the song is not stopped (that is, when it
+    is playing), we update the current time `label`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We need to change the stop button handler so that it resets the text of these
+    `label`'s.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, we can update the handler:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE85]'
+  prefs: []
+  type: TYPE_PRE
+- en: We clone the widgets to move them into the closure and set the text of the `label`'s
+    to the empty string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s the result you should see when running the application:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00039.jpeg)*Figure 6.2*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Loading and saving the playlist
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have the ability to create a playlist in our music player, but we cannot
+    save a playlist to a file in order to be able to load one later. Let's add this
+    feature to our project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll save the playlist in the `m3u` file format and to handle this format,
+    we''ll use the `m3u` crate. So let''s add it to our `Cargo.toml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE86]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Add this line to the `main` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE87]'
+  prefs: []
+  type: TYPE_PRE
+- en: Saving a playlist
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''ll start by adding a button to save the playlist. First, we add a field
+    in the `MusicToolbar` structure for the button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE88]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And in the constructor, we''ll create this button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE89]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we''ll add a `save` method in the `Playlist` structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE90]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we first create a `m3u::Writer` with a `File` that we've created. This
+    writer will be used to write the entry to the file. We create a closure that gets
+    the path from an iterator of our `TreeView` and writes this path to the file.
+    We chose to create a closure to avoid repeating the code, as we'll need this code
+    twice. After that, we get the first iterator and write its contents before looping
+    until there's no more row in the view.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''re now ready to call this code. First, we''ll create a function in the
+    module toolbar to show a save file dialog. It is similar to the `show_open_dialog()`
+    function we wrote in the previous chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE91]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we use the `FileChooserAction::Save` type instead of `FileChooserAction::Open`.
+    We use a different filter and mime type. We also call `set_do_overwrite_confirmation()`
+    which is very important. It will ask for a confirmation if the user asks to overwrite
+    a file. The rest of the function is exactly the same as the one to open a file,
+    except that the `label` of the button is now `Save`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now use this function in the event handler of the save button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE92]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We simply call the function `show_save_dialog()` and give the resulting file
+    to the `Playlist::save()` method. You can now try to save a playlist in the application:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00040.jpeg)*Figure 6.3*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Loading a playlist
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We can save playlists, but still cannot load them. Let''s start by adding a
+    `load()` method to `Playlist`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE93]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we create a `m3u::Reader` with the specified path. We loop over the entry
+    and if we were able to retrieve a `m3u::Entry::Path`, we add it to the playlist
+    widget.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll now modify the open dialog to allow selecting `M3U` files:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE94]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll now change the open button event handler to select which action to do
+    depending on the file type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE95]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This requires a couple of new import statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE96]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This new event handler now checks the file extension, if it is `mp3`, it will
+    call the `Playlist::add()` method as we were doing earlier. If it is `m3u`, we
+    call our new `Playlist::load()` method. Otherwise, we show an error message to
+    the user:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00041.jpeg)*Figure 6.4*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can now try to load a playlist in our music player, don't forget to change
+    the filter in order to see M3U files in the dialog.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using gstreamer for playback
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Implementing an engine to play music was a good exercise to learn about threading.
+    However, for a real program, you could simply use `gstreamer` for the music playback.
+    So, let's see how to use this library in our music player.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Remove the following dependencies in your `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE97]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And remove their corresponding `extern crate` statements. We can also remove
+    the `mp3` and `player` modules as we''ll use `gstreamer` instead. Now, we can
+    add our dependencies for `gstreamer`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE98]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And add their corresponding `extern crate` statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE99]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At the beginning of the `main` function, we need to initialize `gstreamer`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE100]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We no longer need our `State` structure, so we remove it and the `state` field
+    in the `App` structure. And now, we can update our `playlist` module. First, let''s
+    add a few `use` statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE101]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We remove the `state` field and update the `player` one in the `Playlist` structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE102]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Playlist` constructor does not need the `state` anymore:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE103]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we create the `Player` from the `gstreamer` crate. We need to remove
+    the `compute_duration()` method and all its uses because we''ll use `gstreamer`
+    to get the song''s duration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE104]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we create a few methods that will be useful to show the time and when
+    the song is playing. Finally, we can update the `play()` method to use `gstreamer`
+    instead:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE105]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s go back to the `main` module to update the creation of the playlist:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE106]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'One more thing to update is the code to show the current time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE107]'
+  prefs: []
+  type: TYPE_PRE
+- en: We now use the methods we created a bit earlier and some from `gstreamer`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, we update the `toolbar` module. First, the `play_button` event handler:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE108]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We now use the `is_playing()` method instead of the `state`. Let''s also remove
+    the `FileFilter` from the `show_open_dialog()` function because `gstreamer` supports
+    more formats than just `MP3`. And to be able to open them, we need to update the
+    `open_button` event handler:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE109]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we only added the `ogg` format, but you can also add other formats.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter started by showing you how to decode MP3 data with the `simplemad`
+    crate. You then learned how to write a music engine, this showed you how to use
+    threads and different threading objects such as `Mutex`, lock-free data structures,
+    and condition variables. You also learned how Rust can ensure thread safety. You
+    also saw how to mutable the fields of a value when you have an immutable reference
+    with interior mutability. During the whole chapter, we added the missing features
+    to the music player such as play, pause, previous, and next song.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we'll improve the modularity of the music player by rewriting
+    it with the `relm` crate.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,1589 @@
+- en: '10'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Creating Your Own Runtime
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the last few chapters, we covered a lot of aspects that are relevant to asynchronous
+    programming in Rust, but we did that by implementing alternative and simpler abstractions
+    than what we have in Rust today.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This last chapter will focus on bridging that gap by changing our runtime so
+    that it works with Rust futures and async/await instead of our own futures and
+    coroutine/wait. Since we’ve pretty much covered everything there is to know about
+    coroutines, state machines, futures, wakers, runtimes, and pinning, adapting what
+    we have now will be a relatively easy task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we get everything working, we’ll do some experiments with our runtime to
+    showcase and discuss some of the aspects that make asynchronous Rust somewhat
+    difficult for newcomers today.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll also take some time to discuss what we might expect in the future with
+    asynchronous Rust before we summarize what we’ve done and learned in this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We’ll cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating our own runtime with futures and async/await
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Experimenting with our runtime
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Challenges with asynchronous Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The future of asynchronous Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The examples in this chapter will build on the code from the last chapter, so
+    the requirements are the same. The example is cross-platform and will work on
+    all platforms that Rust ([https://doc.rust-lang.org/beta/rustc/platform-support.html#tier-1-with-host-tools](https://doc.rust-lang.org/beta/rustc/platform-support.html#tier-1-with-host-tools))
+    and `mio` (https://github.com/tokio-rs/mio#platforms) support.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The only thing you need is Rust installed and the book’s repository downloaded
+    locally. All the code in this chapter can be found in the `ch10` folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll use `delayserver` in this example as well, so you need to open a separate
+    terminal, enter the `delayserver` folder at the root of the repository, and type
+    `cargo run` so it’s ready and available for the examples going forward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember to change the ports in the code if for some reason you have to change
+    what port `delayserver` listens on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Okay, so we’re in the home stretch; the last thing we’ll do is change our runtime
+    so it uses the Rust `Future` trait, `Waker`, and `async/await`. This will be a
+    relatively easy task for us now that we’ve pretty much covered the most complex
+    aspects of asynchronous programming in Rust by building everything up ourselves.
+    We have even gone into quite some detail on the design decisions that Rust had
+    to make along the way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The asynchronous programming model Rust has today is the result of an evolutionary
+    process. Rust started in its early stages with green threads, but this was before
+    it reached version 1.0\. At the point of reaching version 1.0, Rust didn’t have
+    the notion of futures or asynchronous operations in its standard library at all.
+    This space was explored on the side in the futures-rs crate ([https://github.com/rust-lang/futures-rs](https://github.com/rust-lang/futures-rs)),
+    which still serves as a nursery for async abstractions today. However, it didn’t
+    take long before Rust settled around a version of the `Future` trait similar to
+    what we have today, often referred to as *futures 0.1*. Supporting coroutines
+    created by async/await was something that was in the works already at that point
+    but it took a few years before the design reached its final stage and entered
+    the stable version of the standard library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, many of the choices we had to make with our async implementation are real
+    choices that Rust had to make along the way. However, it all brings us to this
+    point, so let’s get to it and start adapting our runtime so it works with Rust
+    futures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we get to the example, let’s cover the things that are different from
+    our current implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Future` trait Rust uses is slightly different from what we have now. The
+    biggest difference is that it takes something called `Context` instead of `Waker`.
+    The other difference is that it returns an enum called `Poll` instead of `PollState`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Context` is a wrapper around Rust’s `Waker` type. Its only purpose is to future-proof
+    the API so it can hold additional data in the future without having to change
+    anything related to `Waker`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `Poll` enum returns one of two states, `Ready(T)` or `Pending`. This is
+    slightly different from what we have now with our `PollState` enum, but the two
+    states mean the same as `Ready(T)/NotReady` in our current implementation.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Wakers` in Rust is slightly more complex to create than what we’re used to
+    with our current `Waker`. We’ll go through how and why later in the chapter.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Other than the differences outlined above, everything else can stay pretty much
+    as is. For the most part, we’re renaming and refactoring this time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve got an idea of what we need to do, it’s time to set everything
+    up so we can get our new example up and running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though we create a runtime to run futures properly in Rust, we still try
+    to keep this simple by avoiding error handling and not focusing on making our
+    runtime more flexible. Improving our runtime is certainly possible, and while
+    it can be a bit tricky at times to use the type system correctly and please the
+    borrow checker, it has relatively little to do with *async* Rust and more to do
+    with Rust being Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up our example
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Tip
+  prefs: []
+  type: TYPE_NORMAL
+- en: You’ll find this example in the book’s repository in the `ch1``0``/a-rust-futures`
+    folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We’ll continue where we left off in the last chapter, so let’s copy everything
+    we had over to a new project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a new folder called `a-rust-futures`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Copy everything from the example in the previous chapter. If you followed the
+    naming I suggested, it would be stored in the `e-coroutines-pin` folder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You should now have a folder containing a copy of our previous example, so the
+    last thing to do is to change the project name in `Cargo.toml` to `a-rust-futures`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Okay, so let’s start with the program we want to run. Open `main.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: main.rs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We’ll go back to the simplest version of our program and get it running before
+    we try anything more complex. Open `main.rs` and replace all the code in that
+    file with this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: No need for `corofy` or anything special this time. The compiler will rewrite
+    this for us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice that we’ve removed the declaration of the `future` module. That’s because
+    we simply don’t need it anymore. The only exception is if you want to retain and
+    use the `join_all` function we created to join multiple futures together. You
+    can either try to rewrite that yourself or take a look in the repository and locate
+    the `ch1``0``/a-rust-futures-bonus/src/future.rs` file, where you’ll find the
+    same version of our example, only this version retains the future module with
+    a `join_all` function that works with Rust futures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: future.rs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: You can delete this file altogether as we don’t need our own `Future` trait
+    anymore.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s move right along to `http.rs` and see what we need to change there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: http.rs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The first thing we need to change is our dependencies. We’ll no longer rely
+    on our own `Future`, `Waker`, and `PollState`; instead, we’ll depend on `Future`,
+    `Context`, and `Poll` from the standard library. Our dependencies should look
+    like this now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have to do some minor refactoring in the `poll` implementation for `HttpGetFuture`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we need to change the signature of the `poll` function so it complies
+    with the new `Future` trait:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'runtime::reactor().set_waker(Poll instead of PollState. To do that, locate
+    the poll method and start by changing the signature so it matches the Future trait
+    from the standard library:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/http.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we need to change our return types wherever we return from the function
+    (I’ve only presented the relevant part of the function body here):'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/http.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: That’s it for this file. Not bad, huh? Let’s take a look at what we need to
+    change in our executor and open `executor.rs`.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: executor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The first thing we need to change in `executor.rs` is our dependencies. This
+    time, we only rely on types from the standard library, and our `dependencies`
+    section should now look like this:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/runtime/executor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our coroutines will no longer be limited to only output String, so we can safely
+    use a more sensible `Output` type for our top-level futures:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/runtime/executor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '#[derive(Clone)]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: pub struct MyWaker {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'thread: Thread,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'id: usize,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'ready_queue: Arc<Mutex<Vec<usize>>>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: impl Wake for MyWaker {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn wake(self: Arc<Self>) {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.ready_queue
+  prefs: []
+  type: TYPE_NORMAL
+- en: .lock()
+  prefs: []
+  type: TYPE_NORMAL
+- en: .map(|mut q| q.push(self.id))
+  prefs: []
+  type: TYPE_NORMAL
+- en: .unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.thread.unpark();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'fn get_waker(&self, id: usize) -> Arc<MyWaker> {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Arc::new(MyWaker {
+  prefs: []
+  type: TYPE_NORMAL
+- en: id,
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'thread: thread::current(),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'ready_queue: CURRENT_EXEC.with(|q| q.ready_queue.clone()),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '})'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'pub fn block_on<F>(&mut self, future: F)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: where
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'F: Future<Output = ()> + ''static,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '{'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: '...'
+  prefs: []
+  type: TYPE_NORMAL
+- en: // guard against false wakeups
+  prefs: []
+  type: TYPE_NORMAL
+- en: None => continue,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '};'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'let waker: Waker = self.get_waker(id).into();'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut cx = Context::from_waker(&waker);
+  prefs: []
+  type: TYPE_NORMAL
+- en: match future.as_mut().poll(&mut cx) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: '...'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'pub fn spawn<F>(future: F)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: where
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'F: Future<Output = reactor.rs.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: reactor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The first thing we do is to make sure our dependencies are correct. We have
+    to remove the dependency on our old `Waker` implementation and instead pull in
+    these types from the standard library. The `dependencies` section should look
+    like this:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/runtime/reactor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There are two minor changes we need to make. The first one is that our `set_waker`
+    function now accepts `Context` from which it needs to get a `Waker` object:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/runtime/reactor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last change is that we need to call a slightly different method when calling
+    `wake` in the `event_loop` function:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/a-rust-futures/src/runtime/reactor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since calling `wake` now consumes `self`, we call the version that takes `&self`
+    instead since we want to hold on to that waker for later.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: That’s it. Our runtime can now run and take advantage of the full power of asynchronous
+    Rust. Let’s try it out by typing `cargo run` in the terminal.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'We should get the same output as we’ve seen before:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: That’s pretty neat, isn’t it?
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: So, now we have created our own async runtime that uses Rust’s `Future`, `Waker`,
+    `Context`, and `async/await`.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Now that we can pride ourselves on being runtime implementors, it’s time to
+    do some experiments. I’ll choose a few that will also teach us a few things about
+    runtimes and futures in Rust. We’re not done learning just yet.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Experimenting with our runtime
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You’ll find this example in the book’s repository in the `ch1``0``/b-rust-futures-experiments`
+    folder. The different experiments will be implemented as different versions of
+    the `async_main` function numbered chronologically. I’ll indicate which function
+    corresponds with which function in the repository example in the heading of the
+    code snippet.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Before we start experimenting, let’s copy everything we have now to a new folder:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Create a new folder called `b-rust-futures-experiments`.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Copy everything from the `a-rust-futures` folder to the new folder.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Open `Cargo.toml` and change the `name` attribute to `b-rust-futures-experiments`.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The first experiment will be to exchange our very limited HTTP client with a
+    proper one.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The easiest way to do that is to simply pick another production-quality HTTP
+    client library that supports async Rust and use that instead.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: So, when trying to find a suitable replacement for our HTTP client, we check
+    the list of the most popular high-level HTTP client libraries and find `reqwest`
+    at the top. That might work for our purposes, so let’s try that first.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The first thing we do is add `reqwest` as a dependency in `Cargo.toml` by typing
+    the following:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, let’s change our `async_main` function so we use `reqwest` instead of
+    our own HTTP client:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/b-rust-futures-examples/src/main.rs (async_main2)
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: Besides using the `reqwest` API, I also changed the message we send. Most HTTP
+    clients don’t return the raw HTTP response to us and usually only provide a convenient
+    way to get the *body* of the response, which up until now was similar for both
+    our requests.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'That should be all we need to change, so let’s try to run our program by writing
+    `cargo run`:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Okay, so the error tells us that there is no reactor running and that it must
+    be called from the context of a Tokio 1.x runtime. Well, we know there is a reactor
+    running, just not the one `reqwest` expects, so let’s see how we can fix this.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'We obviously need to add Tokio to our program, and since Tokio is heavily feature-gated
+    (meaning that it has very few features enabled by default), we’ll make it easy
+    on ourselves and enable all of them:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: According to the documentation, we need to start a Tokio runtime and explicitly
+    enter it to enable the reactor. The `enter` function will return `EnterGuard`
+    to us that we can hold on to it as long as we need the reactor up and running.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Adding this to the top of our `async_main` function should work:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/b-rust-futures-examples/src/main.rs (async_main2)
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Calling `Runtime::new` creates a multithreaded Tokio runtime, but Tokio also
+    has a single-threaded runtime that you can create by using the runtime builder
+    like this: `Builder::new_current_thread().enable_all().build().unwrap()`. If you
+    do that, you end up with a peculiar problem: a deadlock. The reason for that is
+    interesting and one that you should know about.'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Tokio’s single-threaded runtime uses only the thread it’s called on for both
+    the executor and the reactor. This is very similar to what we did in the first
+    version of our runtime in [*Chapter 8*](B20892_08.xhtml#_idTextAnchor138). We
+    used the `Poll` instance to park our executor directly. When both our reactor
+    and executor execute on the same thread, they must have the same mechanism to
+    park themselves and wait for new events, which means there will be a tight coupling
+    between them.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: When handling an event, the reactor has to wake up first to call `Waker::wake`,
+    but the executor is the last one to park the thread. If the executor parked itself
+    by calling `thread::park` (like we do), the reactor is parked as well and will
+    never wake up since they’re running on the same thread. The only way for this
+    to work is that the executor parks on something shared with the reactor (like
+    we did with `Poll`). Since we’re not tightly integrated with Tokio, all we get
+    is a deadlock.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Now, if we try to run our program once more, we get the following output:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Okay, so now everything works as expected. The only difference is that we get
+    woken up a few extra times, but the program finishes and produces the expected
+    result.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Before we discuss what we just witnessed, let’s do one more experiment.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '**Isahc** is an HTTP client library that promises to be *executor agnostic*,
+    meaning that it doesn’t rely on any specific executor. Let’s put that to the test.'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'First, we add a dependency on `isahc` by typing the following:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we rewrite our `main` function so it looks like this:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch10/b-rust-futures-examples/src/main.rs (async_main3)
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, if we run our program by writing `cargo run`, we get the following output:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, we get the expected output without having to jump through any hoops.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '*Why does all this have to be* *so unintuitive?*'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The answer to that brings us to the topic of common challenges that we all face
+    when programming with async Rust, so let’s cover some of the most noticeable ones
+    and explain the reason they exist so we can figure out how to best deal with them.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Challenges with asynchronous Rust
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: So, while we’ve seen with our own eyes that the executor and reactor could be
+    loosely coupled, which in turn means that you could in theory mix and match reactors
+    and executors, the question is why do we encounter so much friction when trying
+    to do just that?
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Most programmers that have used async Rust have experienced problems caused
+    by incompatible async libraries, and we saw an example of the kind of error message
+    you would get previously.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: To understand this, we have to dive a little bit deeper into the existing async
+    runtimes in Rust, specifically those we typically use for desktop and server applications.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Explicit versus implicit reactor instantiation
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Info
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The type of future we’ll talk about going forward is leaf futures, the kind
+    that actually represents an I/O operation (for example, `HttpGetFuture`).
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: When you create a runtime in Rust, you also need to create non-blocking primitives
+    of the Rust standard library. Mutexes, channels, timers, TcpStreams, and so on
+    are all things that need an async equivalent.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Most of these can be implemented as different kinds of reactors, but the question
+    that then comes up is: how is that reactor started?'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In both our own runtime and in Tokio, the reactor is started as part of the
+    runtime initialization. We have a `runtime::init()` function that calls `reactor::start()`,
+    and Tokio has a `Runtime::new()` and `Runtime::enter()` function.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: If we try to create a leaf future (the only one we created ourselves is `HttpGetFuture`)
+    without the reactor started, both our runtime and Tokio will panic. The reactor
+    has to be instantiated *explicitly*.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Isahc, on the other hand, brings its own kind of reactor. Isahc is built on
+    `libcurl`, a highly portable C library for `libcurl` accepts a callback that is
+    called when an operation is ready. So, Isahc passes the waker it receives to this
+    callback and makes sure that `Waker::wake` is called when the callback is executed.
+    This is a bit oversimplified, but it’s essentially what happens.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In practice, that means that Isahc brings its own reactor since it comes with
+    the machinery to store wakers and call `wake` on them when an operation is ready.
+    The reactor is started *implicitly*.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Incidentally, this is also one of the major differences between `async_std`
+    and Tokio. Tokio requires *explicit* instantiation, and `async_std` relies on
+    *implicit* instantiation.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: I’m not going into so much detail on this just for fun; while this seems like
+    a minor difference, it has a rather big impact on how intuitive asynchronous programming
+    in Rust is.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: This problem mostly arises when you start programming using a different runtime
+    than Tokio and then have to use a library that internally relies on a Tokio reactor
+    being present.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Since you can’t have two Tokio instances running on the same thread, the library
+    can’t implicitly start a Tokio reactor. Instead, what often happens is that you
+    try to use that library and get an error like we did in the preceding example.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Now, you have to solve this by starting a Tokio reactor yourself, use some kind
+    of compatibility wrapper created by someone else, or seeing whether the runtime
+    you use has a built-in mechanism for running futures that rely on a Tokio reactor
+    being present.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: For most people who don’t know about reactors, executors, and different kinds
+    of leaf futures, this can be quite unintuitive and cause quite a bit of frustration.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The problem we describe here is quite common, and it’s not helped by the fact
+    that async libraries rarely explain this well or even try to be explicit about
+    what kind of runtime they use. Some libraries might only mention that they’re
+    built on top of Tokio somewhere in the `README` file, and some might simply state
+    that they’re built on top of Hyper, for example, assuming that you know that Hyper
+    is built on top of Tokio (at least by default).
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: But now, you know that you should check this to avoid any surprises, and if
+    you encounter this issue, you know exactly what the problem is.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Ergonomics versus efficiency and flexibility
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Rust is good at being ergonomic *and* efficient, and that almost makes it difficult
+    to remember that when Rust is faced with the choice between being efficient *or*
+    ergonomic, it will choose to be efficient. Many of the most popular crates in
+    the ecosystem echo these values, and that includes async runtimes.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Some tasks can be more efficient if they’re tightly integrated with the executor,
+    and therefore, if you use them in your library, you will be dependent on that
+    specific runtime.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Let’s take **timers** as an example, but task notifications where *Task A* notifies
+    *Task B* that it can continue is another example with some of the same trade-offs.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Tasks
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: We’ve used the terms tasks and futures without making the difference explicitly
+    clear, so let’s clear that up here. We first covered tasks in [*Chapter 1*](B20892_01.xhtml#_idTextAnchor014),
+    and they still retain the same general meaning, but when talking about runtimes
+    in Rust, they have a more specific definition. A task is a *top-level future*,
+    the one that we spawn onto our executor. The executor schedules between different
+    tasks. Tasks in a runtime in many ways represent the same abstraction that threads
+    do in an OS. Every task is a future in Rust, but every future is not a task by
+    this definition.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You can think of `thread::sleep` as a timer, and we often need something like
+    this in an asynchronous context, so our asynchronous runtime will therefore need
+    to have a `sleep` equivalent that tells the executor to park this task for a specified
+    duration.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: We could implement this as a reactor and have separate OS-thread sleep for a
+    specified duration and then wake the correct `Waker`. That would be simple and
+    executor agnostic since the executor is oblivious to what happens and only concern
+    itself with scheduling the task when `Waker::wake` is called. However, it’s also
+    not optimally efficient for all workloads (even if we used the same thread for
+    all timers).
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Another, and more common, way to solve this is to delegate this task to the
+    executor. In our runtime, this could be done by having the executor store an ordered
+    list of instants and a corresponding `Waker`, which is used to determine whether
+    any timers have expired before it calls `thread::park`. If none have expired,
+    we can calculate the duration until the next timer expires and use something such
+    as `thread::park_timeout` to make sure that we at least wake up to handle that
+    timer.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The algorithms used to store the timers can be heavily optimized and you avoid
+    the need for one extra thread just for timers with the additional overhead of
+    synchronization between these threads just to signal that a timer has expired.
+    In a multithreaded runtime, there might even be contention when multiple executors
+    frequently add timers to the same reactor.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Some timers are implemented reactor-style as separate libraries, and for many
+    tasks, that will suffice. The important point here is that by using the defaults,
+    you end up being tied to one specific runtime, and you have to make careful considerations
+    if you want to avoid your library being tightly coupled to a specific runtime.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Common traits that everyone agrees about
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The last topic that causes friction in async Rust is the lack of universally
+    agreed-upon traits and interfaces for typical async operations.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: I want to preface this segment by pointing out that this is one area that’s
+    improving day by day, and there is a nursery for the traits and abstractions for
+    asynchronous Rust in the `futures-rs` crate ([https://github.com/rust-lang/futures-rs](https://github.com/rust-lang/futures-rs)).
+    However, since it’s still early days for async Rust, it’s something worth mentioning
+    in a book like this.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Let’s take spawning as an example. When you write a high-level async library
+    in Rust, such as a web server, you’ll likely want to be able to spawn new tasks
+    (top-level futures). For example, each connection to the server will most likely
+    be a new task that you want to spawn onto the executor.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Now, spawning is specific to each executor, and Rust doesn’t have a trait that
+    defines how to spawn a task. There is a trait suggested for spawning in the `future-rs`
+    crate, but creating a spawn trait that is both zero-cost and flexible enough to
+    support all kinds of runtimes turns out to be very difficult.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'There are ways around this. The popular HTTP library Hyper ([https://hyper.rs/](https://hyper.rs/)),
+    for example, uses a trait to represent the executor and internally uses that to
+    spawn new tasks. This makes it possible for users to implement this trait for
+    a different executor and hand it back to Hyper. By implementing this trait for
+    a different executor, Hyper will use a different spawner than its default option
+    (which is the one in Tokio’s executor). Here is an example of how this is used
+    for `async_std` with Hyper: [https://github.com/async-rs/async-std-hyper](https://github.com/async-rs/async-std-hyper).'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'However, since there is no universal way of making this work, most libraries
+    that rely on executor-specific functionality do one of two things:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Choose a runtime and stick with it.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Implement two versions of the library supporting different popular runtimes
+    that users choose by enabling the correct features.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Async drop
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Async drop, or async destructors, is an aspect of async Rust that’s somewhat
+    unresolved at the time of writing this book. Rust uses a pattern called RAII,
+    which means that when a type is created, so are its resources, and when a type
+    is dropped, the resources are freed as well. The compiler automatically inserts
+    a call to drop on objects when they go out of scope.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: If we take our runtime as an example, when resources are dropped, they do so
+    in a blocking manner. This is normally not a big problem since a drop likely won’t
+    block the executor for too long, but it isn’t always so.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: If we have a drop implementation that takes a long time to finish (for example,
+    if the drop needs to manage I/O, or makes a blocking call to the OS kernel, which
+    is perfectly legal and sometimes even unavoidable in Rust), it can potentially
+    block the executor. So, an async drop would somehow be able to yield to the scheduler
+    in such cases, and this is not possible at the moment.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Now, this isn’t a rough edge of async Rust you’re likely to encounter as a user
+    of async libraries, but it’s worth knowing about since right now, the only way
+    to make sure this doesn’t cause issues is to be careful what you put in the drop
+    implementation for types that are used in an async context.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: So, while this is not an extensive list of everything that causes friction in
+    async Rust, it’s some of the points I find most noticeable and worth knowing about.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Before we round off this chapter, let’s spend a little time talking about what
+    we should expect in the future when it comes to asynchronous programming in Rust.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The future of asynchronous Rust
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Some of the things that make async Rust different from other languages are unavoidable.
+    Asynchronous Rust is very efficient, has low latency, and is backed by a very
+    strong type system due to how the language is designed and its core values.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: However, much of the perceived complexity today has more to do with the ecosystem
+    and the kind of issues that result from a lot of programmers having to agree on
+    the best way to solve different problems without any formal structure. The ecosystem
+    gets fragmented for a while, and together with the fact that asynchronous programming
+    is a topic that’s difficult for a lot of programmers, it ends up adding to the
+    cognitive load associated with asynchronous Rust.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: All the issues and pain points I’ve mentioned in this chapter are constantly
+    getting better. Some points that would have been on this list a few years ago
+    are not even worth mentioning today.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: More and more common traits and abstractions will end up in the standard library,
+    making async Rust more ergonomic since everything that uses them will “just work.”
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: As different experiments and designs gain more traction than others, they become
+    the de facto standard, and even though you will still have a lot of choices when
+    programming asynchronous Rust, there will be certain paths to choose that cause
+    a minimal amount of friction for those that want something that “just works.”
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: With enough knowledge about asynchronous Rust and asynchronous programming in
+    general, the issues I’ve mentioned here are, after all, relatively minor, and
+    since you know more about asynchronous Rust than most programmers, I have a hard
+    time imagining that any of these issues will cause you a lot of trouble.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: That doesn’t mean it’s not something worth knowing about since chances are your
+    fellow programmers will struggle with some of these issues at some point.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: So, in this chapter, we did two things. First, we made some rather minor changes
+    to our runtime so it works as an actual runtime for Rust futures. We tested the
+    runtime using two external HTTP client libraries to learn a thing or two about
+    reactors, runtimes, and async libraries in Rust.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The next thing we did was to discuss some of the things that make asynchronous
+    Rust difficult for many programmers coming from other languages. In the end, we
+    also talked about what to expect going forward.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Depending on how you’ve followed along and how much you’ve experimented with
+    the examples we created along the way, it’s up to you what project to take on
+    yourself if you want to learn more.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: There is an important aspect of learning that only happens when you experiment
+    on your own. Pick everything apart, see what breaks, and how to fix it. Improve
+    the simple runtime we created to learn new stuff.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'There are enough interesting projects to pick from, but here are some suggestions:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Change out the parker implementation where we used `thread::park` with a proper
+    parker. You can choose one from a library or create a parker yourself (I added
+    a small bonus at the end of the `ch1``0` folder called `parker-bonus` where you
+    get a simple parker implementation).
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Implement a simple `delayserver` using the runtime you’ve created yourself.
+    To do this, you have to be able to write some raw HTTP responses and create a
+    simple server. If you went through the free introductory book called *The Rust
+    Programming Language*, you created a simple server in one of the last chapters
+    ([https://doc.rust-lang.org/book/ch20-02-multithreaded.html](https://doc.rust-lang.org/book/ch20-02-multithreaded.html)),
+    which gives you the basics you need. You also need to create a timer as we discussed
+    above or use an existing crate for async timers.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can create a “proper” multithreaded runtime and explore the possibilities
+    that come with having a global task queue, or as an alternative, implement a work-stealing
+    scheduler that can steal tasks from other executors’ local queues when they’re
+    done with their own.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only your imagination sets the limits on what you can do. The important thing
+    to note is that there is a certain joy in doing something just because you can
+    and just for fun, and I hope that you get some of the same enjoyment from this
+    as I do.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: I’ll end this chapter with a few words on how to make your life as an asynchronous
+    programmer as easy as possible.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The first thing is to realize that an async runtime is not just another library
+    that you use. It’s extremely invasive and impacts almost everything in your program.
+    It’s a layer that rewrites, schedules tasks, and reorders the program flow from
+    what you’re used to.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: My clear recommendation if you’re not specifically into learning about runtimes,
+    or have very specific needs, is to pick one runtime and stick to it for a while.
+    Learn everything about it – not necessarily *everything* from the start, but as
+    you need more and more functionality from it, you will learn everything eventually.
+    This is almost like getting comfortable with everything in Rust’s standard library.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: What runtime you start with depends a bit on what crates you’re using the most.
+    Smol and `async-std` share a lot of implementation details and will behave similarly.
+    Their big selling point is that their API strives to stay as close as possible
+    to the standard library. Combined with the fact that the reactors are instantiated
+    implicitly, this can result in a slightly more intuitive experience and a more
+    gentle learning curve. Both are production-quality runtimes and see a lot of use.
+    Smol was originally created with the goal of having a code base that’s easy for
+    programmers to understand and learn from, which I think is true today as well.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: With that said, the most popular alternative for users looking for a general-purpose
+    runtime at the time of writing is **Tokio** ([https://tokio.rs/](https://tokio.rs/)).
+    Tokio is one of the oldest async runtimes in Rust. It is actively developed and
+    has a welcoming and active community. The documentation is excellent. Being one
+    of the most popular runtimes also means there is a good chance that you’ll find
+    a library that does exactly what you need with support for Tokio out of the box.
+    Personally, I tend to reach for Tokio for the reasons mentioned, but you can’t
+    really go wrong with either of these runtimes unless you have very specific requirements.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Finally, let’s not forget to mention the `futures-rs` crate ([https://github.com/rust-lang/futures-rs](https://github.com/rust-lang/futures-rs)).
+    I mentioned this crate earlier, but it’s really useful to know about as it contains
+    several traits, abstractions, and executors ([https://docs.rs/futures/latest/futures/executor/index.html](https://docs.rs/futures/latest/futures/executor/index.html))
+    for async Rust. It serves the purpose of an async toolbox that comes in handy
+    in many situations.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Epilogue
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: So, you have reached the end. First of all, congratulations! You’ve come to
+    the end of quite a journey!
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: We started by talking about concurrency and parallelism in [*Chapter 1*](B20892_01.xhtml#_idTextAnchor014).
+    We even covered a bit about the history, CPUs and OSs, hardware, and interrupts.
+    In [*Chapter 2*](B20892_02.xhtml#_idTextAnchor043), we discussed how programming
+    languages modeled asynchronous program flow. We introduced coroutines and how
+    stackful and stackless coroutines differ. We discussed OS threads, fibers/green
+    threads, and callbacks and their pros and cons.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Then, in [*Chapter 3*](B20892_03.xhtml#_idTextAnchor063), we took a look at
+    OS-backed event queues such as `epoll`, `kqueue`, and IOCP. We even took quite
+    a deep dive into syscalls and cross-platform abstractions.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In [*Chapter 4*](B20892_04.xhtml#_idTextAnchor081), we hit some quite difficult
+    terrain when implementing our own mio-like event queue using epoll. We even had
+    to learn about the difference between edge-triggered and level-triggered events.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: If [*Chapter 4*](B20892_04.xhtml#_idTextAnchor081) was somewhat rough terrain,
+    [*Chapter 5*](B20892_05.xhtml#_idTextAnchor092) was more like climbing Mount Everest.
+    No one expects you to remember everything covered there, but you read through
+    it and have a working example you can use to experiment with. We implemented our
+    own fibers/green threads, and while doing so, we learned a little bit about processor
+    architectures, ISAs, ABIs, and calling conventions. We even learned quite a bit
+    about inline assembly in Rust. If you ever felt insecure about the stack versus
+    heap difference, you surely understand it now that you’ve created stacks that
+    we made our CPU jump to ourselves.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In *Chapter 6*, we got a high-level introduction to asynchronous Rust, before
+    we took a deep dive from [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122) and onward,
+    starting with creating our own coroutines and our own `coroutine/wait` syntax.
+    In [*Chapter 8*](B20892_08.xhtml#_idTextAnchor138), we created the first versions
+    of our own runtime while discussing basic runtime design. We also deep-dived into
+    reactors, executors, and wakers.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In [*Chapter 9*](B20892_09.xhtml#_idTextAnchor156), we improved our runtime
+    and discovered the dangers of self-referential structs in Rust. We then took a
+    thorough look at pinning in Rust and how that helped us solve the problems we
+    got into.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Finally, in [*Chapter 10*](B20892_10.xhtml#_idTextAnchor178), we saw that by
+    making some rather minor changes, our runtime became a fully functioning runtime
+    for Rust futures. We rounded everything off by discussing some well-known challenges
+    with asynchronous Rust and some expectations for the future.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The Rust community is very inclusive and welcoming, and we’d happily welcome
+    you to engage and contribute if you find this topic interesting and want to learn
+    more. One of the ways asynchronous Rust gets better is through contributions by
+    people with all levels of experience. If you want to get involved, then the async
+    work group ([https://rust-lang.github.io/wg-async/welcome.html](https://rust-lang.github.io/wg-async/welcome.html))
+    is a good place to start. There is also a very active community centered around
+    the Tokio project ([https://github.com/tokio-rs/tokio/blob/master/CONTRIBUTING.md](https://github.com/tokio-rs/tokio/blob/master/CONTRIBUTING.md)),
+    and many, many more depending on what specific area you want to dive deeper into.
+    Don’t be afraid to join the different channels and ask questions.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Now that we’re at the end I want to thank you for reading all the way to the
+    end. I wanted this book to feel like a journey we took together, not like a lecture.
+    I wanted you to be the focus, not me.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: I hope I succeeded with that, and I genuinely hope that you learned something
+    that you find useful and can take with you going forward. If you did, then I’m
+    sincerely happy that my work was of value to you. I wish you the best of luck
+    with your asynchronous programming going forward.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Until the next time!
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Carl Fredrik
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE

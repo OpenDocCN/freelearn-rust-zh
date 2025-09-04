@@ -1,0 +1,1045 @@
+- en: Unsafe Rust and Foreign Function Interfaces
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Rust is a language that has two modes: safe mode (the default) and unsafe mode.
+    In safe mode, you get all sorts of safety features to protect you from serious
+    mistakes, but there are times when you''re required to shake off the safety harness
+    provided by the compiler and get that extra level of control. One use case is
+    interfacing with other languages, such as C, which can be very unsafe. In this
+    chapter, you will get to know what sort of extra work is required when Rust has
+    to interact with other languages and how unsafe mode is used to facilitate and
+    make this interaction explicit.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the safe and unsafe modes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Operations that are unsafe in Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Foreign function interface, talking to C, and vice versa
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interfacing with Python using PyO3
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interfacing with Node.js using Neon
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is safe and unsafe really?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: “You are allowed to do this, but you had better know what you are doing.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: '- *A Rustacean*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we talk about safety in programming languages, it is a property that spans
+    different levels. A language can be memory-safe, type-safe, or it can be concurrent-safe.
+    Memory safety means that a program doesn't write to a forbidden memory address
+    and it doesn't access invalid memory. Type safety means that a program doesn't
+    allow you to assign a number to a string variable and that this check happens
+    at compile time, while concurrent-safe means that the program does not lead to
+    race conditions when multiple threads are executing and modifying a shared state. If
+    a language provides all of these levels of safety by itself, then it is said to
+    be safe. To put it more generally, a program is deemed safe if, in all possible
+    executions of the program and for all possible inputs, it gives correct outputs,
+    does not lead to crashes, and does not clobber or corrupt its internal or external
+    state. With Rust in safe mode, this is indeed true!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An unsafe program is one that violates an invariant at runtime or triggers
+    an undefined behavior. These unsafe effects may be local to a function, or may
+    have propagated later as a global state in the program. Some of them are inflicted
+    by programmers themselves, such as logic errors, while some of them are due to
+    the side effects of the compiler implementation that''s used, and sometimes from
+    the language specification itself. **Invariants** are conditions that must always
+    be true during the execution of the program in all code paths. The simplest example
+    would be that a pointer pointing to an object on the heap should never be null
+    within a certain section of code. If that invariant breaks, code that is dependent
+    on that pointer might dereference it and undergo a crash. Languages such as C/C++
+    and languages based on them are unsafe because quite a few operations are categorized
+    as an undefined behavior in the compiler specification. An undefined behavior
+    is an effect of hitting a situation in a program for which the compiler specification
+    does not specify what happens at lower levels, and you are free to assume that
+    anything can happen. One example of undefined behavior is using an uninitialized
+    variable. Consider the following C code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of this program is not the same with all C compiler implementations
+    because using an uninitialized variable is an undefined operation. On some C compilers
+    with some optimizations enabled, you may even get the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Having your code take unpredictable code paths like this is something you don't
+    want to see happen in production. Another example of undefined behavior in C is
+    writing past the end of an array of size `n`. When the write happens to `n + 1`
+    offset in memory, the program may either crash or it may modify a random memory
+    location. In the best case scenario, the program would crash immediately and you
+    would get to know about this. In the worst case scenario, the program would continue
+    running but may later corrupt other parts of the code and give faulty results.
+    Undefined behaviors in C exist in the first place to allow compilers to optimize
+    code for performance and go with the assumption that a certain corner case never
+    happens and to not add error-checking code for these situations, just to avoid
+    the overhead associated with error handling. It would be great if undefined behavior
+    could be converted to compile time errors, but detecting some of these behaviors
+    at compile time sometimes becomes resource intensive, and so not doing so keeps
+    the compiler implementation simple.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, when Rust has to interact with these languages, it knows very little about
+    how function calls and how types are represented at lower levels in these languages
+    and because undefined behavior can occur at unexpected places, it sidesteps from
+    all of these gotchas and instead provides us with a special `unsafe {}` block
+    for interacting with things that come from other languages. In unsafe mode, you
+    get some extra abilities to do things, which would be considered undefined behavior
+    in C/C++. However, with great power comes great responsibility. A a developer
+    who uses `unsafe` in their code has to be careful of the operations that are performed
+    within the `unsafe` block. With Rust in unsafe mode, the onus is on you. Rust
+    places trust in the programmer to keep operations safe. Fortunately, this unsafe
+    feature is provided in a very controlled manner and is easily identifiable by
+    reading the code, because unsafe code is always annotated with the `unsafe` keyword
+    or `unsafe {}` blocks. This is unlike C, where most things are likely to be unsafe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, it''s important to mention that, while Rust offers to protect you from
+    major unsafe situations in programs, there are also cases where Rust can''t save
+    you, even if the program you wrote is safe. These are the cases where you have
+    logical errors such as the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A program uses floating-point numbers to represent currency. However, floating-point
+    numbers are not precise and lead to rounding errors. This error is somewhat predictable
+    (since, given the same input, it always manifests itself in the same way) and
+    easy to fix. This is a logic and implementation error, and Rust offers no protection
+    for such errors.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A program to control a spacecraft uses primitive numbers as parameters in functions
+    to calculate distance metrics. However, a library may be providing an API where
+    the distances are interpreted in the metric system, and the user might provide
+    numbers in the imperial system, leading to invalid measurements. A similar error
+    occurred in 1999, in NASA's Mars Climate Orbiter spacecraft, and caused nearly
+    $125 million worth of loss. Rust won't fully protect you from such mistakes, although,
+    with the help of type system abstractions such as enums and the newtype pattern,
+    we can isolate different units from each other and restrict the API's surface
+    to only valid operations, making this error much less likely.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A program writes to shared data from multiple threads without the appropriate
+    locking mechanisms. The error manifests itself unpredictably, and finding it can
+    be very difficult since it is non-deterministic. In this case, Rust fully protects
+    you against data races with its ownership and borrowing rules, which are applicable
+    to concurrent code too, but it cannot detect deadlocks for you.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A program accesses an object through a pointer, which, in some situations, is
+    a null pointer, causing the program to crash. In safe mode, Rust fully protects
+    you against null pointers. However, when using unsafe mode, the programmer has
+    to make sure that operations with a pointer from other languages are safe.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The unsafe feature of Rust is also needed for situations where the programmer
+    knows better than the compiler and has to implement some of the tricky parts in
+    their code, where the compile-time ownership rules become too restrictive and
+    get in the way. For instance, let''s say there''s a case where you need to convert
+    a sequence of bytes into a `String` value and you know that your `Vec<u8>` is
+    a valid UTF-8 sequence. In this case, you can directly use the unsafe `String::from_utf_unchecked`
+    method instead of the usual safe `String::from_utf8` method to bypass the extra
+    overhead in checking for valid UTF-8 in the `from_utf8` method and can gain a
+    bit of speedup. Also, when doing low-level embedded system development or any
+    program that interfaces with the operating system kernel, you need to switch to
+    unsafe mode. However, not everything requires unsafe mode and there are a few
+    select operations that the Rust compiler sees as unsafe. They are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Updating a mutable static variable
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Dereferencing raw pointers, such as `*const T` and `*mut T`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Calling an unsafe function
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reading values from a union type
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Invoking a declared function in `extern` blocks – items from other languages
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Some of the memory-safety guarantees are relaxed in the aforementioned situations,
+    but the borrow checker is still active in these operations and all the scoping
+    and ownership rules still apply. The Rust reference about unsafety at [https://doc.rust-lang.org/stable/reference/unsafety.html](https://doc.rust-lang.org/stable/reference/unsafety.html)
+    distinguishes between what is considered undefined and what is not unsafe. To
+    easily distinguish this when you are performing the aforementioned operations,
+    Rust requires you to use the `unsafe` keyword. It allows only a handful of places
+    to be marked as `unsafe`, such as the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Functions and methods
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Unsafe block expressions, such as `unsafe {}`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Traits
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Implementation blocks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Unsafe functions and blocks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s look at unsafe functions and blocks, starting with unsafe functions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We defined a `get_value` function that takes in a pointer to an `i32` value,
+    which simply returns the pointed value back by dereferencing it. In `main`, we
+    are passing `foo` to `get_value`, which is a reference to an `i32` value that `1024`
+    cast to `*const i32`. If we try running this, the compiler says the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ac78220b-7cce-4109-bf7e-c1e34a8d421d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'As we already said, we need an `unsafe` function or block to dereference a
+    raw pointer. Let''s go with the first suggestion and add `unsafe` before our function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, let''s try running this again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/28bf6917-59c4-4b83-82b7-b50ddfac96b2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Interesting! We got rid of the error on our `get_value` function, but now another
+    error is shown at the `call` site in `main`. Calling an `unsafe` function requires
+    us to wrap it within an `unsafe` block. That''s because unsafe functions, apart
+    from Rust''s `unsafe` functions, can also be functions in other languages that
+    are declared in `extern` blocks. These might or might not return values that the
+    caller expects or a totally malformed value. As such, we need the `unsafe` block
+    when calling `unsafe` functions. We modify our code to invoke `get_value` within
+    an `unsafe` block like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`unsafe` blocks are expressions, so we remove the semi-colon after `get_value`,
+    and instead move it outside the `unsafe` block so that our return value from `get_value`
+    gets assigned to `bar`. With that change, our program compiles.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Unsafe functions behave like regular functions, except that the aforementioned
+    operations are allowed in it and that declaring your function as `unsafe` makes
+    it non-callable from regular, safe functions. However, we could have written `get_value`
+    the other way around:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This looks similar to before but contains a significant change. We moved the
+    `unsafe` keyword from the function signature to an inner `unsafe` block. The function
+    now does the same unsafe operation but wraps it inside a function that appears
+    just like a regular `safe` function. Now, this function can be called without
+    requiring unsafe blocks on the caller side. This technique is often used to provide
+    interfaces from libraries that look safe, even though they are doing unsafe operations
+    internally. Obviously, if you do this, you should take special care that the `unsafe`
+    blocks are correct. There are quite a lot of APIs in the standard library that
+    use this paradigm of tucking away operations within `unsafe` blocks while providing
+    a safe API on the surface. For example, the `insert` method on the `String` type,
+    which inserts a character, `ch`, at a given index, `idx`, is defined like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, it does an assertion if the `idx` passed to it lies at the start or the
+    end of a UTF-8 encoded code-point sequence. Then, it encodes the `ch` passed to
+    it as a sequence of bytes. Finally, it calls an `unsafe` method, `insert_bytes`,
+    in an `unsafe` block, passing in `idx` and `bits`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are many such APIs in the standard library that have similar implementations
+    where they rely on an unsafe block internally, either to gain speedups or when
+    they need mutable access to individual parts of a value because ownership gets
+    in the way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, if we call our `get_value` function from our previous snippet, with a
+    number as an argument, and cast it to a pointer, you can already guess what''s
+    going to happen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Running this gives us the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/869b1b0e-5414-4a28-960a-1cd525392a5b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This is an obvious segmentation fault message! The takeaway from this observation
+    is that the `unsafe` function, even though appearing safe on the outside, can
+    be ignorantly or intentionally misused if the user supplies a malformed value.
+    Therefore, if there is the need to expose an unsafe API from your library where
+    the safety of your operations is dependent on user-supplied arguments, the author
+    should document this clearly to ensure they are not passing an invalid value and
+    mark the function with `unsafe` rather than using `unsafe` blocks internally.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Safe wrapper functions behind `unsafe` blocks should not really be exposed to
+    consumers and instead are to be used mostly to hide implementation details in
+    libraries, as is the case with many standard library API implementations. If you're
+    not certain that you have managed to create a safe wrapper around the unsafe part,
+    you should mark the function as `unsafe`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unsafe traits and implementations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Apart from functions, traits can also be marked as unsafe. It isn't obvious
+    why we would need unsafe traits. One of the primary motivations for unsafe traits
+    existing in the first place is to mark types that cannot be sent to or shared
+    between threads. This is achieved via the unsafe `Send` and `Sync` marker traits.
+    These types are also auto traits, which means that they are implemented for most
+    types in the standard library whenever appropriate. However, they are also explicitly
+    opted out for certain types, for instance, the `Rc<T>`. An `Rc<T>` does not have
+    an atomic reference counting mechanism and if it were to implement `Sync` and
+    later be used in multiple threads, then we might end up with the wrong reference
+    counts on the type, which could lead to early frees and dangling pointers. Making
+    `Send` and `Sync` unsafe puts the onus on the developer to only implement it,
+    that is, if they have proper synchronization in place for their custom types. `Send`
+    and `Sync` are marked as `unsafe` because it's incorrect to implement them for
+    types that have no clear semantics on how types behave when mutated from multiple
+    threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another motivation for marking traits as unsafe is to encapsulate operations
+    that are likely to have an undefined behavior by a family of types. As we've already
+    mentioned, traits, by their nature, are used to specify a contract that implementing
+    types must hold. Now, let's say your types contain entities from FFI boundaries,
+    that is, a field that contains a reference to a C string, and you have many of
+    these types. In this case, we can abstract away the behavior of such types by
+    using an unsafe trait and then we can have a generic interface that takes types
+    that implement this unsafe trait. One such example from Rust's standard library
+    is the `Searcher` trait, which is an associated type of the `Pattern` trait,which
+    is defined at [https://doc.rust-lang.org/std/str/pattern/trait.Pattern.html](https://doc.rust-lang.org/std/str/pattern/trait.Pattern.html).
+    The `Searcher` trait is an unsafe trait that abstracts the notion of searching
+    an item from a given byte sequence. One of the implementers of `Searcher` is the
+    `CharSearcher` struct. Marking it as `unsafe` removes the burden on the `Pattern`
+    trait to check for valid slices on valid UTF-8 byte boundaries and can give you
+    some performance gains in string matching.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With the motivation for unsafe traits covered, let''s look at how we can define
+    and use unsafe traits. Marking a trait as unsafe doesn''t make your methods unsafe.
+    We can have unsafe traits that have safe methods. The opposite is also true; we
+    can have a safe trait that can have unsafe methods within it, but that doesn''t
+    signify that the trait is unsafe. Unsafe traits are denoted in the same way as
+    functions by simply prepending them with the `unsafe` keyword:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we have all kinds of variations with unsafe traits and
+    methods. First, we have two trait declarations: `UnsafeTrait`, which is an unsafe
+    trait and `SafeTrait`, which is safe. We also have a unit struct called `MyType`,
+    which implements them. As you can see, unsafe traits require the `unsafe` prefix
+    to implement `MyType`, letting the implementer know that they have to uphold the
+    contracts that are expected by the trait. In the second implementation of the
+    `SafeTrait` on `MyType`, we have an unsafe method that we need to call within
+    the `unsafe` block, as we can see in the `main` function.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the following sections, we'll be exploring a handful of languages and how
+    Rust interoperates with them. All of the related APIs and abstractions that Rust
+    provides to communicate safely back and forth between languages is colloquially
+    termed the **Foreign Function Interface** (**FFI**). As part of the standard library,
+    Rust provides us with built-in FFI abstractions. Wrapper libraries on top of these
+    provide seamless cross-language interaction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Calling C code from Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'First, we''ll take a look at an example of calling C code from Rust. We''ll
+    create a new binary crate from which we''ll call our C function that''s defined
+    in a separate C file. Let''s create a new project by running `cargo new c_from_rust`.
+    Within the directory, we''ll also add our C source, that is, the `mystrlen.c`
+    file, which has the following code inside it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It contains a simple function, `mystrlen`, which returns the length of a string
+    passed to it. We want to invoke `mystrlen` from Rust. To do that, we''ll need
+    to compile this C source into a static library. There''s one more example in the
+    upcoming section, where we cover linking dynamically to a shared library. We''ll
+    use the `cc` crate as a build dependency in our `Cargo.toml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `cc` crate does all the heavy lifting of compiling and linking our C source
+    file with our binary with correct linker flags. To specify our build commands,
+    we need to put a `build.rs` file at the crate root, which has the following contents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a new `Build` instance and passed the C source filename with the
+    static flag set to `true` before giving a name to our static object file to the `compile`
+    method. Cargo runs the contents of any `build.rs` file before any project files
+    get compiled. Upon running code from `build.rs`, the `cc` crate automatically
+    appends the conventional `lib` prefix in C libraries, so our compiled static library
+    gets generated at `target/debug/build/c_from_rust-5c739ceca32833c2/out/libmystrlen.a`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we also need to tell Rust about the existence of our `mystrlen` function.
+    We do this by using `extern` blocks, where we can specify items that come from
+    other languages. Our `main.rs` file is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have a couple of imports from the `std::os::raw` module that contain types
+    that are compatible with primitive C types and have names close to their C counterparts.
+    For numeric types, a single letter before the type says whether the type is unsigned.
+    For instance, the unsigned integer is defined as `c_uint`. In our `extern` declaration
+    of `mystrlen`, we take a `*const c_char` as input, which is equivalent to `char
+    *` in C, and return a `c_uint` as output, which maps to `unsigned int` in C. We
+    also import the `CString` type from the `std::ffi` module, as we need to pass
+    a C-compatible string to our `mystrlen` function. The `std::ffi` module contains
+    common utilities and types that make it easy to perform cross language interactions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you may have noticed, in the `extern` block, we have a string, `"C"`, following
+    it. This `"C"` specifies that we want the compiler's code generator to confirm
+    to the C ABI (`cdecl`) so that the function-calling convention follows exactly
+    as a function call that's done from C. An **Application Binary Interface** *(***ABI**)
+    is basically a set of rules and conventions that dictate how types and functions
+    are represented and manipulated at the lower levels. The function-calling convention
+    is one aspect of an ABI specification. It's quite analogous to what an API means
+    for a library consumer. In the context of functions, an API specifies what functions
+    you can call from the library, while the ABI specifies the lower-level mechanism
+    by which a function is invoked. A calling convention defines things such as whether
+    function parameters are stored in registers or on the stack, and whether the caller
+    clears the register/stack state or the caller when the function returns, and other
+    details. We could have also ignored specifying this, as `"C"` (`cdecl`) is the
+    default ABI in Rust for items that are declared in an `extern` block. The `cdecl`
+    is a calling convention that's used by most C compilers for function calls. There
+    are also other ABIs that Rust supports such as `fastcall`, `cdecl`, `win64`, and
+    others, and these need to be put after the `extern` block based on what platform
+    you are targeting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our `main` function, we use a special version of a `CString` string from
+    the `std::ffi` module because strings in C are null terminated, while Rust one''s
+    aren''t. `CString` does all the checks for us to give us a C-compatible version
+    of strings where we don''t have a null `0` byte character in the middle of the
+    string and ensures that the ending byte is a `0` byte. The `ffi` module contains
+    two major string types:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`std::ffi::CStr` represents a borrowed C string that''s analogous to `&str`.
+    It can be used to reference a string that has been created in C.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`std::ffi::CString` represents an owned string that is compatible with foreign
+    C functions. It is often used to pass strings from Rust code to foreign C functions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Since we want to pass a string from the Rust side to the function we just defined,
+    we used the `CString` type here. Following that, we call `mystrlen` in an unsafe
+    block, passing in the `c_string` as a pointer. We then print the string length
+    to standard output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, all we need to do is run `cargo run`. We get the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/69929d3f-ca44-46af-9aeb-28a3582ffaf4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The `cc` crate automatically figures out the correct C compiler to call. In
+    our case, on Ubuntu, it automatically invokes `gcc` to link our C library. Now,
+    there are a couple of improvements to be made here. First, it is awkward that
+    we have to be in an `unsafe` block to call the function as we know it''s not unsafe.
+    We know our C implementation is sound, at least for this small function. Second,
+    we will panic if `CString` creation fails. To solve this, we can create a safe
+    wrapper function. In a simplistic form, this just means creating a function that
+    calls the external function inside an unsafe block:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our `safe_mystrlen` function returns an `Option` now, where it returns `None`
+    if `CString` creation fails and, following that, calls `mystrlen` wrapped in an
+    `unsafe` block, which is returned as `Some`. Calling `safe_mystrlen` feels exactly
+    like calling any other Rust function. If possible, it's recommended to make safe
+    wrappers around external functions, taking care that all exceptional cases happening
+    inside the `unsafe` block are handled properly so that library consumers don't
+    use unsafe in their code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Calling Rust code from C
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we stated in the previous section, when Rust libraries expose their functions
+    to other languages using the `extern` block, they expose the C ABI (`cdecl`) by
+    default. As such, it becomes a very seamless experience of calling Rust code from
+    C. To C, they appear just like regular C functions. We'll take a look at an example
+    of calling Rust code from a C program. Let's create a cargo project for this by
+    running `cargo new rust_from_c --lib`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our `Cargo.toml` file, we have the following items:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Under the `[lib]` section, we specified the crate as `cdylib`, which indicates
+    that we want a dynamically loadable library to be generated, which is more commonly
+    known as a shared object file (`.so`) in Linux. We specified an explicit name
+    for our `stringutils` library, and this will be used to create the shared object
+    file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let''s move on to our implementation in `lib.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have a single function, `compare_str`. We prepend it with the `extern` keyword
+    to expose it to C, followed by specifying the `"C"` ABI for the compiler to generate
+    code appropriately. We also need to add a `#[no_mangle]` attribute, as Rust adds
+    random characters to function names by default to prevent the clashing of names
+    of types and functions across modules and crates. This is called name mangling.
+    Without this attribute, we won''t be able to call our function by the name `compare_str`.
+    Our function lexicographically compares two C strings passed to it and returns
+    an enum, `Order`, accordingly, which has three variants: `Gt` (Greater than),
+    `Lt` (Less than), and `Eq` (Equal). As you may have noticed, the enum definition
+    has a `#[repr(C)]` attribute. Because this enum is being returned to the C side,
+    we want it to be represented in the same way as a C enum. The `repr` attribute
+    allows us to do that. On the C side, we will get a `uint_32` type as the return
+    type of this function as enums variants are represented as 4 bytes in Rust, as
+    well as in C. Do note that at the time of writing this book, Rust follows the
+    same data layout for enums that have associated data as it does for C enums. However,
+    this may change in the future.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let''s create a file called `main.c` that uses our exposed function from
+    Rust:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We declared the prototype of our `compare_str` function, just like any normal
+    prototype declaration. Following that, we called `compare_str` in `main`, passing
+    in our two string values. Do note that if we were passing strings that were allocated
+    on the heap, we would need to also free it from the C side. In this case, we are
+    passing a C string literal that goes to the data segment of the process, and so
+    we don''t need to do any free calls. Now, we''ll create a simple `Makefile` that
+    builds our `stringutils` crate and also compiles and links with our `main.c` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now run `make` to build our crate and then run `main` by first setting
+    our `LD_LIBRARY_PATH` to where our generated `libstringutils.so` resides. Following
+    that, we can run `main` like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: This gives us an output of `1`, which is the value of the `Lt` variant from
+    the `Order` enum on the Rust side. The takeaway from this example is that when
+    you are invoking a Rust function from C/C++ or any other language that has a supported
+    ABI in Rust, we cannot pass Rust-specific data types to the FFI boundary. For
+    instance, passing `Option` or `Result` types, that ha've associated data with
+    them is meaningless, as C cannot interpret and extract values out of them, as
+    it has no way of knowing about that. In such cases, we need to pass primitive
+    values as return types from functions to the C side or convert our Rust type to
+    some format that C can understand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, consider our previous case of calling C code from Rust. In the manual way,
+    we needed to write `extern` declarations for all of our APIs that have been declared
+    in header files. It would be great if this could be automated for us. Let's see
+    how we can do that next!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using external C/C++ libraries from Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Given the amount of software written over the last three decades, a lot of system
+    software is written in C/C++. It's more likely that you may want to link to an
+    existing library written in C/C++ for use in Rust, as rewriting everything in
+    Rust (though desirable) is not practical for complex projects. But at the same
+    time, writing manual FFI bindings for these libraries is also painful and error-prone.
+    Fortunately, there are tools for us to automatically generate bindings to C/C++
+    libraries. For this demo, the required code on the Rust side is much simpler than
+    the previous example of calling C/C++ code from Rust, as, this time, we'll use
+    a neat crate called **bindgen** that automatically generates FFI bindings from
+    C/C++ libraries. Bindgen is the recommended tool if someone wants to integrate
+    a complex library with lots of APIs. Writing these bindings manually can be very
+    error-prone and bindgen helps us by automating this process. We'll use this crate
+    to generate bindings for a simple C library, `levenshtein.c`, which can be found
+    at [https://github.com/wooorm/levenshtein.c](https://github.com/wooorm/levenshtein.c),
+    which is used to find the minimum edit distance between two strings. The edit
+    distance is used in a wide variety of applications, such as in fuzzy string matching,
+    natural language processing, and in spell checkers. Anyway, let's create our cargo
+    project by running `cargo new edit_distance --lib`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we use bindgen, we need to install a few dependencies as bindgen needs
+    them:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, in our `Cargo.toml` file, we''ll add a `build` dependency on `bindgen`
+    and the `cc` crate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `bindgen` crate will be used to generate bindings from the `levenshtein.h`
+    header file, while the `cc` crate will be used to compile our library as a shared
+    object so that we can use it from Rust. Our library-related files reside in the
+    `lib` folder at the crate root.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we''ll create our `build.rs` file, which will be run before any of our
+    source files are compiled. It will do two things: first, it will compile `levenshtein.c`
+    to a shared object (`.so`) file, and second, it will generate bindings to the
+    APIs defined in the `levenshtein.h` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we tell Cargo that our library search path is our current
+    directory and that the library we are linking against is called `levenshtein`.
+    We also tell Cargo to rerun code in `build.rs` if any of our files in our current
+    directory change:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Following that, we create a compilation pipeline for our library by creating
+    a new `Build` instance and provide the appropriate C source file for the `file`
+    method. We also set the output directory to `out_dir` and our library name to
+    the `compile` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we create a bindgen `Builder` instance, pass our header file location,
+    call `generate()`, and then write it to a `bindings.rs` file before calling `write_to_file`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, when we run `cargo build`, a `bindings.rs` file will be generated under
+    `src/`. As we mentioned previously, it''s good practice for all libraries that
+    are exposing FFI bindings to provide a safe wrapper. So, under `src/lib.rs`, we''ll
+    create a function named `levenshtein_safe` that wraps the unsafe function from
+    `bindings.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We import the unsafe function from `bindings.rs`, wrap it within our `levenshtein_safe`
+    function, and call our `levenshtein` function in an `unsafe` block, passing C-compatible
+    strings. It''s time to test our `levenshtein_safe` function. We''ll create a `basic.rs` file
+    in an `examples/` directory in our crate root, which has the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can run this with `cargo run --example basic` and we should see no assertion
+    failures as the value should be `1` from the `levenshtein_safe` call. Now, it's
+    a recommended naming convention for these kind of crates to have the suffix `sys` appended
+    to them, which only houses FFI bindings. Most crates on `crates.io` follow this
+    convention. This was a whirlwind tour on how to use bindgen to automate cross-language
+    interaction. If you want similar automation for reverse FFI bindings, such as
+    Rust in C, there is also an equivalent project called `cbindgen` at [https://github.com/eqrion/cbindgen](https://github.com/eqrion/cbindgen),
+    which can generate C header files for Rust crates. For instance, `Webrender` uses
+    this crate to expose its APIs to other languages. Given the legacy of C, it's
+    the lingua franca of programming languages and Rust has first-class support for
+    it. A lot of other languages also call into C. This implies that your Rust code
+    can be called from all other languages that target C. Let's make other languages
+    talk to Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating native Python extensions with PyO3
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll see how Python can also call Rust code. The Python community
+    has always been a heavy user of native modules such as numpy, lxml, opencv, and
+    so on, and most of them have their underlying implementations in either C or C++.
+    Having Rust as an alternative to native C/C++ modules is a major advantage both
+    in terms of speed and safety for a lot of Python projects out there. For the demo,
+    we'll build a native Python module that's implemented in Rust. We'll be using
+    `pyo3`, a popular project that provides Rust bindings for the Python interpreter
+    and hides all the low-level details, thus providing a very intuitive API. The
+    project is on GitHub at [https://github.com/PyO3/pyo3](https://github.com/PyO3/pyo3).
+    It supports both Python 2 and Python 3 versions. `pyo3` is a fast-moving target
+    and only works on nightly at the time of writing this book. So, we'll use a specific
+    version of `pyo3`, that is, `0.4.1`, along with a specific nightly version of
+    the Rust compiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create a new cargo project by running `cargo new word_suffix --lib`. This
+    library crate will expose a Python module called `word_suffix`, which contains
+    a single function, `find_words`, which accepts a comma-separated string of words
+    and returns all the words in that text that end with a given suffix. Once we build
+    our module, we'll be able to import this module like a normal Python module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we go ahead with the implementation, we'll need to switch to a specific
+    nightly Rust toolchain for this project, that is, `rustc 1.30.0-nightly (33b923fd4
+    2018-08-18)`. We can override the toolchain to use this specific nightly version
+    for this project by running `rustup override set nightly-2018-08-19` in our current
+    directory (`word_suffix/`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To start things off, we''ll specify our dependencies in our `Cargo.toml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added our only dependency here on `pyo3`. As you can see, in the `[lib]`
+    section, we specified the `crate-type` as `cdylib`, which means that the generated
+    library is similar to a C shared library (`.so` in linux), which Python already
+    knows how to call.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let''s start the implementation in our `lib.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we imported our `pyo3` crate, along with all the Python-related types
+    from the `prelude` module. Then, we defined a `word_suffix` function, annotating
+    it with the `#[pymodinit]` attribute. This becomes our Python module, which  we
+    can import in any `.py` file. This function receives two arguments. The first
+    argument is `Python`, a marker type that is required for most Python related operations
+    in `pyo3`. This is used to indicate that a particular operation modifies the Python
+    interpreter state. The second argument is a `PyModule` instance, which represents
+    a Python module object. Through this instance, we then add our `find_words` function,
+    wrapped inside the `wrap_function` macro by calling `add_function`. The `wrap_function`
+    macro does some manipulation to the provided Rust function to convert it into
+    a Python-compatible function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, is our `find_words` function, which is the important piece here. We wrap
+    it with a `#[pyfunction]` attribute, which performs conversions on the argument
+    and return type of our function so that it's compatible with a Python function.
+    Our `find_words` implementation is simple. First, we create a vector, `v`, to
+    hold the list of filtered words. Then, we filter our `src` string by splitting
+    on `","`, followed by a `filter` and `map` operation. The `split(",")` call returns
+    an iterator on which we call the `filter_map` method. This method receives a closure
+    as an argument containing the split word `s`. We first remove any white space
+    from our `s` by calling `s.trim()`, followed by checking whether it `ends_with`
+    our provided `suffix` string. If it does, it converts `trimmed` to an owned `String`
+    wrapping in `Some`; otherwise, it returns `None`. We then iterate over all the
+    filtered words (if any), push them to our `v`, and return it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With that explanation out of the way, it''s time to build our Python module.
+    To do that, we have `pyo3-pack`: another tool from the same `pyo3` project that
+    automates the whole process of making a native Python module. This tool also has
+    the ability to publish the built packages to the **Python Package Index** (**PyPI**).
+    Let''s install `pyo3-pack` by running `cargo install pyo3-pack`. Now, we can generate
+    the package as a Python wheel (`.whl`), followed by installing the package locally
+    using `pyo3-pack develop`. But before we do that, we need to be in a Python virtual
+    environment, since the `py3-pack develop` command requires that.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can create our virtual environment by running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are using Python 3.5 here. After that, we need to activate our environment
+    by running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you don''t have `pip` or `virtualenv` installed, you can install them by
+    running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, we can run `pyo3-pack develop`, which creates the *wheel* files for both
+    Python 2 and Python 3 versions and also installs them locally inside our virtual
+    environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we''ll create a simple `main.py` file in our `word_suffix` directory and
+    import this module to see if we can use our module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Running it via `python main.py`, we get the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/c7e97fad-d750-4b13-8fdf-33e5408ed38a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Great! This was a very simple example, though. For complex cases, there are
+    lots of details that you need to know about. To explore more about `pyo3`, head
+    over to their excellent guide at [https://pyo3.rs](https://pyo3.rs).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating native extensions in Rust for Node.js
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There are times when the performance of JavaScript in the Node.js runtime is
+    not enough, so developers reach out to other low-level languages to create native
+    Node.js modules. Often, C and C++ are used as the implementation language for
+    these native modules. Rust can also be used to create native Node.js modules via
+    the the same FFI abstractions that we saw for C and Python. In this section, we'll
+    explore a high-level wrapper for these FFI abstractions, called the `neon` project,
+    which was created by Dave Herman from Mozilla.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The neon project is a set of tools and glue code that makes the life of Node.js
+    developers easier, allowing them to write native Node.js modules in Rust and consume
+    them seamlessly in their JavaScript code. The project resides at [https://github.com/neon-bindings/neon](https://github.com/neon-bindings/neon).
+    It''s partially written in JavaScript: there''s a command-line tool called `neon`
+    in the `neon-cli` package, a JavaScript-side support library, and a Rust-side
+    support library. Node.js itself has good support for loading native modules, and
+    neon uses that same support.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the following demo, we will be building a native Node.js module in Rust
+    as an npm package, exposing a function that can count occurrences of a given word
+    in a chunk of text. We will then import this package and test the exposed function
+    in a `main.js` file. This demo requires Node.js (version `v11.0.0`) to be installed,
+    along with its package manager, `npm` (version `6.4.1`). If you don''t have Node.js
+    and `npm` installed, head over to [https://www.digitalocean.com/community/tutorials/how-to-install-node-js-on-ubuntu-16-04](https://www.digitalocean.com/community/tutorials/how-to-install-node-js-on-ubuntu-16-0)
+    to set them up. After you are done installing them, you need to install the `neon-cli`
+    tool using `npm` by running the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Since we want this tool to be available globally to create new projects from
+    anywhere, we pass the `--global` flag. The `neon-cli` tool is used to create a
+    Node.js project with skeleton neon support included. Once it is installed, we
+    create our project by running `neon new native_counter`, which prompts for basic
+    information for the project, as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0be051c4-e78f-465e-98d8-c47c0398e527.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Here''s the directory structure this command created for us:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The project structure neon created for us is the same npm package structure
+    that we get with the usual `lib` directory and `package.json`. In addition to
+    the Node.js package structure, it has also created a cargo project for us under
+    the `native` directory with some initial code in it. Let''s see what the contents
+    of this directory are, starting with `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The prominent thing to note is the `[lib]` section, which specifies the crate
+    type as `dylib`, which means we require Rust to create a shared library. There
+    is also an autogenerated `build.rs` file at the root level, which does some initial
+    build environment configuration by calling `neon_build::setup()` inside it. Next,
+    we''ll remove the existing code in our `lib.rs` file and add the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we import the `neon` crate, along with the macros and all the items from
+    the `prelude` module. Following that, we define a function, `count_words`, which
+    takes in a `FunctionContext` instance. This contains information in JavaScript
+    regarding the active function that's invoked, such as the argument list, length
+    of arguments, the `this` binding, and other details. We expect the caller to pass
+    two arguments to our `count_words` function. Firstly, the text, and secondly,
+    the word to search for in the text. These values are extracted by calling the
+    `argument` method on the `cx` instance and passing in the respective index to
+    it. We also use the turbofish operator to ask it to give a value of the `JsString`
+    type. On the returned `JsString` instance, we call the `value` method to get a
+    Rust `String` value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After we''re done extracting the arguments, we split our text with white space
+    and filter only the chunks that contain the given `word` before calling `count()`
+    on the iterator chain to count the number of matched occurrences:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`count()` returns `usize`. However, we need to cast `usize` to `f64` because
+    of the `Into<f64>`  trait bound on our `number` method on `cx`. Once we do that,
+    we wrap this expression with a call to `cx.number()`, which creates a JavaScript*-*compatible
+    `JsNumber` type. Our `count_words` method returns a `JsResult<JsNumber>` type,
+    as accessing the arguments might fail and returning a proper *JavaScript* type
+    might also fail. This error variant in the `JsResult` type represents any exception
+    that''s thrown from the JavaScript-side.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we register our `count_words` function with the `register_module!` macro.
+    This macro gets a mutable reference to a `ModuleContext` instance, `m`. Using
+    this instance, we export our function by calling the `export_function` method,
+    passing in the name of the function as string and the actual function type as
+    the second parameter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, here''s our updated `index.js` file''s contents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As `index.js` is the root of an npm package, we require our native module and
+    must export the function directly at the root of the module using `module.exports`.
+    We can now build our module using the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the package has been built, we can test it by creating a simple `main.js`
+    file in the `native_counter` directory with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll run this file by running the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: This gives us an output of `2`. That concludes our awesome journey on making
+    Rust and other languages talk to each other. It turns out that Rust is quite smooth
+    at this interaction. There are rough edges in cases where other languages don't
+    understand Rust's complex data types, but this is to be expected, as every language
+    is different in its implementation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rust provides us with convenient FFI abstractions to interface with different
+    languages and has first-class support for C, as it exposes the C ABI (`cdecl`)
+    for functions marked as `extern`. As such, it's a good candidate for bindings
+    for a lot of C/C++ libraries. One of the prominent examples of this is the SpiderMonkey
+    JavaScript engine that's implemented in C++, which is used in the Servo project.
+    The Servo engine calls into C++ using the bindings that are generated via the
+    `bindgen` crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But, when we are interacting with cross-language boundaries, the language constructs
+    and data representation that one language has don't need to match with the other
+    language. As such, we need to put extra annotations, along with unsafe blocks,
+    in Rust code to let the compiler know of our intent. We saw this when we used
+    the `#[repr(C)]` attribute. The **Foreign Function Interface** (**FFI**), like
+    many other Rust features, is zero-cost, which means that a minimal runtime cost
+    is incurred when linking to code from other languages. We took a look at Python
+    and Node.js, which have nice wrapper crates for these low-level FFI abstractions.
+    For languages that don't have such wrappers, interfacing with other languages
+    is always possible by using the bare FFI APIs that Rust's standard library provides.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The aim up until this chapter was to cover the topics that are core to the language,
+    and I hope you are up to speed with most of the core language features. The remaining
+    chapters will cover case studies of various Rust frameworks and crates, and will
+    be heavily oriented toward applying Rust to practical projects.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,1295 @@
+- en: Involving Concurrency with Actors and the Actix Crate
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter will show an alternative approach to creating microservices based
+    on the actors model (like Erlang or Akka). This approach allows you to write clear
+    and effective code by splitting a microservice into small independent tasks that
+    interact with each other by message passing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By the end of this chapter, you will be able to do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a microservice using the Actix framework and the `actix-web` crate
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Create middleware for the Actix Web framework
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To implement and run all the examples of this chapter, you'll need the Rust
+    compiler with version 1.31 as a minimum.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can find the sources for the code examples in this chapter on GitHub: [https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter11](https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter11)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actor concurrency in microservices
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you are familiar with Erlang or Akka, you may already know what actors are
+    and how to use them. But in any case, we'll refresh our knowledge about the actors
+    model in this section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We already became familiar with actors in [Chapter 10](ba240208-414e-4dd4-bba8-8bd2658949cd.xhtml),
+    *Background Tasks and Thread Pools in Microservices*, but let's talk about using
+    actors for microservices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An actor is a model for doing concurrent computations. We should know the following
+    models:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Threads**: In this model, every task works in a separate thread'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Fibers or green threads**: In this model, every task has work scheduled by
+    a special runtime'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Asynchronous code**: In this model, every task is run by a reactor (actually,
+    this is similar to fibers)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Actors combine all these approaches into an elegant one. To do any part of the
+    work, you can implement actors that perform their own part of the work, and interact
+    with other actors through messages to inform each other on the overall progress.
+    Every actor has a mailbox for incoming messages and can send messages to other
+    actors using this address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actors in microservices
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To develop a microservice using actors, you should split your service into tasks
+    that solves different kinds of work. For example, you can use a separate actor
+    for every incoming connection or database interaction, and even as a supervisor
+    to control other actors. Every actor is an asynchronous task that is executed
+    in a reactor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The benefits of this approach are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's simpler to write separate actors than a bulk of functions
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Actors can fail and respawn
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can reuse actors
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: One important benefit of using actors is reliability, because every actor can
+    be failed and respawned, so you don't need a long recovery code to handle failures.
+    It doesn't mean your code can call the `panic!` macro everywhere, but this does
+    mean that you can consider actors as short life cycle tasks that work concurrently
+    on small tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you design actors well, you also gain great performance, because interaction
+    with messages helps you to split work into short reactions, which won't block
+    the reactor for a long time. Also, your source code becomes more structured.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Actix framework
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The Actix framework provides an actors model for Rust, based on the `futures`
+    crate and some asynchronous code to allow actors to work concurrently with minimal
+    resources needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I think this is one of the best tools for creating web applications and microservices
+    with Rust. The framework includes two good crates—the `actix` crate that contains
+    core structures, and the `actix-web` crate that implements the HTTP and WebSocket
+    protocols. Let's create a microservice that routes requests to other microservices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a microservice with actix-web
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we will create a microservice that looks similar to other microservices
+    we created in [Chapter 9](6d371e55-d1cf-45b4-83a9-4d5098a885d0.xhtml), *Simple
+    REST Definition and Requests Routing with Frameworks*, but use an actors model
+    internally to achieve full resource utilization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To create a microservice using `actix-web`, you need to add both the `actix`
+    and `actix-web` crates. First, we need to start the `System` actor that manages
+    the runtime of other actors. Let's create a `System` instance and start an `actix-web`
+    server with the necessary routes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Bootstrapping an actix-web server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Starting an `actix-web` server instance looks similar to other Rust web frameworks,
+    but requires a `System` actor instance. We don't need to use `System` directly,
+    but need to run it by calling the `run` method when everything is ready. This
+    call starts the `System` actor and blocks the current thread. Internally, it uses
+    the `block_on` method that we discussed in previous chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Starting a server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Consider the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We create a new server with the `server::new` method call that expects a closure
+    to return the `App` instance. Before we create the `App` instance, we have to
+    finish our server and run it. The `workers` method sets the number of threads
+    to run actors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can choose not to set this value explicitly, and by default, it will be
+    equal to the number of CPUs on the system. In many cases, it's the best possible
+    value for performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next call of the `bind` method binds the server's socket to an address.
+    If it can't be bound to an address, the method returns `Err`, and we `unwrap`
+    the result to halt a server if we can't start a server on a desired port. At the
+    end, we call the `start` method to start the `Server` actor. It returns an `Addr`
+    struct with an address that you can use to send messages to a `Server` actor instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actually, the `Server` actor won't run until we call run the method of the `System`
+    instance. Add this method call, and then we'll go on to look at creating an `App`
+    instance in detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: App creation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Insert the following code into a closure of the `server::new` function call:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `App` struct contains information about the state, middleware, and the scopes
+    of routes. To set shared state to our application, we use the `with_state` method
+    to construct the `App` instance. We create a default instance of the `State` struct,
+    which is declared as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`State` contains a cell with an `i64` value to count all requests. By default,
+    it is created with a `0` value.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After this, we use the middleware method of `App` to set the three following
+    middlewares:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`actix_web::middleware::Logger` is a logger that uses the `log` crate to log
+    request and responses'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`actix_web::middleware::identity::IdentityService` helps to identity requests
+    using an identity backend that implements the `IdentityPolicy` trait'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Counter` is a piece of middleware that we will create in the following *Middleware*
+    section, and uses `State` to count the total quantity of requests'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For our `IdentityPolicy` backend, we use `CookieIdentityPolicy` from the same
+    identity submodule where `IdentityService` lives. `CookieIdentityPolicy` expects
+    a key with at least 32 bytes. When an instance of an identity policy for cookies
+    has been created, we can use methods like `path`, `name`, and `domain` to set
+    specific cookies parameters. We also allow the sending of cookies with insecure
+    connections by using the `secure` method with a `false` value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two special parameters of cookies you should know about: `Secure`
+    and `HttpOnly`. The first requires secure HTTPS connection to send cookies. If
+    you run a service for testing and use plain HTTP to connect to it, then the `CookieIdentityPolicy`
+    won''t work. `HttpOnly` parameters don''t allow the use of cookies from JavaScript.
+    `CookieIdentityPolicy` sets this parameter to true and you can''t override this
+    behavior.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scope and routes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The next thing we have to add to our `App` instance is routing. There is a `route`
+    function that lets you set a handler for any route. But it''s more thoughtful
+    to use scopes to construct a structure of nested paths. Look at the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `scope` method of our `App` struct expects a prefix of a path and a closure
+    with a `scope` as a single argument, and creates a scope that can contain subroutes.
+    We create a `scope` for the `/api` path prefix and add four routes using the `route`
+    method: `/signup`, `/signin`, `/new_comment`, and `/comments`. The `route` method
+    expects a suffix including a path, a method, and a handler. For example, if a
+    server now takes a request for `/api/singup` with the `POST` method, it will call
+    the `signup` function. Let''s add a default handler for other paths.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our microservice also uses `Counter` middleware, which we will implement later,
+    to count the total quantity of requests. We need to add a route to render statistics
+    for the microservice, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, we don't need `scope` here, since we have only one handler and
+    can call the `route` method directly for the `App` instance (not `scope`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Static files handler
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For the other paths that were not listed in the previous `scope`, we will use
+    a `handler` that will return a file''s content from a folder to serve static assets.
+    The `handler` method expects a prefix for a path, and a type that implements the
+    `Handler` trait. In our case, we will use a ready-to-use static files handler, `actix_web::fs::StaticFiles`.
+    It needs a path to a local folder and we can also set an index file by calling the
+    `index_file` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, if a client send a `GET` request to a path such as `/index.html` or `/css/styles.css`,
+    then the `StaticFiles` handler will send the contents of the corresponding files
+    from the `./static/` local folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP client
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The handlers of this microservice work as proxies and resend incoming requests
+    to other microservices, which will not be available to users directly. To send
+    requests to other microservices, we need an HTTP client. The `actix_web` crate
+    contains one. To use a client, we add two functions: one for proxfying `GET` requests,
+    and the other to send `POST` requests.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: GET requests
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To send `GET` requests, we create a `get_request` function that expects a `url`
+    parameter and returns a `Future` instance with binary data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We use `ClientRequestBuilder` to create the `ClientRequest` instance. The `ClientRequest`
+    struct already has shortcuts that create builders with a preset HTTP method. We
+    call the `get` method that only sets the `Method::GET` value to a request that
+    is implemented as the calling method of the `ClientRequestBuilder` instance. You
+    can also use a builder to set extra headers or cookies. When you are done with
+    these values, you have to create a `ClientRequest` instance from a builder by
+    calling one of the following methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`body` sets a body value to binary data that can be converted `Into<Body>`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`json` sets a body value to any type that can be serialized into JSON value'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`form` sets a body value to a type that can be serialized with `serde_urlencoded:
+    serializer`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`streaming` consumes a body value from a `Stream` instance'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`finish` creates a request without a body value'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We use `finish`, because `GET` requests don't contain a body value. All these
+    methods return a `Result` with a `ClientRequest` instance as a successful value.
+    We don't unwrap the `Result` and will convert it into a `Future` value with  the `into_future`
+    method call to return an `Error` value to a client if the handler can't even build
+    a request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we have a `Future` value, we can use the `and_then` method to add the
+    next processing step. We call the `send` method of a `ClientRequest` to create
+    a `SendRequest` instance, which implements the `Future` trait and sends a request
+    to a server. Since the `send` call can return the `SendRequestError` error type,
+    we wrap it with `failure::Error`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If a request has sent successfully we can take a `MessageBody` value with the `body`
+    method call. This method is a part of the `HttpMessage` trait. `MessageBody` also
+    implements a `Future` trait with a `Bytes` value and we use the `and_then` method
+    to extend a chain of futures and transform a value from `SendRequest` to `Bytes`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we use the `to_vec` method of `Bytes` to convert it into `Vec<u8>`
+    and provide this value as a response to a client. We have finished our method
+    that proxies `GET` requests to another microservice. Let's create a similar method
+    for `POST` requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: POST requests
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For `POST` requests, we need input parameters that will be serialized to the
+    request''s body, and output parameters that will be deserialized from the request''s
+    response body. Look at the following function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `post_request` function creates `ClientRequestBuilder` with the `post` method
+    of `ClientRequest` and fills a form with values from the `params` variable. We
+    convert `Result` into `Future` and send a request to a server. Also, as in the
+    `GET` version, we process a response, but do it another way. We get a status of
+    a response with the `status` method call of `HttpResponse`, and check whether
+    it's successful, with the `is_sucess` method call.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For successful responses, we use the `json` method of `HttpResponse` to get
+    a `Future` that collects a body and deserializes it from JSON. If the response
+    wasn't successful, we return an error to the client. Now, we have methods to send
+    requests to other microservices, and can implement handlers for every route.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handlers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We added methods to proxy incoming requests and resend them to other microservices.
+    Now, we can implement handlers for every supported path of our microservice we
+    will provide a holistic API to a client, but actually, we will use a set of microservices
+    to provide all the necessary services to the client. Let's start with implementation
+    of a handler for the `/signup` path.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Signup
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The Router microservice uses the `/signup` route to resend a signup request
+    to a users microservice bound to  the `127.0.0.1:8001` address. This request creates
+    a new users with filled from `UserForm`, passed with a parameter wrapped with the `Form`
+    type. Look at the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: We call the `post_request` function that we declared before to send a `POST`
+    request to a users microservice and if it returns a successful response, we return
+    a response with a `302` status code. We create `HttpResponseBuilder` with the
+    corresponding status code by the  `HttpResponse::Found` function call. After this,
+    we also set the `LOCATION` header to redirect the user to a login form with the
+    `header` method call of `HttpResponseBuilder`. Lastly, we call `finish()` to create
+    a `HttpResponse` from a builder and return it as a boxed `Future` object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The function has a `FutureResponse` return type that is implemented as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, it's a `Box` with a type that implements a `Future` trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Also, the function expects `Form<UserForm>` as a parameter. The `UserForm`
+    structs are declared as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, it expects two parameters: `email` and `password`. Both will
+    be extracted from the query string of a request in the format of `email=user@example.com&password=<secret>`.
+    The `Form` wrapper helps to extract data from the response''s body.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `actix_web` crate limits requests and responses by size. If you want to
+    send or receive huge payloads, you have to override defaults that often won't
+    allow requests larger than 256 KB. For example, if you want to increase the limit,
+    you can use the `FormConfig` struct provided with the `with_config` method call
+    of `Route`, and call the `limit` method of a config with the desired quantity
+    of bytes. The HTTP client is also limited by response size. For example, if you
+    try to read a large JSON object from a `JsonBody` instance, you may need to limit
+    it with the `limit` method call before you use it as a `Future` object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Signin
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Other methods allow users to sign in to a microservice with the provided credentials.
+    Look at the following `signin` function that processes requests that are sent
+    to the `/signin` path:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The function has two parameters: `HttpRequest` and `Form`. The first we need to get
+    access to a shared `State` object. The second we need to extract the `UserForm`
+    struct from the request body. We can also use the `post_request` function here,
+    but expect it to return a `UserId` value in its response. The `UserId` struct
+    is declared as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since `HttpRequest` implements the `RequestIdentity` trait and we plugged in 
+    `IdentityService` to `App`, we can call the `remember` method with a user's ID
+    to associate the current session with a user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After this, we create a response with the `302` status code, as we did in the
+    previous handler, and redirect users to  the `/comments.html` page. But we have
+    to build an `HttpResponse` instance from `HttpRequest` to keep the changes of
+    the `remember` function call.
+  prefs: []
+  type: TYPE_NORMAL
+- en: New comment
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The handler for creating new comments uses the identity of a user to check
+    that there are credentials to add a new comment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: This handler allows every user who has signed it to leave a comment. Let's look
+    at how this handler works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, it calls the `identity` method of the `RequestIdentity` trait that returns
+    the user's ID. We convert it to `Result` to make it possible to convert it into
+    `Future` and return an error if the user is not identified.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We use the returned user ID value to prepare a request for the comments microservice.
+    We extract the `text` field from an `AddComment` form, and create a `NewComment`
+    struct with the user ''s ID and a comment. Structs are declared as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can also use a single struct with an optional `uid`, but it's safer to use
+    a separate struct for different needs, because if we use the same struct and resend
+    it to another microservice without validation, we can create a vulnerability that
+    allows any user to add a comment with another user's identity. Try to avoid these
+    kind of mistakes by using exact, strict types, instead of universal, flexible
+    ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we create a redirect a client as we did before, and send the user to the
+    `/comments.html` page.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Comments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To view all comments that were created by the previous handler, we have to
+    send a `GET` request to the comments microservice with the `get_request` function
+    that we created before and resend the response data to a client:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Counter
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The handler that prints the total quantity of requests also has quite simple
+    implementation, but in this case, we get access to a shared state:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We use the `state` method of `HttpRequest` to get a reference to a `State` instance.
+    Since the counter value is stored in `RefCell`, we use the `borrow` method to
+    get the value from a cell. We implemented all handlers, and now we have to add
+    some middleware that will count every request to the microservice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Middleware
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The `actix-web` crate supports middleware that can be attached to an `App`
+    instance to process every request and response. Middleware helps to log requests,
+    transform them, or even control access to a group of paths using regular expressions.
+    Consider middleware as handlers for all incoming requests and outgoing responses.
+    To create the middleware, we first have to implement the `Middleware` trait for
+    it. Look at the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: We declare an empty `Counter` struct and implement the `Middleware` trait for
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Middleware` trait has a type parameter with a state. Since we want to use
+    the counter of our `State` struct, we set it as a type parameter, but if you want
+    to create middleware that is compatible with different states, you need to add
+    type parameters to your implementation and add an implementation of necessary
+    traits that you can export to your module or crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Middleware` trait contains three methods. We implemented all of them:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`start` is called when the request is ready and will be sent to a handler'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`response` is called after the handler returns a response'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`finish` is called when data has been sent to a client'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We use the default implementation for the `response` and `finish` methods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the first method, we return a response without any changes in the `Response::Done`
+    wrapper. `Response` also has a variant, `Future`, if you want to return a `Future`
+    that generates an `HttpResponse`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the second method, we return a `Done` variant of the `Finished` enum. It
+    also has a `Future` variant that can contain a boxed `Future` object, which will
+    be run after the `finish` method ends. Let's explore how the `start` method works
+    in our implementation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the `start` method implementation of the `Counter` middleware, we will count
+    all incoming requests. To do this, we get the current counter value from `RefCell`,
+    add `1`, and replace the cell with a new value. At the end, the method returns
+    a `Started::Done` value to notify you that the current request will be reused
+    in the next handler/middleware of the processing chain. The `Started` enum also
+    has variants:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Response` should be used if you want to return a response immediately'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Future` should be used if you want to run a `Future` that will return a response'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now, the microservice is ready to build and run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building and running
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To run a microservice, use the `cargo run` command. Since we don't have an other
+    microservice for handlers, we can use the `counter` method to check that the server
+    and `Counter` middleware works. Try to open `http://127.0.0.1:8080/stats/counter` in
+    the browser. It will show a `1` value on a blank page. If you refresh the page,
+    you will see a `3` value. That's because the browser also sends a request to get
+    a `favicon.ico` file after the main request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using databases
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Another good feature of `actix-web`, in combination with the `actix` crate,
+    is the ability to use databases. Do you remember how we used `SyncArbyter` to
+    perform background tasks? It's a good approach to implement database interaction
+    since there are not enough asynchronous database connectors and we have to use
+    synchronous ones. Let's add the caching of responses to a Redis database for our
+    previous example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The database interaction actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We start by implementing an actor that interacts with a database. Copy the
+    previous example and add the `redis` crate to the dependencies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: We use Redis because it's great for caching, but we can also store cached values
+    in memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a `src/cache.rs` module and add the following dependencies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: It adds types from the `redis` crate that we already used in [Chapter 7](e09a1e76-ae09-41d4-99dc-9bad95fa3de7.xhtml), *Reliable
+    Integration with Databases*, to interact with Redis storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Our actor has to keep an instance of `Client`. We don''t use a connection pool,
+    because we will use multiple actors for handing parallel requests to a database.
+    Look at the following struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: The struct also contains an `expiration` field that holds the **time-to-live**
+    (**TTL**) period. This defines how long Redis will hold the value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add a `new` method to the implementation that uses a provided address string
+    to create a `Client` instance, and adds both the `client` and `expiration` values
+    to the `CacheActor` struct, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Also, we have to implement an `Actor` trait for `SyncContext`, just as we did
+    when resizing the worker in [Chapter 10](ba240208-414e-4dd4-bba8-8bd2658949cd.xhtml),
+    *Background Tasks and Thread Pools in Microservices*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, we can add support for messages to set and get cached values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Messages
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To interact with `CacheActor`, we have to add two types of messages: to set
+    a value and to get a value.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting a value message
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The first message type we add is `SetValue`, which provides a pair of key and
+    new value for caching. The struct has two fields—`path`, which is used as a key,
+    and `content`, which holds a value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s implement a `Message` trait for the `SetValue` struct with an empty
+    unit type if the value is set, and return `RedisError` if there are issues with
+    a database connection:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`CacheActor` has support for receiving `SetValue` messages. Let''s implement
+    this with the `Handler` trait:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: We used a `Client` instance stored in `CacheActor` to execute the `SETEX` command
+    from Redis with the `set_ex` method call. This command sets a value with an expiration
+    period in seconds. As you can see, the implementation is close to the database
+    interaction functions of [Chapter 7](e09a1e76-ae09-41d4-99dc-9bad95fa3de7.xhtml), *Reliable
+    Integration with Databases*, but implemented as a `Handler` of the specific message.
+    This code structuring is simpler and more intuitive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Get value message
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The `GetValue` struct represents a message to extract a value from Redis by
+    key (or path, in our case). It contains only one field with a `path` value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We also have to implement the `Message` trait to it, but we want it to return
+    an optional `Vec<u8>` value if Redis contains a value for the provided key:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`CacheActor` also implements a `Handler` trait for the `GetValue` message type,
+    and uses the `GET` command of Redis storage by calling the `get` method of `Client` to
+    extract a value from storage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, actors and messages are simple enough, but we have to use an `Addr`
+    value to interact with them. It's not a concise approach. We will add a special
+    type that allows methods to interact with the `CacheActor` instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Link to actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The following struct wraps an address of `CacheActor`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The constructor only fills this `addr` field with an `Addr` value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We need a `CacheLink` wrapping struct to add methods to get access to caching
+    features, but need to hide the implementation details and message interchange.
+    First, we need a method to get cached values:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding function creates a new `GetValue` message with a `path` inside,
+    and sends this message to `Addr`, contained in `CacheLink`. After this, it waits
+    for the result. The function returns this interaction sequence as a boxed `Future`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next method is implemented in a similar way—the `set_value` method sets
+    a new value to a cache by sending a `SetValue` message to `CacheActor`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: To compose a message, we use a `path` and a bytes array reference converted
+    into a `Vec<u8>` value. Now, we can use `CacheActor` and `CacheLink` in a server
+    implementation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using database actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In the previous example in this chapter, we used shared `State` to provide
+    access to a counter stored as `i64`, wrapped with `RefCell`. We reuse this struct,
+    but add a `CacheLink` field to use connections with a `CacheActor` to get or set
+    cached values. Add this field:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We derived a `Default` trait for the `State` struct before, but now we need
+    a new constructor, because we have to provide a `CacheLink` instance with the
+    actual address of the caching actor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: In most cases, caching works this way—it tries to extract a value from a cache;
+    if it exists and hasn't expired, then the value is returned to a client. If there
+    is no valid value, we need to obtain a new one. After we have taken it, we have
+    to store it in a cache for future use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the previous example, we often used a `Future` instance that receives a
+    `Response` from another microservice. To simplify our use of caching, let''s add the
+    `cache` method to our `State` implementation. This method will wrap any provided
+    `future` with a path and try to extract the cached value. If the value isn''t
+    available, it will obtain a new one, and afterwards, it receives the store-copied
+    value to cache, and returns the value to the client. This method wraps the provided
+    `Future` value with another `Future` trait implementation. Look at the following
+    implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: The implementation uses the `State` instance to clone `CacheLink`. We have to
+    use a cloned `link` because we have to move it to the closure that uses it to
+    store a new value, should we need to obtain it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, we call the `get_value` method of `CacheLink` and get a `Future` that
+    requests a value from the cache. Since the method returns `Option`, we will use the
+    `and_then` method to check that the value exists in a cache, and return that value
+    to the client. If the value is expired or not available, we will obtain it by
+    executing the provided `Future` and use a link to call the `set_value` method
+    if the new value is returned successfully.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we can use the `cache` method to cache the list of comments that are returned
+    for the `comments` handler of the previous example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we create a `Future` to get a value from another microservice using the
+    `get_request` method that we have implemented before. After that, we get a reference
+    to `State` using the `state` method of the request, and call the `cache` method
+    by passing the `/list` path, then create a `Future` instance to obtain a new value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have implemented all of the parts of our database actor. We still need to
+    start a set of caching actors with `SyncArbiter`, and wrap the returned `Addr`
+    value with `CacheLink`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, you can build the server. It will return the cached value of the `/api/list`
+    request every 10 seconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The other good benefit of using actors is WebSocket. With this, we can add stateful
+    interaction to our microservices using a state-machine implemented as an actor.
+    Let's look at this in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: WebSocket
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: WebSocket is a full-duplex communication protocol worked over HTTP. WebSockets
+    are often used as an extension of main HTTP interaction and can be used for live
+    updates or notifications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An actors model is well-suited for implementing WebSocket handlers, because
+    you can combine and isolate code in a single place: in the implementation of the
+    actor. `actix-web` supports the WebSocket protocol, and in this section, we will
+    add notification functionality to our microservice. Maybe all the features we
+    have implemented with `actix-web` make our example a bit complex, but it''s important
+    for demonstration purposes to keep all features to show how you can combine a
+    server with multiple actors and tasks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Repeater actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have to send notifications about new comments to all connected clients. To
+    do this, we have to keep the list of all connected clients to send a notification
+    to them. We could update the `State` instance on every connection to add every
+    new client to it, but instead, we will create a more elegant solution with a router
+    that resends messages to multiple subscribers. Subscribers or listeners, in this
+    case, will be actors that handle incoming WebSocket connections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We will add an actor to resend messages to other actors. We need some basic
+    types from the `actix` crate, along with a `HashSet` to keep addresses of actors.
+    Import the `NewComment` struct, which we will clone and resend:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Add a `RepeaterActor` struct with a `listeners` field of the `HashSet` type
+    that contains `Recipient` instances:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: You are familiar with the `Addr` type, but we haven't used `Recipient` before.
+    Actually, you can convert any `Addr` instance into a `Recipient` using the `recipient`
+    method call. The `Recipient` type is an address that supports only one type of
+    `Message`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add a constructor that creates an empty `HashSet`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, implement an `Actor` trait for this struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: It's enough to have a standard `Context` type as an associated context type
+    of `Actor`, because it can work asynchronously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we have to add messages to this actor type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Messages
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We will support two types of messages. The first is an update message that transfers
+    a new comment from one actor to another. The second is a control message that
+    adds or removes listeners to the actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Updating the message
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We will start with updating the message. Add a `RepeaterUpdate` struct that
+    wraps a `NewComment` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, we also derived the `Clone` trait, because we need to clone
+    this message to resend it to multiple subscribers. `NewComment` also has to be
+    cloneable now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s implement the `Message` trait for the `RepeaterUpdate` struct. We will
+    use an empty type for the `Result` associated type, because we don''t care about the
+    delivery of these messages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can implement a `Handler` for the `RepeaterUpdate` message type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The algorithm of the handler is simple: it iterates over all listeners (actually,
+    addresses of listeners stored as `Recipient` instances) and sends a cloned message
+    to them. In other words, this actor receives a message and immediately sends it
+    to all known listeners.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Control message
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The following message type is necessary to subscribe or unsubscribe from `RepeaterUpdate`
+    messages. Add the following enumeration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: It has two variants with the same `Recipient<RepeaterUpdate>` type inside. Actors
+    will send their own `Recipient` addresses to start listening for updates or to
+    stop any notifications about new comments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Implement the `Message` trait for the `RepeaterControl` struct to turn it into
+    the `message` type and use an empty `Result` associated type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can implement a `Handler` trait for the `RepeaterControl` message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The implementation of the preceding handler is also pretty simple: it adds
+    a new `Recipient` to listeners set on the `Subscribe` message variant, and removes
+    the `Recipient` upon `Unsubscribe` messages.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The actor that resends `NewComment` values to other actors is ready, and now
+    we can start to implement an actor for handling WebSocket connections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The notification actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The notification actor is actually a handler of WebScoket connections, but it
+    performs only one function—sending a `NewComment` value, serialized to JSON, to
+    clients.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since we need a JSON serializer, add the `serde_json` crate to dependencies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then, add the `src/notify.rs` module and start implementing the actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The notification actor is more complex and we need more types to implement
+    it. Let''s look into them:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we started by using the `ws` module of the `actix_web` crate. It contains
+    a necessary `WebsocketContext` that we will use as a context value in the `Actor`
+    trait implementation. Also, we need `Message` and `ProtocolError` types to implement
+    WebSocket stream handling. We also imported `ActorContext` to stop the method
+    of the `Context` instance to break the connection with a client. We imported the `AsyncContext`
+    trait to get an address of a context and to run a task that performs on time intervals.
+    One new type that we have not used yet is `StreamHandler`. It is necessary to
+    implement the handing of values that are sent from `Stream` to `Actor`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can use either `Handler` or `StreamHandler` for handling messages of the
+    same type. Which one is preferable? The rule is simple: if your actor will process
+    a lot of messages, it''s better to use `StreamHandler` and connect the messages
+    flow as a `Stream` to an `Actor`. The `actix` runtime has check and if it calls
+    the same `Handler`, you may receive warnings.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add the constants that we will use for sending `ping` messages to our clients:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: The constants contain interval and timeout values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will send pings to a client, because we have to keep a connection alive,
+    since servers often have default timeouts for WebSocket connections. For example,
+    `nginx` will close the connection after 60 seconds if there isn't any activity.
+    And if you use `nginx` as a proxy with default configuration for WebSocket connections,
+    then your connections can be broken. Browsers don't send pings and only send pongs
+    for incoming pings. The server is responsible for sending pings to clients connected
+    via browsers to prevent disconnecting through a timeout.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add the following `NotifyActor` struct to the code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This actor has a `last_ping` of the `Instant` type to keep the timestamp of
+    the latest ping. Also, the actor holds a `Recipient` address to send `RepeaterControl`
+    messages. We will provide the address of `RepeaterActor` for this field with the
+    constructor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we have to implement the `Actor` trait for the `NotifyActor` struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is the first time where we need to override the empty `started` and `stopped`
+    methods. In the `started` method implementation, we will create a `Subscribe`
+    message and send it using `Repeater`. Also, we add a task that will be executed
+    on `PING_INTERVAL` and will send a ping message using the `ping` method of `WebsocketContext`.
+    If a client never responds to us, then the `last_ping` field won't be updated.
+    If the interval is larger than our `PING_TIMEOUT` value, we will interrupt the
+    connection using the `stop` method of the context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `stopped` method implementation is much simpler: it prepares an `Unsubscribe`
+    event with the same address of the actor and sends it to `RepeaterActor`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our actor implementation is ready and now we have to add handlers for messages
+    and a stream.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handlers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'First, we will implement a `StreamHandler` instance of the `ws::Message` messages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is a basic approach for implementing the WebSocket protocol interaction
+    with `actix-web`. We will use the `ws::start` method later to attach a `Stream`
+    of WebSocket messages to this actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Message` type has multiple variants that reflects types of WebSocket messages
+    from RFC 6455 (the official protocol specification). We use `Ping` and `Pong`
+    to update the `last_ping` field of the actor's struct, and use `Close` to stop
+    the connection by user's demand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The last `Handler` we have to implement allows us to receive `RepeaterUpdate`
+    messages and to send `NewComment` values to a client:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: The implementation destructs a `RepeaterUpdate` message to get a `NewComment`
+    value, serializes it to JSON using the `serde_json` crate, and sends it to a client
+    using the `text` method of `WebsocketContext`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have all necessary actors, so let's join them with a server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding WebSocket support to a server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Since we will be extended the example from the previous section, we reuse the
+    `State` struct, but add an `Addr` to the `Repeater` actor that we will create
+    later in the `main` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Update the constructor to fill the `repeater` field:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can spawn a `RepeaterActor`, set the address of the actor to `State`,
+    and use it as the state for our `App`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Also, we added a handler for HTTP requests with a resource method call of `App`,
+    and passed the `ws_connect` function to it. Let''s look at the implementation
+    of this function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: This clones an address of `RepeaterActor`, converting it into a `Recipient` which
+    is then used for creating a `NotifyActor` instance. To start that actor instance,
+    you have to use the `ws::start` method that uses the current `Request` and bootstraps `WebsocketContext`
+    for this actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The remaining thing is to send a `NewComment` to `RepeaterActor`, which will
+    resend it to any `NotifyActor` instances of connected clients:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: We extended the `new_comment` handler that is called when a user adds a new
+    comment, and add an extra step to send a `NewComment` value to a repeater. In
+    any case, we ignore the result of delivery of this message to an actor, and we
+    send a POST request to another microservice. It's worth noting that clients will
+    be notified about the new comment, even it won't send to the other microservice,
+    but you can improve it by changing the order of the corresponding `Future` in
+    the chain.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we covered creating a microservice using the Actix framework.
+    We discovered how to create and configure an `App` instance, which describes all
+    routes and middleware to be used. After that, we implemented all handlers that
+    return a `Future` instance. In all handlers, we also use `ClientRequest` to send
+    a request to another microservice and return a response back to the client using
+    an asynchronous approach with futures. Finally, we explored how to create our
+    own `Middleware` for the `actix-web` crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we'll examine the scalable microservices architecture,
+    and look at how to achieve loose coupling of microservices. We'll also consider
+    the use of message brokers to provide a flexible and manageable way to exchange
+    messages between parts of a large application.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,1601 @@
+- en: '6'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Data Persistence with PostgreSQL
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: By this point in the book, the frontend for our application has been defined,
+    and our app is working at face value. However, we know that our app is reading
+    and writing from a **JSON** file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will get rid of our JSON file and introduce a `create`,
+    `edit`, and `delete` endpoints interact with the database instead of the JSON
+    file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building our PostgreSQL database
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Connecting to PostgreSQL with Diesel
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Connecting our application to PostgreSQL
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configuring our application
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Managing a database connection pool
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will be able to manage an application that performs
+    reading, writing, and deleting data in a PostgreSQL database with data models.
+    If we make changes to the data models, we will be able to manage them with migrations.
+    Once this is done, you will be able to optimize your database connections with
+    pools and get the server to reject the HTTP request before it hits the view if
+    the database connection cannot be made.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we will be using **Docker** to define, run a PostgreSQL database,
+    and run it. This will enable our app to interact with a database on our local
+    machine. Docker can be installed by following the instructions at [https://docs.docker.com/engine/install/](https://docs.docker.com/engine/install/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will also be using `docker-compose` on top of Docker to orchestrate our Docker
+    containers. This can be installed by following the instructions at [https://docs.docker.com/compose/install/](https://docs.docker.com/compose/install/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code files for this chapter can be found at [https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter06](https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter06).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building our PostgreSQL database
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Up to this point in the book, we have been using a JSON file to store our to-do
+    items. This has served us well so far. In fact, there is no reason why we cannot
+    use a JSON file throughout the rest of the book to complete the tasks. However,
+    if you use a JSON file for production projects, you will come across some downsides.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why we should use a proper database
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: If the reads and writes to our JSON file increase, we can face some concurrency
+    issues and data corruption. There is also no checking on the type of data. Therefore,
+    another developer can write a function that writes different data to the JSON
+    file, and nothing will stand in the way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is also an issue with migrations. If we want to add a timestamp to the
+    to-do items, this will only affect new to-do items that we insert into the JSON
+    file. Therefore, some of our to-do items will have a timestamp, and others won’t,
+    which will introduce bugs into our app. Our JSON file also has limitations in
+    terms of filtering.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Right now, all we do is read the whole data file, alter an item in the whole
+    dataset, and write the whole dataset to the **JSON** file. This is not effective
+    and will not scale well. It also inhibits us from linking these to-do items to
+    another data model-like user. Plus, we can only search right now using the status.
+    If we used a SQL database with a user table linked to a to-do item database, we
+    would be able to filter to-do items based on the user, status, or title. We can
+    even use a combination thereof. When it comes to running our database, we are
+    going to use Docker. So why should we use Docker?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why use Docker?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To understand why we would use Docker, we first need to understand what Docker
+    is. Docker essentially has containers that work like virtual machines but in a
+    more specific and granular way. Docker containers isolate a single application
+    and all the application’s dependencies. The application is run inside the Docker
+    container. Docker containers can then communicate with each other. Because Docker
+    containers share a single common **operating system** (**OS**), they are compartmentalized
+    from one another and from the OS at large, meaning that Docker applications  use
+    less memory compared to virtual machines. Because of Docker containers, we can
+    be more portable with our applications. If the Docker container runs on your machine,
+    it will run on another machine that also has Docker. We can also package our applications,
+    meaning that extra packages specifically required for our application to run do
+    not need to be installed separately, including dependencies on the OS level. As
+    a result, Docker gives us great flexibility in web development as we can simulate
+    servers and databases on our local machine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to use Docker to run a database
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'With all this in mind, it makes sense to go through the extra steps necessary
+    to set up and run a SQL database. To do this, we are going to use Docker: a tool
+    that helps us create and use containers. Containers themselves are Linux technology
+    that package and isolate applications along with their entire runtime environment.
+    Containers are technically isolated file systems, but to help visualize what we
+    are doing in this chapter, you can think of them as mini lightweight virtual machines.
+    These containers are made from images that can be downloaded from **Docker Hub**.
+    We can insert our own code into these images before spinning up a container out
+    of them, as seen in the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 6.1 – Relationship between Docker images and containers](img/Figure_6.1_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6.1 – Relationship between Docker images and containers
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With Docker, we can download an image, such as a PostgreSQL database, and run
+    it in our development environment. Because of Docker, we can spin up multiple
+    databases and apps and then shut them down as and when we need them. First, we
+    need to take stock of our containers by running the following command in the terminal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If Docker is a fresh install, we get the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As we can see, we have no containers. We also need to take stock of our images.
+    This can be done by running the following terminal command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command gives the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Again, if Docker is a fresh install, then there will be no containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are other ways in which we can create a database in Docker. For instance,
+    we can create our own `docker-compose` installed. Using `docker-compose` will
+    make the database definition straightforward. It will also enable us to add more
+    containers and services. To define our PostgreSQL database, we code the following
+    `docker-compose.yml` file in the root directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, at the top of the file, we have defined the version.
+    Older versions, such as *2* or *1*, have different styles in which the file is
+    laid out. The different versions also support different arguments. At the time
+    of writing this book, version *3* is the latest version. The following URL covers
+    the changes between each `docker-compose` version: [https://docs.docker.com/compose/compose-file/compose-versioning/](https://docs.docker.com/compose/compose-file/compose-versioning/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We then define our database service that is nested under the `postgres` tag.
+    Tags such as `postgres` and `services` denote dictionaries, and lists are defined
+    with `-` for each element. If we were to convert our `docker-compose` file to
+    JSON, it would have the following structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, we can see that our services are a dictionary of dictionaries
+    denoting each service. Thus, we can deduce that we cannot have two tags with the
+    same name, as we cannot have two dictionary keys that are the same. The previous
+    code also tells us that we can keep stacking on service tags with their own parameters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running a database in Docker
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With our database service, we have a name, so when we look at our containers,
+    we know what each container is doing in relation to the service, such as a server
+    or database. In terms of configuring the database and building it, we luckily
+    pull the official `postgres` image. This image has everything configured for us,
+    and Docker will pull it from the repository. The image is like a blueprint. We
+    can spin up multiple containers with their own parameters from that one image
+    that we pulled. We then define the restart policy as always. This means that containers’
+    restart policies will trigger when the containers exit. We can also define it
+    to only restart based on a failure or stopping.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It should be noted that Docker containers have their own ports that are not
+    open to the machine. However, we can expose container ports and map the exposed
+    port to an internal port inside the Docker container. Considering these features,
+    we can define our ports.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, in our example, we will keep our definition simple. We will state
+    that we accept incoming traffic to the Docker container on port `5432` and route
+    it through to the internal port `5432`. We will then define our environment variables,
+    which are the username, the name of the database, and the password. While we are
+    using generic, easy-to-remember passwords and usernames for this book, it is advised
+    that you switch to more secure passwords and usernames if pushing to production.
+    We can build a spin up for our system by navigating to the root directory where
+    our `docker-compose` file is by running the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command will pull down the `postgres` image from the repository
+    and start constructing the database. After a flurry of log messages, the terminal
+    should come to rest with the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the date and time will vary. However, what we are told here
+    is that our database is ready to accept connections. Yes, it is really that easy.
+    Therefore, Docker adoption is unstoppable. Clicking *Ctrl* + *C* will stop our
+    `docker-compose`; thus, shutting down our `postgres` container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We now list all our containers with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command gives us the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding output, we can see that all the parameters are there. The ports,
+    however, are empty because we stopped our service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring routing and ports in Docker
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If we were to start our service again and list our containers in another terminal,
+    port `5432` would be under the `PORTS` tag. We must keep note of the `CONTAINER
+    ID` reference to the Docker container as it will be unique and different/random
+    for each container. We will need to reference these if we’re accessing logs. When
+    we run `docker-compose up`, we essentially use the following structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: "![Figure 6.2 – \uFEFFdocker-compose serving our database](img/Figure_6.2_B18722.jpg)"
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6.2 – docker-compose serving our database
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In *Figure 6**.2*, we can see that our `docker-compose` uses a unique project
+    name to keep containers and networks in their namespace. It must be noted that
+    our containers are running on the localhost. Therefore, if we want to make a call
+    to a container managed by `docker-compose`, we will have to make a localhost request.
+    However, we must make the call to the port that is open from `docker-compose`,
+    and `docker-compose` will route it to the port that is defined in the `docker-compose`.`yml`
+    file. For instance, we have two databases with the following `yml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we can see that both of our databases accept traffic
+    into their containers through port `5432`. However, there would be a clash, so
+    one of the ports that we open with is port `5433`, which is routed to port `5432`
+    in the second database container, which gives us the following layout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 6.3 – docker-compose serving multiple databases](img/Figure_6.3_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6.3 – docker-compose serving multiple databases
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This routing gives us flexibility when running multiple containers. We are
+    not going to run multiple databases for our to-do application, so we should delete
+    our `postgres_two` service. Once we have deleted our `postgres_two` service, we
+    can run `docker-compose` again and then list our containers with the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command will now give us the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding output, we can see that our image has been pulled from the
+    `postgres` repository. We also have a unique/random ID for the image and a date
+    for when that image was created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have a basic understanding of how to get our database up and running,
+    we can run `docker-compose` in the background with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command just tells us which containers have been spun up with
+    the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see our status when we list our containers with the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the previous output, the other tags are the same, but we can also see that
+    the `STATUS` tag tells us how long the container has been running, and which port
+    it is occupying. Although `docker-compose` is running in the background, it does
+    not mean we cannot see what is going on. We can access the logs of the container
+    anytime by calling the `logs` command and referencing the ID of the container
+    using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command should give the same output as our standard `docker-compose
+    up` command. To stop `docker-compose`, we can run the `stop` command, shown as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command will stop our containers in our `docker-compose`. It
+    must be noted that this is different from the `down` command, shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `down` command will also stop our containers. However, the `down` command
+    will delete the container. If our database container is deleted, we will also
+    lose all our data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is a configuration parameter called `volumes` that can prevent the deletion
+    of our data when the container is removed; however, this is not essential for
+    local development on our computers. In fact, you will be wanting to delete containers
+    and images from your laptop regularly. *I did a purge on my laptop once of containers
+    and images that I was no longer using, and this freed* *up 23GB!*
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker containers on our local development machines should be treated as temporary.
+    While Docker containers are more lightweight than standard virtual machines, they
+    are not free. The idea behind Docker running on our local machines is that we
+    can simulate what running our application would be like on a server. If it runs
+    in Docker on our laptop, we can be certain that it will also run on our server,
+    especially if the server is being managed by a production-ready Docker orchestration
+    tool such as **Kubernetes**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running Docker in the background with Bash scripts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Docker can also help with consistent testing and development. We will want to
+    be able to have the same results every time we run a test. We will also want to
+    onboard other developers easily and enable them to tear down and spin up containers
+    that will support development quickly and easily. I have personally seen development
+    delayed when not supporting easy teardown and spin-up procedures. For instance,
+    when working on a complex application, the code that we are adding and testing
+    out might scar the database. Reverting back might not be possible, and deleting
+    the database and starting again would be a pain, as reconstructing this data might
+    take a long time. The developer may not even remember how they constructed the
+    data in the first place. There are multiple ways to prevent this from happening
+    and we will cover these in [*Chapter 9*](B18722_09.xhtml#_idTextAnchor182), *Testing
+    Our Application Endpoints and Components*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For now, we will build a script that spins up our database in the background,
+    waits until the connection to our database is ready, and then tears down our database.
+    This will give us the foundations to build pipelines, tests, and onboarding packages
+    to start development. To do this, we will create a directory in the root directory
+    of our Rust web application called `scripts`. We can then create a `scripts/wait_for_database.sh`
+    file housing the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using the preceding code, we move the current working directory of the script
+    out of the `scripts` directory and into our root directory. We then start `docker-compose`
+    in the background. Next, we loop, pinging port `5432` utilizing the `pq_isready`
+    command to wait until our database is ready to accept connections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `pg_isready` Bash command might not be available on your computer. The
+    `pg_isready` command usually comes with the installation of the PostgreSQL client.
+    Alternatively, you can use the following Docker command instead of `pg_isready`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`until docker run -it postgres --add-host host.docker.internal:host-gateway
+    docker.io/postgres:14-alpine -h localhost -U` `username pg_isready`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is happening here is that we are using the `postgres` Docker image to run
+    our database check to ensure that our database is ready to accept connections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once our database is running, we print out to the console that our database
+    is running and then tear down our `docker-compose`, destroying the database container.
+    Running the command that runs the `wait_for_database.sh` Bash script will give
+    the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding output, considering that we tell our loop to sleep for 2
+    seconds at every iteration of the loop, we can deduce that it took roughly 4 seconds
+    for our newly spun-up database to accept connections. Thus, we can say that we
+    have achieved basic competency in managing local databases with Docker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we set up our environment. We also sufficiently understood
+    the basics of Docker to build, monitor, shut down, and delete our database with
+    just a few simple commands. Now, we can move on to the next section, where we’ll
+    interact with our database with Rust and the `diesel` crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Connecting to PostgreSQL with Diesel
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Now that our database is running, we will build a connection to this database
+    in this section. To do this, we will be using the `diesel` crate. The `diesel`
+    crate enables us to get our Rust code to connect to databases. We are using the
+    `diesel` crate instead of other crates because the `diesel` crate is the most
+    established, having a lot of support and documentation. To do this, let us go
+    through the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we will utilize the `diesel` crate. To do this, we can add the following
+    dependencies in our `cargo.toml` file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE23]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE24]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In the preceding code, we have included a `postgres` feature in our `diesel`
+    crate. The `diesel` crate definition also has the `chrono` and `r2d2` features.
+    The `chrono` feature enables our Rust code to utilize datetime structs. The `r2d2`
+    feature enables us to perform connection pooling. We will cover connection pooling
+    at the end of the chapter. We have also included the `dotenv` crate. This crate
+    enables us to define variables in a `.env` file, which will then be passed through
+    into our program. We will use this to pass in the database credentials and then
+    into processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We now need to install the `diesel` client to run migrations to the database
+    through our terminal as opposed to our app. We can do this with the following
+    command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE27]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We now need to define the environment `DATABASE_URL` URL. This will enable
+    our client commands to connect to the database with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'In the preceding URL, our username is denoted as username, and our password
+    is denoted as password. Our database is running on our own computer, which is
+    denoted as `localhost`, and our database is called `to_do`. This creates a `.env`
+    file in the root file outputting the following contents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that our variables are defined, we can start to set up our database. We
+    need to spin up our database container with `docker-compose` with our `docker-compose
+    up` command. We then set up our database with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The preceding command then creates a `migrations` directory in the root with
+    the following structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `up.sql` file is fired when the migration is upgraded, and the `down.sql`
+    file is fired when the migration is downgraded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we need to create our migration to create our to-do items. This can be
+    done by commanding our client to generate the migration with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Once this is run, we should get the following printout in the console:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command gives us the following file structure in our migrations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: At face value, it might seem unfortunate that with the `diesel` crate, we will
+    have to create our own SQL files. However, this is forcing good practice. While
+    it is easier to allow the crate to automatically write the SQL, this couples our
+    application with the database. For instance, once I was working on refactoring
+    a microservices system. The problem I had was that I was using a Python package
+    to manage all my migrations for the database. However, I wanted to change the
+    code of the server. You will not be surprised to hear that I was going to switch
+    the server from Python to Rust. However, because the migrations were autogenerated
+    by the Python library, I had to construct helper Docker containers that, to this
+    day, spin up when a new release is done and then perform a copy of the schema
+    of the database to the Rust application when it is being built. This is messy.
+    This also justified to me why we had to write all our SQL manually when I was
+    an R&D software engineer in financial tech.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Databases are separate from our applications. Because of this, we should keep
+    them isolated, so we do not see the writing of SQL manually as a hindrance. Embrace
+    it as you are learning a good skill that will save you headaches in the future.
+    We must remember not to force one tool into everything, it has to be the right
+    tool for the right job. In our `create to-do items` migrations folder, we define
+    our `to_do` table with the following SQL entries in our `up.sql` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we have an `id` of the item that will be unique. We
+    then have `title` and `status`. We have also added a `date` field that, by default,
+    has the current time the to-do item is inserted into the table. These fields are
+    wrapped in a `CREATE TABLE` command. In our `down.sql` file, we need to drop the
+    table if we are downgrading the migration with the following SQL command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we have written the SQL code for our `up.sql` and `down.sql` files,
+    we can describe what our code does with the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 6.4 – The effect of the up.sql and down.sql scripts](img/Figure_6.4_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6.4 – The effect of the up.sql and down.sql scripts
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that our migration is ready, we can run it with the following terminal
+    command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The preceding command runs the migration creating the `to_do` table. Sometimes,
+    we might introduce a different field type in the SQL. To rectify this, we can
+    change SQL in our `up.sql` and `down.sql` files and run the following `redo` terminal
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding command will run the `down.sql` file and then run the `up.sql`
+    file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we can run commands in our database Docker container to inspect that
+    our database has the `to_do` table with the right fields that we defined. We can
+    do this by running commands directly on our database Docker container. We can
+    enter the container under the `username` username, while pointing to the `to_do`
+    database using the following terminal command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'It must be noted that, in the preceding command, my container ID is `5fdeda6cfe43`,
+    but your container ID will be different. If you do not input the right container
+    ID, you will not be running the right database commands on the right database.
+    After running this command, we get a shell interface with the following prompt:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After the preceding prompt, when we type in `\c`, we will be connected to the
+    database. This will usually be denoted with a statement saying that we are now
+    connected to the `to_do` database and as the `username` user. Finally, typing
+    `\d` will list the relations, giving the following table in the terminal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding table, we can see that there is a migrations table to keep
+    track of the migration version of the database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also have our `to_do` table and the sequence for the `to_do` item IDs. To
+    inspect the schema, all we need to do is type in `\d+ to_do`, which gives us the
+    following schema in the terminal:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE44]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE45]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE46]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE47]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE48]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE49]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE50]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE51]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE52]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE53]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE54]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE55]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE56]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE57]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In the preceding table, we can see that our schema is exactly how we designed
+    it. We get a little more information in the `date` column clarifying that we do
+    not get the time the to-do item was created. Seeing as our migrations have worked,
+    we should explore how migrations show up in the database in the next step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can inspect our migrations table by running the following SQL command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The preceding command gives us the following table as output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, these migrations can be useful for debugging as sometimes we
+    can forget to run a migration after updating a data model. To explore this further,
+    we can revert our last migration with the following command outside the Docker
+    container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We then get the following printout informing us that the rollback has been
+    performed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that our migration has been rolled back, our migrations table will look
+    like the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding printout, we can see that our last migration was removed. Therefore,
+    we can deduce that the migrations table is not a log. It only keeps track of migrations
+    that are currently active. The tracking of the migrations will aid the `diesel`
+    client when running a migration to run the right migration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have used the `diesel` client to connect to our database
+    in a Docker container. We then defined the database URL in an environment file.
+    Next, we initialized some migrations and created a table in our database. Even
+    better, we directly connected with the Docker container, where we could run a
+    range of commands to explore our database. Now that our database is fully interactive
+    via our client in the terminal, we can start building our `to-do` item database
+    models so that our Rust app can interact with our database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Connecting our app to PostgreSQL
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In the preceding section, we managed to connect to the PostgreSQL database
+    using the terminal. However, we now need our app to manage the reading and writing
+    to the database for our to-do items. In this section, we will connect our application
+    to the database running in Docker. To connect, we must build a function that establishes
+    a connection and then returns it. It must be stressed that there is a better way
+    to manage the database connection and configuration, which we will cover at the
+    end of the chapter. For now, we will implement the simplest database connection
+    to get our application running. In the `src/database.rs` file, we define the function
+    with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, first of all, you might notice the `use diesel::prelude::*;`
+    import command. This command imports a range of connection, expression, query,
+    serialization, and result structs. Once the required imports are done, we define
+    the `connection` function. First of all, we need to ensure that the program will
+    not throw an error if we fail to load the environment using the `dotenv().();`
+    command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once this is done, we get our database URL from the environment variables and
+    establish a connection using a reference to our database URL. We then `unwrap`
+    the result, and we might panic displaying the database URL if we do not manage
+    to do this, as we want to ensure that we are using the right URL with the right
+    parameters. As the connection is the final statement in the function, this is
+    what is returned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have our own connection, we need to define the schema. This will
+    map the variables of the `to-do` items to the data types. We can define our schema
+    in the `src/schema.rs` file with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, we are using the `diesel` macro, `table!`, which specifies
+    that a table exists. This map is straightforward, and we will use this schema
+    in the future to reference columns and the table in database queries and inserts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have built our database connection and defined a schema, we must
+    declare them in our `src/main.rs` file with the following imports:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, our first import also enables procedural macros. If we
+    do not use the `#[macro_use]` tag, then we will not be able to reference our schema
+    in our other files. Our schema definition would also would not be able to use
+    the table macro. We also import the `dotenv` crate. We keep the modules that we
+    created in [*Chapter 5*](B18722_05.xhtml#_idTextAnchor091), *Displaying Content
+    in the Browser*. We also define our schema and database modules. After doing this,
+    we have all we need to start building our data models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating our data models
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We will use our data models to define parameters and behavior around the data
+    from the database in Rust. They essentially act as a bridge between the database
+    and the Rust app, as depicted in the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 6.5 – The relationship between models, schemas, and databases](img/Figure_6.5_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6.5 – The relationship between models, schemas, and databases
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this section, we will define the data models for to-do items. However, we
+    need to enable our app to add more data models if needed. To do this, we carry
+    out the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We define a new to-do item data model struct.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Then, we define a constructor function for the new to-do item structs.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: And lastly, we define a to-do item data model struct.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Before we start writing any code, we define the following file structure in
+    the `src` directory as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding structure, each data model has a directory in the `models`
+    directory. Inside that directory, we have two files that define the model. One
+    for a new insert and another for managing the data around the database. The new
+    insert data model does not have an ID field.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There is no ID field because the database will assign an ID to the item; we
+    do not define it before. However, when we interact with items in the database,
+    we will get their ID, and we may want to filter by ID. Therefore, the existing
+    data item model houses an ID field. We can define our new item data model in the
+    `new_item.rs` file with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see in the preceding code, we import our table definition because
+    we are going to reference it. We then define our new item with `title` and `status`,
+    which are to be strings. The `chrono` crate is used to define our `date` field
+    as `NaiveDateTime`. We then use a `diesel` macro to define the table to belong
+    to this struct at the `"to_do"` table. Do not be fooled by the fact that this
+    definition uses quotation marks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we do not import our schema, the app will not compile because it will not
+    understand the reference. We also add another `diesel` macro stating that we allow
+    the data to be inserted into the database with the `Insertable` tag. As covered
+    before, we are not going to add any more tags to this macro because we only want
+    this struct to insert data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have also added a `new` function to enable us to define standard rules around
+    creating a new struct. For instance, we are only going to be creating new items
+    that are pending. This reduces the risk of a rogue status being created. If we
+    want to expand later, the `new` function could accept a `status` input and run
+    it through a match statement, throwing an error if the status is not one of the
+    statuses that we are willing to accept. We also automatically state that the `date`
+    field is the date that we create the item.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With this in mind, we can define our item data model in the `item.rs` file
+    with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see in the preceding code, the only difference between the `NewItem`
+    and `Item` struct is that we do not have a constructor function; we have swapped
+    the `Insertable` tag for `Queryable` and `Identifiable`, and we have added an
+    `id` field to the struct. To make these available to the rest of the application,
+    we define them in the `models/item/mod.rs` file with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, in the `models/mod.rs` file, we make the `item` module public to other
+    modules and the `main.rs` file with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we define our model’s module in the `main.rs` file with the following
+    line of code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we can access our data models throughout the app. We have also locked down
+    the behavior around reading and writing to the database. Next, we can move on
+    to importing these data models and using them in our app.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Getting data from the database
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When interacting with a database, it can take some time to get used to how we
+    do this. Different **object-relational mappers** (**ORMs**) and languages have
+    different quirks. While the underlying principles are the same, the syntax for
+    these ORMs can vary greatly. Therefore, just clocking hours using an ORM will
+    enable you to become more confident and solve more complex problems. We can start
+    with the simplest mechanism, getting all the data from a table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To explore this, we can get all the items from the `to_do` table and return
+    them at the end of each view. We defined this mechanism in [*Chapter 4*](B18722_04.xhtml#_idTextAnchor073),
+    *Processing HTTP Requests*. In terms of our application, you will recall that
+    we have a `get_state` function that packages our to-do items for our frontend.
+    This `get_state` function is housed in the `ToDoItems` struct in the `src/json_serialization/to_do_items.rs`
+    file. Initially, we must import what we need with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we have imported the `diesel` crate and macros, which
+    enable us to build database queries. We then import our `establish_connection`
+    function to make connections to the database and then import the schema and database
+    model to make the query and handle the data. We can then refactor our `get_state`
+    function with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, we first establish the connection. Once the database
+    connection is established, we then get our table and build a database query off
+    it. The first part of the query defines the order. As we can see, our table can
+    also pass references to columns which also have their own function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We then define what struct will be used to load the data and pass in a reference
+    to the connection. Because the macros defined the struct in the load, if we passed
+    in the `NewItem` struct into the `load` function, we would get an error because
+    the `Queryable` macro is not enabled for that struct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It can also be noted that the `load` function has a prefix before the functions
+    brackets where the parameters are passed in `load::<Item>(&connection)`. This
+    prefix concept was covered in [*Chapter 1*](B18722_01.xhtml#_idTextAnchor015),
+    *A Quick Introduction to Rust*,the *Verifying with traits* section, *step 4*,
+    but for now, you can use the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: The type that is passed into the prefix `<Item>` defines the type of input accepted.
+    This means that when the compiler runs, a separate function for each type passed
+    into our `load` function is compiled.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We then directly unwrap the `load` function resulting in a vector of items
+    from the database. With the data from the database, we loop through constructing
+    our item structs and appending them to our buffer. Once this is done, we construct
+    the `ToDoItems` JSON schema from our buffer and return it. Now that we have enacted
+    this change, all our views will return data directly from the database. If we
+    run this, there will be no items on display. If we try and create any, they will
+    not appear. However, although they are not being displayed, what we have done
+    is get the data from the database and serialize it in the JSON structure that
+    we want. This is the basis of returning data from a database and returning it
+    to the requester in a standard way. This is the backbone of APIs built in Rust.
+    Because we are no longer relying on reading from a JSON state file when getting
+    the items from the database, we can remove the following imports from the `src/json_serialization/to_do_items.rs`
+    file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: We remove the preceding imports because we have not refactored any of the other
+    endpoints. Resultantly, the `create` endpoint will fire correctly; however, the
+    endpoint is just creating items in the JSON state file that `return_state` no
+    longer reads. For us to enable creation again, we must refactor the `create` endpoint
+    to insert a new item into the database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inserting into the database
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this section, we will build and create a view that creates a to-do item.
+    If we remember the rules around our creating of to-do items, we do not want to
+    create duplicate to-do items. This can be done with a unique constraint. However,
+    for now, it is good to keep things simple. Instead, we will make a database fall
+    with a filter based on the title that is passed into the view. We then check,
+    and if no results are returned, we will insert a new `to-do` item into the database.
+    We do this by refactoring the code in the `views/to_do/create.rs` file. First,
+    we reconfigure the imports as seen in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we import the necessary `diesel` imports to make a query
+    as described in the previous section. We then import the `actix-web` structs needed
+    for the view to process a request and define a result. We then import our database
+    structs and functions to interact with the database. Now that we have everything,
+    we can start working on our `create` view. Inside our `pub async fn create` function,
+    we start by getting two references of the title of the `to-do` item from the request:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once we have extracted the title from the URL in the preceding code, we establish
+    a database connection and make a database call to our table using that connection,
+    as seen in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As we can see in the preceding code, the query is pretty much the same as the
+    query in the previous section. However, we have a `filter` section that refers
+    to our `title` column that must be equal to our `title`. If the item being created
+    is truly new, there will be no items created; therefore, the length of the result
+    will be zero. Subsequently, if the length is zero, we should create a `NewItem`
+    data model and then insert it into the database to return the state at the end
+    of the function, as seen in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE79]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that Diesel has an `insert` function, which accepts the table, and references
+    to the data model we built. Because we have switched to database storage, we can
+    delete the following imports as they are not needed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE80]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, using our app, we will be able to create to-do items and then see these
+    items pop up on the frontend of our application. Therefore, we can see that our
+    `create` and `get state` functions are working; they are engaging with our database.
+    If you are having trouble, a common mistake is to forget to spin up our `docker-compose`.
+    (*Note: Remember to do this, otherwise, the app will not be able to connect to
+    the database as it is not running*). However, we cannot edit our to-do items status
+    to `DONE`. We will have to edit our data on the database to do this.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Editing the database
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'When we edit our data, we are going to get the data model from the database
+    and then edit the entry with a database call function from Diesel. To engage our
+    `edit` function with the database, we can edit our view in the `views/to_do/edit.rs`
+    file. We start by refactoring the imports, as you see in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE81]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As we can see in the preceding code, there is a pattern emerging. The pattern
+    is that we import dependencies to handle authentication, a database connection,
+    and a schema and then build a function that performs the operation that we want.
+    We have covered the imports and the meanings behind them previously. In our `edit`
+    view, we must only get one reference to the title this time, which is denoted
+    in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE82]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we can see that we perform a filter on our database
+    without loading the data. This means that the `results` variable is an `UpdateStatement`
+    struct. We then use this `UpdateStatement` struct to update our item to `DONE`
+    in the database. With the fact that we are no longer using the JSON file, we can
+    delete the following imports in the `views/to_do/edit.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE83]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, we can see that we call the `update` function and fill
+    it with the results that we got from the database. We then set the `status` column
+    to `Done`, and then `execut`e using the reference to the connection. Now we can
+    use this to edit our `to-do` items so they shift to the done list. However, we
+    cannot delete them. To do this, we are going to have to refactor our final endpoint
+    to completely refactor our app to be connected to a database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deleting data
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'With deleting data, we will take the same approach that we took in the previous
+    section when editing. We will get an item from the database, pass it through the
+    Diesel `delete` function, and then return the state. Right now, we should be comfortable
+    with this approach, so it is advised that you try and implement it by yourself
+    in the `views/to_do/delete.rs` file. The code is given as follows for the imports:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE84]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we rely on the Diesel crates and the prelude so we can
+    use the Diesel macros. Without `prelude`, we would not be able to use the schema.
+    We then import the Actix Web structs that are needed to return data to the client.
+    We then import the crates that we have built to manage our to-do item data. For
+    the `delete` function, the code is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE85]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To conduct quality control, let us go through the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Enter `buy canoe` into the text input and click the **Create** button.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Enter `go dragon boat racing` into the text input and click the **Create** button.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Click the **edit** button on the **buy canoe** item. After doing this, we should
+    have the following output in the frontend:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 6.6 – Expected output](img/Figure_6.6_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6.6 – Expected output
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the preceding figure, we have bought our canoe, but we have not gone dragon
+    boat racing yet. And here we have it, our app is working seamlessly with our PostgreSQL
+    database. We can create, edit, and delete our to-do items. Because of the structure
+    that was defined in previous chapters, chopping out the JSON file mechanism for
+    the database did not require a lot of work. The request for processing and returning
+    of data was already in place. When we run our application now you may have realized
+    that we have the following printout when compiling:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE86]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What is happening, according to the preceding printout, is that we are no longer
+    using our `src/state.rs` file or our `src/processes.rs` file. These files are
+    no longer being used because our `src/database.rs` file is now managing our storage,
+    deletion, and editing of persistent data with a real database. We are also processing
+    our data from the database to a struct with our database model structs that have
+    implemented the Diesel `Queryable` and `Identifiable` traits. Thus, we can delete
+    the `src/state.rs` and `src/database.rs` files as they are no longer needed. We
+    also do not need our `src/to_do/traits` module, so this can be removed too. Next,
+    we can remove all the references to the traits. Removing the references essentially
+    means removing traits from the `src/to_do/mod.rs` file and removing the import
+    and implementation of these traits in our structs for the `to_do` module. For
+    instance, to remove the traits from the `src/to_do/structs/pending.rs` file, we
+    must merely remove the following imports:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE87]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then remove the following implementation of these traits:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE88]'
+  prefs: []
+  type: TYPE_PRE
+- en: We also must remove the traits in the `src/to_do/structs/done.rs` file. We now
+    have an opportunity to appreciate the payoff of our well-structured isolated code.
+    We can slot in different methods for persistent storage easily, as we can simply
+    remove existing storage methods by deleting a couple of files and the traits directly.
+    We then just removed the implementations of the traits. That was it. We did not
+    have to dig into functions and alter lines of code. Because our reading functionality
+    was in the traits, removing the implementations severed our application completely
+    by just removing the implementations of the traits. Structuring code like this
+    really pays off in the future. In the past, I have had to pull code out of one
+    server into another when refactoring microservices or upgrading or switching a
+    method, such as a storage option. Having isolated code makes refactoring a lot
+    easier, quicker, and less error-prone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our application is now fully working with a database. However, we can improve
+    the implementation of our database. Before we do this, however, we should refactor
+    our configuration code in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring our application
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Right now, we are storing our database URL in a `.env` file. This is fine,
+    but we can also use `yaml` `config` files. When developing web servers, they will
+    be run in different environments. For instance, right now, we are running our
+    Rust server on our local machine. However, later we will package the server into
+    our own Docker image and deploy it on the cloud. With microservices infrastructure,
+    we might use a server that we built in one cluster and slot it into a different
+    cluster with different databases to connect to. Because of this, config files
+    defining all inward and outward traffic become essential. When we deploy our server,
+    we can make a request to file storage, such as AWS S3, to get the right config
+    file for the server. It must be noted that environment variables can be preferred
+    for deployment as they can be passed into containers. We will cover how to configure
+    a web application using environment variables in *Chapter 13*, *Best Practices
+    for a Clean Web App Repository*. For now, we will focus on using config files.
+    We also need to enable our server to be flexible in terms of what config file
+    is being loaded. For instance, we should not have to have a config file in a particular
+    directory and with a particular name to be loaded into our server. We should keep
+    our config files properly named for the right context to reduce the risk of the
+    wrong config file being loaded into the server. Our path to the file can be passed
+    when spinning up our server. Because we are using `yaml` files, we need to define
+    the `serde_yaml` dependency on our `Cargo.toml` file as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE89]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we can read `yaml` files, we can build our own configuration module,
+    which loads to `yaml` file values into a HashMap. This can be done with one struct;
+    therefore, we should put our config module into one file, which is the `src/config.rs`
+    file. First, we import what we need with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE90]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we use `env` to capture environment variables passed
+    into the program, `HashMap` to store the data from the config file, and the `serde_yaml`
+    crate to process `yaml` values from the config file. We then define the struct
+    that houses our config data with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE91]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we can see that our data key of the value is `String`,
+    and the value belonging to those keys are `yaml` values. We then build a constructor
+    for our struct that takes the last argument passed into the program, opens the
+    file based on the path to the file passed into the program, and loads our `map`
+    field with the data from the file with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE92]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that the `config` struct is defined, we can define our `config` module
+    in the `src/main.rs` file with the following line of code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE93]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We must then refactor our `src/database.rs` file to load from a `yaml` `config`
+    file. Our refactored imports take the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE94]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that all references to `env` have been removed, as this is now handled
+    in our `config` module. We then load our file, get our `DB_URL` key, and directly
+    unwrap the result of getting the variable associated with the `DB_URL` key, converting
+    the `yaml` value to a string and directly unwrapping the result from that conversion.
+    We directly unwrap the getting and conversion functions because if they fail,
+    we will not be able to connect to the database anyway. If we cannot connect, we
+    want to know about the error as soon as possible with a clear error message showing
+    where this is happening. We can now shift our database URL into our `config.yml`
+    file in the root of our Rust application with the following content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE95]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we can run our application with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE96]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `config.yml` file is the path to the config file. If you run `docker-compose`
+    and the frontend, you will see that the database URL from our config file is being
+    loaded and our application is connected to the database. There is one problem
+    with this database connection, however. Every time we execute the `establish_connection`
+    function, we make a connection to our database. This will work; however, it is
+    not optimal. In the next section, we will be more efficient with our database
+    connections with database connection pooling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building a database connection pool
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this section, we will create a database connection pool. A database connection
+    pool is a limited number of database connections. When our application needs a
+    database connection, it will take the connection from the pool and place it back
+    into the pool when the application no longer needs the connection. If there are
+    no connections left in the pool, the application will wait until there is a connection
+    available, as seen in the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 6.7 – Database connection pool with a limit of three connections](img/Figure_6.7_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6.7 – Database connection pool with a limit of three connections
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we refactor our database connection, we need to install the following
+    dependency in our `Cargo.toml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE97]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We then define our imports with the `src/database.rs` file with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE98]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the imports we have defined in the preceding code, what do you think we
+    will do when we write out our new database connection? At this point, it is a
+    good time to stop and think about what you can do with these imports.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first block of imports, if you remember, will be used to establish a database
+    connection before the request hits the view. The second block of imports enables
+    us to define our database connection pool. The final `Config`  parameter is to
+    get the database URL for the connection. Now that our imports are done, we can
+    define the connection pool struct with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE99]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we state that our `PgPool` struct is a connection manager
+    that manages connections inside a pool. We then build our connection, which is
+    a static reference, with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE100]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we get the URL from the config file and construct a
+    connection pool that is returned and thus assigned to the `DBCONNECTION` static
+    referenced variable. Because this is a static reference, the lifetime of our `DBCONNECTION`
+    variable matches the lifetime of the server. We can now refactor our `establish_connection`
+    function to take from the database connection pool with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE101]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we can see that we are returning a `PooledConnection`
+    struct. However, we do not want to call the `establish_connection` function every
+    time we need it. We also want to reject the HTTP request before it hits the view
+    if we cannot make the connection for whatever reason, as we do not want to load
+    a view that we cannot process. Just like our `JWToken` struct, we can create a
+    struct that creates a database connection and passes that database connection
+    into the view. Our struct has one field, which is a pooled connection, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE102]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With this `DB` struct, we can implement the `FromRequest` trait like we did
+    with our `JWToken` struct with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE103]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here we do not directly unwrap the getting the database connection. Instead,
+    if there is an error when connecting, we return an error with a helpful message.
+    If our connection is successful, we then return it. We can implement this in our
+    views. To avoid repetitive code, we shall just use the `edit` view, but we should
+    apply this approach to all our views. First, we define the following imports:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE104]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we can see that we have imported the `DB` struct. Our
+    `edit` view should now look as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE105]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, we can see that we directly reference the `connection`
+    field of our `DB` struct. The fact is that we can simply get a pooled connection
+    into our view by passing the `DB` struct into the view like our authentication
+    token.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we constructed a development environment where our app could
+    interact with the database using Docker. Once we did this, we explored the listing
+    of containers and images to inspect how our system is going. We then created migrations
+    using the `diesel` crate. After this, we installed the `diesel` client and defined
+    the database URL as an environment variable so that our Rust app and migrations
+    could directly connect with the database container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We then ran migrations and defined the SQL scripts that would fire when the
+    migration ran, and in turn, ran them. Once all this was done, we inspected the
+    database container again to see whether the migration had, in fact, been executed.
+    We then defined the data models in Rust, and refactored our API endpoints, so
+    they performed `get`, `edit`, `create`, and `delete` operations on the database
+    in order to keep track of the to-do items.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What we have done here is upgraded our database storage system. We are one step
+    closer to having a production-ready system as we are no longer relying on a JSON
+    file to store our data. You now have the skills to perform database management
+    tasks that enable you to manage changes, credentials/access, and schemas. We also
+    performed all the basic operations on the database that are needed to run an app
+    that creates, gets, updates, and deletes data. These skills are directly transferable
+    to any other project you wish to undertake in Rust web projects. We then augmented
+    our newly developed database skills by enabling our database connections to be
+    limited by a connection pool. Finally, implementing our database connection structs
+    was made easy by implementing the `FromRequest` trait so other developers can
+    implement our connection just by passing the struct into the view as a parameter.
+    The view is also protected if the database connection cannot be made.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will build on these skills to build a user authentication
+    system so we can create users and check credentials when accessing the app. We
+    will use a combination of database, extraction of data from headers, browser storage,
+    and routing to ensure that the user must be logged in to access the to-do items.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: What are the advantages of having a database over a JSON file?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How do you create a migration?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How do we check migrations?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If we wanted to create a user data model in Rust with a name and age, what should
+    we do?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is a connection pool, and why should we use it?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The database has advantages in terms of multiple reads and writes at the same
+    time. The database also checks the data to see whether it is in the right format
+    before inserting it and we can do advanced queries with linked tables.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We install the `diesel` client and define the database URL in the `.env` file.
+    We then create migrations using the client and write the desired schema required
+    for the migration. We then run the migration.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We use the container ID of the database to access the container. We then list
+    the tables; if the table we desire is there, then this is a sign that the migration
+    ran. We can also check the migration table in the database to see when it was
+    last run.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We define a `NewUser` struct with the name as a string and age as an integer.
+    We then create a `User` struct with the same field and an extra integer field,
+    the ID.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A connection pool pools a limited number of connections that connect to the
+    database. Our application then passes these connections to the threads that need
+    them. This keeps the number of connections connecting to the database limited
+    to avoid the database being overloaded.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

@@ -1,0 +1,1365 @@
+- en: Atomics – Safely Reclaiming Memory
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we discussed the atomic primitives available to the
+    Rust programmer, implementing higher-level synchronization primitives and some
+    data structures built entirely of atomics. A key challenge with atomic-only programming,
+    compared to using higher-level synchronization primitives, is memory reclamation.
+    It is only safe to free memory once. When we build concurrent algorithms only
+    from atomic primitives, it's very challenging to do something only once and keep
+    performance up. That is, safely reclaiming memory requires some form of synchronization.
+    But, as the total number of concurrent actors rise, the cost of synchronization
+    dwarfs the latency or throughput benefits of atomic programming.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will discuss three techniques to resolve the memory reclamation
+    issue of atomic programming—reference counting, hazard pointers, and epoch-based
+    reclamation. These methods will be familiar to you from previous chapters, but
+    here we will do a deep-dive on them, investigating their trade-offs. We will introduce
+    two new libraries, `conc` and crossbeam, which implement hazard pointers and epoch-based
+    reclamation, respectively. By the close of this chapter, you should have a good
+    handle on the three approaches presented and be in a good place to start laying
+    down production-quality code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By the end of this chapter, we will have:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Discussed reference counting and its associated tradeoffs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Discussed the hazard pointer approach to memory reclamation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Investigated a Treiber stack using the hazard pointer approach via the `conc`
+    crate
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Discussed the epoch-based reclamation strategy
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Done a deep investigation of the `crossbeam_epoch` crate
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Investigated a Treiber stack using the epoch-based reclamation approach
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter requires a working Rust installation. The details of verifying
+    your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust*. No additional
+    software tools are required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can find the source code for this book''s projects on GitHub: [https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust).
+    The source code for this chapter is under `Chapter07`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Approaches to memory reclamation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the discussion that follows, the three techniques are laid out roughly in
+    order of their speed, slowest to fastest, as well as their difficulty, easiest
+    to hardest. You should not be discouraged—you are now at one of the forefronts
+    of the software engineering world. Welcome. Go boldly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reference counting
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Reference-counting memory reclamation associates a piece of protected data with
+    an atomic counter. Every thread reading or writing to that protected data increases
+    the counter on acquisition and decreases the counter on de-acquisition. The thread
+    to decrease the counter and find it as zero is the last to hold the data and may
+    either mark the data as available for reclamation or deallocate it immediately.
+    This should, hopefully, sound familiar. The Rust standard library ships with `std::sync::Arc`—discussed
+    in [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync and Send – the
+    Foundation of Rust Concurrency*, and [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+    *Locks – Mutex, Condvar, Barriers and RWLock*, especially—to fulfill this exact
+    need. While we discussed the usage of `Arc`, we did not discuss its internals
+    previously, owing to our need to reach [Chapter 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml), *Atomics – the
+    Primitives of Synchronization*, before we had the necessary background. Let's
+    dig into `Arc` now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Rust compiler''s code for `Arc` is `src/liballoc/arc.rs`. The structure
+    definition is compact enough:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We encountered `Shared<T>` in [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml), 
+    *The Rust Memory Model – Ownership, References and Manipulation*, with it being
+    a pointer with the same characteristics as `*mut X` except that it is non-null.
+    There are two functions for creating a new `Shared<T>`, which are `const unsafe
+    fn new_unchecked(ptr: *mut X) -> Self` and `fn new(ptr: *mut X) -> Option<Self>`.
+    In the first variant, the caller is responsible for ensuring that the pointer
+    is non-null, in the second, the nulled nature of the pointer is checked. Please
+    refer back to [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml),  *The Rust
+    Memory Model – Ownership, References and Manipulation*, *Rc* section for a deep-dive.
+    We know, then, that `ptr` in `Arc<T>` is non-null and, owing to the phantom data
+    field, that the store of `T` is not held in `Arc<T>`. That''d be in `ArcInner<T>`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We see two inner `AtomicUsize` fields: `strong` and `weak`. Like `Rc`, `Arc<T>`
+    allows two kinds of strength references to the interior data. A weak reference
+    does not own the interior data, allowing for `Arc<T>` to be arranged in a cycle
+    without causing an impossible memory-reclamation situation. A strong reference
+    owns the interior data. Here, we see the creation of a new strong reference via
+    `Arc<T>::clone() -> Arc<T>`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we can see that on every clone, the `strong` of `ArcInner<T>` is increased
+    by one  when you use relaxed ordering. The code comment to this block—dropped
+    for brevity in this text—asserts that relaxed ordering is sufficient owing to
+    the circumstance of the use of `Arc`*.* Using a relaxed ordering is alright here,
+    as knowledge of the original reference prevents other threads from erroneously
+    deleting the object. This is an important consideration. Why does clone not require
+    a more strict ordering? Consider a thread, `A`, that clones some `Arc<T>` and
+    passes it to another thread, `B`, and then, having passed to `B`, immediately
+    drops its own copy of `Arc`. We can determine from the inspection of `Arc<T>::new()
+    -> Arc<T>` that, at creation time, `Arc` always has one strong and one weak reference:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'From the perspective of thread `A`, the cloning of `Arc` is composed of the
+    following operations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We know from discussion in the previous chapter, that `Release` ordering does
+    not offer a causality relationship. It''s entirely possible that a hostile CPU
+    could reorder the increment of `strong` to after the movement of  `New Arc` into
+    `B`. Would we be in trouble if `B` then immediately dropped `Arc`? We need to
+    inspect `Arc<T>::drop()`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here we go. `atomic::fence(Acquire)` is new to us. `std::sync::atomic::fence`
+    prevents memory migration around itself, according to the causality relationship
+    established by the provided memory ordering. The fence applies to same-thread
+    and other-thread memory operations. Recall that `Release` ordering disallows loads
+    and stores from migrating downward in the source-code order. Here, we see, that
+    the load and store of strong will disallow migrations downward but will not be
+    reordered after the `Acquire` fence. Therefore, the deallocation of the `T` interior
+    to `Arc` will not happen until both the `A` and `B` threads have synchronized
+    and removed all strong references. An additional thread, `C`, cannot come through
+    and increase the strong references to the interior `T` while this is ongoing,
+    owing to the causality relationship established—neither `A` nor `B` can give `C`
+    a strong reference without increasing the strong counter, causing the drops of
+    `A` or `B` to bail out early. A similar analysis holds for weak references.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Doing an immutable dereference of `Arc` does not increase the strong or weak
+    counts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Because drop requires a mutable self, it is impossible to free `Arc<T>` while
+    there is a valid `&T`. Getting `&mut T` is more involved, which is done via `Arc<T>::get_mut(&mut
+    Self) -> Option<&mut T>`. Note that the return is an `Option`. If there are other
+    strong or weak references to the interior `T`, then it''s not safe to consume `Arc`.
+    The implementation of `get_mut` is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Where `is_unique` is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: The compare and exchange operation on weak ensures that there is only one weak
+    reference outstanding—implying uniqueness—and does so on success with `Acquire`
+    ordering. This ordering will force the subsequent check of the strong references
+    to occur after the check of weak references in the code order and above the release
+    store to the same. This exact technique will be familiar from our discussion on
+    mutual exclusion in the previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tradeoffs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Reference counting has much to recommend it as an approach for atomic memory
+    reclamation. The programming model of reference counting is straightforward to
+    understand and memory is reclaimed as soon as it's possible to be safely reclaimed.
+    Programming reference-counted implementations without the use of `Arc<T>` remains
+    difficult, owing to the lack of double-word compare and swap in Rust. Consider
+    a Treiber stack in which the reference counter is internal to stack nodes. The
+    head of the stack might be snapshotted, then freed by some other thread, and the
+    subsequent read to the reference counter will be forced through an invalid pointer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following reference-counted Treiber stack is flawed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is one of the few (intentionally) flawed examples in this book. You are
+    encouraged to apply the techniques discussed earlier in this book to identify
+    and correct the flaws with this implementation. It should be interesting. J.D.
+    Valois' 1995 paper, *Lock-Free Linked Lists Using Compare-and-Swap*, will be of
+    use. You are further warmly encouraged to attempt a Treiber stack using only `Arc`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ultimately, where reference counting struggles is contention, as the number
+    of threads operating on the same reference-counted data increase., those acquire/release
+    pairs don't come cheaply. Reference counting is a good model when you expect the
+    number of threads to be relatively low or where absolute performance is not a
+    key consideration. Otherwise, you'll need to investigate the following methods,
+    which have tradeoffs of their own.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hazard pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We touched on hazard pointers as a method for safe memory reclamation in the
+    previous chapter. We'll now examine the concept in-depth and in the context of
+    a more or less ready-to-use implementation via the Redox project ([https://crates.io/crates/conc](https://crates.io/crates/conc)).
+    We'll be inspecting `conc` as a part of its parent project, tfs ([https://github.com/redox-os/tfs](https://github.com/redox-os/tfs)),
+    at SHA `3e7dcdb0c586d0d8bb3f25bfd948d2f418a4ab10`. Incidentally, if you're unfamiliar
+    with this, Redox is a Rust microkernel-based operating system. The allocator,
+    coreutils, and netutils are all encouraged reading.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The conc crate is not listed in its entirety. You can find the full listing
+    in this book's source repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Hazard pointers were introduced by Maged Michael—of Michael and Scott Queue
+    fame—in his 2004 book, *Hazard Pointers: Safe Memory Reclamation for Lock-Free
+    Objects*. A *hazard*, in this context, is any pointer that is subject to races
+    or ABA issues in the rendezvous of multiple treads participating in some shared
+    data structure. In the previous section''s Treiber stack, the hazard is the head
+    pointer inside of the Stack struct, and in the Michael and Scott queue, it is
+    the head and tail pointers. A hazard pointer associates these hazards with *single-writer
+    multireader shared pointers*, owned by a single writer thread and read by any
+    other threads participating in the data structure.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every participating thread maintains a reference to its own hazard pointers
+    and all other participating threads in addition to private, thread-local lists
+    for the coordination of deallocation. The algorithm description in section 3 of
+    Michael's paper is done at a high level and is difficult to follow with an eye
+    towards producing a concrete implementation. Rather than repeat that here, we
+    will instead examine a specific implementation, `conc`. The reader is encouraged
+    to read Michael's paper ahead of the discussion of `conc`, but this is not mandatory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A hazard-pointer Treiber stack
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The introduction of the Treiber stack in the previous section on reference
+    counting was not an idle introduction. We''ll examine hazard pointers and epoch-based
+    reclamation here, through the lens of an effectively reclaimed Treiber stack.
+    It so happens that `conc` ships with a Treiber stack, in `tfs/conc/src/sync/treiber.rs`.
+    The preamble is mostly familiar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Both `Guard` and `add_garbage_box` are new, but we''ll get to them directly.
+    The `Treiber` struct is as you might have imaged it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As is the node:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is where we need to understand `conc::Guard`. Much like `MutexGuard` in
+    the standard library, `Guard` exists here to protect the contained data from being
+    multiply mutated. `Guard` is the hazard pointer interface for `conc`. Let''s examine
+    `Guard` in detail and get to the hazard pointer algorithm. `Guard` is defined
+    in `tfs/conc/src/guard.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As of writing this book, all `T` protected by `Guard` have to be static, but
+    we''ll ignore that as the codebase has references to a desire to relax that restriction.
+    Just be aware of it should you wish to make immediate use of `conc` in your project.
+    Like `MutexGuard`, `Guard` does not own the underlying data but merely protects
+    a reference to it, and we can see that our `Guard` is the writer-end of the hazard.
+    What is `hazard::Writer`? It''s defined in `tfs/conc/src/hazard.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Pointer to the heap-allocated hazard? Okay, let''s back out a bit. We know
+    from the algorithm description that there has to be thread-local storage happening
+    in coordination with, apparently, heap storage. We also know that `Guard` is our
+    primary interface to the hazard pointers. There are three functions to create
+    new instances of `Guard`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Guard<T>::new<F: FnOnce() -> &''static T>(ptr: F) -> Guard<T>`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Guard<T>::maybe_new<F: FnOnce() -> Option<&''static T>>(ptr: F) -> Option<Guard<T>>`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Guard<T>::try_new<F: FnOnce() -> Result<&''static T, E>>(ptr: F) -> Result<Guard<T>,
+    E>`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The first two are defined in terms of `try_new`. Let''s dissect `try_new`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The function takes `FnOnce` whose responsibility is to kick out a reference
+    to `T` or fail. The first call in `try_new` is an increment of `CURRENT_CREATING`,
+    which is `thread-local Cell<usize>`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ve seen `Cell` in [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml), 
+    *The Rust Memory Model – Ownership, References and Manipulation*, but `thread_local!`
+    is new. This macro wraps one or more static values into `std::thread::LocalKey`,
+    Rust''s take on thread-local stores. The exact implementation varies from platform
+    to platform but the basic idea holds: the value will act as a static global but
+    will be confined to a single thread. In this way, we can program as if the value
+    were global but without having to manage coordination between threads. Once `CURRENT_CREATING`
+    is incremented:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `local::get_hazard` function is defined in `tfs/conc/src/local.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `STATE` referenced in this function is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `State` is type defined like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: The field garbage maintains a list of `Garbage` that has yet to be moved to
+    the global state—more on that in a minute—for reclamation. `Garbage` is a pointer
+    to bytes and a function pointer to bytes called `dtor`, for destructor. Memory
+    reclamation schemes must be able to deallocate, regardless of the underlying type.
+    The common approach, and the approach taken by `Garbage`, is to build a monomorphized
+    destructor function when the type information is available, but otherwise work
+    on byte buffers. You are encouraged to thumb through the implementation of `Garbage`
+    yourself, but the primary trick is `Box::from_raw(ptr as *mut u8 as *mut T)`,
+    which we've seen repeatedly throughout this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `available_hazards` field stores the previously allocated hazard writers
+    that aren''t currently being used. The implementation keeps this as a cache to
+    avoid allocator thrash. We can see this in action in `local::State::get_hazard`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The final field, `available_hazards_free_before`, stores hazards in the freed state,
+    prior to the actual deallocation of the underlying type. We''ll discuss this more
+    later. Hazards are in one of four states: free, dead, blocked, or protecting.
+    A dead hazard can be deallocated safely, along with the protected memory. A dead
+    hazard should not be read. A free hazard is protecting nothing and may be reused.
+    A blocked hazard is in use by some other thread can and will cause reads of the
+    hazard to stall. A protecting hazard is, well, protecting some bit of memory.
+    Now, jump back to this branch in `local::get_hazard`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What is `global::create_hazard`? This module is `tfs/conc/src/global.rs` and
+    the function is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The variable names are confusing. This `STATE` is not the thread-local `STATE`
+    but a globally scoped `STATE`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s dig in there:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The global `STATE` is a mpsc `Sender` of `Message` and a mutex-guarded `Garbo`. `Message`
+    is a simple enumeration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Garbo` is something we''ll get into directly. Suffice it to say for now that
+    `Garbo` acts as the global garbage collector for this implementation. The global
+    state sets up a channel, maintaining the sender side in the global state and feeding
+    the receiver into `Garbo`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The creation of a new global hazard doesn''t take much:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This establishes a new hazard via `hazard::create()` and feeds the reader side
+    down through to `Garbo`, returning the writer side back out to `local::get_hazard()`.
+    While the names writer and reader suggest that hazard is itself an MPSC, this
+    is not true. The hazard module is `tfs/conc/src/hazard.rs` and creation is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: Well, look at that. What we have here are two structs, `Writer` and `Reader`,
+    which each store the same raw pointer to a heap-allocated atomic pointer to a
+    mutable byte pointer. Phew! We've seen this trick previously but what's special
+    here is the leverage of the type system to provide for different reading and writing
+    interfaces over the same bit of raw memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What about `Garbo`? It''s defined in the global module and is defined as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Garbo` defines a `gc` function that reads all `Messages` from its channel,
+    storing the garbage into the garbage field and free hazards into hazards. Dead
+    hazards are destroyed, freeing its storage as the other holder is guaranteed to
+    have hung up already. Protected hazards also make their way into hazards, which
+    are to be scanned during the next call of gc. Garbage collections are sometimes
+    performed when a thread calls `global::tick()` or when `global::try_gc()` is called.
+    A tick is performed whenever `local::add_garbage` is called, which is what `whatconc::add_garbage_box` calls.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We first encountered `add_barbage_box` at the start of this section. Every time
+    a thread signals a node as garbage, it rolls the dice and potentially becomes
+    responsible for performing a global garbage collection over all of the threads'
+    hazard-pointed memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we understand how memory reclamation works, all that remains is to
+    understand how hazard pointers protect memory from reads and writes. Let''s finish
+    `guard::try_new` in one large jump:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that the conc authors have inserted a sequentially consistent fence
+    that they question. The model laid out by Michael does not require sequential
+    consistency and I believe that this fence is not needed, being a significant drag
+    on performance. The key things here to note are the call to `hazard::protect`
+    and `''hazard::free`. Both calls are part of `hazard::Writer`, the former setting
+    the internal pointer to the byte pointer fed to it, the latter marking the hazard
+    as free. Both states interact with the garbage collector, as we''ve seen. The
+    remaining bit has to do with `hardard::Reader::get`, the function used to retrieve
+    the state of the hazard. Here it is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: Only if the hazard is blocked does the get of the state spin until it's dead,
+    free, or merely protected. What blocks the hazard? Recall that they're created
+    blocked. By creating the hazards in a blocked state, it is not possible to perform
+    garbage collection over a pointer that has not been fully initialized—a problem
+    we saw with the reference-counting implementation—nor is it possible to read from
+    a partially-initialized hazarded pointer. Only once the pointer is moved into
+    the protected state can reads move forward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And there you go—garbage collection and atomic isolation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s go all the way back up to the stack and look at its push implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At the top of the function, the implementation loads the hazard pointer for
+    the head node into the snapshot. `Guard::as_ptr(&self) -> *const T` retrieves
+    the current pointer for the hazard on each invocation, adapting as the underlying
+    data shifts forward. The node is the allocated and raw-pointered `Node` containing
+    `item: T`. The remainder of the loop is the same compare-and-swap we''ve seen
+    for other data structures of this kind, merely in terms of a hazard `Guard` instead
+    of raw `AtomicPtrs` or the like. The programming model is very direct, as it is
+    for `pop` as well:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note that when the old node is removed from the stack, `add_garbage_box` is
+    called on it, adding the node to be garbage-collected at a later date. We know,
+    further, from inspection, that this later date might well be exactly the moment
+    of invocation, depending on luck.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The hazard of Nightly
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Unfortunately, conc relies on an unstable feature of the Rust compiler and will
+    not compile with a recent `rustc`. The last update to `conc`, and to TFS, its
+    parent project, was in August of 2017\. We'll have to travel back in time for
+    a nightly `rustc` from that period. If you followed the instructions laid out
+    in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml), *Preliminaries – Machine
+    Architecture and Getting Started with Rust*, and are using `rustup`, that's a
+    simple `rustup` default nightly-2017-08-17 away. Don't forget to switch back to
+    a more modern Rust when you're done playing with conc.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exercizing the hazard-pointer Treiber stack
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s put the conc, Treiber stack through the wringer to get an idea of the
+    performance of this approach. Key areas of interest for us will be:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Push/pop cycles per second
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Memory behavior, high-water mark, and what not
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Cache behavior
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We'll run our programs on x86 and ARM, as in previous chapters. One thing to
+    note here, before we proceed, is that conc—at least as of version 0.5—requires
+    the nightly channel to be compiled. Please read the section just before this one
+    if you're jumping around in the book for full details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Because we have to run on an old version of nightly, we have to stick static
+    `AtomicUsize` into `lazy_static!`, a technique you''ll see in older Rust code
+    but not in this book, usually. With that in mind, here is our exercise program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have a number of worker threads equal to the total number of CPUs in the
+    target machine, each doing one push and then an immediate pop on the stack. A
+    `COUNT` is kept and the main thread swaps that value for `0` every second or so,
+    tossing the value into a quantile estimate structure—discussed in more detail
+    in [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync and Send – the
+    Foundation of Rust Concurrency*—and printing out a summary of the recorded cycles
+    per second, scaled to the number of CPUs. The worker threads the cycle up through
+    to `MAX_I`, which is arbitrarily set to the smallish value of `2**26`. When the
+    worker is finished cycling, it decreases `WORKERS` and exits. Once `WORKERS` hits
+    zero, the main loop also exits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On my x86 machine, it takes approximately 58 seconds for this program to exit,
+    with this output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The x86 perf run is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: The memory-allocation behavior of this program is very favorable as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On my ARM machine, it takes approximately 460 seconds for the program to run
+    to completion, with this output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is about 7.5 times slower than the x86 machine, even though both machines
+    have the same number of cores. The x86 machine has a faster clock and a faster
+    memory bus than my ARM:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: The fact that the branch misses on ARM are 12% higher than on x86 is an interesting
+    result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before moving on, do remember to execute the rustup default stable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tradeoffs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Assuming that conc was brought up to speed with modern Rust, where would you
+    want to apply it? Well, let''s compare it to reference counting. In a reference-counting
+    data structure, every read and modification requires manipulating atomic values,
+    implying some level of synchronization between threads with an impact on performance.
+    A similar situation exists with hazard pointers, though to a lesser degree. As
+    we''ve seen, the hazard requires synchronization, but reading anything apart from
+    the hazard, through it, is going to be at machine speed. That''s a significant
+    improvement over reference counting. Furthermore, we know that the hazard pointer
+    approach does accumulate garbage—and the implementation of conc is done via an
+    especially neat trick—but this garbage is bounded in size, no matter the frequency
+    of updates to the hazardous structure. The cost of garbage collection is placed
+    on one thread, incurring potentially high latency spikes for some operations while
+    benefiting from bulk-operation calls to the deallocator. This is distinct from
+    reference counting approaches where every thread is responsible for deallocating
+    dead memory as soon as it is dead, keeping operation cost overheads similar but
+    higher than baseline, and incurred on each operation without the benefit of bulk
+    accumulation of deallocations. The hazard pointer approach struggles as the number
+    of threads increase: recall that the number of hazards needed grows linearly with
+    the number of threads, but also consider that an increase in thread count increases
+    the traversal cost of any structure. Furthermore, while many structures have easily
+    identifiable hazards, this is not universally true. Where do you put the hazard
+    pointers for a b-tree?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In summary—hazard pointers are an excellent choice when you have relatively
+    few hazardous memory references to make and need bounded garbage, no matter the
+    load on your structure. Hazard-based memory reclamation does not have the raw
+    speed of epoch-based reclamation, but bounded memory use in all cases is hard
+    to pass up.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Epoch-based reclamation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We touched on epoch-based memory reclamation in the last chapter. We'll now
+    examine the concept in depth and in the context of a ready-to-use implementation
+    via the crossbeam project ([https://github.com/crossbeam-rs](https://github.com/crossbeam-rs)).
+    Some of the developers of conc overlap with crossbeam, but there's been more work
+    done to crossbeam in the pursuit of a general-purpose framework for low-level
+    atomic programming in Rust. The developers note that they plan to support other
+    memory management schemes, for example hazard pointers (HP) and quiescent state-based
+    reclamation (QSBR). The crate is re-exported as the epoch module. Future editions
+    of this book may well only cover crossbeam and simply discuss the various memory
+    reclamation techniques embedded in it. The particular crate we'll be discussing
+    in this section is crossbeam-epoch, at SHA `3179e799f384816a0a9f2a3da82a147850e14d38`.
+    This coincides with the 0.4.1 release of the project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The crossbeam crates under discussion here are not listed in their entirety.
+    You can find the full listings in this book's source repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Epoch-based memory reclamation was introduced by Keir Fraser in his 2004 PhD
+    thesis, *Practical lock-freedom*. Fraser''s work builds on previous limbo list approaches,
+    whereby garbage is placed in a global list and reclaimed through periodic scanning
+    when it can be demonstrated that the garbage is no longer referenced. The exact
+    mechanism varies somewhat by author, but limbo lists have some serious correctness
+    and performance downsides. Fraser''s improvement is to separate limbo lists into
+    three epochs, a current epoch, a middle, and an epoch from which garbage may be
+    collected. Every participating thread is responsible for observing the current epoch
+    on start, adds its garbage to the current epoch, and attempts to increase the
+    epoch count when its operations complete. The last thread to complete is the one
+    that succeeds in increasing the epoch and is responsible for performing garbage
+    collection on the final epoch. Three total epochs are needed as threads move from
+    epochs independently from one another: a thread at epoch n may still hold a reference
+    from n-1, but not n-2, and so only n-2 is safe to reclaim. Fraser''s thesis is
+    quite long—being, well, being that it is sufficient work to acquire a PhD—but
+    Hart et al''s 2007 paper, *Performance of Memory Reclamation for Lockless Synchronization*, is
+    warmly recommended to the reader pressed for time.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An epoch-based Treiber stack
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We inspected reference counting and hazard-pointer-based Treiber stacks earlier
+    in this chapter and will follow this approach in this section as well. Fortunately,
+    crossbeam also ships with a Treiber stack implementation, in the crossbeam-rs/crossbeam
+    project, which we''ll examine at SHA `89bd6857cd701bff54f7a8bf47ccaa38d5022bfb`,
+    which is the source for `crossbeam::sync::TreiberStack` is in `src/sync/treiber_stack.rs`.
+    The preamble is almost immediately interesting:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What, for instance, are `epoch::Atomic` and `epoch::Owned`? Well, we''ll explore
+    these here. Unlike the section on hazard pointers, which explored the implementation
+    of conc in a depth-first fashion, we''ll take a breadth-first approach here, more
+    or less. The reason being, crossbeam-epoch is intricate—it''s easy to get lost.
+    Setting aside the somewhat unknown nature of `epoch::Atomic`, the `TreiberStack`
+    and `Node` structs are similar to what we''ve seen in other implementations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As is the creation of a new stack:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Pushing a new element also looks familiar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: Except, what is `epoch::pin()`? This function `pins` the current thread, returning
+    a `crossbeam_epoch::Guard`. Much like previous guards we've seen throughout the
+    book, crossbeam_epoch's `Guard` protects a resource. In this case, the guard protects
+    the pinned nature of the thread. Once the guard drops, the thread is no longer
+    pinned. Okay, great, so what does it mean for a thread to be pinned? Recall that
+    epoch-based reclamation works by a thread entering an epoch, doing some stuff
+    with memory, and then potentially increasing the epoch after finishing up fiddling
+    with memory. This process is observed in crossbeam by pinning. `Guard` in hand—implying
+    a safe epoch has been entered—the thread is able to take a heap allocation and
+    get a stack reference to it. Just any old heap allocation and stack reference
+    would be unsafe, however. There's no magic here. That's where `Atomic` and `Owned`
+    come in. They're analogs to `AtomicPtr` and `Box` from the standard library, except
+    that the operations done on them require a reference to `crossbeam_epoch::Guard`.
+    We saw this technique in [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync
+    and Send – the Foundation of Rust Concurrency*, when discussing hopper, using
+    the type-system to ensure that potentially thread-unsafe operations are done safely
+    by requiring the caller to pass in a guard of some sort. Programmer error can
+    creep in by using `AtomicPtr`, `Box`, or any non-epoch unprotected memory accesses,
+    but these will tend to stand out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look at popping an element off the stack, where we know marking memory
+    as safe to delete will have to happen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The key things to note are the creation of `head_shared` by performing a load
+    on an Atomic, the usual compare and set operation, and then this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`head_shared` is moved into a closure, converted, and that closure is then
+    passed into the as-yet unexamined defer function of `Guard`. But, head is dereferenced
+    and the data from it is read out and returned. Absent some special trick, that''s
+    dangerous. We need to know more.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: crossbeam_epoch::Atomic
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s dig in with the holder of our data, `Atomic`. This structure is from
+    the crossbeam_epoch library and its implementation is in `src/atomic.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The representation is a little odd: why not `data: *mut T`? Crossbeam''s developers
+    have done something neat here. On modern machines, there''s a fair bit of space
+    inside of pointer to store information, in the least significant bits. Consider
+    that if we point only to aligned data, the address of a bit of memory will be
+    multiples of 4 on a 32-bit system, or multiples of 8 on a 64-bit system. This
+    leaves either two zero bits at the end of a pointer on 32-bit systems or three
+    zero bits on a 64-bit system. Those bits can store information, called a tag.
+    The fact that `Atomic` can be tagged will come into play. But, Rust doesn''t allow
+    us to manipulate pointers in the fashion of other systems programming languages.
+    To that end, and because `usize` is the size of the machine word, crossbeam stores
+    its `*mut T` as a `usize`, allowing for tagging of the pointer. Null `Atomics`
+    are equivalent to tagged pointers to zero:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'New `Atomic`s are created by passing `T` down through `Owned`—which we saw
+    previously—and then converting from that `Owned`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Owned` boxes `T`, performing a heap allocation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And subsequently converts that box into `*mut T`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And converts that into a tagged pointer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: That's a bit of a trek, but what that tells us is that `Atomic` is no different
+    in terms of data representation compared to `AtomicPtr`, except that the pointer
+    itself is tagged.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, what about the usual operations on an atomic pointer, loading and the
+    like? How do those differ in `Atomic`? Well, for one, we know that an epoch `Guard`
+    has to be passed in to each call, but there are other important differences. Here''s
+    `Atomic::load`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see `self.data.load(ord)`, so the underlying atomic load is performed
+    as expected. But, what is `Shared`?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It''s a reference to `Atomic` with an embedded reference to `Guard`. So long
+    as `Shared` exists, the `Guard` that makes memory operations on it safe will also
+    exist and cannot, importantly, cease to exist until `Shared` has been dropped.
+    `Atomic::compare_and_set` introduces a few more traits:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice that `compare_and_set` is defined in terms of `compare_exchange`. This
+    CAS primitive is equivalent to a comparative exchange, but that exchange allows
+    failure to be given more relaxed semantics, offering a performance boost on some
+    platforms. Implementation of compare-and-set, then, requires understanding of
+    which success `Ordering` matches with which failure `Ordering`, from which need
+    comes `CompareAndSetOrdering`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Where `strongest_failure_ordering` is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The final new trait is `Pointer`, a little utility trait to provide functions
+    over both `Owned` and `Shared`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: crossbeam_epoch::Guard::defer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now, again, how is the following in `TreiberStack::try_pop` a safe operation?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What we need to explore now is `defer`, which lives in crossbeam-epoch at `src/guard.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We need to understand `Garbage`. It''s defined in `src/garbage.rs` as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The implementation of `Garbage` is very brief:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Deferred` is a small structure that wraps `FnOnce()`, storing it inline or
+    on the heap as size allows. You are encouraged to examine the implementation yourself,
+    but the basic idea is to maintain the same properties of `FnOnce` in a heap-allocated
+    structure that finds use in the `Garbage` drop implementation. What drops `Garbage`?
+    This is where the following comes into play:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `self.local` of `Guard` is `*const Local`, a struct called a participant
+    for garbage collection in crossbeam''s documentation. We need to understand where
+    and how this `Local` is created. Let''s understand the `Guard` internals, first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Guard` is a wrapper around a const pointer to `Local`. We know that instances
+    of `Guard` are created by `crossbeam_epoch::pin`, defined in `src/default.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`HANDLE` is a thread-local static variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`COLLECTOR` is a static, global variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is a lot of new things all at once. Pinning is a non-trivial activity!
+    As its name implies and its documentation states, `COLLECTOR` is the entry point
+    for crossbeam-epoch''s global garbage collector, called `Global`. `Collector`
+    is defined in `src/collector.rs` and has a very brief implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We know that `Collector` is a global static, implying that `Global::new()`
+    will be called only once. `Global`, defined in `src/internal.rs`, is the data
+    repository for the global garbage collector:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'List is an intrusive list, which we saw reference to in the definition of `Local`.
+    An intrusive list is a linked list in which the pointer to the next node in the
+    list is stored in the data itself, the `entry: Entry` field of `Local`. Intrusive
+    lists pop up fairly rarely, but they are quite useful when you''re concerned about
+    small memory allocations or need to store an element in multiple collections,
+    both of which apply to crossbeam. `Queue` is a Michael and Scott queue. The epoch
+    is a cache-padded `AtomicEpoch`, cache-padding being a technique to disable write
+    contention on cache lines, called false sharing. `AtomicEpoch` is a wrapper around
+    `AtomicUsize`. `Global` is, then, a linked-list of instances of `Local` – which,
+    themselves, are associated with thread-pinned `Guards`—a queue of `Bag`s, which
+    we haven''t investigated yet, associated with some epoch number (a `usize`) and
+    an atomic, global `Epoch`. This layout is not unlike what the algorithm description
+    suggests. Once the sole `Global` is initialized, every thread-local `Handle` is
+    created by calling `Collector::register`, which is `Local::register` internally:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note, specifically, that the `collector.global.locals.insert(local, &unprotected())` call
+    is inserting the newly created `Local` into the list of `Global` locals. (`unprotected`
+    is a `Guard` that points to a null, rather than some valid `Local`). Every pinned
+    thread has a `Local` registered with the global garbage collector''s data. In
+    fact, let''s look at what happens when `Guard` is dropped, before we finish `defer`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `unpin` method of `Local` is called:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `guard_count` field, recall, is the total number of participating threads
+    or otherwise arranged for guards that keep the thread pinned. The `handle_count` field
+    is a similar mechanism, but one used by `Collector` and `Local`. `Local::finalize`
+    is where the action is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Local` contains a `self.bag` field of the `UnsafeCell<Bag>` type. Here''s
+    `Bag`, defined in `src/garbage.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`ArrayVec` is new to this book. It''s defined in the `ArrayVec` crate and is
+    a `Vec` but with a capped maximum size. It''s the same growable vector we know
+    and love, but one that can''t allocate to infinity. `Bag`, then, is a growable
+    vector of `Garbage`, capped at `MAX_OBJECTS` total size:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Attempting to push garbage into a bag above `MAX_OBJECTS` will fail, signaling
+    to the caller that it''s time to collect some garbage. What `Local::finalize`
+    is doing, specifically with `self.global().push_bag(&mut *self.bag.get(), guard)`,
+    is taking the `Local`''s bag of garbage and pushing it into the `Global`''s bag
+    of garbage as a part of shutting `Local` down. `Global::push_bag` is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Unpinning `Guard` potentially shuts down a `Local`, which pushes its garbage
+    into the queue of epoch-tagged garbage in `Global`. Now that we understand that,
+    let''s finish `Guard::defer` by inspecting `Local::defer`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: The pinned caller signals garbage to its `Guard` by calling `defer`. The `Guard`,
+    in turn, defers this garbage to its `Local`, which enters a while loop wherein
+    it attempts to push garbage onto the local bag of garbage but will shift garbage
+    into `Global` so long as the local bag is full.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When does garbage get collected from `Global`? The answer is in a function we've
+    not yet examined, `Local::pin`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: crossbeam_epoch::Local::pin
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Recall that `crossbeam_epoch::pin` calls `Handle::pin`, which in turn calls
+    `pin` on its `Local`. What happens during the execution of `Local::pin`? A lot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Local` guard count is increased, which is done amusingly by creating a
+    `Guard` with `self`. If the guard count was previously zero:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This means that there are no other active participants in `Local`, and `Local`
+    needs to query for the global epoch. The global epoch is loaded as the `Local`
+    epoch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE79]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Sequential consistency is used here to ensure that ordering is maintained with
+    regard to future and past atomic operations. Finally, the `Local`''s `pin_count`
+    is increased and this kicks off, potentially, `Global::collect`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE80]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It is possible for `Local` to be pinned and unpinned repeatedly, which is where
+    `pin_count` comes into play. This mechanism doesn''t find use in our discussion
+    here, but the reader is referred to `Guard::repin` and `Guard::repin_after`. The
+    latter function is especially useful when mixing network calls with atomic data
+    structures as, if you''ll recall, garbage cannot be collected until epochs advance
+    and the epoch is only advanced by unpinning, usually. `Global::collect` is brief:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE81]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The global epoch is potentially advanced by `Global::try_advance`, the advancement
+    only happening if every `Local` in the global list of `Local` is not in another
+    epoch *or* the list of locals is not modified during examination. The detection
+    of concurrent modification is an especially neat trick, being part of crossbeam-epoch''s
+    private `List` iteration. The tagged pointer plays a part in this iteration and
+    the reader is warmly encouraged to read and understand the `List` implementation
+    crossbeam-epoch uses:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE82]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The condition will be passed into the Global''s `Queue::try_pop_if`, which
+    only pops an element from the queue that matches the conditional. We can see the
+    algorithm at play again here. Recall `self.queue :: Queue<(Epoch, Bag)>`? Bags
+    of garbage will only be pulled from the queue if they are greater than two epochs
+    away from the current epoch, otherwise there may still be live and dangerous references
+    to them. The steps control how much garbage will end up being collected, doing
+    a tradeoff for time versus memory use. Recall that every newly pinned thread is
+    participating in this process, deallocating some of the global garbage.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To summarize, when the programmer calls for their thread to be pinned, this
+    creates a `Local` for storing thread-local garbage that is linked into a list
+    of all `Local`s in a `Global` context. The thread will attempt to collect `Global`
+    garbage, potentially pushing the epoch forward in the process. Any garbage the
+    programmer defers during execution is preferentially pushed into the `Local` bag
+    of garbage or, if that's full, causes some garbage to shift into the `Global`
+    bag. Any garbage in the `Local` bag is shifted onto the `Global` bag when the
+    `Local` is unpinned. Every atomic operation, by reason of requiring a reference
+    to `Guard`, is implicitly associated with some `Local`, some epoch, and can be
+    safely reclaimed by the method outlined in the preceding algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Phew!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exercising the epoch-based Treiber stack
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s put the crossbeam-epoch Treiber stack through the wringer to get an
+    idea of the performance of this approach. Key areas of interest for us will be:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Push/pop cycles per second
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Memory behavior, high-water mark, and what not
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: cache behavior
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We''ll run our programs on x86 and ARM, like we did in previous chapters. Our
+    exercise program, similar to the hazard pointer program from the previous section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE83]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have a number of worker threads equal to the total number of CPUs in the
+    target machine, each doing one push and then an immediate pop on the stack. A
+    `COUNT` is kept and the main thread swaps that value for 0 every second or so,
+    tossing the value into a quantile estimate structure—discussed in more detail
+    in [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync and Send – the
+    Foundation of Rust Concurrency*—and printing out a summary of the recorded cycles
+    per second, scaled to the number of CPUs. The worker threads cycle up through
+    to `MAX_I`, which is arbitrarily set to the smallish value of `2**26`. When the
+    worker is finished cycling, it decreases `WORKERS` and exits. Once `WORKERS` hits
+    zero, the main loop also exits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On my x86 machine, it takes approximately 38 seconds for this program to exit,
+    with this output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE84]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Compare this to the x86 hazard implementation, which takes 58 total seconds.
+    The x86 perf run is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE85]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The total number of executed instructions is much, much lower in the epoch-based
+    approach, which squares well with the analysis in the opening discussion of this
+    section. Even with a single hazardous pointer, epoch-based approaches do less
+    work. On my ARM machine, it takes approximately 72 seconds for the program to
+    run to completion, with this output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE86]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Compared to the ARM hazard implementation, which takes 463 total seconds! The
+    ARM perf run is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE87]'
+  prefs: []
+  type: TYPE_PRE
+- en: Again, drastically fewer instructions are executed compared to the hazard-pointer
+    implementation on the same processor architecture. In passing, it's worth noting
+    that the memory use of both the x86 and ARM versions' `epoch_stack` were lower
+    than the hazard pointer stack implementations, though neither were memory hogs,
+    consuming only a few kilobytes each. Had one of our epoch threads slept for a
+    long while—say, a second or so—before leaving its epoch, memory use would have
+    grown during execution. The reader is encouraged to wreak havoc on their own system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tradeoffs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Of the three approaches outlined in this chapter, crossbeam-epoch is the fastest,
+    both in terms of our measurements and from discussions in the literature. The
+    faster technique, quiescent-state-based memory reclamation, is not discussed in
+    this chapter as it''s an awkward fit for user-space programs and there is no readily-available
+    implementation in Rust. Furthermore, the authors of the library have put years
+    of work into the implementation: it is well-documented and runs on modern Rust
+    across multiple CPU architectures.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Traditional issues with the approach—namely, threads introducing long delays
+    to pinned critical sections, resulting in long-lived epochs and garbage buildup—are
+    addressed in the API by the abiltiy of `Guard `to be arbitrarily repinned. The
+    transition of standard-library `AtomicPtr` data structures to crossbeam is a project,
+    to be sure, but an approachable one. As we've seen, crossbeam-epoch does introduce
+    some overhead, both in terms of cache padding and thread synchronization. This
+    overhead is minimal and should be expected to improve with time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we discussed three memory reclamation techniques: reference
+    counting, hazard pointers, and epoch-based reclamation. Each, in turn, is faster
+    than the last, though there are tradeoffs with each approach. Reference counting
+    incurs the most overhead and has to be incorporated carefully into your data structure,
+    unless Arc fits your needs, which it may well. Hazard pointers require the identification
+    of hazards, memory accesses that result in memory that cannot be reclaimed without
+    some type of coordination. This approach incurs overhead on each access to the
+    hazard, which is costly if traversal of a hazardous structure must be done. Finally,
+    epoch-based reclamation incurs overhead at thread-pinning, which denotes the start
+    of an epoch and may require the newly pinned thread to participate in garage collection.
+    Additional overhead is not incurred on memory accesses post-pin, a big win if
+    you''re doing traversal or can otherwise include many memory operations in a pinned
+    section.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The crossbeam library is exceptionally well done. Unless you have an atomic
+    data structure specifically designed to not require allocations or to cope with
+    allocations on a relaxed memory system without recourse to garbage collection,
+    you are warmly encouraged to consider crossbeam as part and parcel with doing
+    atomic programming in Rust, as of this writing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will leave the realm of atomic programming and discuss
+    higher-level approaches to parallel programming, using thread pooling and data
+    parallel iterators.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '*Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects*, Maged Michael.
+    This paper introduces the hazard-pointer reclamation technique discussed in this
+    chapter. The paper specifically discusses the newly invented technique in comparison
+    to reference counting and demonstrates the construction of a safe Michael and
+    Scott queue using the hazard pointer technique.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Practical Lock-Freedom*, Keir Fraser. This is Keir Fraser''s PhD thesis and
+    is quite long, being concerned with the introduction of abstractions to ease the
+    writing of lock-free structures—one of which is epoch-based reclamation—and the
+    introduction of lock-free search structures, skip-lists, binary search trees,
+    and red-black trees. Warmly recommended.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Performance of Memory Reclamation for Lockless Synchronization*, Thomas Hart
+    et al. This paper provides an overview of four techniques, all of which were discussed
+    in passing in [Chapter 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml), *Atomics
+    – the Primitives of Synchronization*, of this book, and three of which were discussed
+    in-depth in this chapter. Further, the paper introduces an optimization to epoch-based
+    reclamation, which has influenced crossbeam, if your author is not mistaken. The
+    paper is an excellent overview of the algorithms and provides comparative measurements
+    of the algorithms'' performance in a well-defined manner.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*RFCs for changes to Crossbeam*, available at [https://github.com/crossbeam-rs/rfcs](https://github.com/crossbeam-rs/rfcs).
+    This Github repository is the primary discussion point for large-scale changes
+    to the crossbeam library and is an especially important read for its discussions.
+    For instance, RFC 2017-07-23-relaxed-memory lays out the changes necessary to
+    crossbeam to operate on relaxed-memory systems, a topic rarely discussed in the
+    literature.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*CDSCHECKER: Checking Concurrent Data Structures Written with C/C++ Atomics*,
+    Brian Norris and Brian Demsky. This paper introduces a tool for checking the behavior
+    of concurrent data structures according to the C++11/LLVM memory model. Given
+    how utterly confounding relaxed-memory ordering can be, this tool is extremely
+    useful when doing C++ work. I am unaware of a Rust analog but hope this will be
+    seen as an opportunity for some bright spark reading this. Good luck, you.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*A Promising Semantics for Relaxed-Memory Concurrency*, Jeehoon Kang et al.
+    Reasoning about the memory model proposed in C++/LLVM is very difficult. Which,
+    despite how many people have thought about it in-depth over the years, there''s
+    still active research into formalizing this model to validate the correct function
+    of optimizers and algorithms. Do read this paper in conjunction with `CDSCHECKER`
+    by Norris and Demsky.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

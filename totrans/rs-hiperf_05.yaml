@@ -1,0 +1,704 @@
+- en: Profiling Your Rust Application
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One of the elementary steps to understand why your application is going slower
+    than expected is to check what your application is doing at a low level. In this
+    chapter, you will understand the importance of low-level optimization, and learn
+    about some tools that will help you find where your bottlenecks are.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, you will learn about the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: How the processor works at low level
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: CPU caches
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Branch prediction
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to fix some of the most common bottlenecks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to use Callgrind to find your most-used code
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to use Cachegrind to see where your code might be performing poorly in the
+    cache
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Learn how to use OProfile to know where your program spends most of its execution
+    time
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understanding the hardware
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To understand what our software is doing, we should first understand how the
+    compiled code is running in our system. We will, therefore, start with how the
+    **Central Processing Unit** (**CPU**) works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding how the CPU works
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The CPU is in charge of running the central logic of your application. Even
+    if your application is a graphics application running most of its workload in
+    the GPU, the CPU is still going to be governing all that process. There are many
+    different CPUs, some faster than others for certain things, others that are more
+    efficient and consume less power, sacrificing their computing power. In any case,
+    Rust can compile for most CPUs, since it knows how they work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But our job here is to figure out how they work by ourselves, since sometimes
+    the compiler won't be as efficient at improving our machine code as we are. So,
+    let's get to the center of the processing, where things get done.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The processor has a set of instructions it knows how to execute. We can ask
+    it to perform any kind of instruction in that set, but we have a limitation: in
+    most cases, it can only work with what''s called a **register**. A register is
+    a small location near the **arithmetic and logical unit** (**ALU**) inside the
+    CPU. It can contain one variable, as big as the processor word size; nowadays,
+    that is 64 bits most of the time, but it can be 32, 16, or even 8 in some embedded
+    processors.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Those registers go as fast as the processor itself, so information can be modified
+    in them without having to wait for anything (well, just for the actual instructions
+    to execute). This is great; in fact, you might be wondering, why do we even need
+    RAM if we have registers?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Well, the answer is simple: price. Having more registers in a CPU is very costly.
+    You cannot have much more than a couple of dozen registers (in the best case scenario),
+    since the processor wiring would get very complicated. Taking into account that
+    for each instruction and register you will have dedicated data lines and control
+    lines, this is very costly.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, an external memory is required, one that can be freely accessed without
+    requiring you to read all the memory sequentially, and still being very fast.
+    **Random Access Memory** (**RAM**) is there for you. Your program will be loaded
+    from RAM and will use RAM to store data that will need to be manipulated during
+    the software execution. Of course, that software in RAM has to be loaded from
+    the hard or solid state disk to RAM before being usable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The main issue with RAM is that even if it's much, much faster than even the
+    fastest SSD out there, it's still not as fast as the processor. The processor
+    can execute tens of instructions while waiting for the RAM to get some data into
+    one of the processor's registers to be able to operate with them. So, to avoid
+    having the processor waiting every time it needs to load or store something in
+    RAM, we have caches.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Speeding up memory access with the cache
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The first level of cache, also known as the L1 cache, is a cache located almost
+    as close as the registers to the ALU. The L1 cache is almost as fast as a register
+    (about three times slower), and it has a very interesting property. Its internal
+    structure can be represented as a lookup table. It will have two columns: the
+    first will contain a memory address in the RAM, while the second will contain
+    the contents of that memory address. When we need to load something from the RAM
+    to a register, if it''s already in the L1 cache, it will be almost immediate.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'And not only that, this cache is usually divided in two very differentiated
+    areas: the data cache and the instructions cache. The first will contain information
+    about variables that the program is using, while the second will contain the instructions
+    the program will execute. This way, since we know how the program is being executed,
+    we can preload the next instructions in the instructions cache and execute them
+    without having to wait for the RAM. In the same way, since we know what variables
+    will be required in the execution of the program, we can preload them in the cache.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: But this cache has some problems too. Even if it's three times slower than the
+    processor, it is still too expensive. Also, there is not much physical space so
+    close to the processor, so its size is limited usually to about 32 KiB. Since
+    most software requires more than that size, and we want it to execute fast without
+    having to wait for the RAM, we usually have a second level of cache, called the
+    L2 cache, that also runs at the processor's clock speed, but being farther away
+    from the L1 cache makes its signal arrives with a higher latency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The L2 cache is thus almost as fast as the L1 cache and usually has up to 4
+    MiB of space. Instructions and data are combined. This is still not enough for
+    many operations your software might do. Remember you will require all the data
+    you are using, and in image processing, that might be millions of pixels with
+    their value. So, for that, some high-end processors have an L3 cache in this case,
+    farther away and with a slower clock, but still much faster than the RAM. Sometimes,
+    this cache can be up to 32 MiB at the time of writing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But still, we know that even in processors such as the Ryzen processors, with
+    more than 40 MiB of combined caches, we will need more space. We have the RAM,
+    of course, since in the end, the cache is just a copy of the RAM we have close
+    to the processor for faster use. For every new piece of information, we will need
+    to load it from RAM to the L3 cache, then the L2, then the L1, and finally a register,
+    making the process slower.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this, processors have highly complex algorithms programmed in pure silicon,
+    in hardware, that are able to predict what memory locations are going to be accessed
+    next, and preload the locations in bursts. This means that if the processor knows
+    you will access variables stored from address 1,000 to 2,000 in the RAM, it will
+    request the RAM to load the whole batch of the memory in the L3 cache, and when
+    the time to use them approaches, the L2 cache will copy the data from the L3,
+    and so will the L1 from the L2\. When your program asks for that memory location's
+    value, it will magically be in the L1 cache already, and be extremely fast to
+    retrieve.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cache misses
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: But how well does this work? Is it possible to have 100% efficiency? Well, no.
+    Sometimes, your software will do something the processor wasn't built to predict,
+    and the data will not be in the L1 cache. This means that the processor will ask
+    the L1 cache for the data, and this L1 cache will see that it doesn't have it,
+    losing time. It will then ask the L2, the L2 will ask the L3, and so on. If you
+    are lucky, it will be on the second level of cache, but it might not even be on
+    the L3 and thus your program will need to wait for the RAM, after waiting for
+    the three caches.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is what is called a cache miss. How often does this happen? Depending on
+    how optimized your code and the CPU are, it might be between 2% and 5% of the
+    time. It seems low, but when it happens, the whole processor stops to wait, which
+    means that even if it doesn't happen many times, it has a huge performance impact,
+    making things much slower. And as we saw, it's not only the loss of time of having
+    to wait for the slower storage, it's also the lookup time in the previous storage
+    that is lost, so in cache misses, it would have been faster to just ask the RAM
+    directly (if the value wasn't in any cache).
+  prefs: []
+  type: TYPE_NORMAL
+- en: How can you fix it?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It is not easy to fix this situation. Cache misses happen sometimes because
+    you use big arrays only once, for example, in scenarios such as video buffers.
+    If you are streaming some data, it might happen that the data is not yet in the
+    cache and that it will no longer be used after using it once. This creates two
+    problems. First, the time you need it, it's still in some area of the RAM, creating
+    a cache miss. And second, once you load it into the cache, it will occupy most
+    of the cache, forgetting about other variables you might require and creating
+    more cache misses. This last effect is called **cache pollution**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The best way to avoid this kind of behavior is to use smaller buffers, but this
+    creates other problems, such as the data requiring constant buffering, so you
+    will need to see what is best for your particular situation. If it's not caused
+    by buffers, it might be that you are creating too many variables and only use
+    them once. Try to find out whether you can reuse information, or whether you can
+    change some executions for loops. But be careful, since some loops can affect
+    branch prediction, as we will see later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cache invalidation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There is another big issue with caches, called **cache invalidation**. Since,
+    usually, in new processors, you use multithreaded applications, it sometimes happens
+    that one thread changes some information in memory and that the other threads
+    need to check it. As you might know, or as you will see in [Chapter 10](03028198-9025-4bfd-8677-215147e9400d.xhtml), *Multithreading*,
+    Rust makes this perfectly safe at compile time. Data races won't happen, but it
+    won't prevent cache invalidation performance issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A cache invalidation happens in the case that some information in the RAM gets
+    changed by another CPU or thread. This means that if that memory location was
+    cached in any L1 to L3 caches, somehow it will need to be removed from there,
+    since it will have old values. This is usually done by the storage mechanism.
+    Whenever a memory address gets changed, any cache pointing to that memory address
+    gets invalidated. This way, the next instruction trying to read the data from
+    that address will create a cache miss, thus making the cache refresh and get data
+    from the RAM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is pretty inefficient, in any case, since every time you change a shared
+    variable, that variable will require a cache refresh in the rest of the threads
+    it gets used. In Rust, for that, you will be using an `Arc`. To try to avoid this
+    kind of performance pitfall, you should try to share as little as possible between
+    threads, and if messages have to be delivered to them, it might sometimes make
+    sense to use structures in the `std::sync::mpsc` module, as we will see in [Chapter
+    10](03028198-9025-4bfd-8677-215147e9400d.xhtml), *Multithreading*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CPU pipeline
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Instruction sets get more and more complex, and processors have faster and faster
+    clock speeds, which sometimes makes most CPU instructions require more than one
+    clock tick to execute. This is usually because the CPU needs to first understand
+    what instruction is being executed, understand its operands, produce the meaningful
+    signals to get those operands, perform the operations, and then save those operations.
+    And no more than one step can be done per clock tick.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is usually solved in processors by creating a CPU pipeline. This means
+    that when a new instruction comes in, while that instruction gets analyzed and
+    executed, the next instruction comes to the CPU to get analyzed. This has some
+    complications, as you might imagine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, if an instruction requires the output of a previous instruction, it might
+    need to sometimes wait for the result of another instruction. It might also sometimes
+    happen that the instruction being executed is a jump to another place in the memory
+    so that new instructions need to be fetched from the RAM and the pipeline needs
+    to be removed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Overall, what this technique achieves is to be able to execute one instruction
+    per clock cycle in ideal conditions (once the pipeline is full). Most new processors
+    do this, since it enables much faster execution without requiring a clock speed
+    improvement, as we can see in this diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/a2973ad4-d32a-45a5-b3e0-9fe358416125.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Another extra benefit from this approach is that dividing the instruction processing
+    makes each step easier to implement, and not only that. Since each section will
+    be physically smaller, electrons at light speed will be able to synchronize the
+    whole step circuit in less time, making it possible for the clock to run faster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In any case, though, dividing each instruction execution into more steps increases
+    the complexity of the CPU wiring, since it has to fix potential concurrency issues.
+    In the event that an instruction requires the output of the previous one to work,
+    four different things can happen. As a first, and bad, option, it could happen
+    that the behavior gets undefined. This is not what we want, and fixing this complicates
+    the wiring of the processor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The most important wiring piece to fix this is to first detect it. This on its
+    own will make the wiring more complex. Once the CPU can detect the potential issue,
+    the easiest fix is to simply wait for the output without advancing the pipeline.
+    This is called **stalling**, and will hurt the performance of the CPU, but it
+    will work properly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some processors will handle this by adding some extra input paths that will
+    contain previous results, in case they need to be used, but this will greatly increase
+    the complexity of the pipeline. Another option would be to detect some safety
+    instructions and make them run before the instruction that requires the output
+    of the previous one. This last option is called **out of order execution** and
+    will also increase the complexity of the CPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, in conclusion, to improve the speed of a CPU, apart from making its clock
+    run faster, we have the option to create a pipeline of instructions. This will
+    make it possible to run one instruction per clock tick (ideally) and sometimes
+    even increase the clock speed. It will increase the complexity of the CPU, though,
+    making it much more expensive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And what are the pipelines of current processors like, you might ask? Well,
+    they come in different lengths and behaviors, but in the case of some high-end
+    Intel chips, pipelines can be larger than 30 steps. This will make them run really
+    fast, but greatly increase their complexity and price.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you develop applications, a way to avoid slowing down the pipeline will
+    be to try to perform operations that do not require previous results first, and
+    then use the generated results, even though this, in practice, is very difficult
+    to do, and some compilers will actually do it for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Branch prediction
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There is one situation that we didn't see how to solve, though. When our processor
+    receives a conditional jump instruction, depending on the current state of the
+    processor flags, the next instruction to execute will be one or another. This
+    means that we cannot anticipate some instructions and load them into the pipeline.
+    Or can we?
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are multiple ways of somehow predicting what code will be run next without
+    doing the computation of the last instructions. The simplest way, and one used
+    in old processors, was to statically decide which branches will load the next
+    instructions and which will load instructions at the jump address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some processors would do that by deciding that some type of instructions were
+    more likely to jump than others. Other processors would look into the jump address.
+    If the address was lower, they would load the instructions at the target address
+    into the pipeline, if not, they would load the ones at the next address. For example,
+    in loops, it's much more likely to loop back to the beginning of the loop more
+    times than continuing the flow of the program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In both preceding cases, the decision was made statically, when developing the
+    processor, and the actual program execution wouldn't change the way pipeline loading
+    would work. A much-improved approach, a dynamic one, was to count how many times
+    the processor would jump for a given conditional jump.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first time the processor gets to the branch, it won't know whether the code
+    will jump or not, so it will probably load the next instruction to the pipeline.
+    If it jumps, the next instruction will be canceled and new instructions will be
+    loaded in the pipeline. This will make the processor wait for as many cycles as
+    the pipeline has stages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this old method, we would have put the counter of jumps for those instructions
+    to `1`, and the counter of no jumps to `0`. The next time the program gets to
+    the same jump, seeing the counter, the processor will start loading the instructions
+    that come from the jump into the pipeline, instead of the next instructions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the calculation has been done, if the processor actually needs to jump,
+    it already has the instructions in the pipeline. If not, it will need to load
+    the next instructions into it. In both cases, the respective counter would go
+    up by 1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This means that, for example, in a long `for` loop, the jump counter will increase
+    to a high number, since it will, most of the time, have to jump back to the beginning
+    of the loop, and only after the last iteration will it continue the flow of the
+    application. This means that for all except the first and the last iteration,
+    there will be no empty pipeline and the branch will be predicted properly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These counters are actually a bit more complex since they would saturate at
+    1 or 2 bits, meaning that the counter could indicate whether the last time the
+    branch was taken or not, or how sure the processor was that the next time the
+    branch would be taken. The counter could be `0`, if it usually never takes the
+    branch, 1, if it might take it, 2, if it many times takes the branch or 3 if it
+    takes it almost always. This means that a branch that gets taken only some of
+    the time will have a better prediction. Some benchmarks have shown that the accuracy
+    can be as high as 93.5%.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's amazing how a simple counter will make branch prediction much more efficient,
+    right? Well, of course, this has big limitations. In code, that branching depends
+    on some condition, but where patterns can be seen (an `if` condition that returns
+    true on almost every second call, for example), counters will fail enormously,
+    since they will have no clue of the pattern.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this kind of behavior, complex adaptive prediction tables get used. It will
+    store the last *n* occurrences of the `jump` instruction in a table, and see whether
+    there is a pattern. If there is, it will group the outcomes in groups of the number
+    of elements in the pattern, and better predict this kind of behavior. This increases
+    the accuracy up to 97% in some cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are many different branch prediction techniques, and depending on the
+    pipeline size, it will make more sense to use more complex predictors or simpler
+    ones. If the processor has a 30-stage pipeline, failing to predict a branch will
+    end up in a 30-cycle delay for the next instruction. If it has 2 stages, it will
+    only lose 2 cycles. This means that more complex and expensive pipelines will
+    also require more complex and expensive branch predictors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The relevance of branch prediction for our code
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This book is not about creating processors, so you might think that all this
+    branch prediction theory does not make sense for our use case of improving the
+    efficiency of our Rust code. But the reality is that this theory can make us develop
+    more efficient applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, knowing that patterns in conditional execution will probably be detected
+    after two passes by new and expensive processors will make us try to use those
+    patterns if we know that our code will be mainly used by newer processors. On
+    the other hand, if we know that our code will run in a cheaper or older processor,
+    we might optimize its execution by maybe writing the result of the pattern condition
+    sequentially if possible (in a loop) or by trying to group conditions in other
+    ways.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, we have to take into account compiler optimizations. Rust will often optimize
+    loops to the point of copying some code 12 times if it knows it will always be
+    executed that number of times, to avoid branching. It will also lose some optimization
+    prediction if we have many branches in the same code generation unit (a function,
+    for example).
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is where Clippy lints such as **cyclomatic complexity** enter into play.
+    They will show as functions where we are adding too many branches. This can be
+    fixed by dividing such functions into smaller ones. The Rust compiler will better
+    optimize the given function, and if we have link-time optimizations enabled, it
+    might even end up in the same function, in the end, making the processor branchless.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We shouldn't completely rely on hardware branch prediction, especially if our
+    code is performance-critical, and we should develop taking into account how the
+    processor will optimize it too. If we know for sure which processor will be running
+    our code, we might even decide to learn the branch prediction techniques of the
+    processor from the developer manual and write our code accordingly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Profiling tools
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You might be wondering how we will detect bottlenecks such as these ones in
+    our application. We all know that not all developers will take such low-level
+    details into account, and even if they do, they might forget to do it in some
+    critical code that the program needs to run many times in a row. We cannot check
+    the whole code base manually but, fortunately, there are some profiling tools
+    that will give us information about our software.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Valgrind
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's first start with a tool that will help you find where your software spends
+    more time. **Valgrind** is a tool that helps to find bottlenecks. Two main tools
+    inside Valgrind will give us the statistics we need to find out where to improve
+    our code. It's included in most Linux distributions. There are Windows alternatives,
+    but if you have access to a Linux machine (even if it's a virtual one), Valgrind
+    will really make the difference when getting results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The easiest way to use it is to use `cargo-profiler`. This tool is in `crates.io`,
+    but it''s no longer updated, and the version in GitHub has some much-needed fixes.
+    You can install it by running the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once installed, you can use it by running `cargo profiler callgrind` or `cargo
+    profiler cachegrind`, depending on the Valgrind tool you want to use. Nevertheless,
+    `cargo-profiler` does not compile with source annotations by default, so it might
+    make sense to use the `cargo rustc` command to compile with a `-g` flag, and then
+    run Valgrind directly in those binaries:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Callgrind
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Callgrind will show statistics about the most-used functions in your program.
+    To run it, you will need to run `cargo profiler callgrind {args}`, where `args`
+    are the arguments to your executable. There is an interesting issue here though.
+    Rust uses `jemalloc` as the default allocator, but Valgrind will try to use its
+    own allocator to detect calls. There is a way to use Valgrind's allocator, but
+    it will only work in nightly Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You will need to add the following lines to your `main.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will force Rust to use the system allocator. You might need to add `#![allow(unused_extern_crates)]`
+    to the file so that it doesn't alert you for an unused crate. An interesting flag
+    for Valgrind is `-n {num}`.  This will limit the results to the `num` most relevant
+    ones. In the case of Callgrind, it will only show the most-used functions. An
+    optional `--release` flag will tell `cargo profiler` if you want to profile the
+    application in release mode instead of doing it in debug mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see an output of the Callgrind tool:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/73d0a237-8dfa-4030-aa2d-d9261b106d2d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Let's analyze what this means. I only selected the top functions, but we can
+    already see lots of information. The most-used function is a system call for a
+    memory copy. This means that this program is copying lots of data in memory between
+    one position and another. Fortunately, at least it uses an efficient system call,
+    but maybe we should check whether we need so much copying for its job.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second most-used function is something called `Executor` in the `abxml`
+    module/crate. You might think the `regex` reference is more used because it's
+    in the second position, but the `Executor` seems to be divided since it seems
+    that some of the references lost their initial `lib.rs` (third and fifth elements
+    seem the same). It seems that we use that function a lot, or that at least it's
+    taking most of our CPU time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We should ask ourselves if this is normal. Should it spend so much time on that
+    function? In the case of this program, the SUPER Android Analyzer ([http://superanalyzer.rocks/](http://superanalyzer.rocks/)),
+    it uses that function to get the resources of the application. It makes sense
+    that most of the time it would be actually analyzing the application instead of
+    decompressing it (and in fact, we are not being shown the use of a Java dependency
+    that takes 80% of the time). But it seems that the decompression of the resources
+    of the `apk` file takes a lot of time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We could check if there is something that could be optimized in that function
+    or in descendant functions. It makes sense that if we could optimize 10% of that
+    function, we would gain a lot of speed in the application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another option would be to check our regular expression usage, as we can see
+    that many instructions are used to check regular expressions and compile them.
+    An improvement in the regular expression engine would also make a difference.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We finally see that the SHA-1 and SHA-256 algorithm execution take a lot of
+    time too. Do we need them? Could they be optimized? Maybe by using the native
+    algorithm implementations often found in newer processors, we could speed up the
+    execution. It might make sense to create a pull request in the upstream crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see, Callgrind gives us tons of valuable information about the execution
+    of our program, and we can at least see where it makes sense to spend time trying
+    to optimize the code. In this particular case, hashing algorithms, regular expressions,
+    and resource decompression take most of the time; we should try to optimize those
+    functions. On the other hand, for example, one of the lesser-used functions is
+    the XML emitter. So even if we find out how to optimize that function by 90%,
+    it won't really make a difference. If it's an easy optimization, we can do it
+    (better something than nothing), but if it will take us a long time to implement,
+    it probably makes no sense to do it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cachegrind
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We have talked at length about caches in this chapter, but is there a way to
+    see how our application is performing in this sense? There actually is. It''s
+    called **Cachegrind**, and it''s part of Valgrind. It''s used in the same way
+    as Callgrind, with `cargo profiler`. In the case of the same preceding application,
+    the `cargo profiler` failed to parse Cachegrind''s response, so I had to run Valgrind
+    directly, as you can see in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/368b2b62-6548-4978-bd60-c97ac8f8d4ac.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This was my second or third run, so some information might have already been
+    cached. But still, as you can see, 2.1% of the first-level data cache missed,
+    which is not so bad, given that the second-level cache had that data most of the
+    time (it only missed 0.1% of the time).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instruction data was fetched properly at the level 1 cache almost all the time,
+    except for 0.04% of the time. There was almost no miss at level 2\. Cachegrind
+    can also give us more valuable information with some flags though.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using `--branch-sim=yes` as an argument, we can see how the branch prediction
+    worked:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/01bda42e-d40f-4878-85df-42c635d27442.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As we can see, 3.3% of the branches were not predicted properly. This means
+    that an interesting improvement could be done if branches were more predictable,
+    or if some loops were unrolled, as we saw previously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This, by itself, tells us nothing about where we could improve our code. But
+    using the tool creates a `cachegrind.out` file in the current directory. This
+    file can be used by another tool, `cg_anotate`, that will show improved stats.
+    Running it, you will see the various stats on a per-function basis, where you
+    can see which functions are giving the cache more trouble, and go there to try
+    to fix them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the case of SUPER, it seems that the resource decompress is giving more cache
+    misses. It might make sense, though, since it's reading new data from a file and
+    reading that data almost all the time from memory for the first time. But maybe
+    we can check those functions and try to improve the fetching, by using buffers,
+    for example, if they are not being used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: OProfile
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: OProfile is another great tool that can give us interesting information about
+    our program. It's also only available for Linux, but you will find a similar tool
+    for Windows too. Once again, if you can get a Linux partition to check this, your
+    results will probably be more in line with what you will read next. To install
+    it, install the `oprofile` package of your distribution. You might also need to
+    install the generic Linux tools (`linux-tools-generic` in Ubuntu).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'OProfile is not of much help without source annotations, so you should first
+    compile your binary with them by using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You will need to be root to do the profiling, as it will directly get the kernel
+    counters for it. Don''t worry; once you profile the application, you can stop
+    being root. To profile the application, simply run `operf` with the binary and
+    the arguments to profile:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2db4a3e0-5be1-4dab-a13e-e91811cb6588.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This will create an `oprofile_data` directory in the current path. To make
+    some sense from it, you can use the `opannotate` command. This will show a bunch
+    of stats, with some of the source code present, with how much time the CPU spends
+    in each place. In the case of our Android analyzer, we can see that the rule processing
+    takes quite a lot of time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/78b6a992-02a9-4c3d-a429-4554900a0f0b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In this case, this is probably reasonable. It makes sense that a piece of software
+    that is supposed to analyze a file with rules would spend lots of time analyzing
+    that file with those rules. But, nevertheless, it also means that in that code,
+    we could find some optimization that could make a difference.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With OProfile, we could find some areas where the program is spending more time
+    than it should. Maybe we would find a bottleneck in an unexpected area. That is
+    why it's important to use these kinds of tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, you learned how the processor really works. You understood
+    the multiple hacks we have in the hardware so that everything runs much, much
+    faster than it would if the CPU was always waiting for the RAM. You also got a
+    grasp of the most common performance issues and some information on how to fix
+    them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, you learned about the Callgrind, Cachegrind, and OProfile tools, which
+    will help you find those bottlenecks so that you can fix them easily. They will
+    even show where in your source code you can find the slowdowns.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In [Chapter 6](4a4cf14d-1c2e-4a33-9856-6ef520591a44.xhtml), *Benchmarking*,
+    you will learn how to benchmark your application. It is especially interesting
+    to compare it to other applications or to a previous version of your own application.
+    You will learn how to spot changes that make your application slower.
+  prefs: []
+  type: TYPE_NORMAL

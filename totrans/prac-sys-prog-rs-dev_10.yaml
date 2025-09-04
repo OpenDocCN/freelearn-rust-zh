@@ -1,0 +1,1243 @@
+- en: '*Chapter 8*: Working with Processes and Signals'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Do you know how commands are executed when you type them into a terminal interface
+    on your computer? Are these commands directly executed by the operating system,
+    or is there an intermediate program that handles them? When you run a program
+    from the command line in the foreground, and press *Ctrl* + *C*, who is listening
+    to this keypress, and how is the program terminated? How can multiple user programs
+    be run at the same time by the operating system? What is the difference between
+    a program and a process? If you are curious, then read on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the previous chapter, we learned how to control and alter the terminal interface
+    that is used to interact with the users in command-line applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will look at *processes*, which are the second most popular
+    abstraction in systems programming after *files*. We'll learn what processes are,
+    how they differ from programs, how they are started and terminated, and how the
+    process environment can be controlled. This skill is necessary if you want to
+    write systems programs such as shells, where you want programmatic control over
+    the life cycle of processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll also build an elementary shell program as a mini project by using the
+    *Rust Standard Library* This will give you a practical understanding of how popular
+    shells such as *Bourne*, *Bash*, and *zsh* work under the hood, and teach you
+    the basics of how you can build your own customized shell environments in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover these topics in the following order:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding Linux process concepts and syscalls
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Spawning new processes with Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Handling I/O and environment variables for child processes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Handling panic, errors, and signals
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Writing a basic shell program in Rust (project)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will have learned how to programmatically launch
+    new programs as separate processes, how to set and adjust environment variables,
+    how to handle errors, respond to external signals, and exit the process gracefully.
+    You will learn how to talk to the operating system to perform these tasks using
+    the Rust standard library. This gives you, as a system programmer, great control
+    over this important system resource; that is, *processes*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Verify that `rustc`, and `cargo` have been installed correctly with the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Git repo for the code in this chapter can be found at [https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter08](https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter08).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The section on signal handling requires a Unix-like development environment
+    (*Unix*, *Linux*, or *macOS*), as Microsoft Windows does not directly have the
+    concept of signals. If you work with Windows, download a virtual machine such
+    as Oracle VirtualBox ([https://www.virtualbox.org/wiki/Downloads](https://www.virtualbox.org/wiki/Downloads))
+    or use a *Docker* container to launch a *Unix/Linux* image to follow along.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding Linux process concepts and syscalls
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll cover the fundamentals of process management and get
+    an appreciation of why it is important for systems programming. We'll look at
+    the process life cycle, including *creating new processes*, *setting their environment
+    parameters*, *working with their standard input and output*, and *terminating
+    the processes*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This section starts with understanding the differences between a *program* and
+    a *process*. We'll then go into a few key details about the fundamentals of processes
+    in Linux. Lastly, we'll see an overview of how to manage the process life cycle
+    with Rust using syscalls encapsulated by the Rust standard library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does a program become a process?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: A **process** is a running **program**. To be precise, it is an *instance* of
+    a running program. You can have *multiple instances* of a single program running
+    at the same time, such as starting a text editor from multiple terminal windows.
+    Each such instance of a running program is a *process*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though a process is created as a result of running (or executing) a program,
+    the two are different. A program exists in two forms – **source code** and **machine-executable
+    instructions** (object code or executables). A compiler (and linker) is typically
+    used to convert the source code of a program into *machine-executable instructions*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Machine-executable instructions* contain information for the operating system
+    on how to *load a program into memory*, *initialize* it, and *run* it. The instructions
+    include the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An executable format (for example, **ELF** is a popular executable format in
+    Unix systems).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The program logic to be executed by the CPU.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The memory address of the entry point of the program.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Some data for initializing the program variables and constants.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Information on the location of shared libraries, functions, and variables.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'When a program is started either from a command line, script, or graphical
+    user interface, the following steps occur:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The operating system (kernel) allocates virtual memory to the program (which
+    is also called the **memory layout** of the program). We saw this in [*Chapter
+    5*](B16405_05_Final_NM_ePUB.xhtml#_idTextAnchor083), *Memory Management in Rust*,
+    on how virtual memory is laid out for a program in terms of *stack*, *heap*, *text*,
+    and *data* segments.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The kernel then loads the program instructions into the *text segment* of the
+    virtual memory.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The kernel initializes the program variables in the *data segment*.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The kernel triggers the CPU to start executing the program instructions.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The kernel also provides the running program with access to resources it needs,
+    such as files or additional memory.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The memory layout of a process (running program) was discussed in [*Chapter
+    5*](B16405_05_Final_NM_ePUB.xhtml#_idTextAnchor083), *Memory Management*. It is
+    reproduced here in *Figure 8.1* for reference:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.1 – Program memory layout](img/Figure_8.1_B16405.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 8.1 – Program memory layout
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've seen the *memory layout* of a program. What is a *process*, then?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As far as the kernel is concerned, a process is an abstraction that consists
+    of the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Virtual memory in which the program instructions and data are loaded, which
+    is represented in the program memory layout in *Figure 8.1*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A set of metadata about the running program such as the *process identifier*,
+    *system resources* associated with the program (such as a list of open files),
+    *virtual memory tables*, and other such information about the program. What is
+    of particular importance is the *process ID*, which uniquely identifies an instance
+    of a running program.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The kernel itself is the `init`, which is assigned a *process ID* of *1*. The
+    `init` process terminates only when the system is shut down and cannot be killed.
+    All future processes are created either by the `init` process or one of its descendent
+    processes.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Thus, a program refers to instructions created by the programmer (in the source
+    or a machine-executable format) and a process is a running instance of a program
+    that uses system resources and is controlled by the kernel. As programmers, if
+    we want to control a running program, we will need to use appropriate *system
+    calls* to the kernel. The Rust standard library wraps these system calls into
+    neat APIs for use within Rust programs, as discussed in [*Chapter 3*](B16405_03_Final_NM_ePUB.xhtml#_idTextAnchor057),
+    *Introduction to the Rust Standard Library*.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: We've seen how programs relate to processes. Let's discuss some more details
+    about the *characteristics of processes* in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Delving into Linux process fundamentals
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In [*Chapter 3*](B16405_03_Final_NM_ePUB.xhtml#_idTextAnchor057), *Introduction
+    to the Rust Standard Library and Key Crates for Systems Programming*, we saw how
+    system calls are the interface between a user program (process) and the kernel
+    (operating system). Using system calls, a user program can manage and control
+    various system resources such as *files*, *memory*, *devices*, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we'll look at how one running program (the parent process)
+    can make system calls to manage the life cycle of another program (the child process).
+    Recall that processes are also treated as system resources in Linux, just like
+    files or memory. Understanding how one process can manage and communicate with
+    another process is the focus of this section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Figure 8.2* shows the key set of tasks related to process management:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.2 – Working with processes in Rust](img/Figure_8.2_B16405.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 8.2 – Working with processes in Rust
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's go over the process management tasks shown in the preceding figure. We'll
+    see how process management is done on Linux by a non-Rust user program (for example,
+    C/C++), and how it is different in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a new process
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: While working with Unix/Linux, any user program that needs to create a new process
+    has to request the kernel to do so using system calls (*syscalls*). A program
+    (let's call it the `fork()` syscall. The kernel duplicates the parent process
+    and creates a *child process* with a unique ID. The child process gets an exact
+    copy of the parent's memory space (the heap, stack, and so on). The child also
+    gets access to the same copy of the program instructions as the parent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After creation, a child process can choose to load a different program into
+    its process memory space and execute it. This is accomplished using one of the
+    `exec()` family of *syscalls*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, basically, the *syscall* in Unix/Linux to *create a new child process* is
+    different from that needed to *load a new program* into the child process and
+    execute it. However, the Rust standard library simplifies this for us and provides
+    a uniform interface, where both these steps can be combined while creating a new
+    child process. We'll see examples of this in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s go back to the question at the beginning of the chapter: *What exactly
+    happens when you type something in the command line of a terminal?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When you run a program by typing the program executable name in a command line,
+    two things take place:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, a new process is created using the `fork()` system call.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Then, the image of the new program (that is, the *program executable*) is loaded
+    into memory and executed using the `exec()` family of calls.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What happens when you type a command in a terminal?
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: A terminal (as we saw in the previous chapter) provides an interface for the
+    user to interact with the system. But there has to be something that interprets
+    that command and executes it. This is the `find * | grep debug | wc -l`
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: When this command is typed into a terminal, the shell program spawns three processes
+    to execute this command pipeline. It is this shell command that makes the system
+    call to the kernel to create new processes, load these commands, and execute them
+    in a sequence. The shell then returns the results of the execution and prints
+    it to standard output.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Checking the status of a child process
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Once a child process is spawned by the kernel, it returns a child *process ID*.
+    The `wait()` and `waitpid()` syscalls can be used to check whether the child process
+    is running by passing the *child process ID* to the call. These are helpful to
+    synchronize the execution of the child process with the parent process. The Rust
+    system library provides calls to wait for the child process to finish and to check
+    its status.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Communicating using inter-process communication
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Processes can communicate with each other and with the kernel (remember that
+    the kernel is also a process) to coordinate their activities, using mechanisms
+    such as signals, pipes, sockets, message queues, semaphores, and shared memory.
+    In Rust also, two processes can communicate using various means including pipes,
+    processes, and message queues. But one of the basic forms of **Inter-Process Communication**
+    (**IPC**) between parent and child processes involves *stdin/stdout pipes*. The
+    parent process can write to standard input and read from the child process's standard
+    output. We'll see an example of this in a later section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting environment variables
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Each process also has its own set of associated environment variables. The `fork()`
+    and `exec()` syscalls allow the passing and setting of environment variables from
+    the parent to the child process. The values of these environment variables are
+    stored within the virtual memory area of the process. The Rust standard library
+    also allows the parent process to explicitly set or reset the environment variables
+    of the child process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Terminating a process
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A process can terminate itself by using the `exit()` syscall, or by being killed
+    by a signal (such as the user pressing *Ctrl* + *C*) or using the `kill()` syscall.
+    Rust also has an `exit()` call for this purpose. Rust also provides other ways
+    to abort a process, which we will look at in a later section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handling signals
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Signals are used to communicate asynchronous events such as keyboard interrupts
+    to a process. Except for two of the signals, SIGSTOP and SIGKILL, processes can
+    either choose to ignore signals or decide how to respond to them in their own
+    way. Handling signals directly using the Rust standard library is not developer-friendly,
+    so for this, we can use external crates. We'll be using one such crate in a later
+    section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we've seen the differences between a *program* and a *process*,
+    delved into a few of the characteristics of Linux processes, and got an overview
+    of the kind of things we can do in Rust to interact with processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we'll learn first-hand how to spawn, interact, and terminate
+    processes using Rust by writing some code. Note that in the next few sections,
+    only code snippets are provided. In order to execute the code, you will need to
+    create a new cargo project and add the code shown in the `src/main.rs` file with
+    the appropriate module imports.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spawning processes with Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the Rust standard library, `std::process` is the module for working with
+    processes. In this section, we'll look at how to *spawn new processes*, *interact
+    with child processes*, and *abort the current process* using the Rust standard
+    library. The Rust standard library internally uses the corresponding Unix/Linux
+    *syscalls* to invoke the kernel operations for managing processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's begin with launching new child processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spawning new child processes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The `std::process::Command` is used to launch a program at a specified path,
+    or to run a standard shell command. The configuration parameters for the new process
+    can be constructed using a builder pattern. Let''s see a simple example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code shown uses the `Command::new()` method to create a new command for
+    execution, that takes as a parameter the name of the program to be run. The `spawn()`
+    method creates a new child process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you run this program, you will see a listing of files in the current directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is the simplest way to spin off a standard Unix *shell command* or a *user
+    program* as a child process using the Rust standard library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What if you would like to pass parameters to the shell command? Some example
+    code is shown in the following snippet that passes arguments to the command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `arg()` method can be used to pass one argument to the program. Here we
+    want to run the `ls –lh` command to display files in a long format with readable
+    file sizes. We have to use the `arg()` method twice to pass the two flags.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Alternatively, the `args()` method can be used as shown here. Note that the
+    `std::process` import and the `main()` function declaration have been removed
+    in future code snippets to avoid repetition, but you must add them before you
+    can run the program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let's alter the code to list the directory contents for the directory one level
+    above (relative to the current directory).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code shows two parameters for the `ls` command configured through the `args()`
+    method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, let''s set the current directory for the child process to a non-default
+    value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, we are spawning the process to run the `ls` command in
+    the directory one level above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the program with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will see the listing of the parent directory displayed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've so far used `spawn()` to create a new child process. This method returns
+    a handle to the child process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There is another way to spawn a new process using `output()`. The difference
+    is that `output()` spawns the child process and waits for it to terminate. Let''s
+    see an example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are spawning a new process using the `output()` method to print out the
+    contents of a file named `a.txt`. Let''s create this file using the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you run the program, you will see the contents of the `a.txt` file printed
+    out to the terminal. Note that we are printing out the contents of the standard
+    output handle of the child process because that's where the output of the `cat`
+    command is directed to by default. We'll learn more details of how to work with
+    child processes' `stdin` and `stdout` later in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll now look at how to terminate a process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Terminating processes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We've seen how to spawn new processes. What about terminating them? For this,
+    the Rust standard library provides two methods—`abort()` and `exit()`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The usage of the `abort()` method is shown in the following snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code aborts the current process, and the last statement will not get printed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is another `exit()` method similar to `abort()`, but it allows us to specify
+    an exit code that is available to the calling process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is the benefit of processes returning error codes? A child process can
+    fail due to various errors. When the program fails and the child process exits,
+    it would be useful to the calling program or user to know the error code denoting
+    the reason for failure. **0** indicates a successful exit. Other error codes indicate
+    various conditions such as *data error*, *system file error*, *I/O error*, and
+    so on. The error codes are platform-specific, but most Unix-like platforms use
+    8-bit error codes, allowing for error values between 0 and 255\. Examples of error
+    codes for Unix BSD can be found at [https://www.freebsd.org/cgi/man.cgi?query=sysexits&apropos=0&sektion=0&manpath=FreeBSD+11.2-stable&arch=default&format=html](https://www.freebsd.org/cgi/man.cgi?query=sysexits&apropos=0&sektion=0&manpath=FreeBSD+11.2-stable&arch=default&format=html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following is an example showing the returning of error codes from a process
+    with the `exit()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Run this program on the command line in your terminal. To know the exit code
+    of the last executed process on Unix-like systems, you can type `$?` on the command
+    line. Note that this command may vary depending on the platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: abort() versus exit()
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that both `abort()` and `exit()` do not clean up and call any destructors,
+    so if you want to shut down a process in a clean manner, these methods should
+    be called only after all the destructors have been run. However, the operating
+    system will ensure that on termination of a process, all the resources associated
+    with it, such as memory and file descriptors, are automatically made available
+    for re-allocation to other processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we've seen how to spawn and terminate processes. Let's next
+    take a look at how to check the status of execution of a child process after it
+    has been spawned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Checking the status of a child process' execution
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As seen earlier, when we start a new process, we also specify the program or
+    command to be executed within the process. Frequently, we also care about whether
+    this program or command has been executed successfully or not, in order to take
+    suitable actions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Rust standard library provides a `status()` method to let us find out whether
+    a process completed executing successfully. Some example usage is shown in the
+    following snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Run this program and you will see the message **Unsuccessful operation** printed
+    out to your terminal. Re-run the program with a valid filename and you will see
+    the success message printed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This concludes this section. You learned different ways to run commands in a
+    separate child process, how to terminate them, and how to get the status of their
+    execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we'll look at how to set environment variables and work
+    with I/O for child processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handling I/O and environment variables
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll look at how to handle I/O with child processes, and also
+    learn to set and clear environment variables for the child process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why would we need this?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Take the example of a load balancer that is tasked with spawning new workers
+    (Unix processes) in response to incoming requests. Let's assume the new worker
+    process reads configuration parameters from environment variables to perform its
+    tasks. The load balancer process then would need to spawn the worker process and
+    also set its environment variables. Likewise, there may be another situation where
+    the parent process wants to read a child process's standard output or standard
+    error and route it to a log file. Let's understand how to perform such activities
+    in Rust. We'll start with handling the I/O of the child process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handling the I/O of child processes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Standard input (`stdin`), standard output (`stdout`), and standard error (`stderr`)
+    are abstractions that allow a process to interact with the surrounding environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, when many user processes are running at the same time, and when
+    a user types keystrokes on a terminal, the kernel delivers the keystrokes to the
+    standard input of the right process. Likewise, a Rust program (running as a process
+    in a shell) can print out characters to its standard output, which is in turn
+    read by the shell program and delivered to the terminal screen for the user. Let's
+    learn how to work with standard input and standard output using the Rust standard
+    library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `piped()` method on `std::process::Stdio` allows the child process to communicate
+    with its parent process using a `pipe` (which is an IPC mechanism in Unix-like
+    systems).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll first look at how to communicate with the standard output handle of
+    the child process from the parent process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code snippet, we first create a new child process to run the
+    `ps` command to show a list of currently running processes. The output is, by
+    default, sent to the child process's `stdout`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In order to get access to the child process's `stdout` from the parent process,
+    we create a Unix pipe using the `stdio::piped()` method. The `process` variable
+    is the handle to the child process, and `process.stdout` is the handle to the
+    child process's standard output. The parent process can read from this handle,
+    and print out its contents to its own `stdout` (that is, the parent process's
+    `stdout`). This is how a parent process can read the output of a child process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s now write some code to send some bytes from the parent process to the
+    standard input of the child process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The descriptions of the numbered annotations in the preceding code are provided
+    here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Register a piped connection between the *parent process* and *standard input*
+    of the child process.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Register a piped connection between the *parent process* and *standard output*
+    of the child process.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Write bytes to the *standard input* of the child process.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Read from the *standard output* of the child process and print it to the terminal
+    screen.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: There are a few other methods available on the child process. The `id()` method
+    provides the *process id* of the child process, the `kill()` method kills the
+    child process, the `stderr` method gives a handle to the child process's *standard
+    error*, and the `wait()` method makes the parent process to wait until the child
+    process has completely exited.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've seen how to handle I/O for child processes. Let's now learn how to work
+    with environment variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting the environment for the child process
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let''s look at how to set environment variables for the child process. The
+    following example shows how to set the path environment variable for a child process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `env()` method on `std::process::Command` allows the parent process to
+    set the environment variable for the child process being spawned. Run the program
+    and test it with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll see the value of the `MY_PATH` environment variable that was set in the
+    program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To set multiple environment variables, the `envs()` command can be used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The environment variables for a child process can be cleared by using the `env_clear()`
+    method, as shown:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Run the program with `cargo run` , and you will see that *nothing* is printed
+    out for the `env` command. Re-run the program by commenting out the `.env_clear()`
+    statement, and you will find the `env` values printed to terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To remove a specific environment variable, the `env_remove()` method can be
+    used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we conclude this section. We've seen how to interact with standard
+    input and standard output of a child process and to set/reset the environment
+    variables. In the next section, we'll learn how to handle errors and signals in
+    child processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handling panic, errors, and signals
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Processes can fail due to various error conditions. These have to be handled
+    in a controlled manner. There may also be situations where we want to terminate
+    a process in response to external inputs, such as a user pressing *Ctrl* + *C*.
+    How we can handle such situations is the focus of this section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: In cases when processes exit due to errors, the operating system itself performs
+    some cleanup, such as releasing memory, closing network connections, and releasing
+    any file handles associated with the process. But sometimes, you may want program-driven
+    controls to handle these cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Failures in process execution can broadly be classified into two types – *unrecoverable
+    errors* and *recoverable errors*. When a process encounters an unrecoverable error,
+    there is sometimes no option but to abort the process. Let's see how to do that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Aborting the current process
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We saw how to terminate and exit from a process in the *Spawning processes with
+    Rust* section. The `abort()` and `exit()` methods on `process::Command` can be
+    used for this purpose.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In some cases, we consciously allow a program to fail under some conditions
+    without handling it, mainly in cases of unrecoverable errors. The `std::panic`
+    macro allows us to panic the current thread. What this means is that the program
+    terminates immediately and provides feedback to the caller. But unlike the `exit()`
+    or `abort()` methods, it unwinds the stack of the current thread and calls all
+    destructors. Here is an example of the usage of the `panic!` macro:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Run the program with `cargo run` and you will see the error message printed
+    out from the `panic!` macro. There is also a custom hook that can be registered
+    that will get invoked before the standard cleanup is performed by the `panic`
+    macro. Here is the same example, this time with a custom `panic` hook:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: On running this program, you will see the custom error hook message displayed,
+    as we are providing an invalid command to spawn as a child process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that `panic!` should be used only for non-recoverable errors. For example,
+    if a child process tries to open a file that does not exist, this can be handled
+    using a recoverable error mechanism such as the `Result enum`. The advantage of
+    using `Result` is that the program can return to its original state and the failed
+    operation can be retried. If `panic!` is used, the program terminates abruptly,
+    and the original state of the program cannot be recovered. But there are situations
+    where `panic!` may be appropriate such, as when a process runs out of memory in
+    the system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's next look at another aspect of process control—signal handling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Signal handling
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In Unix-like systems, the operating system can send signals to processes. Note
+    that Windows OS does not have signals. The process can handle the signal in a
+    way it deems fit, or even ignore the signal. There are operating-system defaults
+    for handling various signals. For example, when you issue a kill command on a
+    process from a shell, the `SIGTERM` signal is generated. The program terminates
+    on receipt of this signal by default, and there is no special additional code
+    that needs to be written in Rust to handle that signal. Similarly, a `SIGINT`
+    signal is received when a user presses *Ctrl* + *C*. But a Rust program can choose
+    to handle these signals in its own way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, handling Unix signals correctly is hard for various reasons. For example,
+    a signal can occur at any time and the thread processing cannot continue until
+    the signal handler completes execution. Also, signals can occur on any thread
+    and synchronization is needed. For this reason, it is better to use third-party
+    crates in Rust for signal handling. Note that even while using external crates,
+    caution should be exercised as the crates do not solve all problems associated
+    with signal handling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s now see an example of handling signals using the `signal-hook` crate.
+    Add it to dependencies in `Cargo.toml` as shown:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'An example code snippet is shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, we listen for two specific signals, `SIGTERM` and `SIGINT,`
+    within the `match` clause. `SIGINT` can be sent to the program by pressing *Ctrl*
+    + *C*. The `SIGTERM` signal can be generated by using the `kill` command on a
+    *process id* from the shell.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, run the program and simulate the two signals. Then, press the *Ctrl* +
+    *C* key combination, which generates the `SIGINT` signal. You will see that instead
+    of the default behavior (which is to terminate the program), a statement is printed
+    out to the terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To simulate SIGTERM, run a `ps` command on the command line of a Unix shell
+    and retrieve the *process id*. Then run a `kill` command with the *process id*.
+    You will see that the process terminates, and a statement is printed to the terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are using **tokio** for asynchronous code, you can use the **tokio-support**
+    feature of signal-hook.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is important to remember that signal handling is a complex topic, and even
+    with external crates, care must be exercised while writing custom signal-handling
+    code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While handling signals or dealing with errors, it is also good practice to log
+    the signal or error using a crate such as `log` for future reference and troubleshooting
+    by system administrators. However, if you'd like a program to read these logs,
+    you can log these messages in JSON format instead of plaintext by using an external
+    crate such as `serde_json`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This concludes this subsection on working with *panic*, *errors*, and *signals*
+    in Rust. Let's now write a shell program that demonstrates some of the concepts
+    discussed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing a shell program in Rust (project)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We learned in the *Delving into Linux process fundamentals* section what a shell
+    program is. In this section, let's build a shell program, adding features iteratively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the first iteration, we''ll write the basic code to read a shell command
+    from the command line and spawn a child process to execute the command. Next,
+    we''ll add the ability to pass command arguments to the child process. Lastly,
+    we will personalize the shell by adding support for users to enter commands in
+    a more natural-language-like syntax. We''ll also introduce error handling in this
+    last iteration. Let''s get started:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s first create a new project:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create three files: `src/iter1.rs`, `src/iter2.rs`, and `src/iter3.rs`. The
+    code for the three iterations will be placed in these files so that it will be
+    easy to build and test each iteration separately.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following to `Cargo.toml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In the preceding code, we specify to the Cargo tool that we want to build separate
+    binaries for the three iterations.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: We're now ready to start with the first iteration of the shell program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Iteration 1 – Spawning a child process to execute commands
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'First, let''s write a program to accept commands from the terminal, and then
+    spawn a new child process to execute those user commands. Add a loop construct
+    to continue accepting user commands in a loop until the process is terminated.
+    The code is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: src/iter1.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The numbered annotations in the preceding code are described as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Display the `$` prompt to nudge the user to enter commands.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Flush the `stdout` handle so that the `$` prompt is immediately displayed on
+    the terminal.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create a buffer to hold the command entered by the user.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Read the user commands one line at a time.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Remove the newline character from the buffer (this is added when the user presses
+    the *Enter* key to submit the command).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create a new child process and pass the user commands to the child process for
+    execution.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Wait until the child process completes execution before accepting additional
+    user inputs.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Run the program with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Type any command without arguments such as `ls` or `ps` or `du` on the `$` prompt.
+    You'll see the output of the command execution displayed on the terminal. You
+    can continue to enter more such commands at the next `$` prompt. Press *Ctrl*
+    + *C* to exit the program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We now have the first version of our shell program working, but this program
+    will fail if parameters or flags are entered after the command. For example, typing
+    a command such as `ls` works, but typing `ls –lah` will cause the program to panic
+    and exit. Let's add support for command arguments in the next iteration of our
+    code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Iteration 2 – Adding support for command arguments
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Let''s add support for command arguments with the `args()` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: src/iter2.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The code shown is essentially the same as the previous snippet, except for
+    the three additional lines added, which are annotated with numbers. The annotations
+    are described as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Take the user input, split it by whitespace, and store the result in `Vec`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The first element of the `Vec` corresponds to the command. Create a child process
+    to execute this command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Pass the list of `Vec` elements, starting from the second element, as a list
+    of arguments to the child process.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Run the program with the following line:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Enter a command and pass arguments to it before hitting the *Enter* key. For
+    example, you can type one of the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note that in the last command, `a.txt` is an existing file holding some contents
+    and located in the project root folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will see the command outputs successfully displayed on the terminal. The
+    shell works so far as we intended. Let's extend it now a little further in the
+    next iteration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Iteration 3 – Supporting natural-language commands
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Since this is our own shell, let''s implement a user-friendly alias for a shell
+    command in this iteration (*why not?*). Instead of typing `ls`, what if a user
+    could type a command in natural language, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is what we''ll code next. The following snippet shows the code. Let''s
+    look at the module imports first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Modules from `std::io` are imported for writing to the terminal, reading from
+    the terminal, and for error handling. We already know the purpose of importing
+    the `process` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s now look at the `main()` program in parts. We won''t cover the code
+    already seen in previous iterations. The complete code for the `main()` function
+    can be found in the GitHub repo in the `src/iter3.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After displaying the `$` prompt, check whether the user has entered any command.
+    If the user presses just the *Enter* key at the prompt, ignore and redisplay the
+    `$` prompt. The following code checks whether at least one command has been entered
+    by the user, then processes the user input:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'If the command entered is `show files`, execute the `ls` command in a child
+    process. If the command is `show process`, execute the `ps` command. If `show`
+    is entered without a parameter, or if the `show` command is followed by an invalid
+    word, throw an error:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Wait for the child process to complete. If the child process fails to execute
+    successfully, or if the user input is invalid, throw an error:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Run the program with `cargo run –-bin iter3` and try the following commands
+    at the `$` prompt to test:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You'll see the commands successfully execute, with a statement printed out indicating
+    success.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You would have noticed that we''ve added some error handling in the code. Let''s
+    look at what error conditions we''ve addressed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the user presses *Enter* without entering a command
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the user enters the `show` command without a parameter (either a file or
+    process)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the user enters the `show` command with an invalid parameter
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the user enters a valid Unix command, but one that is not supported by our
+    program (for example, `pipes` or `redirection`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Let''s try the following invalid inputs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll see that an error message is printed to the terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Try also hitting the *Enter* key without command. You will see that this is
+    not processed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In error-handling code, note use of `ErrorKind` `enum`, which is a set of pre-defined
+    error types defined in the Rust standard library. The list of predefined error
+    types can be found at [https://doc.rust-lang.org/std/io/enum.ErrorKind.html](https://doc.rust-lang.org/std/io/enum.ErrorKind.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Congratulations! You have implemented a basic shell program that can recognize
+    natural-language commands for non-technical users. You've also implemented some
+    error handling so that the program is reasonably robust and doesn't crash on invalid
+    inputs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As an exercise, you can do the following to enhance this shell program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Add support for pipe-operator-separated command chains such as `ps | grep sys`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Add support for redirections such as the **>** operator to divert the output
+    of a process execution to a file.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Move the logic of command-line parsing into a separate tokenizer module.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In this section, we've written a shell program that has a subset of the features
+    of a real-world shell program such as `zsh` or `bash`. To be clear, a real-world
+    shell program has a lot more complex features, but we have covered the fundamental
+    concepts behind creating a shell program here. Also importantly, we've learned
+    how to handle errors in case of invalid user inputs or if a child process fails.
+    To internalize your learning, it is recommended to write some code for the suggested
+    exercises.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This concludes the section on writing a shell program in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we reviewed the basics of processes in Unix-like operating
+    systems. We learned how to spawn a child process, interact with its standard input
+    and standard output, and execute a command with its arguments. We also saw how
+    to set and clear environment variables. We looked at the various ways to terminate
+    a process on error conditions, and how to detect and handle external signals.
+    We finally wrote a shell program in Rust that can execute the standard Unix commands,
+    but also accept a couple of commands in a natural-language format. We also handled
+    a set of errors to make the program more robust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Continuing on the topic of managing system resources, in the next chapter, we
+    will learn how to manage threads of a process and build concurrent systems programs
+    in Rust.
+  prefs: []
+  type: TYPE_NORMAL

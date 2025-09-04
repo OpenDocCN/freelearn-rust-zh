@@ -1,0 +1,1985 @@
+- en: '8'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Runtimes, Wakers, and the Reactor-Executor Pattern
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we created our own pausable tasks (coroutines) by writing
+    them as state machines. We created a common API for these tasks by requiring them
+    to implement the `Future` trait. We also showed how we can create these coroutines
+    using some keywords and programmatically rewrite them so that we don’t have to
+    implement these state machines by hand, and instead write our programs pretty
+    much the same way we normally would.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we stop for a moment and take a bird’s eye view over what we got so far,
+    it’s conceptually pretty simple: we have an interface for pausable tasks (the
+    `Future` trait), and we have two keywords (`coroutine/wait`) to indicate code
+    segments we want rewritten as a state machine that divides our code into segments
+    we can pause between.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, we have no event loop, and we have no scheduler yet. In this chapter,
+    we’ll expand on our example and add a runtime that allows us to run our program
+    efficiently and opens up the possibility to schedule tasks concurrently much more
+    efficiently than what we do now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter will take you on a journey where we implement our runtime in two
+    stages, gradually making it more useful, efficient, and capable. We’ll start with
+    a brief overview of what runtimes are and why we want to understand some of their
+    characteristics. We’ll build on what we just learned in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
+    and show how we can make it much more efficient and avoid continuously polling
+    the future to make it progress by leveraging the knowledge we gained in [*Chapter
+    4*](B20892_04.xhtml#_idTextAnchor081).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we’ll show how we can get a more flexible and loosely coupled design
+    by dividing the runtime into two parts: an **executor** and a **reactor**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, you will learn about basic runtime design, reactors, executors,
+    wakers, and spawning, and we’ll build on a lot of the knowledge we’ve gained throughout
+    the book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will be one of the big chapters in this book, not because the topic is
+    too complex or difficult, but because we have quite a bit of code to write. In
+    addition to that, I try to give you a good mental model of what’s happening by
+    providing quite a few diagrams and explaining everything very thoroughly. It’s
+    not one of those chapters you typically blaze through before going to bed, though,
+    but I do promise it’s absolutely worth it in the end.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The chapter will be divided into the following segments:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction to runtimes and why we need them
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Improving our base example
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating a proper runtime
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Step 1 – Improving our runtime design by adding a Reactor and a Waker
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Step 2 – Implementing a proper Executor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Step 3 – Implementing a proper Reactor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Experimenting with our new runtime
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: So, let’s dive right in!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The examples in this chapter will build on the code from our last chapter, so
+    the requirements are the same. The examples will all be cross-platform and work
+    on all platforms that Rust ([https://doc.rust-lang.org/beta/rustc/platform-support.html#tier-1-with-host-tools](https://doc.rust-lang.org/beta/rustc/platform-support.html#tier-1-with-host-tools))
+    and `mio` ([https://github.com/tokio-rs/mio#platforms](https://github.com/tokio-rs/mio#platforms))
+    supports. The only thing you need is Rust installed and the repository that belongs
+    to the book downloaded locally. All the code in this chapter will be found in
+    the `ch08` folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To follow the examples step by step, you’ll also need `corofy` installed on
+    your machine. If you didn’t install it in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
+    install it now by going into the `ch08/corofy` folder in the repository and running
+    this command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Alternatively, you can just copy the relevant files in the repository when we
+    come to the points where we use `corofy` to rewrite our `coroutine/wait` syntax.
+    Both versions will be available to you there as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll also use `delayserver` in this example, so you need to open a separate
+    terminal, enter the `delayserver` folder at the root of the repository, and write
+    `cargo run` so that it’s ready and available for the examples going forward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember to change the ports in the code if you for some reason have to change
+    the port `delayserver` listens on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction to runtimes and why we need them
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As you know by now, you need to bring your own runtime for driving and scheduling
+    asynchronous tasks in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Runtimes come in many flavors, from the popular **Embassy** embedded runtime
+    ([https://github.com/embassy-rs/embassy](https://github.com/embassy-rs/embassy)),
+    which centers more on general multitasking and can replace the need for a **real-time
+    operating system** (**RTOS**) on many platforms, to **Tokio** ([https://github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio)),
+    which centers on non-blocking I/O on popular server and desktop operating systems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'All runtimes in Rust need to do at least two things: schedule and drive objects
+    implementing Rust’s `Future` trait to completion. Going forward in this chapter,
+    we’ll mostly focus on runtimes for doing non-blocking I/O on popular desktop and
+    server operating systems such as Windows, Linux, and macOS. This is also by far
+    the most common type of runtime most programmers will encounter in Rust.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Taking control over how tasks are scheduled is *very* invasive, and it’s pretty
+    much a one-way street. If you rely on a userland scheduler to run your tasks,
+    you cannot, at the same time, use the OS scheduler (without jumping through several
+    hoops), since mixing them in your code will wreak havoc and might end up defeating
+    the whole purpose of writing an asynchronous program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following diagram illustrates the different schedulers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.1 – Task scheduling in a single-threaded asynchronous system](img/B20892_09_1.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 8.1 – Task scheduling in a single-threaded asynchronous system
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An example of yielding to the OS scheduler is making a blocking call using
+    the default `std::net``     ::TcpStream` or `std::thread::sleep` methods. Even *potentially* blocking calls
+    using primitives such as `Mutex` provided by the standard library might yield
+    to the OS scheduler.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: That’s why you’ll often find that asynchronous programming tends to color everything
+    it touches, and it’s tough to only run a part of your program using `async/await`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The consequence is that runtimes must use a non-blocking version of the standard
+    library. In theory, you could make one non-blocking version of the standard library
+    that all runtimes use, and that was one of the goals of the `async_std` initiative
+    ([https://book.async.rs/introduction](https://book.async.rs/introduction)). However,
+    having the community agree upon one way to solve this task was a tall order and
+    one that hasn’t really come to fruition yet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we start implementing our examples, we’ll discuss the overall design
+    of a typical async runtime in Rust. Most runtimes such as Tokio, Smol, or async-std
+    will divide their runtime into two parts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The part that tracks events we’re waiting on and makes sure to wait on notifications
+    from the OS in an efficient manner is often called the *reactor* or *driver*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The part that schedules tasks and polls them to completion is called the *executor*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s take a high-level look at this design so that we know what we’ll be implementing
+    in our example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reactors and executors
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Dividing the runtime into two distinct parts makes a lot of sense when we take
+    a look at how Rust models asynchronous tasks. If you read the documentation for
+    `Future` ([https://doc.rust-lang.org/std/future/trait.Future.html](https://doc.rust-lang.org/std/future/trait.Future.html))
+    and `Waker` ([https://doc.rust-lang.org/std/task/struct.Waker.html](https://doc.rust-lang.org/std/task/struct.Waker.html)),
+    you’ll see that Rust doesn’t only define a `Future` trait and a `Waker` type but
+    also comes with important information on how they’re supposed to be used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One example of this is that `Future` traits are *inert*, as we covered in [*Chapter
+    6*](B20892_06.xhtml#_idTextAnchor113). Another example is that a call to `Waker::wake`
+    will guarantee *at least one call* to `Future::poll` on the corresponding task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, already by reading the documentation, you will see that there is at least
+    some thought put into how runtimes should behave.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason for learning this pattern is that it’s almost a glove-to-hand fit
+    for Rust’s asynchronous model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since many readers, including me, will not have English as a first language,
+    I’ll explain the names here at the start since, well, they seem to be easy to
+    misunderstand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the name `READABLE` event on `TcpStream`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You could have several kinds of reactors running in the same runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the name **executor** gives you associations to *executioners* (the medieval
+    times kind) or *executables*, drop that thought as well. If you look up what an
+    executor is, it’s a person, often a lawyer, who administers a person’s will. Most
+    often, since that person is dead. Which is also the point where whatever mental
+    model the naming suggests to you falls apart since nothing, and no one, needs
+    to come in harm’s way for the executor to have work to do in an asynchronous runtime,
+    but I digress.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The important point is that an executor simply decides who gets time on the
+    CPU to progress and when they get it. The executor must also call `Future::poll`
+    and advance the state machines to their next state. It’s a type of scheduler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It can be frustrating to get the wrong idea from the start since the subject
+    matter is already complex enough without thinking about how on earth nuclear reactors
+    and executioners fit in the whole picture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since reactors will respond to events, they need some integration with the *source*
+    of the event. If we continue using `TcpStream` as an example, something will call
+    *read* or *write* on it, and at that point, the reactor needs to know that it
+    should track certain events on that source.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this reason, non-blocking I/O primitives and reactors need tight integration,
+    and depending on how you look at it, the I/O primitives will either have to bring
+    their own reactor or you’ll have a reactor that provides I/O primitives such as
+    sockets, ports, and streams.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve covered some of the overarching design, we can start writing
+    some code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Runtimes tend to get complex pretty quickly, so to keep this as simple as possible,
+    we’ll avoid any error handling in our code and use `unwrap` or `expect` for everything.
+    We’ll also choose simplicity over cleverness and readability over efficiency to
+    the best of our abilities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our first task will be to take the first example we wrote in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122)
+    and improve it by avoiding having to actively poll it to make progress. Instead,
+    we lean on what we learned about non-blocking I/O and `epoll` in the earlier chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Improving our base example
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We’ll create a version of the first example in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122)
+    since it’s the simplest one to start with. Our only focus is showing how to schedule
+    and drive the runtimes more efficiently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We start with the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a new project and name it `a-runtime` (alternatively, navigate to `ch08/a-runtime`
+    in the book’s repository).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Copy the `future.rs` and `http.rs` files in the `src` folder from the first
+    project we created in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122), named `a-coroutine`
+    (alternatively, copy the files from `ch07/a-coroutine` in the book’s repository)
+    to the `src` folder in our new project.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Make sure to add `mio` as a dependency by adding the following to `Cargo.toml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Create a new file in the `src` folder called `runtime.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We’ll use `corofy` to change the following `coroutine/wait` program into its
+    state machine representation that we can run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In `src/main.rs`, add the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/a-runtime/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: This program is basically the same one we created in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
+    only this time, we create it from our `coroutine/wait` syntax instead of writing
+    the state machine by hand. Next, we need to transform this into code by using
+    `corofy` since the compiler doesn’t recognize our own `coroutine/wait` syntax.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re in the root folder of `a-runtime`, run `corofy ./src/main.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You should now have a file that’s called `main_corofied.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Delete the code in `main.rs` and copy the contents of `main_corofied.rs` into
+    `main.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can now delete `main_corofied.rs` since we won’t need it going forward.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If everything is done right, the project structure should now look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Tip
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can always refer to the book’s repository to make sure everything is correct.
+    The correct example is located in the `ch08/a-runtime` folder. In the repository,
+    you’ll also find a file called `main_orig.rs` in the root folder that contains
+    the `coroutine/wait` program if you want to rerun it or have problems getting
+    everything working correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Design
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Before we go any further, let’s visualize how our system is currently working
+    if we consider it with two futures created by `coroutine/wait` and two calls to
+    `Http::get`. The loop that polls our `Future` trait to completion in the `main`
+    function takes the role of the executor in our visualization, and as you see,
+    we have a chain of futures consisting of:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Non-leaf futures created by `async/await` (or `coroutine/wait` in our example)
+    that simply call `poll` on the next future until it reaches a leaf future
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Leaf futures that poll an actual source that’s either `Ready` or `NotReady`
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The following diagram shows a simplified overview of our current design:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.2 – Executor and Future chain: current design](img/B20892_09_2.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.2 – Executor and Future chain: current design'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we take a closer look at the future chain, we can see that when a future
+    is polled, it polls all its child futures until it reaches a leaf future that
+    represents something we’re actually waiting on. If that future returns `NotReady`,
+    it will propagate that up the chain immediately. However, if it returns `Ready`,
+    the state machine will advance all the way until the next time a future returns
+    `NotReady`. The top-level future will not resolve until all child futures have
+    returned `Ready`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next diagram takes a closer look at the future chain and gives a simplified
+    overview of how it works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.3 – Future chain: a detailed view](img/B20892_09_3.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.3 – Future chain: a detailed view'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first improvement we’ll make is to avoid the need for continuous polling
+    of our top-level future to drive it forward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We’ll change our design so that it looks more like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.4 – Executor and Future chain: design 2](img/B20892_09_4.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.4 – Executor and Future chain: design 2'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this design, we use the knowledge we gained in [*Chapter 4*](B20892_04.xhtml#_idTextAnchor081),
+    but instead of simply relying on `epoll`, we’ll use `mio`’s cross-platform abstraction
+    instead. The way it works should be well known to us by now since we already implemented
+    a simplified version of it earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of continuously looping and polling our top-level future, we’ll register
+    interest with the `Poll` instance, and when we get a `NotReady` result returned,
+    we wait on `Poll`. This will put the thread to sleep, and no work will be done
+    until the OS wakes us up again to notify us that an event we’re waiting on is
+    ready.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This design will be much more efficient and scalable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Changing the current implementation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now that we have an overview of our design and know what to do, we can go on
+    and make the necessary changes to our program, so let’s go through each file we
+    need to change. We’ll start with `main.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: main.rs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We already made some changes to `main.rs` when we ran `corofy` on our updated
+    `coroutine/wait` example. I’ll just point out the change here so that you don’t
+    miss it since there is really nothing more we need to change here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Instead of polling the future in the `main` function, we created a new `Runtime`
+    struct and passed the future as an argument to the `Runtime::block_on` method.
+    There are no more changes that we need to in this file. Our `main` function changed
+    to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/a-runtime/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The logic we had in the `main` function has now moved into the `runtime` module,
+    and that’s also where we need to change the code that polls the future to completion
+    from what we had earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next step will, therefore, be to open `runtime.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: runtime.rs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The first thing we do in `runtime.rs` is pull in the dependencies we need:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/a-runtime/src/runtime.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next step is to create a static variable called `REGISTRY`. If you remember,
+    `Registry` is the way we register interest in events with our `Poll` instance.
+    We want to register interest in events on our `TcpStream` when making the actual
+    HTTP `GET` request. We could have `Http::get` accept a `Registry` struct that
+    it stored for later use, but we want to keep the API clean, and instead, we want
+    to access `Registry` inside `HttpGetFuture` without having to pass it around as
+    a reference:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/a-runtime/src/runtime.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: We use `std::sync::OnceLock` so that we can initialize `REGISTRY` when the runtime
+    starts, thereby preventing anyone (including ourselves) from calling `Http::get`
+    without having a `Runtime` instance running. If we did call `Http::get` without
+    having our runtime initialized, it would panic since the only public way to access
+    it outside the `runtime` module is through the `pub fn registry(){…}` function,
+    and that call would fail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: We might as well have used a thread-local static variable using the `thread_local!`
+    macro from the standard library, but we’ll need to access this from multiple threads
+    when we expand the example later in this chapter, so we start the design with
+    this in mind.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next thing we add is a `Runtime` struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/a-runtime/src/runtime.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For now, our runtime will only store a `Poll` instance. The interesting part
+    is in the implementation of `Runtime`. Since it’s not too long, I’ll present the
+    whole implementation here and explain it next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/a-runtime/src/runtime.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first thing we do is create a `new` function. This will initialize our runtime
+    and set everything we need up. We create a new `Poll` instance, and from the `Poll`
+    instance, we get an owned version of `Registry`. If you remember from [*Chapter
+    4*](B20892_04.xhtml#_idTextAnchor081), this is one of the methods we mentioned
+    but didn’t implement in our example. However, here, we take advantage of the ability
+    to split the two pieces up.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We store `Registry` in the `REGISTRY` global variable so that we can access
+    it from the `http` module later on without having a reference to the runtime itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next function is the `block_on` function. I’ll go through it step by step:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: First of all, this function takes a generic argument and will block on anything
+    that implements our `Future` trait with an `Output` type of `String` (remember
+    that this is currently the only kind of `Future` trait we support, so we’ll just
+    return an empty string if there is no data to return).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Instead of having to take `mut future` as an argument, we define a variable
+    that we declare as `mut` in the function body. It’s just to keep the API slightly
+    cleaner and avoid us having to make minor changes later on.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Next, we create a loop. We’ll loop until the top-level future we received returns
+    `Ready`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the future returns `NotReady`, we write out a message letting us know that
+    at this point we could do other things, such as processing something unrelated
+    to the future or, more likely, polling another top-level future if our runtime
+    supported multiple top-level futures (don’t worry – it will be explained later
+    on).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Note that we need to pass in an `Events` collection to `mio`’s `Poll::poll`
+    method, but since there is only one top-level future to run, we don’t really care
+    which event happened; we only care that something happened and that it most likely
+    means that data is ready (remember – we always have to account for false wakeups
+    anyway).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: That’s all the changes we need to make to the `runtime` module for now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last thing we need to do is register *interest* for *read* events after
+    we’ve written the request to the server in our `http` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s open `http.rs` and make some changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: http.rs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'First of all, let’s adjust our dependencies so that we pull in everything we
+    need:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/a-runtime/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: We need to add a dependency on our `runtime` module as well as a few types from
+    `mio`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We only need to make one more change in this file, and that’s in our `Future::poll`
+    implementation, so let’s go ahead and locate that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We made one important change here that I’ve highlighted for you. The implementation
+    is exactly the same, with one important difference:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/a-runtime/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'On the first poll, after we’ve written the request, we register interest in
+    `READABLE` events on this `TcpStream`. We also removed the line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: By removing his line, we’ll poll `TcpStream` immediately, which makes sense
+    since we don’t really want to return control to our scheduler if we get the response
+    immediately. You wouldn’t go wrong either way here since we registered our `TcpStream`
+    as an event source with our reactor and would get a wakeup in any case. These
+    changes were the last piece we needed to get our example back up and running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you remember the version from [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
+    we got the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In our new and improved version, we get the following output if we run it with
+    `cargo run`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you run the example on Windows, you’ll see that you get two `Schedule other
+    tasks` messages after each other. The reason for that is that Windows emits an
+    extra event when the `TcpStream` is dropped on the server end. This doesn’t happen
+    on Linux. Filtering out these events is quite simple, but we won’t focus on doing
+    that in our example since it’s more of an optimization that we don’t really need
+    for our example to work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The thing to make a note of here is how many times we printed `Schedule other
+    tasks`. We print this message every time we poll and get `NotReady`. In the first
+    version, we printed this every 100 ms, but that’s just because we had to delay
+    on each sleep to not get overwhelmed with printouts. Without it, our CPU would
+    work 100% on polling the future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we add a delay, we also add latency even if we make the delay much shorter
+    than 100 ms since we won’t be able to respond to events immediately.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our new design makes sure that we respond to events as soon as they’re ready,
+    and we do no unnecessary work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, by making these minor changes, we have already created a much better and
+    more scalable version than we had before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This version is fully single-threaded, which keeps things simple and avoids
+    the complexity and overhead synchronization. When you use Tokio’s `current-thread`
+    scheduler, you get a scheduler that is based on the same idea as we showed here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, there are also some drawbacks to our current implementation, and the
+    most noticeable one is that it requires a very tight integration between the *reactor
+    part* and the *executor part* of the runtime centered on `Poll`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We want to yield to the OS scheduler *when there is no work to do* and have
+    the OS wake us up when an event has happened so that we can progress. In our current
+    design, this is done through blocking on `Poll::poll`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Consequently, both the executor (scheduler) and the reactor must know about
+    `Poll`. The downside is, then, that if you’ve created an executor that suits a
+    specific use case perfectly and want to allow users to use a different reactor
+    that doesn’t rely on `Poll`, you can’t.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*More importantly, you might want to run multiple different reactors that wake
+    up the executor for different reasons.* You might find that there is something
+    that `mio` doesn’t support, so you create a different reactor for those tasks.
+    How are they supposed to wake up the executor when it’s blocking on `mio::Poll::poll(...)`?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To give you a few examples, you could use a separate reactor for handling timers
+    (for example, when you want a task to sleep for a given time), or you might want
+    to implement a thread pool for handling CPU-intensive or blocking tasks as a reactor
+    that wakes up the corresponding future when the task is ready.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To solve these problems, we need a loose coupling between the reactor and executor
+    part of the runtime by having a way to wake up the executor that’s not tightly
+    coupled to a single reactor implementation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s look at how we can solve this problem by creating a better runtime design.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a proper runtime
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'So, if we visualize the degree of dependency between the different parts of
+    our runtime, our current design could be described this way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.5 – Tight coupling between reactor and executor](img/B20892_09_5.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 8.5 – Tight coupling between reactor and executor
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we want a loose coupling between the reactor and executor, we need an interface
+    provided to signal the executor that it should wake up when an event that allows
+    a future to progress has occurred. It’s no coincidence that this type is called
+    `Waker` ([https://doc.rust-lang.org/stable/std/task/struct.Waker.html](https://doc.rust-lang.org/stable/std/task/struct.Waker.html))
+    in Rust’s standard library. If we change our visualization to reflect this, it
+    will look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.6 – A loosely coupled reactor and executor](img/B20892_09_6.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 8.6 – A loosely coupled reactor and executor
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s no coincidence that we land on the same design as what we have in Rust
+    today. It’s a minimal design from Rust’s point of view, but it allows for a wide
+    variety of runtime designs without laying too many restrictions for the future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though the design is pretty minimal today from a language perspective,
+    there are plans to stabilize more async-related traits and interfaces in the future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rust has a working group tasked with including widely used traits and interfaces
+    in the standard library, which you can find more information about here: [https://rust-lang.github.io/wg-async/welcome.html](https://rust-lang.github.io/wg-async/welcome.html).
+    You can also get an overview of items they work on and track their progress here:
+    [https://github.com/orgs/rust-lang/projects/28/views/1](https://github.com/orgs/rust-lang/projects/28/views/1).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Maybe you even want to get involved ([https://rust-lang.github.io/wg-async/welcome.html#-getting-involved](https://rust-lang.github.io/wg-async/welcome.html#-getting-involved))
+    in making async Rust better for everyone after reading this book?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we change our system diagram to reflect the changes we need to make to our
+    runtime going forward, it will look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 8.7 – Executor and reactor: final design](img/B20892_09_7.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.7 – Executor and reactor: final design'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have two parts that have no direct dependency on each other. We have an `Executor`
+    that schedules tasks and passes on a `Waker` when polling a future that eventually
+    will be caught and stored by the `Reactor`. When the `Reactor` receives a notification
+    that an event is ready, it locates the `Waker` associated with that task and calls
+    `Wake::wake` on it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This enables us to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Run several OS threads that each have their own executor, but share the same
+    reactor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Have multiple reactors that handle different kinds of leaf futures and make
+    sure to wake up the correct executor when it can progress
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: So, now that we have an idea of what to do, it’s time to start writing it in
+    code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1 – Improving our runtime design by adding a Reactor and a Waker
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this step, we’ll make the following changes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Change the project structure so that it reflects our new design.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Find a way for the executor to sleep and wake up that does not rely directly
+    on `Poll` and create a `Waker` based on this that allows us to wake up the executor
+    and identify which task is ready to progress.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Change the trait definition for `Future` so that poll takes a `&Waker` as an
+    argument.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Tip
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You’ll find this example in the `ch08/b-reactor-executor` folder. If you follow
+    along by writing the examples from the book, I suggest that you create a new project
+    called `b-reactor-executor` for this example by following these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1\. Create a new folder called `b-reactor-executor`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2\. Enter the newly created folder and write `cargo init`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3\. Copy everything in the `src` folder in the previous example, `a-runtime`,
+    into the `src` folder of a new project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 4\. Copy the `dependencies` section of the `Cargo.toml` file into the `Cargo.toml`
+    file in the new project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s start by making some changes to our project structure to set it up so
+    that we can build on it going forward. The first thing we do is divide our `runtime`
+    module into two submodules, `reactor` and `executor`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a new subfolder in the `src` folder called `runtime`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create two new files in the `runtime` folder called `reactor.rs` and `executor.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Just below the imports in `runtime.rs`, declare the two new modules by adding
+    these lines:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You should now have a folder structure that looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To set everything up, we start by deleting everything in `runtime.rs` and replacing
+    it with the following lines of code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/runtime.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The new content of `runtime.rs` first declares two submodules called `executor`
+    and `reactor`. We then declare one function called `init` that starts our `Reactor`
+    and creates a new `Executor` that it returns to the caller.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next point on our list is to find a way for our `Executor` to sleep and
+    wake up when needed without relying on `Poll`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a Waker
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So, we need to find a different way for our executor to sleep and get woken
+    up that doesn’t rely directly on `Poll`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It turns out that this is quite easy. The standard library gives us what we
+    need to get something working. By calling `std::thread::current()`, we can get
+    a `Thread` object. This object is a handle to the current thread, and it gives
+    us access to a few methods, one of which is `unpark`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The standard library also gives us a method called `std::thread::park()`, which
+    simply asks the OS scheduler to park our thread until we ask for it to get *unparked*
+    later on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It turns out that if we combine these, we have a way to both *park* and *unpark*
+    the executor, which is exactly what we need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s create a `Waker` type based on this. In our example, we’ll define the
+    `Waker` inside the `executor` module since that’s where we create this exact type
+    of `Waker`, but you could argue that it belongs to the `future` module since it’s
+    a part of the `Future` trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our `Waker` relies on calling `park/unpark` on the `Thread` type from the standard
+    library. This is OK for our example since it’s easy to understand, but given that
+    any part of the code (including any libraries you use) can get a handle to the
+    same thread by calling `std::thread::current()` and call `park/unpark` on it,
+    it’s not a robust solution. If unrelated parts of the code call `park/unpark`
+    on the same thread, we can miss wakeups or end up in deadlocks. Most production
+    libraries create their own `Parker` type or rely on something such as `crossbeam::sync::Parker`
+    ([https://docs.rs/crossbeam/latest/crossbeam/sync/struct.Parker.html](https://docs.rs/crossbeam/latest/crossbeam/sync/struct.Parker.html))
+    instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We won’t implement `Waker` as a trait since passing trait objects around will
+    significantly increase the complexity of our example, and it’s not in line with
+    the current design of `Future` and `Waker` in Rust either.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Open the `executor.rs` file located inside the `runtime` folder, and let’s
+    add all the imports we’re going to need right from the start:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/runtime/executor.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next thing we add is our `Waker`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/runtime/executor.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Waker` will hold three things for us:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`thread` – A handle to the `Thread` object we mentioned earlier.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`id` – An `usize` that identifies which task this `Waker` is associated with.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`ready_queue` – This is a reference that can be shared between threads to a
+    `Vec<usize>`, where `usize` represents the ID of a task that’s in the ready queue.
+    We share this object with the executor so that we can push the task ID associated
+    with the `Waker` onto that queue when it’s ready.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The implementation of our `Waker` will be quite simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/runtime/executor.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: When `Waker::wake` is called, we first take a lock on the `Mutex` that protects
+    the ready queue we share with the executor. We then push the `id` value that identifies
+    the task that this `Waker` is associated with onto the ready queue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After that’s done, we call `unpark` on the executor thread and wake it up. It
+    will now find the task associated with this `Waker` in the ready queue and call
+    `poll` on it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s worth mentioning that many designs take a *shared reference (for example,
+    an Arc<…>)* to the *future/task itself*, and push that onto the queue. By doing
+    so, they skip a level of indirection that we get here by representing the task
+    as a `usize` instead of passing in a reference to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, I personally think this way of doing it is easier to understand and
+    reason about, and the end result will be the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does this Waker compare to the one in the standard library?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Waker` we create here will take the same role as the `Waker` type from
+    the standard library. The biggest difference is that the `std::task::Waker` method
+    is wrapped in a `Context` struct and requires us to jump through a few hoops when
+    we create it ourselves. Don’t worry – we’ll do all this at the end of this book,
+    but neither of these differences is important for understanding the role it plays,
+    so that’s why we stick to our own simplified version of asynchronous Rust for
+    now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last thing we need to do is to change the definition of the `Future` trait
+    so that it takes `&Waker` as an argument.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Changing the Future definition
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Since our `Future` definition is in the `future.rs` file, we start by opening
+    that file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first thing we need to change is to pull in the `Waker` so that we can
+    use it. At the top of the file, add the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/future.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next thing we do is to change our `Future` trait so that it takes `&Waker`
+    as an argument:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/future.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At this point, you have a choice. We won’t be using the `join_all` function
+    or the `JoinAll<F: Future>` struct going forward.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you don’t want to keep them, you can just delete everything related to `join_all`,
+    and that’s all you need to do in `future.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you want to keep them for further experimentation, you need to change the
+    `Future` implementation for `JoinAll` so that it accepts a `waker: &Waker` argument,
+    and remember to pass the `Waker` when polling the joined futures in `match fut.poll(waker)`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The remaining things to do in *step 1* are to make some minor changes where
+    we implement the `Future` trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s start in `http.rs`. The first thing we do is adjust our dependencies
+    a little to reflect the changes we made to our `runtime` module, and we add a
+    dependency on our new `Waker`. Replace the `dependencies` section at the top of
+    the file with this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: The compiler will complain about not finding the reactor yet, but we’ll get
+    to that shortly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we have to navigate to the `impl Future for HttpGetFuture` block, where
+    we need to change the `poll` method so that it accepts a `&``Waker` argument:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/http.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: The last file we need to change is `main.rs`. Since `corofy` doesn’t know about
+    `Waker` types, we need to change a few lines in the coroutines it generated for
+    us in `main.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First of all, we have to add a dependency on our new `Waker`, so add this at
+    the start of the file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the `impl Future for Coroutine`block, change the following three lines of
+    code that I’ve highlighted:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch08/b-reactor-executor/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: type Task = Box<dyn Future<Output = String>>;
+  prefs: []
+  type: TYPE_NORMAL
+- en: thread_local! {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'static CURRENT_EXEC: ExecutorCore = ExecutorCore::default();'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: '#[derive(Default)]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: struct ExecutorCore {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'tasks: RefCell<HashMap<usize, Task>>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'ready_queue: Arc<Mutex<Vec<usize>>>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'next_id: Cell<usize>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'pub fn spawn<F>(future: F)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: where
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'F: Future<Output = String> + ''static,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '{'
+  prefs: []
+  type: TYPE_NORMAL
+- en: CURRENT_EXEC.with(|e| {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let id = e.next_id.get();
+  prefs: []
+  type: TYPE_NORMAL
+- en: e.tasks.borrow_mut().insert(id, Box::new(future));
+  prefs: []
+  type: TYPE_NORMAL
+- en: e.ready_queue.lock().map(|mut q| q.push(id)).unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: e.next_id.set(id + 1);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '});'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: pub struct Executor;
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: impl Executor {
+  prefs: []
+  type: TYPE_NORMAL
+- en: pub fn new() -> Self {
+  prefs: []
+  type: TYPE_NORMAL
+- en: Self {}
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: fn pop_ready(&self) -> Option<usize> {
+  prefs: []
+  type: TYPE_NORMAL
+- en: CURRENT_EXEC.with(|q| q.ready_queue.lock().map(|mut q| q.pop()).unwrap())
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn get_future(&self, id: usize) -> Option<Task> {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: CURRENT_EXEC.with(|q| q.tasks.borrow_mut().remove(&id))
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn get_waker(&self, id: usize) -> Waker {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Waker {
+  prefs: []
+  type: TYPE_NORMAL
+- en: id,
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'thread: thread::current(),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'ready_queue: CURRENT_EXEC.with(|q| q.ready_queue.clone()),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn insert_task(&self, id: usize, task: Task) {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: CURRENT_EXEC.with(|q| q.tasks.borrow_mut().insert(id, task));
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: fn task_count(&self) -> usize {
+  prefs: []
+  type: TYPE_NORMAL
+- en: CURRENT_EXEC.with(|q| q.tasks.borrow().len())
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'pub fn block_on<F>(&mut self, future: F)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: where
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'F: Future<Output = String> + ''static,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '{'
+  prefs: []
+  type: TYPE_NORMAL
+- en: spawn(future);
+  prefs: []
+  type: TYPE_NORMAL
+- en: loop {
+  prefs: []
+  type: TYPE_NORMAL
+- en: while let Some(id) = self.pop_ready() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut future = match self.get_future(id) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some(f) => f,
+  prefs: []
+  type: TYPE_NORMAL
+- en: // guard against false wakeups
+  prefs: []
+  type: TYPE_NORMAL
+- en: None => continue,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '};'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let waker = self.get_waker(id);
+  prefs: []
+  type: TYPE_NORMAL
+- en: match future.poll(&waker) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::NotReady => self.insert_task(id, future),
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::Ready(_) => continue,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let task_count = self.task_count();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let name = thread::current().name().unwrap_or_default().to_string();
+  prefs: []
+  type: TYPE_NORMAL
+- en: if task_count > 0 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'println!("{name}: {task_count} pending tasks. Sleep until notified.");'
+  prefs: []
+  type: TYPE_NORMAL
+- en: thread::park();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '} else {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'println!("{name}: All tasks are finished");'
+  prefs: []
+  type: TYPE_NORMAL
+- en: break;
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: use crate::runtime::Waker;
+  prefs: []
+  type: TYPE_NORMAL
+- en: use mio::{net::TcpStream, Events, Interest, Poll, Registry, Token};
+  prefs: []
+  type: TYPE_NORMAL
+- en: use std::{
+  prefs: []
+  type: TYPE_NORMAL
+- en: collections::HashMap,
+  prefs: []
+  type: TYPE_NORMAL
+- en: sync::{
+  prefs: []
+  type: TYPE_NORMAL
+- en: atomic::{AtomicUsize, Ordering},
+  prefs: []
+  type: TYPE_NORMAL
+- en: Arc, Mutex, OnceLock,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '},'
+  prefs: []
+  type: TYPE_NORMAL
+- en: thread,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '};'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: type Wakers = Arc<Mutex<HashMap<usize, Waker>>>;
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'static REACTOR: OnceLock<Reactor> = OnceLock::new();'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: pub fn reactor() -> &'static Reactor {
+  prefs: []
+  type: TYPE_NORMAL
+- en: REACTOR.get().expect("Called outside an runtime context")
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: pub struct Reactor {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'wakers: Wakers,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'registry: Registry,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'next_id: AtomicUsize,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: impl Reactor {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'pub fn register(&self, stream: &mut TcpStream, interest: Interest, id: usize)
+    {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.registry.register(stream, Token(id), interest).unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'pub fn set_waker(&self, waker: &Waker, id: usize) {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let _ = self
+  prefs: []
+  type: TYPE_NORMAL
+- en: .wakers
+  prefs: []
+  type: TYPE_NORMAL
+- en: .lock()
+  prefs: []
+  type: TYPE_NORMAL
+- en: .map(|mut w| w.insert(id, waker.clone()).is_none())
+  prefs: []
+  type: TYPE_NORMAL
+- en: .unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'pub fn deregister(&self, stream: &mut TcpStream, id: usize) {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.wakers.lock().map(|mut w| w.remove(&id)).unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.registry.deregister(stream).unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: pub fn next_id(&self) -> usize {
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.next_id.fetch_add(1, Ordering::Relaxed)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'fn event_loop(mut poll: Poll, wakers: Wakers) {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut events = Events::with_capacity(100);
+  prefs: []
+  type: TYPE_NORMAL
+- en: loop {
+  prefs: []
+  type: TYPE_NORMAL
+- en: poll.poll(&mut events, None).unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: for e in events.iter() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let Token(id) = e.token();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let wakers = wakers.lock().unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: if let Some(waker) = wakers.get(&id) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: waker.wake();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: pub fn start() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: use thread::spawn;
+  prefs: []
+  type: TYPE_NORMAL
+- en: let wakers = Arc::new(Mutex::new(HashMap::new()));
+  prefs: []
+  type: TYPE_NORMAL
+- en: let poll = Poll::new().unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let registry = poll.registry().try_clone().unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let next_id = AtomicUsize::new(1);
+  prefs: []
+  type: TYPE_NORMAL
+- en: let reactor = Reactor {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'wakers: wakers.clone(),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: registry,
+  prefs: []
+  type: TYPE_NORMAL
+- en: next_id,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '};'
+  prefs: []
+  type: TYPE_NORMAL
+- en: REACTOR.set(reactor).ok().expect("Reactor already running");
+  prefs: []
+  type: TYPE_NORMAL
+- en: spawn(move || event_loop(poll, wakers));
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: struct HttpGetFuture {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'stream: Option<mio::net::TcpStream>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'buffer: Vec<u8>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'path: String,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'id: usize,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: impl HttpGetFuture {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn new(path: String) -> Self {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let id = reactor().next_id();
+  prefs: []
+  type: TYPE_NORMAL
+- en: Self {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'stream: None,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'buffer: vec![],'
+  prefs: []
+  type: TYPE_NORMAL
+- en: path,
+  prefs: []
+  type: TYPE_NORMAL
+- en: id,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: if self.stream.is_none() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("FIRST POLL - START OPERATION");
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.write_request();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let stream = self.stream.as_mut().unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: runtime::reactor().register(stream, Interest::READABLE, self.id);
+  prefs: []
+  type: TYPE_NORMAL
+- en: runtime::reactor().set_waker(waker, self.id);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: match self.stream.as_mut().unwrap().read(&mut buff) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ok(0) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let s = String::from_utf8_lossy(&self.buffer);
+  prefs: []
+  type: TYPE_NORMAL
+- en: runtime::reactor().deregister(self.stream.as_mut().unwrap(), self.id);
+  prefs: []
+  type: TYPE_NORMAL
+- en: break PollState::Ready(s.to_string());
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ok(n) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.buffer.extend(&buff[0..n]);
+  prefs: []
+  type: TYPE_NORMAL
+- en: continue;
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Err(e) if e.kind() == ErrorKind::WouldBlock => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: runtime::reactor().set_waker(waker, self.id);
+  prefs: []
+  type: TYPE_NORMAL
+- en: break PollState::NotReady;
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Err(e) => panic!("{e:?}"),
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: mod future;
+  prefs: []
+  type: TYPE_NORMAL
+- en: mod http;
+  prefs: []
+  type: TYPE_NORMAL
+- en: mod runtime;
+  prefs: []
+  type: TYPE_NORMAL
+- en: use future::{Future, PollState};
+  prefs: []
+  type: TYPE_NORMAL
+- en: use runtime::Waker;
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: fn main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut executor = runtime::init();
+  prefs: []
+  type: TYPE_NORMAL
+- en: executor.block_on(async_main());
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: cargo run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: Program starting
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP/1.1 200 OK
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-length: 15'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'connection: close'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-type: text/plain; charset=utf-8'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'date: Thu, xx xxx xxxx 15:38:08 GMT'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HelloAsyncAwait
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP/1.1 200 OK
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-length: 15'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'connection: close'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-type: text/plain; charset=utf-8'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'date: Thu, xx xxx xxxx 15:38:08 GMT'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HelloAsyncAwait
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: All tasks are finished'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: fn main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut executor = runtime::init();
+  prefs: []
+  type: TYPE_NORMAL
+- en: executor.block_on(async_main());
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'coro fn request(i: usize) {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let path = format!("/{}/HelloWorld{i}", i * 1000);
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = Http::get(&path).wait;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{txt}");
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: coro fn async_main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("Program starting");
+  prefs: []
+  type: TYPE_NORMAL
+- en: for i in 0..5 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let future = request(i);
+  prefs: []
+  type: TYPE_NORMAL
+- en: runtime::spawn(future);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: mod future;
+  prefs: []
+  type: TYPE_NORMAL
+- en: mod http;
+  prefs: []
+  type: TYPE_NORMAL
+- en: mod runtime;
+  prefs: []
+  type: TYPE_NORMAL
+- en: use crate::http::Http;
+  prefs: []
+  type: TYPE_NORMAL
+- en: use future::{Future, PollState};
+  prefs: []
+  type: TYPE_NORMAL
+- en: use runtime::{Executor, Waker};
+  prefs: []
+  type: TYPE_NORMAL
+- en: use std::thread::Builder;
+  prefs: []
+  type: TYPE_NORMAL
+- en: fn main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut executor = runtime::init();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut handles = vec![];
+  prefs: []
+  type: TYPE_NORMAL
+- en: for i in 1..12 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let name = format!("exec-{i}");
+  prefs: []
+  type: TYPE_NORMAL
+- en: let h = Builder::new().name(name).spawn(move || {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut executor = Executor::new();
+  prefs: []
+  type: TYPE_NORMAL
+- en: executor.block_on(async_main());
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}).unwrap();'
+  prefs: []
+  type: TYPE_NORMAL
+- en: handles.push(h);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: executor.block_on(async_main());
+  prefs: []
+  type: TYPE_NORMAL
+- en: handles.into_iter().for_each(|h| h.join().unwrap());
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'coroutine fn request(i: usize) {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let path = format!("/{}/HelloWorld{i}", i * 1000);
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = Http::get(&path).wait;
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = txt.lines().last().unwrap_or_default();
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!(«{txt}»);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: coroutine fn async_main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("Program starting");
+  prefs: []
+  type: TYPE_NORMAL
+- en: for i in 0..5 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let future = request(i);
+  prefs: []
+  type: TYPE_NORMAL
+- en: runtime::spawn(future);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE

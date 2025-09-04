@@ -1,0 +1,815 @@
+- en: Understanding Asynchronous Operations with Futures Crate
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rust is a modern language and has many approaches and crates that we can use
+    to implement microservices. We can split these into two categories—synchronous
+    frameworks and asynchronous frameworks. If you want to write synchronous microservices,
+    you can implement a handler as a sequence of expressions and methods calls. But
+    writing asynchronous code is hard in Rust, because it doesn't use a garbage collector
+    and you have to take into account the lifetimes of all objects, including callbacks.
+    This is not a simple task, because you can't stop the execution at any line of
+    the code. Instead, you have to write code that won't block the execution for a
+    long period of time. This challenge can be elegantly solved with the `futures`
+    crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, you will learn about how the  `futures` crate works. We will
+    study two basic types—`Future` and `Stream`. We will also explore the **Multi-Producer
+    Single-Consumer** (**MPSC**) module, which is an alternative to a similar module
+    of the `std` crate, but supports asynchronous access to channels. At the end of
+    the сhapter, we will create a microservice that uses `Future` and `Stream` traits
+    to process incoming data and return a processed result to a client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `futures` crate contains asynchronous primitives only. We will also use
+    the `tokio` crate, which provides asynchronous input and output capabilities to
+    read and write image files for our microservice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basic asynchronous types
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating an image service
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter requires Rust installation. We will develop microservices using
+    the `futures` and `tokio` crates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find the source code of the projects of this chapters on GitHub: [https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter04](https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter04).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basic asynchronous types
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Microservices can be implemented in two different ways—synchronously and asynchronously.
+    The approach refers to when the next task has to wait for the completion of the
+    current task. To run tasks in parallel using code, we have to run a pool of threads
+    and run tasks in the threads of the pool. The asynchronous approach is when you
+    use non-blocking operations and a single thread performs multiple tasks. If an
+    operation can't be completed, it returns a flag that means the task has not yet
+    completed and we have to try to run it again later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the past, Rust developers used synchronous operations only, which meant that
+    if we wanted to read data from a socket, we would have to block an executing thread.
+    Modern operating systems have two approaches to avoid blocking—non-blocking input/output
+    functions, and a scalable I/O event notification system, such as **epoll**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Asynchronous activity refers to the ability to use the resources of the working
+    for multiple concurrent activities. In contrast to synchronous handlers, asynchronous
+    handlers use non-blocking operations. If resources are not available to finish
+    the handler, it will be suspended until the next attempt to get access to resources.
+    There is a well-established approach that involves a reactor and promises. A reactor
+    allows a developer to run multiple activities in the same thread, while a promise
+    represents a delayed result that will be available later. A reactor keeps a set
+    of promises and continues to poll until it is completed and the result is returned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since the standard Rust library doesn't contain useful modules to write asynchronous
+    applications and to work with reactors and promises, you need a third-party crate.
+    An example of this type of crate is the `futures` crate, which we have used indirectly
+    by using the `hyper` crate. It's now time to explore this crate in detail. In
+    this section, we will discuss the different types of the `futures` crate that
+    are available, how to use channels to pass messages between tasks, and how to
+    use reactors, which are needed to run tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basic types of future crate
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `futures` crate was created to provide Rust developers zero-cost abstractions
+    for asynchronous programming. The crate fits the borrowing system of Rust and
+    helps to create types that poll resources and return results when they are available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For everyday use, you need only a few types of the `futures` crate. The three
+    basic types are `Future`, `Stream`, and `Sink`. Let's explore all of these types
+    in detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the Future trait
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Future` is a trait that returns a result in the future and represents an operation
+    that can''t be completed immediately. Like the `Result` enumeration, `Future`
+    has two outcome variants that are represented by the associated types `Item` and
+    `Error`. The trait has a `poll` method, which is what retrieves the result. This
+    method will be called by a reactor until it returns `Error` or an `Async::Ready`
+    value. `Async` is an enumeration that has both `Ready` and `Pending` variants,
+    which are used to represent a result of an asynchronous operation. `Ready` means
+    the value is ready to use, while `Pending` means the value is not yet available
+    and will be ready later.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As you can see, `Future` is used for a similar purpose to `Result`. Unlike
+    `Result`, however, `Future` is a trait, which means the implementation is not
+    specified and many types can implement it. A useful feature is the `FutureExt`
+    trait which can be implemented for all the  `Future` instances. This has multiple
+    methods to process the result in a delayed manner. For example, if we want to
+    convert an obtained value to another type, the trait has a `map` method for this
+    purpose. Take a look at the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this example, we created a `FutureResult` struct from a constant. This type
+    implements the `Future` trait and represents a value that is immediately ready.
+    Afterward, we called the `map` method from `FutureExt` for `FutureResult`, which
+    expects a closure and returns.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You have to use a reactor to get the result for types that implement the `Future`
+    trait. We will discuss reactors later in this section. Remember that you can't
+    get the result immediately and use it in the next expression; instead, you have
+    to create chains of futures or streams to get the appropriate result. Keep reading!
+    We will now look into the `Stream` trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the Stream trait
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Stream` is a trait that represents a sequence of deferred items. It works
+    in a similar way to the `Iterator` trait, but it uses the poll method to get the
+    next `Item` or to return `Error` in the case of failure. The stream can either
+    be incoming data from a socket or data that can be read from a file. `Stream`
+    can be converted to `Future` and vice versa if the `Future` instance returns a
+    `Stream`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To use streams effectively, you should learn the methods of the `StreamExt`
+    trait. This lets you make a chain to process every item of the stream or even
+    join multiple streams into one. For example, you can filter some elements from
+    `Stream` using the `filter` method with a predicate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `iter_ok` method creates a `Stream` from the `Iterator`. It is useful if
+    you want to provide your own values from a `Vec` instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A useful feature is the conversion of a `Future` instance that contains a `Stream` as
+    a result to just a `Stream`. For example, when you try to connect by TCP using
+    the `TcpStream::connect` method of the `tokio` crate, it will return `ConnectFuture`,
+    which implements the `Future` trait and returns a `TcpStream` instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Sink to send data back
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Future` and `Stream` objects supply data from a source, but if you want to
+    send a piece of data to the source, you have to use `Sink` objects. `Sink` is
+    a trait that is similar to `Stream`, but works in the opposite direction. It contains
+    two associated types—`SinkItem` and `SinkError`. The first determines the type
+    of item that can be sent using a specific sink. The second represents an error
+    if the sending process goes wrong. To interact with a `Sink`, you should use the
+    methods of the `SinkExt` trait, which contains `send` methods to send an item
+    to a recipient. The `send` method returns a `Send` struct that implements the `Future`
+    trait, which means you can''t send an item immediately. The call of the `send`
+    methods returns a future that has to be executed with a reactor. If you are not
+    concerned about the result of the sending process, you can use the `spawn` method
+    to send the future in a separate task.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Sink` object comes with `Stream` and you have to call the split method
+    of `StreamExt` to get an instance of `Sink` attached to a stream. This call returns
+    a tuple with both `SplitSink` and  `SplitStream` objects. These are necessary
+    to let you read an input and write an output concurrently. Later, both of these
+    can be reunited using the `reunite` method of any of these objects. If you are
+    writing a complex interaction, you have to use a `Sink` trait many times. It's
+    hard to do this using `split` every time, but there are two alternative approaches
+    that you can use. The first is to implement all interactions in a separate implementation
+    of the `Stream` trait and work with a `Stream` and a `Sink` using the `poll` method.
+    The second approach is to `split` a sink and `join` it with a `Receiver` object
+    of a channel. You can then use a `Sender` of this channel to send an item without
+    splitting the stream every time. We will implement an example of this kind of
+    interaction in the next section, in which we will discuss channels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The channel module
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Concurrent activities often need to interact with each other. It's likely that
+    you are already familiar with the `mpsc` module of the standard library, which
+    uses blocking operations to send in channels, but this is not suitable for a sophisticated
+    reactor that blocks completely if any operation blocks the working thread. Fortunately,
+    however, there is the `channel` module in the `futures` crate which is capable
+    of carrying out cross-task communication. The `channel` module contains two modules—`mpsc`
+    and `oneshot`. Let's look at both.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Channels for sending multiple messages
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As a rule, channels are a one-way interaction primitive. A channel has a sender
+    to send messages and a receiver to extract messages. Internally, a channel works
+    as an array or list that is protected from data races (when two or more threads
+    try to write the same memory cell) using an atomic flag or lock-free data types.
+    Channels implement one of the queue access patterns we will discuss in the following
+    sections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Single-Producer Single-Consumer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This approach means that only one producer can send messages and only one consumer
+    can read them. In Rust, this means we have a single `Sender` and a single `Receiver`,
+    neither of which can be cloned. The standard library has an internal implementation
+    of a **Single-Produce Single-Consumer** (**SPSC**) queue, but this type is not
+    available for users. If you need this type of queue, try the `bounded-spsc-queue`
+    crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-Producer Single-Consumer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This is the most popular queue type in Rust. Both the standard library and the
+    `futures` crate provide this kind of channel. It's popular because channels are
+    often used to provide access to a resource that lives in a single thread for other
+    multiple threads. For this type of queue, the `Sender` can be cloned, but the `Receiver`
+    can't.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-Producer Multi-Consumer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This type of queue allows us to use a `Sender` and a `Receiver` with any amount
+    of threads. Both the `Sender` and the `Receiver` can be cloned and used in multiple
+    threads. If multiple threads read messages from `Receiver`, you can't predict
+    which thread will get a specific message. You can find this functionality in the `crossbeam-channel`
+    crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Example of usage
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To send a message from one thread to another, you are likely to use the `mpsc`
+    module of the standard library. The `mpsc` module of the `futures` crate works
+    in a similar way, but the `Sender` returns the `Sink` instance when you call the `send`
+    method to send an item to the message stream. The `Receiver` implements the `Stream`
+    trait, which means you have to use a reactor to poll the stream for new messages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In this example, we created a channel that delivers messages of the `u8` type.
+    We used the `fold` method of the `Receiver` to add all the values and print the
+    result when the channel is closed. We used the `Sender` to `send` values to the
+    `Receiver`. At the end, we combined all the futures to a single future with the `future::join_all`
+    method and passed the resultant future to an executor of the `tokio` crate. The `join_all`
+    function expects a `Vec` of specific types that implements the `Future` trait.
+    We added the `to_box` function which converts a type into a `Future` with the `IntoFuture`
+    trait, drops the result and an error, and boxes it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: To close the `Sender`, all we need to do is drop it. If we don't drop the `Sender`,
+    the channel remains open and `tokio::run` will never finish.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One-shot
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `oneshot` module implements a channel of a single message. It also has its
+    own `Sender` and `Receiver` types, but these work in a different way. The `Sender`
+    has a `send` method that completes `oneshot` and consumes an instance completely.
+    `Sender` doesn't need to implement the `Sink` trait, because we can't send multiple
+    items. It has a preallocated cell for an item that will be put into the cell immediately
+    and we don't have any queue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Receiver` implements the `Future` trait, which means you have to use a
+    reactor to get an item from it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this example, we created a `Sender` and a `Receiver` for a `oneshot` channel.
+    The sender is an object that will be consumed with the `send` method call. The `Receiver`
+    implements the `Future` trait and we can use the `map` method to get access to
+    a value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Previously, we mentioned that we can send messages to `Sink` from multiple sources.
+    Let's implement this example using channels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using channels to use Sink in multiple places
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As mentioned previously, you can use a channel to send data with `Sink` from
+    different places and at any time. Look at the following example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: This example creates a `UdpSocket` instance that represents a UDP socket and
+    binds it to the `0.0.0.0:12345` address. After that, we wrap a socket with the `UdpFramed`
+    type, which implements a `Stream` of data that is generated with the provided
+    codec. We will use `LinesCodec` from the `tokio::codec` module. This reads an
+    input and uses a line delimiter to split the data into pieces that represent lines
+    of text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will split the framed stream and create a channel to send the UDP datagrams
+    from different places. We will get familiar with the channel module in the next
+    section and learn how tasks can interact with each other asynchronously using
+    the `Sender` and `Receiver` objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `channel` method returns the `Sender` and `Receiver` objects. We use the `Receiver`
+    to forward all incoming messages to a `Sink` of the UDP connection and we read
+    all data from the stream and send it back with the channel. This echo server can
+    be implemented more effectively without channels, but we have used them here for
+    demonstrative purposes. To send a message, we used a `Sender` of the created channel.
+    The advantage of this approach is that you can clone and use a sender instance
+    everywhere to send messages to a channel at any time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Sometimes, `Future` and `Stream` differ with regard to their `Item`  or  `Error`
+    type parameters. To counteract this, we add an  `other` method that wraps any
+    error instance with the `io::Error`  type. We use this function to convert one
+    error type to another:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can compile this echo server and check how it works using the netcat utility.
+    You should install this if your operating system doesn''t contain it already.
+    Type the `nc` command with the `--verbose` (short form: `-v`), `--udp` (short
+    form: `-u`), and `--no-dns` (short form: `-n`) arguments and enter any text. As
+    an example, we have typed *"*Text Message*"*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the server has sent us back the provided string. All these examples
+    used an executor to run the tasks concurrently. Before we start to implement a
+    server, let's learn how executors work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Executors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Since asynchronous tasks can be executed in a single thread, we need a way
+    to execute all tasks, even if some tasks generate new tasks during execution.
+    There are two approaches to run all tasks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Run futures and collect streams directly with blocking
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use an executor to run futures and streams
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's explore them both in the following sections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running futures and streams with blocking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The first approach is to use the `block_on` or `block_on_stream` functions
+    of the `executor` module. Both functions block the current thread to wait for
+    the result. It is a naive approach that is not very flexible, but it is great
+    in the following circumstances:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you have only one task
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If none of your tasks read or write streams
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you want to complete the task from a separate thread that can be blocked
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You should remember that you must not call this function in asynchronous code,
+    because the call will block the executor and your program will stop working.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using an executor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The second approach is to execute all tasks with an `Executor`  instance. This
+    allows you to run multiple tasks in a single thread, even if some tasks can't
+    be completed immediately. To use an `Executor`, you have to create and run it,
+    but it will block the current thread and you should add all the necessary tasks
+    to be executed at the start.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, if you want to open a socket and process the stream of every incoming
+    connection, you have to create a main `Future` that will read the `Stream` of
+    incoming connections and spawn a handler for processing the `Stream` of the data
+    of the connection using the `tokio::spawn` method. After you have created it,
+    you have to `spawn` the whole processing future with the executor. Take a look
+    at the following example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this example, we have created a channel. We have also created a stream from
+    a sequence of integers using the `stream::iter_ok` method. We send all items of
+    the stream to the channel, which reads all the incoming values and prints them
+    to a console. We have already dealt with a similar example. In the current version,
+    we use the `tokio::spawn` function to spawn a task in an executor of the current
+    thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see, to use the `futures` crate, you have to build chains of handlers.
+    The resultant code is hard to maintain and improve. To simplify asynchronous code,
+    the Rust compiler has started to support the `async`/`await` syntax.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The async/await syntax
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Some programming languages, such as JavaScript and C#, have `async` and `await`
+    operators which help to write asynchronous code that looks like synchronous code.
+    The nightly version of the Rust compiler supports a new syntax and adds `async`
+    and `await` (actually, this is a macro) keywords to the language to simplify the
+    writing of asynchronous applications. The new code might look as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is not stable yet and may be changed before release. `async` is a new keyword
+    that converts a standard function to asynchronous. `await!` is a macro that is
+    built in in unstable Rust versions. It suspends the execution of a function and
+    waits for the result from a `Future` instance provided to `await!` as argument.
+    This macro uses the generators feature to interrupt execution until the `Future`
+    under `await!` has been completed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the remaining part of this chapter, we are going to look at a proxy that
+    uses streams to process incoming and outgoing data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating an image service
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we will create a microservice that allows clients to upload
+    images and then download them. At first, we implement a handler to upload images
+    and save them to a filesystem asynchronously using the `tokio` crate. After that,
+    we will implement a downloading handler that allows the user to download original
+    images from files that were uploaded before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Uploading images
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s start implementing a microservice to store and serve images with an
+    uploading files feature. To get incoming files, we have to read an incoming `Stream`
+    of a `Request`. The `Stream` might be huge, so we shouldn''t hold the whole file
+    in memory. We will read the incoming data in chunks and write them immediately
+    to a file. Let''s create the `main` function of our microservice:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: This looks like the other examples that we've created but here we set a `std::path::Path`
+    to a directory that will keep all incoming files. We will create the directory
+    with the path we set before using the `create_dir` function of the `std::fs` module.
+    If the creation of the directory fails, we will ignore it, but for production
+    code it's better to stop creating a server and return an `Error` or print the
+    necessary information. This is suitable for demonstrative purposes, but it's not
+    reliable, because locally stored files can be lost in the server and your service
+    will be corrupted. In real microservices, you may prefer to use a third-party
+    service, such as AWS S3, to store and deliver files to clients.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After we create a directory to store files, we will start a `Server` with a
+    `microservice_handler` that we will define later. Pay attention to when we pass
+    a reference to a `Path`. Providing a path as a parameter is useful if you want
+    to set another folder using command-line arguments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now define the `microservice_handler` function that will handle four
+    cases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Returning an index page on the `/` path
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Storing a file to the `/upload` path
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Returning the uploaded file with the `/download` path
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Returning 404 errors for other requests
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The function has the following definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is a similar handler definition to that we used in [Chapter 2](621dffeb-7f43-4c11-9ac5-00a366dc8d9f.xhtml), *Developing
+    a Microservice with Hyper Crate*, and [Chapter 3](751f86d9-59ce-4966-beb8-cd743b521373.xhtml), *Logging
+    and Configuring Your Microservices*, but we use `std::io::Error` instead of `hyper::Error`.
+    This is because we are not only working with requests and responses, but we are
+    also using a filesystem that can cause errors of other types. We also expect an
+    argument of the `Path` type to determine a directory in which we will store files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lets add a `match` expression to match the parameters of an incoming request.
+    We will consider only two branches here—the first is when a client sends a GET
+    request to the root path, and the second is for all other requests. We will add
+    other branches later:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: We used similar pattern matching in [Chapter 2](621dffeb-7f43-4c11-9ac5-00a366dc8d9f.xhtml),
+    *Developing a Microservice with Hyper Crate*. Previously, we had a `match` expression
+    to check the method and the path of incoming requests. This time, we need a copy
+    of `Uri::path`, because we will need to use a path copy in regular expressions
+    of other branches later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `response_with_code` function returns a `Future` instance now, instead
+    of `Request`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s add the remaining branches to the `match` expression. Let''s add one
+    to handle the uploading of files:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: This request-handling branch expects the `POST` method and the `"/upload"` path.
+    We don't check the user credentials and we allow everyone to upload a file, but
+    in a real microservice, you should filter incoming traffic to avoid spam or malicious
+    use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the first line of the branch, we generate a random name for the incoming
+    file. We can provide the client with an opportunity to set the name of the file,
+    but this is a dangerous practice. If you don't check the paths of incoming requests,
+    a client can request a file from any folder in the server. We take an instance
+    of random number generator that implements the `Rng` trait with `thread_rng` function
+    call of the `rand` crate. Afterward, we use the generator to get an `Iterator`
+    of samples by the `sample_iter` method call of the `Rng` trait and provide an `Alphanumeric`
+    distribution to it that generates random characters and digits. We take 20 items
+    from the iterator and collect them in a `String`. Then, we convert the `files`
+    variable to `PathBuf` using the `to_path_buf` method and add the generated filename
+    to the path.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next line, we create a `File` with the generated name. Here lies the
+    most important difference of asynchronous applications—we use the `tokio::fs::File`
+    type instead of the `std::fs::File` type, so we return a `Future` instance instead
+    of a file reference. The future will be completed when the file is created. After
+    that, we use the created file to write some data to this file asynchronously.
+    The `tokio::fs::File` type wraps `std::fs::File`, but implements the `AsyncRead`
+    and `AsyncWrite` traits. At any time, you can call the `into_std` method to unwrap
+    the standard `File` type. Before we do this, however, we will write an incoming
+    stream to the created file. Let's take a closer look at the `tokio` crate and
+    some important issues to do with the asynchronous reading and writing of files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The tokio crate
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `tokio` crate provides the functionality to work with the network connections
+    of files in an asynchronous manner. It includes wrappers for the TCP and UDP sockets—`TcpStream`
+    and `UdpSocket`. It also includes types to access a filesystem through the `Future`
+    and `Stream` traits. There is no cross-platform approach to work with files asynchronously,
+    because operating systems have their own implementations of non-blocking APIs.
+    Some operating systems, however, don't have good asynchronous APIs at all. To
+    provide cross-platform asynchronous access to filesystems, `tokio` uses the `tokio_threadpool`
+    crate, which has a `blocking` method that runs a task in a separate thread. This
+    helps to implement asynchronous interaction for types that can block the thread
+    using input/output operations. It isn't the most effective way to interact with
+    a filesystem, but it does allow us to convert synchronous APIs to asynchronous. The `tokio`
+    crate also contains an `Executor` trait and a `Timer` module. We've considered
+    executors before. The `timer` module contains the `Timeout` and `Interval` types
+    to create a `Future` and a `Stream` that generate values whenever a specified
+    time period has elapsed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Asynchronous input/output of files
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We now have to create a chain to read all incoming chunks and write them to
+    the created file. As you might remember, `File::create` returns a `Future` that
+    returns a `File` instance. We won''t take the result immediately, because I/O
+    operations take some time and can cause the current running thread to be blocked.
+    We have to use the `Future::and_then` method to move the result (when it is ready)
+    to other `Future` instance that will send all chunks to the file. To do that,
+    we will use a `Body` instance that we get with the `into_body` method call of
+    the `Request` that is stored in the `req` variable. The `Body` implements a `Stream`
+    of the `Chunk` instances, but it can produce a `hyper::Error`. Since `File::create`
+    can produce an `io::Error`, we have to convert the `hyper::Error` to an `io::Error`
+    using the `other` function call as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding function creates an `io::Error` with `ErrorKind::Other` based
+    on any `Error` provided with the single argument. We use the `other` function
+    with the `map_err` of the `StreamExt` to convert failures of the stream to `io::Error`. When
+    the `Stream` of the `Body` is compatible with the type of error, we can create
+    a `Future` that will move incoming binary data to the file. To do that, we can
+    use a `fold` method of a `StreamExt` trait. If you are familiar with functional
+    programming, you might know how this works already. The `fold` function takes
+    two arguments—an initial value, which will be reused in every iteration, and a
+    function, which carries out some processing with the initial value. Processing
+    functions have to return a `Future` instance on every call, with one condition—the
+    `Future` has to return the same type as the type of the initial value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will provide a `File` instance as an initial value and we will call `tokio::io::write_all`
+    to write an incoming chunk of the request's body to a file. The `write_all` function
+    expects an output stream and a binary slice. It returns a `Future`, which returns
+    a tuple with an output stream and a provided slice on success. We have to use
+    the `map` method of the returned `Future` to drop the slice and keep the file. The
+    resultant chain will `fold` the whole `Stream` to a `Future`, which will return
+    a filled `File` instance when all chunks are written to the file. We store this
+    `Future` to write a variable and use the map method of `FutureExt` to drop the
+    file instance (the real file with the written data will remain on the drive),
+    and return a `Response` with the name of the stored file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have now successfully implemented file uploading. We should now discuss how
+    to upload files using HTML forms and add a downloading feature to our service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multipart form requests
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'So far in this chapter, we have used requests with binary bodies. This is suitable
+    for microservices, but if you want to send files with an HTML form, you should
+    use a request with a `multipart/form-data` type of content. This allows a client
+    to include multiple files in a single request, but it also needs a parser to split
+    files from the body of a request. The `hyper` crate doesn''t include a parser
+    for multipart requests, and you can use other crates such as the `multipart` crate
+    to parse requests instead. This, however, doesn''t work asynchronously, so you
+    should use the `multipart-async` crate with the latest versions of the `hyper`
+    crate. You can also implement multipart requests yourself. To implement this,
+    you can create a struct that implements the `Stream` trait and parses incoming
+    chunks of data. Multipart requests have the `multipart/form-data` content type
+    with a boundary value such as `boundary=53164434ae464234f`. Its body contains
+    a separator and the embedded files:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: Your stream has to implement **`Stream<Item=FileEntry>`**, which reads a request
+    and extracts files using the provided boundary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Downloading images
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s implement a branch to download images. The handler can download files
+    using the  `/download/filename` path. To extract the name of the file, we use
+    a regular expression:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will use `startwith` to detect the `/download` part of the path. Take a
+    look at the implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this example, we expect a `GET` method and check that the paths match with
+    the `DOWNLOAD_FILE` regular expression. We use the name `"filename"` to extract
+    a string with the name of the file. Since we have the filepath variable with a
+    path to a folder, we convert the `Path` value to the `PathBuf`  type using the `to_path_buf`
+    method of the `Path` instance and push a filename to it. After that, we use the
+    file type of the `tokio` crate to open a file, which has asynchronous reading
+    and writing capabilities to work with the file's content. The `open` method of
+    the file returns an `OpenFuture` instance that resolves to a `File` instance when
+    it is successful.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We wrap a file with `FileChunkStream`, imported from the `hyper_staticfile`
+    crate. This stream reads a `File` and returns chunks of bytes. The body has a
+    `wrap_stream` method and we can send the whole stream as a response. When the
+    stream is forwarded to a client, the opened `File` will be closed when the stream
+    is dropped.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last thing we should do is return a `Body` instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: sendfile for sending files
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Forwarding files from one file to another is not effective, because this approach
+    copies every chunk of data to the memory before sending it. Popular servers such
+    as **NGINX** use the `sendfile` system call to send files from one file descriptor
+    to another. This helps to save a lot of resources, because `sendfile` allows for
+    zero copy, which means that we can write the buffer directly to the necessary
+    device. To use `sendfile` with `tokio`, you have to implement a wrapper for it,
+    but I don't think it's a good idea to serve static files with a microservice.
+    You may prefer to use NGINX for this task or use object storage such as **AWS
+    S3**, which can provide static files to a client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing the service
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The image service is now ready for testing. Compile it, download any image
+    from the internet, and use `curl` to upload it to our service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This request downloads the Rust logo and uploads it to our microservice. It
+    will return the name of the uploaded image with a response. Put it after the `/download/`
+    path and try to download it with your browser:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/3ce9c8aa-0ed8-44bf-95ca-45091bfeef1d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we have examined the `futures` and `tokio` crates. The `futures`
+    crate contains types to work with delayed results and streams. We have compared
+    the `Future` and `Result` types and the `Stream` and `Iterator` types. After that,
+    we implemented a microservice that stores images and sends them back to the client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will improve microservice of this chapter using threads and background tasks
+    in [Chapter 10](ba240208-414e-4dd4-bba8-8bd2658949cd.xhtml), *Background Tasks
+    and Thread Pools in Microservices*. But in the next chapter, we will take a look
+    at reactive microservices and using remote procedure calls as an alternative way
+    to implement of microservices.
+  prefs: []
+  type: TYPE_NORMAL

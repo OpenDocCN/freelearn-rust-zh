@@ -1,0 +1,675 @@
+- en: Memory Management in Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Until now, we have always talked about how the Rust compiler handles the memory
+    by itself, and how that makes it memory-safe and gives us some extra superpowers
+    without the fear of creating memory vulnerabilities. Nevertheless, there is no
+    limit to what you can accomplish by using unsafe scopes, and even by using safe
+    code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will check all the configuration and metaprogramming options that Rust gives
+    us regarding memory management and see how we can improve our code by using both
+    safe and unsafe code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will be looking into the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Learning the rules of the borrow checker
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Binding lifetimes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Memory representation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Data representation for FFI with C/C++
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Shared pointers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reference counted pointers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Mastering the borrow checker
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To ensure memory and thread safety, Rust''s borrow checker has three simple
+    rules. They are enforced all through the code except in unsafe scopes. Here they
+    are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each binding will have an owner
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There can only be one owner for a binding
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When the owner goes out of the scope, the binding gets dropped
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These three rules seem simple enough, but they have a great implication on how
+    we code. The compiler can know beforehand when an owner goes out of scope, so
+    it will always know when to drop/destruct a binding/variable. This means that
+    you can write your code without having to think about where you create variables,
+    where you call destructors, or whether you have already called a destructor or
+    you are calling it twice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Of course, this comes with an additional learning curve that can sometimes be
+    difficult to catch up. The second rule is what most people find difficult to manage.
+    Since there can only be one owner at a time, sharing information sometimes becomes
+    somewhat difficult.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see an example of this behavior with a known type, the `Vec` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will print the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/9e603958-352b-4675-b3e4-635253803fb6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: At the end of the current scope (the `main()` function, for example), the vector
+    will be dropped by calling its destructor. In this case, it will simply deallocate
+    the memory cleanly and then destroy itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Allocations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: For a variable to be growable (so that it can occupy different amounts of space
+    in the memory at different times), it needs to be allocated on the heap, and not
+    on the stack. The stack works faster, since on the loading of the program, it
+    gets assigned to it. But the heap is slower, since for each allocation you need
+    to perform a system call to the kernel, which means you will need a context switch
+    (to kernel mode) and back (to user mode). This makes things too slow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Vectors (and other standard library structures) have an interesting way of
+    allocating that memory so that they perform as efficiently as possible. Let''s
+    check the algorithm it uses to allocate new memory with this code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output should be something along these lines:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ad0089ad-34f2-4d39-80f3-82a12241a276.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This means that, at the beginning, the vector will have allocated only the space
+    required by our first two elements. But as soon as we push a new one, it will
+    allocate space for two new elements, so that with the fourth push it won't need
+    to allocate more memory. When we finally insert a fifth element, it allocates
+    space for another four, so that it does not need to allocate until it gets to
+    the ninth.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you follow the progression, the next time it will allocate space for 8 more
+    elements, making the capacity grow to 16\. This is dependent on the first allocation,
+    and if we had started the vector with 3 elements, the numbers would be 3, 6, 12,
+    24,... We can, in any case, force the vector to pre-allocate a given number of
+    elements with two functions, `reserve()` and `reserve_exact()`. The former will
+    reserve space for at least the given number of elements, while the latter will
+    reserve space exactly for the given number of elements. This is really useful
+    when you know the size of the input, so that it doesn't need to allocate once
+    and again. It will just allocate once.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mutability, borrowing, and owning
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'There are also rules about mutability in Rust, that prevent data races between
+    threads. Let''s see them:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: All bindings are immutable by default
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There can be unlimited immutable borrows of a binding at the same time
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There can only be one mutable borrow of a binding at most at a given point in
+    time
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If there is a mutable borrow, no immutable borrows can coexist at a given point
+    in time
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: They are fairly simple to understand. You can read the contents of a binding
+    from as many places as you would like, but if you want to modify a binding, you
+    must somehow ensure that no readers or other writers exist. This, of course, prevents
+    data races, but makes your coding a bit more troublesome.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see this with a couple of examples. Let''s first define these two functions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `change_third()` function requires a mutable `u32` slice that will use
+    to add `1` to the third element if the slice has at least three elements. The
+    second will print that element. You can then use this `main()` function to test
+    it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, since the two functions borrow the vector (one of them mutably
+    and the other one immutably), you can continue using the vector in the `main()`
+    function. This means that the ownership of the vector is in the `main()` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we had a function that took ownership of the vector, we wouldn''t be able
+    to use it later. Consider changing the `change_third()` function for this one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In this case, the function receives the argument and takes ownership of the
+    vector (there is no slicing or referencing on the function declaration). Of course,
+    we will need to change the call to the function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The issue is that the program will no longer compile. After we give the ownership
+    of the vector to the `change_third()` function, there will no longer be a `my_vector`
+    variable in the `main()` function. The error that the Rust compiler shows is really
+    clarifying, and it will even point out where the issue is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/95d20d42-bcaf-4713-bf81-18b287cbd42c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In conclusion, if you need to continue using the variable after using it to
+    call a function, pass it by reference, let the function borrow your variable but
+    not own it. If you don't, and you prefer the new function to have absolute control
+    over the variable (even to drop it), pass it by value. This doesn't apply to `Copy`
+    types, as we saw in [Chapter 1](ad672e4d-0f5e-4c59-b823-249da183abc8.xhtml), *Common
+    Performance Pitfalls*, since, in that case, the whole object gets copied to the
+    new function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: References can be a little difficult to manage though. We sometimes require
+    a structure to have a referenced value, but since the structure won't have ownership
+    of the variable to drop it, it will have to make sure that the owner of the variable
+    doesn't do it while it is still in use. For this, we have lifetimes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lifetimes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Every variable, structure attribute, and constant has a lifetime in Rust. Most
+    of them can be elided, since we usually know that a constant has a static lifetime
+    (it will always be there for us), or that most of the variables have the lifetime
+    of its scope. Nevertheless, there is sometimes a place where we need to specify
+    that lifetime. Let''s check the following structures:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, the parent has a reference to the child, but we added two letters
+    preceded by a single quote. These are lifetime specifications, and what means
+    is that the reference to the child has to live at least while the parent exists.
+    Let''s see this behavior with a simple `main()` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will print that the child is `10` years old. The child gets dropped at
+    the end of the `main` function, so the reference is valid while the parent exists.
+    But let's create a small inner scope to see if we can trick the compiler. Inner
+    scopes are explicit scopes that you can create by using curly braces. All variables
+    defined in there will be dropped at the end of the inner scope, and if an expression
+    is added at the end without a semicolon, it will be the value of the scope, and
+    can be assigned to any variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s try to add a `child` to a `parent` that will be dropped at an inner
+    scope:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we try to compile this, the compiler will tell us that `child` does not live
+    long enough. The compiler has understood that we told it in the structure that
+    `child` had to live at least as long as the `Parent` structure, and since, in
+    this case, it knows that the variable defined inside the inner scope will be dropped
+    there, it will complain at compile time and not let you add it to the `parent`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This can be extended to functions. Let''s consider a very simple function that
+    returns a reference to the oldest child of the two provided:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will not compile, since it needs a lifetime parameter. This means that
+    the compiler does not know whether the return child will live as long as `child1`
+    or as long as `child2`. We don''t know either, so we will specify that all lifetimes
+    must be at least as long as the current function, and then the rest is the problem
+    of our caller:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: This just declares a new lifetime (declared before the first parenthesis before
+    the arguments) that we call `f`, that will be the lifetime of the function. We
+    then specify that all references must live at least as long as the function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Memory representation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Apart from managing the references, ownerships, allocations, and copies, we
+    can also manage the memory layout of those structures we saw earlier, and we can
+    do it by using both safe and unsafe code. Let''s first understand how Rust manages
+    the memory. Think of the following structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Alignment
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When accessing the attributes from memory, they need to be aligned so that their
+    position in memory is a multiple of their size, 16 bits in this case. That way,
+    when we try to get each attribute, we will only need to add 16 bits to the base
+    address of the structure, multiplied by the attribute. This makes information
+    retrieval much more efficient, and it's done by the compiler automatically. The
+    main issue with it is that for each attribute to be 16-bit aligned, the compiler
+    would need to pad 8 bits for each of the first and third attributes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This means that the structure gets converted to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'But, in this concrete case, both `attr1` and `attr3` have 8 bits, so they do
+    not need to be 16-bit aligned; they could be 8-bit aligned and work properly.
+    This means that we could move the first attribute to the end and, that way, it
+    would be something like having two 16-bit aligned attributes, and the second one
+    would contain two 8-bit aligned attributes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: This does not require extra padding and thus the structure will occupy 32 bits
+    (instead of 48 as before). This is a typical optimization that has to be done
+    manually in C/C++, messing up our order of attributes, but in Rust we can do better.
+    The compiler knows about this, and it will reorder the fields the best it can
+    to have a better memory footprint, so you can put the attributes in the order
+    you'd like.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But, if the compiler already does this automatically, what is this doing in
+    a performance optimization book? Well, there is a situation where you want to
+    avoid this behavior.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's face it, not all of the software is written in Rust yet, and in the case
+    of high-performance libraries, it's common that we have to use C dependencies.
+    Luckily, Rust can seamlessly integrate with any C-compatible interface at no cost.
+    But you will have a problem if you move structures between the Rust and C codes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As we discussed, Rust will reorder the fields, which means that the structure
+    in C and in Rust might not have attributes positioned the same way. We can tell
+    Rust not to change the order of the fields, though, by using the `repr` attribute
+    with the `C` value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will make the structure compatible with C. We can also tell Rust not to
+    add padding to attributes, and therefore make the structure minimal size even
+    if its alignment could be better. Note that this will break the code for platforms
+    that require aligned structures. If you still want to use it, you can simply use
+    the `packed` form of representation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Complex enumerations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you know about C/C++ enumerations, you know that each element represents
+    a value, and that you can use them to avoid remembering the proper integers from
+    the set of possible values. They are not strongly typed, though, so you can mix
+    different enumerations. And they can only store one integer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once again, Rust can do better, and we can create complex enumerations where
+    we cannot only have strong typing (we won''t mix enumerations) but we will even
+    be able to have more than integers in enumerations. As you can see in the following `Color`
+    enumeration, we can have inner data, and even attributes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, in this case, the enumeration can have one of four values,
+    but in the case of the last one, it will have three numbers associated. This gives
+    you almost infinite possibilities, where you can safely represent any data structure.
+    Check out, for instance, this implementation of *any JSON value* by the `Serde`
+    crate, one of the most-used crates in the ecosystem:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: A value in a JSON structure can either be null, a Boolean (and with the information
+    whether it's `true` or `false`), a number (that will be another enumeration to
+    know whether it's positive, negative, or float point), a string, with the text
+    information, an array of values, or a whole JSON object with its keys as strings
+    and values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are two caveats with this approach, though. For comparison between the
+    different variants of an enumeration, they must be tagged. This means that they
+    will need to occupy some extra space just to differentiate between them at runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second problem is that the size of the enumeration type (without taking
+    into account the tag) will be the size of the biggest option. So if you have 10
+    options that can be stored in 1 byte, but another one needs 10 bytes, the enumeration
+    will have 10 bytes (plus the tag) independently of the variant being stored. This
+    works this way because it works as a `union` (in C/C++ language), where all variants
+    share the same representation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To mitigate this, an option is for big objects to be references. We can do
+    this in two ways. The first way is by borrowing the color, in which case the compiler
+    will force us to not return the enumeration from any function where the color
+    was created (remember, the reference would be destroyed at the end of the scope):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And if we want to avoid that, we can simply store that element in the heap
+    by boxing it (yes, this will slow performance). It depends whether you require
+    a lower RAM consumption or an improved speed. To store an element in the heap,
+    you will need to use the `Box` type, as you can see here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Unions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'There is also another type of union that is not tagged. If the types in the
+    union are not `Copy`, you will need to use the `untagged_unions` feature and compile
+    the code with the nightly compiler. This can be avoided by deriving the `Copy`
+    trait in the structures used inside the union, but you shouldn''t do this for
+    big structures, as we discussed earlier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this particular example, the `Plant` can be a `Geranium` or a `Carnation`.
+    Or more precisely, it will be both at the same time. The `Plant` will have the
+    size of the biggest structure in it, and it won't have any extra padding for a
+    tag describing which of the two variants it is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This means that when writing one of the fields of the union, you will change
+    the rest of the fields too. When creating the union, you will need to specify
+    only one field, and since the compiler won''t know which variant it is at compile
+    time, you will need to read the values using an unsafe block, as you can see in
+    the next piece of code, since reading an unset value ends up being undefined behavior:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this example, we first create a `Plant` that is a `Carnation`, and then we
+    convert it to a `Geranium`. That change does not need an unsafe block, since the
+    `Plant` will always have 32 bits, the size of the `Geranium`, so it can be assigned
+    with perfect memory safety.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we retrieve the height, though, we need to specify that we want to read
+    the `Plant` as a `Geranium`, and then get the height. In this case, it works perfectly,
+    since we changed the `Plant` to be a `Geranium`. If we tried to get the plant
+    as a `Carnation` in this example, it would trigger undefined behavior. This means
+    that the number of flowers can be a random number depending on the layout of the
+    union. Still, this is not a security vulnerability, since the `u8` we will get
+    for the number of flowers will be one of the bytes of the `Geranium` height, it
+    will just feel random (in my case, it says 44 flowers).
+  prefs: []
+  type: TYPE_NORMAL
+- en: But in any case, this is particularly great for interfacing with C (FFI). If
+    we use the `#[repr(C)]` attribute in the union, it will be structured exactly
+    the same way as in C, so we will be able to send the union to a C library without
+    needing to think about how to emulate a C union.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Shared pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One of Rust's most criticized problems is that it's difficult to develop an
+    application with shared pointers. As we have seen before, it's true that due to
+    Rust's memory safety guarantees, it might be difficult to develop those kinds
+    of algorithms, but as we will see now, the standard library gives us some types
+    we can use to safely allow that behavior.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The cell module
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The standard library has one interesting module, the `std::cell` module, that
+    allows us to use objects with interior mutability. This means that we can have
+    an immutable object and still mutate it by getting a mutable borrow to the underlying
+    data. This, of course, would not comply with the mutability rules we saw before,
+    but the cells make sure this works by checking the borrows at runtime or by doing
+    copies of the underlying data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cells
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s start with the basic `Cell` structure. A `Cell` will contain a mutable
+    value, but it can be mutated without having a mutable `Cell`. It has mainly three
+    interesting methods: `set()`, `swap()`, and `replace()`. The first allows us to
+    set the contained value, replacing it with a new value. The previous structure
+    will be dropped (the destructor will run). That last bit is the only difference
+    with the `replace()` method. In the `replace()` method, instead of dropping the
+    previous value, it will be returned. The `swap()` method, on the other hand, will
+    take another `Cell` and swap the values between the two. All this without the
+    `Cell` needing to be mutable. Let''s see it with an example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see in the example, to use a `Cell`, the contained type must be
+    `Copy`. If the contained type is not `Copy`, you will need to use a `RefCell`,
+    which we will see next. Continuing with this `Cell` example, as you can see through
+    the code, the output will be the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/a6ec229b-d16d-47f1-8d9a-9ae73cdc5b26.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: So we first create two houses, we select one of them as the current one, and
+    we keep mutating the current and the new ones. As you might have seen, I also
+    used the `take()` method, only available for types implementing the `Default`
+    trait. This method will return the current value, replacing it with the default
+    value. As you can see, you don't really mutate the value inside, but you replace
+    it with another value. You can either retrieve the old value or lose it. Also,
+    when using the `get()` method, you get a copy of the current value, and not a
+    reference to it. That's why you can only use elements implementing `Copy` with
+    a `Cell`. This also means that a `Cell` does not need to dynamically check borrows
+    at runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RefCell
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`RefCell` is similar to `Cell`, except that it accepts non-`Copy` data. This
+    also means that when modifying the underlying object, it cannot simply copy it
+    when returning it, it will need to return references. The same way, when you want
+    to mutate the object inside, it will return a mutable reference. This only works
+    because it will dynamically check at runtime whether a borrow exists before returning
+    a mutable borrow, or the other way around, and if it does, the thread will panic.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Instead of using the `get()` method as in `Cell`, `RefCell` has two methods
+    to get the underlying data: `borrow()` and `borrow_mut()`. The first will get
+    a read-only borrow, and you can have as many immutable borrows in a scope. The
+    second one will return a read-write borrow, and you will only be able to have
+    one in scope to follow the mutability rules. If you try to do a `borrow_mut()`
+    after a `borrow()` in the same scope, or a `borrow()` after a `borrow_mut()`,
+    the thread will panic.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two non-panicking alternatives to these borrows: `try_borrow()` and
+    `try_borrow_mut()`. These two will try to borrow the data (the first read-only
+    and the second read/write), and if there are incompatible borrows present, they
+    will return a `Result::Err`, so that you can handle the error without panicking.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both `Cell` and `RefCell` have a `get_mut()` method, that will get a mutable
+    reference to the element inside, but it requires the `Cell` / `RefCell` to be
+    mutable, so it doesn't make much sense if you need the `Cell` / `RefCell` to be
+    immutable. Nevertheless, if in a part of the code you can actually have a mutable
+    `Cell` / `RefCell`, you should use this method to change the contents, since it
+    will check all rules statically at compile time, without runtime overhead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interestingly enough, `RefCell` does not return a plain reference to the underlying
+    data when we call `borrow()` or `borrow_mut()`. You would expect them to return
+    `&T` and `&mut T` (where `T` is the wrapped element). Instead, they will return
+    a `Ref` and a `RefMut`, respectively. This is to safely wrap the reference inside,
+    so that the lifetimes get correctly calculated by the compiler without requiring
+    references to live for the whole lifetime of the `RefCell`. They implement `Deref`
+    into references, though, so thanks to Rust's `Deref` coercion, you can use them
+    as references.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rc module
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The `std::rc` module contains reference-counted pointers that can be used in
+    single-threaded applications. They have very little overhead, thanks to counters
+    not being atomic counters, but this means that using them in multithreaded applications
+    could cause data races. Thus, Rust will stop you from sending them between threads
+    at compile time. There are two structures in this module: `Rc` and `Weak`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An `Rc` is an owning pointer to the heap. This means that it's the same as a
+    `Box`, except that it allows for reference-counted pointers. When the `Rc` goes
+    out of scope, it will decrease by `1` the number of references, and if that count
+    is `0`, it will drop the contained object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since an `Rc` is a shared reference, it cannot be mutated, but a common pattern
+    is to use a `Cell` or a `RefCell` inside the `Rc` to allow for interior mutability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Rc` can be downgraded to a `Weak` pointer, that will have a borrowed reference
+    to the heap. When an `Rc` drops the value inside, it will not check whether there
+    are `Weak` pointers to it. This means that a `Weak` pointer will not always have
+    a valid reference, and therefore, for safety reasons, the only way to check the
+    value of the `Weak` pointer is to upgrade it to an `Rc`, which could fail. The
+    `upgrade()` method will return `None` if the reference has been dropped.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s check all this by creating an example binary tree structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this case, the tree will have a root node, and each of the nodes can have
+    up to two children. We call them left and right, because they are usually represented
+    as trees with one child on each side. Each node has a pointer to one of the children,
+    and it owns the children nodes. This means that when a node loses all references,
+    it will be dropped, and with it, its children.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each child has a pointer to its parent. The main issue with this is that, if
+    the child has an `Rc` pointer to its parent, it will never drop. This is a circular
+    dependency, and to avoid it, the pointer to the parent will be a `Weak` pointer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, you have learned how the borrow checker works. You now understand
+    the rules that your code must follow to compile, and how little tricks can make
+    your code much faster without having to worry about making the compiler happy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You also learned about the memory representation of structures and enumerations
+    in Rust and how to make your Rust code compatible with the C/C++.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, you understood how Rust manages shared pointers for complex structures
+    where the Rust borrow checker can make your coding experience much more difficult.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In [Chapter 4](0a00a575-c592-4022-8721-79c2f2d63f76.xhtml), *Lints and Clippy*,
+    we will learn about linting and a surprisingly good linting tool called **Clippy**.
+    With these lints, you will be able to find many of the issues we saw at compile
+    time.
+  prefs: []
+  type: TYPE_NORMAL

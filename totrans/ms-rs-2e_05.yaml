@@ -1,0 +1,2246 @@
+- en: Memory Management and Safety
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Memory management is a fundamental concept to understand for anyone working
+    with a low-level programming language. Low-level languages don't come with automatic
+    memory reclamation solutions like a built-in garbage collector, and it's the responsibility
+    of the programmer to manage memory that's used by the program. Having knowledge
+    of where and how memory gets used in a program enables programmers to build efficient
+    and safe software systems. A lot of bugs in low-level software are due to improper
+    handling of memory. At times, it's the programmer's mistake. The other times,
+    it's the side effect of the programming language used, such as C and C++, which
+    are infamous for a lot of memory vulnerability reports in software. Rust offers
+    a better, compile-time solution to memory management. It makes it hard to write
+    software that leaks memory unless you explicitly intend to! Programmers who have
+    done a fair amount of development with Rust eventually come to the realization
+    that it discourages bad programming practices and directs the programmer toward
+    writing software that uses memory safely and efficiently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we go into the nitty-gritty details of how Rust tames the memory
+    that's used by resources in a program. We'll give a brief introduction to processes, memory
+    allocation, memory management, and what we mean by memory safety. Then, we'll
+    go through the memory safety model provided by Rust and understand the concepts
+    that enable it to track memory usage at compile time. We'll see how traits are
+    used to control where types reside in memory and when they get freed. We'll also
+    delve into various smart pointer types that provide abstractions to manage resources
+    in the program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The topics that are covered in this chapter are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Programs and memory
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Memory allocations and safety
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Memory management
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Stack and Heap
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Trifecta of safety—Ownership, borrowing, and lifetimes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Smart pointer types
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Programs and memory
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '"If you’re willing to restrict the flexibility of your approach, you can almost
+    always do something better."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: – *John Carmack*
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a motivation to understand memory and its management, it's important for
+    us to have a general idea of how programs are run by the operating system and
+    what mechanisms are in place that allow it to use memory for its requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every program needs memory to run, whether it's your favorite command-line tool
+    or a complex stream processing service, and they have vastly different memory
+    requirements. In major operating system implementations, a program in execution
+    is implemented as a process. A process is a running instance of a program. When
+    we execute `./my_program` in a shell in Linux or double-click on `my_program.exe`
+    on Windows*,* the OS loads `my_program` as a process in memory and starts executing
+    it, along with other processes, giving it a share of CPU and memory. It assigns
+    the process with its own virtual address space, which is distinct from the virtual
+    address space of other processes and has its own view of memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: During the lifetime of a process, it uses many system resources. First, it needs
+    memory to store its own instructions, then it needs space for resources that are
+    demanded at runtime during instruction execution, then it needs a way to keep
+    track of function calls, any local variables, and the address to return to after
+    the last invoked function. Some of these memory requirements can be decided ahead
+    at compile time, like storing a primitive type in a variable, while others can
+    only be satisfied at runtime, like creating a dynamic data type such as `Vec<String>`.
+    Due to the various tiers of memory requirements, and also for security purposes,
+    a process's view of memory is divided into regions known as the memory layout.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here, we have an approximate representation of the memory layout of a process
+    in general:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/3559bb5d-de6f-4448-8dd8-e2e9d4a4e2e7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This layout is divided into various regions based on the kind of data they
+    store and the functionality they provide. The major parts we are concerned with
+    are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Text segment**: This section contains the actual code to be executed in the
+    compiled binary. The text segment is a read-only segment and any user code is
+    forbidden to modify it. Doing so can result in a crash of the program.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Data segment**: This is further divided into subsections, that is, the initialized
+    data segment and uninitialized data segment, which is historically known as **Block
+    Started by Symbol (BSS)**, and holds all global and static values declared in
+    the program. Uninitialized values are initialized to zero when they are loaded
+    into memory.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Stack segment**: This segment is used to hold any local variables and the
+    return addresses of functions. All resources whose sizes are known in advance
+    and any temporary/intermediary variables that a program creates are implicitly
+    stored on the stack.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Heap segment**: This segment is used to store any dynamically allocated data
+    whose size is not known up front and can change at runtime depending on the needs
+    of the program. This is the ideal allocation place when we want values to outlive
+    their declaration within a function.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do programs use memory?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So, we know that a process has a chunk of memory dedicated for its execution.
+    But, how does it access this memory to perform its task? For security purposes
+    and fault isolation, a process is not allowed to access the physical memory directly.
+    Instead, it uses a virtual memory, which is mapped to the actual physical memory
+    by the OS using an in-memory data structure called **pages**, which are maintained
+    in **page tables**. The process has to request memory from the OS for its use,
+    and what it gets is a virtual address that is internally mapped to a physical
+    address in the RAM. For performance reasons, this memory is requested and processed
+    in chunks. When virtual memory is accessed by the process, the memory management
+    unit does the actual conversion from virtual to physical memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The whole series of steps through which memory is acquired by a process from
+    the OS is known as **memory allocation**. A process requests a chunk of memory
+    from the OS by using *system calls*, and the OS marks that chunk of memory in
+    use by that process. When the process is done using the memory, it has to mark
+    the memory as free so other processes can use it. This is called **de-allocation**
+    of memory. Major operating system implementations provide abstractions through
+    system calls (such as `brk` and `sbrk` in Linux), which are functions that talk directly
+    to the OS kernel and can allocate memory requested by the process. But these kernel-level
+    functions are very low-level, so they are further abstracted by system libraries
+    such as the **glibc** library, which is C's standard library in Linux including
+    the implementation of the POSIX APIs, facilitating low-level interactions with
+    the OS from the C language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: POSIX is an acronym for Portable Operating System Interface, a term coind by
+    Richard Stallman. It is a set of standards that emerged with the need to standardize
+    what functionality, a Unix-like operating system should provide, what low level
+    APIs they should expose to languages such as C, what command-line utilities they
+    should include, and many other aspects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Glibc also provides a memory allocator API, exposing functions such as `malloc`,
+    `calloc`, and `realloc` for allocating memory and the `free` function for de-allocating
+    memory. Even though we have a fairly high-level API for allocating/de-allocating
+    memory, we still have to manage memory ourselves when using low-level programming
+    languages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Memory management and its kinds
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The RAM in your computer is a limited resource and is shared by all running
+    programs. It's a necessity that when a program is done executing its instructions,
+    it is expected to release any memory used so that the OS can reclaim it and hand
+    it to other processes. When we talk about memory management, a prominent aspect
+    we care about is the reclamation of used memory and how that happens. The level
+    of management required in deallocating used memory is different in different languages.
+    Up until the mid-1990s, the majority of programming languages relied on manual
+    memory management, which required the programmer to call memory allocator APIs
+    such as `malloc` and `free` in code to allocate and deallocate memory, respectively.
+    Around 1959, *John McCarthy*, the creator of *Lisp,* invented **Garbage Collectors**
+    (**GC**), a form of automatic memory management and Lisp was the first language
+    to use one. A GC runs as a daemon thread as part of the running program and analyzes
+    the memory that is no longer being referenced by any variable in the program and
+    frees it automatically at certain points in time along with program execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, low-level languages don't come with a GC as it introduces non-determinism
+    and a runtime overhead due to the GC thread running in the background, which in
+    some cases pauses the execution of the program. This pause sometimes reaches to
+    a milisecond of latency. This might violate the hard time and space constraints
+    of system software. Low-level languages put the programmer in control of managing
+    memory manually. However, languages such as C++ and Rust take some of this burden
+    off from programmers, through type system abstractions like smart pointers, which
+    we'll cover later in the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Given the difference between languages, we can classify the memory management
+    strategies that are used by them into three buckets:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Manual**: *C* has this form of memory management, where it''s completely
+    the programmers responsibility to put `free` calls after the code is done using
+    memory. C++ automates this to some extent using smart pointers where the `free`
+    call is put in a class''s deconstructor method definition. Rust also has smart
+    pointers, which we will cover later in this chapter.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Automatic**: Languages with this form of memory management include an additional
+    runtime thread,that is the Garbage Collector, that runs alongside the program
+    as a daemon thread. Most dynamic languages based on a virtual machine such Python,
+    Java, C# and Ruby rely on automatic memory management. Automatic memory management
+    is one of the reasons that writing code in these languages is easy.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Semi-automatic**: Languages such as Swift fall into this category. They don''t
+    have a dedicated GC built in as part of the runtime, but offer a reference counting
+    type, which does automatic management of memory at a granular level. Rust also
+    provides the reference counting types `Rc<T>` and `Arc<T>`. We''ll get to them
+    when we explain about *smart pointers,* later in this chapter.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Approaches to memory allocation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: At runtime, memory allocations in a process happens either on the *stack* or
+    on the *heap*. They are storage locations that are used to store values during
+    the execution of the program. In this section, we'll take a look at both of these
+    allocation approaches.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The stack is used for short-lived values whose sizes are known as compile time,
+    and is the ideal storage location for function calls and their associated context,
+    which needs to go away once the function returns. The heap is for anything that
+    needs to live beyond function calls. As mentioned in [Chapter 1](d9f771cc-9948-4bb5-8ad7-bb6fcbcc62b1.xhtml),
+    *Getting Your Feet Wet*, Rust prefers stack allocation by default. Any value or
+    instance of a type that you create and bind to a variable gets stored on the stack
+    by default. Storing on the heap is explicit and is done by using smart pointer
+    types, which are explained later in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The stack
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Any time we call a function or a method, the stack is used for allocating space
+    for values that are created within the function. All of the `let` bindings in
+    your functions are stored in the stack, either as values themselves or as pointers
+    to memory locations on the heap. These values constitute the **stack frame** for
+    the active function. A stack frame is a logical block of memory in the stack that
+    stores the context of a function call. This context may include function arguments,
+    local variables, return addresses, and any saved register's values that need to
+    be restored after returning from the function. As more and more functions get
+    called, their corresponding stack frames are pushed onto the stack. Once a function
+    returns, the stack frame corresponding to the function goes away, along with all
+    values declared within that frame.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These values are removed in the reverse order of their declaration, following
+    the **Last In First Out** (**LIFO**) order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Allocation on the stack is fast because allocating and deallocating memory
+    here requires just one CPU instruction: incrementing/decrementing the stack frame
+    pointer. The stack frame pointer (`esp`) is a CPU register that always points
+    to the top of the stack. The stack frame pointer keeps on updating as functions
+    get called, or when they return. When a function returns, its stack frame is discarded
+    by restoring the stack frame pointer to where it was before entering the function.
+    Using stacks is a temporary memory allocation strategy, but it is reliable in
+    terms of releasing used memory because of its simplicity. However, the same property
+    of a stack makes it unsuitable for cases where we need longer living values beyond
+    the current stack frame.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s a piece of code to roughly illustrate how the stack gets updated in
+    a program during function calls:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll represent the state of the stack for this program by an empty array
+    `[]`. Let''s explore the stack contents by doing a dry run of this program. We''ll
+    use `[]` to also represent stack frames within our parent stack. When this program
+    is run, the following are the sequence of steps that happens:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When the `main` function is invoked, it creates the stack frame, which holds
+    `a`  and `result` (initialized to zero). The stack is now `[[a=12, result=0]]`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Next, the `double_of` function is called and a new stack frame is push onto
+    the stack to hold its local values. The stack's contents is now `[[a=12, result=0],
+    [b=12, temp_double=2*x, x=0]]`. `temp_double` is a temporary variable that's created
+    by the compiler to store the result of `2 * x`, which is then assigned to the `x`
+    that's variable declared within the `double_of` function. This `x` is then returned
+    to the caller, which is our `main` function.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Once `double_of` returns, its stack frame is popped off the stack and the stack
+    contents are now `[[a=12, result=24]`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Following that, `main` ends and its stack frame is popped out, leaving the
+    stack empty: `[]`.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: There are more details to this, though. We just gave a very high level overview
+    of a function call and its interaction with the stack memory. Now, if all we had
+    were local values staying valid only for the lifetime of the function call, it
+    would be very limiting. While the stack is simple and powerful, to be practical,
+    a program also needs longer-living variables, and for that we need the heap.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The heap
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The heap is for the more complicated and dynamic memory allocation requirements.
+    A program might allocate on the heap at some point and may release it at some
+    other point, and there need not be a strict boundary between these points, as
+    is the case with stack memory. In the case of stack allocation, you get deterministic
+    allocation and deallocation of values. Also, a value in the heap may live beyond
+    the function where it was allocated and it may later get deallocated by some other
+    function. In that case, the code fails to call `free`, so it may not get deallocated
+    at all, which is the worst case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Different languages use the heap memory differently. In dynamic languages such
+    as Python*,* everything is an object and they are allocated on the heap by default.
+    In C, we allocate memory on the heap using manual `malloc` calls, while in C++,
+    we allocate using the `new` keyword. To deallocate memory, we need to call free
+    in C and delete in C++. In C++, to avoid manual `delete` calls, programmers often
+    use smart pointer types such as `unique_ptr` or `shared_ptr`. These smart pointer
+    types have deconstructor methods, which get invoked when they go out of scope
+    internally, calling `delete`. This paradigm of managing memory is called the RAII
+    principle, and was popularized by C++.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RAII stands for Resource Acquisition Is Initialization; a paradigm suggesting
+    that resources must be acquired during initialization of objects and must be released
+    when they are deallocated or their destructors are called.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust also has similar abstractions to how C++ manages heap memory. Here, the
+    only way to allocate memory on the heap is through smart pointer types. Smart
+    pointer types in Rust implement the `Drop` trait, which specifies how memory used
+    by the value should be deallocated, and are semantically similar to deconstructor
+    methods in C++. Unless someone writes their own custom smart pointer type, you
+    never need to implement `Drop` on their types. More on the `Drop` trait in a separate
+    section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To allocate memory on the heap, languages rely on dedicated memory allocators,
+    which hide all the low-level details like allocating memory on aligned memory,
+    maintaining free chunks of memory to reduce system call overheads, and reducing
+    fragmentation while allocating memory and other optimizations. For compiling programs,
+    the compiler rustc itself uses the jemalloc allocator, whereas the libraries and
+    binaries that are built from Rust use the system allocator. On Linux, it would
+    be the glibc memory allocator APIs. Jemalloc is an efficient allocator library
+    for use in multithreaded environments and it greatly reduces the build time of
+    Rust programs. While jemalloc is used by the compiler, it's not used by any applications
+    that are built with Rust because it increases the size of the binary. So, compiled
+    binaries and libraries always use the system allocators by default.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust also has a pluggable allocator design, and can use the system allocator
+    or any user implemented allocator that implements the `GlobalAlloc` trait from
+    the `std::alloc` module. This is often implemented by the `#[global_allocator]`
+    attribute, which can be put on any type to declare it as an allocator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Note**: If you have a use case where you want to use the jemalloc crate for
+    your programs too, you can use the [https://crates.io/crates/jemallocator](https://crates.io/crates/jemallocator)
+    crate.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In Rust, most dynamic types with sizes not known in advance are allocated on
+    the heap. This excludes primitive types. For instance, creating a `String` internally
+    allocates on the heap:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`String::new` allocates a `Vec<u8>` on the heap and returns a reference to
+    it. This reference is bound to the variable `s`, which is allocated on the stack.
+    The string in the heap lives for as long as `s` is in scope. When `s` goes out
+    of scope, the `Vec<u8>` is deallocated from the heap and its `drop` method is
+    called as part of the `Drop` implementation. For rare cases where you need to
+    allocate a primitive type on the heap, you can use the `Box<T>` type, which is
+    a generic smart pointer type.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, let's look at the pitfalls when using a language such as
+    C that doesn't have all the comforts of automatic memory management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Memory management pitfalls
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In languages with a GC, dealing with memory is abstracted away from the programmer.
+    You declare and use the variables in your code, and how they get deallocated is
+    an implementation detail you don't have to worry about. A low-level system programming
+    language such as C/C++, on the other hand, does nothing to hide these details
+    from the programmer, and provides nearly no safety. Here, programmers are given
+    the responsibility of deallocating memory via manual free calls. Now, if we look
+    at the majority of  **Common Vulnerabilities & Exposure** (**CVEs**) in software
+    related to memory management, it shows that we humans are not very good at this!
+    Programmers can easily create hard-to-debug errors by allocating and deallocating
+    values in the wrong order, or may even forget to deallocate used memory, or cast
+    pointers illegally. In C, nothing stops you from creating a pointer out of an
+    integer and dereferencing it somewhere, only to see the program crash later. Also,
+    it's quite easy to create vulnerabilities in C because of the minimal compiler
+    checks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The most concerning case is freeing heap allocated data. The heap memory is
+    to be used with care. Values in the heap can possibly live forever during the
+    lifetime of the program if not freed, and may eventually lead to the program being
+    killed by the **Out Of Memory** (**OOM**) killer in the kernel. At runtime, a
+    bug in the code or mistake from the developer can also cause the program to either
+    forget to free the memory, or access a portion of memory that is outside the bounds
+    of its memory layout, or dereference a memory address in the protected code segment.
+    When this happens, the process receives a trap instruction from the kernel, which
+    is what you see as a `segmentation fault` error message, followed by the process
+    getting aborted. As such, we must ensure that processes and their interactions
+    with memory need to be safe! Either we as programmers need to be critically aware
+    of our `malloc` and `free` calls, or use a memory safe language to handle these
+    details for us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Memory safety
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: But what do we mean by a program being memory safe? Memory safety is the idea
+    that your program never touches a memory location it is not supposed to, and that
+    the variables declared in your program cannot point to invalid memory and remain
+    valid in all code paths. In other words, safety basically boils down to pointers
+    having valid references all of the time in your program, and that the operations
+    with pointers do not lead to undefined behavior. Undefined behavior is the state
+    of a program where it has entered a situation that has not been accounted for
+    in the compiler's because the compiler specification does not clarify what happens
+    in that situation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An example of undefined behavior in C is accessing out of bound and uninitialized
+    array elements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we have an array of 5 elements and we loop and print
+    the values in the array. Running this program with `gcc -o main uninitialized_reads.c
+    && ./main` gives me the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: On your machine, this could print any value, or might even print an address
+    of an instruction, which can be exploited. This is an undefined behavior where
+    anything can happen. Your program might crash immediately, which is the best case
+    scenario as you get to know it then and there. It may also continue to work, clobbering
+    any internal state of the program that might later give faulty outputs from the
+    application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another example of memory safety violation is the iterator invalidation problem
+    in C++:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this C++ code, we create a vector of integers `v` and we are trying to iterate
+    using an iterator called  `it` in the `for` loop. The problem with the preceding
+    code, is that we have an `it` iterator pointer to `v`, while at the same time
+    we iterate and push to `v`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, because of the way vectors are implemented, they internally reallocate
+    to some other place in memory if their size reaches their capacity. When this
+    happens, this would render the `it` pointer pointing to some garbage value, which
+    is called the iterator invalidation problem, because the pointer is now pointing
+    to invalid memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another example of memory unsafety are buffer overflows in C. The following
+    is a simple piece of code to demonstrate this idea:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: This compiles fine and even runs without errors, but the last assignment went
+    over the allocated buffer and might have overwritten other data or instructions
+    in the address. Also, specially crafted malicious input values, adapted to the
+    architecture and environment, could yield arbitrary code execution. These kind
+    of errors have happened in actual code in less obvious ways and has led to vulnerabilities
+    affecting businesses worldwide. On recent versions of gcc compilers, this is detected
+    as a stack smash attack where gcc halts the program by sending a `SIGABRT` (abort)
+    signal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Memory safety bugs lead to memory leaks, hard crashes in the form of segmentation
+    faults, or in the worst case, security vulnerabilities. To create correct and
+    safe programs in C, a programmer has to be discrete in correctly placing `free`
+    calls when they are done using the memory. Modern C++ safeguards against some
+    of the problems associated with manual memory management by providing smart pointer
+    types, but this does not completely eliminate them. Languages based on virtual
+    machines (Java's JVM being the most prominent example) use garbage collection
+    to eliminate whole classes of memory safety issues. While Rust doesn't have a
+    built-in GC, it relies on the same RAII built into the language and makes freeing
+    used memory automatic for us based on the scope of variables and is much more
+    safer than C or C++. It provides us with several fine-grained abstractions that
+    you can choose according to your needs and pay only for what you use. To see how
+    all of this works in Rust, let's explore the principles that helps Rust provide
+    compile-time memory management to programmers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Trifecta of memory safety
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The concepts that we will explore next are the core tenets of Rust's memory
+    safety and its zero cost abstraction principle. They enable Rust to detect memory
+    safety violations in a program at compile time, provide automatic freeing of resources
+    when their scope ends, and much more. We call these concepts ownership, borrowing,
+    and lifetimes. Ownership is kind of like the core principle, while borrowing and
+    lifetimes are type system extensions to the language, enforcing and sometimes
+    relaxing the ownership principle in different contexts in code to ensure compile-time
+    memory management. Let's elaborate on these ideas.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ownership
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The notion of a true owner of a resource in a program differs across languages.
+    Here, by resource, we collectively refer to any variable holding a value on the
+    heap or the stack, or a variable holding an open file descriptor, a database connection
+    socket, a network socket, and similar things. All of them occupy some memory from
+    the time they exist until the time they are done being used by the program. An
+    important responsibility of being the owner of a resource is to judiciously free
+    the memory used by them, as not being able to perform deallocations at proper
+    places and times can lead to memory leaks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When programming in dynamic languages such as Python, it's fine to have multiple
+    owners or aliases to a `list` object where you can add to or remove items from
+    the list using one of the many variables pointing to the object. The variables
+    don't need to care about freeing the memory used by the object because the GC
+    takes care of this and will free the memory once all references to the object
+    are gone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For compiled languages such as C/C++, before smart pointers were a thing, libraries
+    had an opinionated take on whether the callee or the caller of an API was responsible
+    for deallocating the memory after the code is done with a resource. These opinions
+    existed because ownership is not enforced by the compiler in these languages.
+    There's still a possibility of goofing up by not using smart pointers in C++.
+    It's totally fine in C++ to have more than one variable pointing to a value on
+    the heap (though we advise against it), and that is called *aliasing*. The programmer
+    runs into all sorts of ill effects with the flexibility of having multiple pointers
+    or aliases to a resource, one being the iterator invalidation problem in C++,
+    which we explained previously. Specifically, problems arise when there is at least
+    one mutable alias to a resource among other immutable aliases in a given scope.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rust, on the other hand, tries to bring proper semantics regarding the ownership
+    of values in a program. The ownership rule of Rust states the following principles:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you create a value or a resource using the `let` statement and assign it
+    to a variable, the variable becomes the owner of the resource
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When the value is reassigned from one variable to another, the ownership of
+    the value moves to the other variable and the older variable becomes invalid for
+    further use
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The value and the variable are deallocated at the end of their scope
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The takeaway is that values in Rust have a single owner, that is, the variables
+    that created them. The principle is quite simple, but the implications of it are
+    what surprises programmers coming from other languages. Consider the following
+    code, which demonstrates the ownership principle in its most basic form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We create two variables, `foo` and `bar`, that points to a `Foo` instance.
+    As someone familiar with mainstream imperative languages that allow multiple owners
+    to a value, we expect this program to compile just fine. But in Rust, we get the
+    following error upon compilation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/8bc1cf49-e912-4ef6-b405-b0c62ce4b96c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Here, we created a `Foo` instance and assigned it to the `foo` variable. According
+    to the ownership rule, `foo` is now the owner of the `Foo` instance. In the next
+    line, we then assign `foo` to `bar`. On executing the second line in `main`, 
+    `bar` becomes the new owner of the `Foo` instance and the older `foo` is now an
+    abandoned variable, which cannot be used anywhere after the move. This is evident
+    from the `println!` call on the third line. Rust moves values pointed to by a
+    variable by default any time we assign it to some other variable or read from
+    the variable. The ownership rule prevents you from having multiple points of access
+    for modifying the value, which can lead to use after free situations, even in
+    single threaded contexts with languages that permit multiple mutable aliases for
+    values. The classic example is the iterator invalidation problem in C++. Now,
+    to analyze when a value goes out of scope, the ownership rule also takes into
+    account the scope of variables. Let's understand scopes next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A brief on scopes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we go further into ownership, we need to get a brief idea of scopes,
+    which might be familiar to you already if you know C, but we'll recap it here
+    in the context of Rust, as ownership works in tandem with scopes. So, a scope
+    is nothing but an environment where variables and values come into existence.
+    Every variable you declare is associated with a scope. Scopes are represented
+    in code by braces `{}`. A scope is created whenever you use a *block expression*,
+    that is, any expression that starts and ends with braces `{}`. Also, scopes can
+    nest within each other and can access items from the parent scope, but not the
+    other way around.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s some code that demonstrates multiple scopes and values:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: To help with this explanation, will assume that our scopes are numbered, starting
+    from `0`. With this assumption, we have created variables that have the `level_x`
+    prefix in their name. Let's run through the preceding code, line by line. As functions
+    can create new scopes, the `main` function introduces a root scope level 0 with
+    a `level_0_str` defined within it. Inside the level 0 scope, we create a new scope, level
+    1*,* with a bare block `{}`, which contains the variable `level_1_number`. Within
+    level 1, we create another block expression, which becomes level 2 scope. In level
+    2, we declare another variable, `level_2_vector`, to which we push `level_1*_*number`,
+    which comes from the parent scope,that is, level 1\. Finally, when the code reaches
+    the end of `}`, all of the values get destructed and the respective scopes come
+    to an end. Once the scope ends, we cannot use any values defined within them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scopes are an important property to keep in mind when reasoning about the ownership
+    rule. They are also used to reason about borrowing and lifetimes, as we'll see
+    later. When a scope ends, any variable that owns a value runs code to deallocate
+    the value and itself becomes invalid for use outside the scope. In particular,
+    for heap allocated values, a `drop` method is placed right before the end of the scope
+    `}`. This is akin to calling the `free` function in C, but here it's implicit
+    and saves the programmer from forgetting to deallocate values. The `drop` method
+    comes from the `Drop` trait, which is implemented for most heap allocated types
+    in Rust and makes automatic freeing of resources a breeze.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Having learned about scopes, let''s look at an example similar to the one we
+    previously saw in `ownership_basics.rs`, but this time, let''s use a primitive
+    value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Try compiling and running this program. You might be in for a surprise as this
+    program compiles and runs just fine. What gives? In the program, the ownership
+    of `4623` does not move from `foo` to `bar`, but `bar` gets a separate copy of
+    `4623`. It appears that primitive types are treated specially in Rust, where they
+    get copied instead of moved. This means that there are different semantics of
+    ownership depending on what types we use in Rust, which brings us to the concept
+    of move and copy semantics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Move and copy semantics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In Rust, variable bindings have move semantics by default. But what does this
+    really mean? To understand that, we need to think about how variables are used
+    in a program. We create values or resources and assign them to variables to easily
+    refer to them later in our program. These variables are names that point to the
+    memory location where the value resides. Now, operations with variables such as
+    reading, assignment, addition, passing them to functions, and so on can have different
+    semantics or meaning around how the value being pointed to by the variable is
+    accessed. In statically typed languages, these semantics are broadly classified
+    as move semantics and copy semantics. Let's define both.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Move semantics**: A value that gets moved to the receiving item when accessed
+    through a variable or reassigning to a variable exhibits move semantics. Rust
+    has move semantics  by default due to its **affine type system**. A highlighting
+    part of affine type systems is that values or resources can only be used once,
+    and Rust exhibits this property with the ownership rule.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Copy semantics**: A value that gets copied (as in a bitwise copy) by default
+    when assigned or accessed through a variable or passed to/returned from a function
+    exhibits copy semantics. This means that the value can be used any number of times
+    and each value is completely new.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: These semantics are familiar to people from the C++ community. C++ has copy
+    semantics by default. Move semantics were added later with the C++11 release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Move semantics in Rust can be limiting at times. Fortunately, a type''s behavior
+    can be changed to follow copy semantics by implementing the `Copy` trait. This
+    is implemented by default for primitives and other stack-only data types and is
+    the reason why the previous code using primitives works. Consider the following
+    snippet that tries to make a type `Copy` explicitly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'On compiling this, we get the following error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/328db879-eb70-45cd-9a36-380ac8399a6e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Interesting! It appears that `Copy` depends on the `Clone` trait. This is because
+    `Copy` is defined in the standard library as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Clone` is a super trait of `Copy`, and any type implementing `Copy` must also
+    implement `Clone`. We can make this example compile by adding the `Clone` trait
+    beside `Copy` in the derive annotation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: The program works now. But it's not quite clear of the differences between `Clone`
+    and `Copy`. Let's differentiate them next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Duplicating types via traits
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `Copy` and `Clone` traits convey the idea of how types gets duplicated when
+    they are used in code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Copy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `Copy` trait is usually implemented for types that can be completely represented
+    on the stack. This is to say that they don't have any part of themselves that
+    lives on the heap. If that were the case, `Copy` would be a heavy operation as
+    it would also have to go down the heap to copy the values. It directly affects
+    how the `=` assignment operator works. If a type implements `Copy`, an assignment
+    from one variable to another would copy the data implicitly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Copy` is an auto trait that is implemented automatically on most stack data
+    types such as primitives and immutable references, that is, `&T`.  The way `Copy`
+    duplicates types is very similar to how the  `memcpy` function works in C, which
+    is used to copy values bitwise. `Copy` for user-defined types is not implemented
+    by default as Rust wants to be explicit about copying and the developer has to
+    opt in to implement the trait. `Copy` also depends on the `Clone` trait when anyone
+    wants to implement `Copy` on their types.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Types that don't implement `Copy` are `Vec<T>`, `String`, and mutable references.
+    To make copies of these values, we use the more explicit `Clone` trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Clone
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The `Clone` trait is for explicit duplication and comes with a `clone` method that
+    a type can implement to obtain a copy of itself. The `Clone` trait is defined
+    like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: It has a method called `clone` that takes an immutable reference to the receiver,
+    that is, `&self`, and returns a new value of the same type. User defined types
+    or any wrapper types that need to provide the ability to duplicate themselves
+    should implement the `Clone` trait by implementing the `clone` method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But unlike `Copy` types where assignment implicitly copies the value, to duplicate
+    a `Clone` value, we have to explicitly call the `clone` method. The `clone` method
+    is a more general duplication mechanism and `Copy` is a special case of it, which
+    is always a bitwise copy. Items such as `String` and `Vec` that are heavy to copy,
+    only implements  the `Clone` trait. Smart pointer types also implement the `Clone`
+    trait where they just copy the pointer and extra metadata such as the reference
+    count while pointing to the same heap data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is one of those examples of being able to decide how we want to copy types,
+    and the `Clone` trait gives us that flexibility.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s a program that demonstrates using `Clone` to duplicate a type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added a `Clone` in the derive attribute. With that, we can call `clone` on
+    `a`  to get a new copy of it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, you are probably wondering when you should one implement either of these
+    types. The following are a few guidelines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When to implement `Copy` on a type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Small values that can be represented solely in the stack as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the type depends only on other types that have `Copy` implemented on them;
+    the `Copy` trait is implicitly implemented for it.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `Copy` trait implicitly affects how the assignment operator `=` works. The
+    decision on whether to make your own externally visible types using the `Copy`
+    trait requires some consideration due to how it affects the assignment operator.
+    If at an early point of development your type is a `Copy` and you remove it afterwards,
+    it affects every point where values of that type are assigned. You can easily
+    break an API in that manner.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'When to implement `Clone` on a type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Clone` trait merely declares a `clone` method, which needs to be called
+    explicitly.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If your type also contains a value on the heap as part of its representation,
+    then opt for implementing `Clone`, which makes it explicit to users that will
+    also be cloning the heap data.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you are implementing a smart pointer type such as a reference counting type,
+    you should implement `Clone` on your type to only copy the pointers on the stack.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now that we know the basics of `Copy` and `Clone`, let's move on to see how
+    ownership affects various places in code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ownership in action
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Apart from the `let` binding example, there are other places where you will
+    find ownership in effect, and it's important to recognize these and the errors
+    the compiler gives us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Functions:** If you pass parameters to functions, the same ownership rules
+    are in effect:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The compilation fails in a similar way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ef35f1ee-f850-4a2a-962e-100f6db2e38b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '`String` does not implement the `Copy` trait, so the ownership of the value
+    is moved inside the `take_the_s` function. When that function returns, the scope
+    of the value comes to an end and `drop` is called on `s`, which frees the heap
+    memory used by `s`. Therefore, `s` cannot be used after the function call anymore.
+    However, since `String` implements `Clone`, we can make our code work by adding
+    a `.clone()` call at the function call site:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our `take_the_n` works fine as `u8` (a primitive type) implements `Copy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is to say that, after passing move types to a function, we cannot use
+    that value later. If you want to use the value, we must clone the type and send
+    a copy to the function instead. Now, if we only need read access to variable `s`,
+    another way we could have made this code work is by passing the string `s` back
+    to main. This looks something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added a return type to our `take_the_s` function and return the passed string
+    `s` back to the caller. In `main`, we receive it in `s`. With this, the last line
+    of code in `main` works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Match expressions:** Within a match expression, a move type is also moved
+    by default, as shown in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we create a `Bag` instance and assign it to `bag`. Next,
+    we match on its `food` field and print some text. Later, we print the `bag` with
+    `println!`. We get the following error upon compilation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/22d4bacb-d7c3-4ece-9f28-d984cd60b3c8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can clearly read, the error message says that `bag` has already been
+    moved and consumed by the `a` variable in the match expression. This invalidates
+    the variable `bag` for any further use. We'll see how to make this code work when
+    we get to the concept of borrowing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Methods:** Within an `impl` block, any method with `self` as the first parameter
+    takes ownership of the value on which the method is called. This means that after
+    you call the method on the value, you cannot use that value again. This is shown
+    in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Upon compilation, we get the following error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/b4710d33-9819-44e6-ac28-44a33bf4842d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '`take_item` is an instance method that takes `self` as the first parameter.
+    After its invocation, `it` is moved inside the method and deallocated when the
+    function scope ends. We cannot use `it` again later. We''ll make this code work
+    when we get to the borrowing concept.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Ownership in closures**: A similar thing happens with closures. Consider
+    the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can already guess, the ownership of `Foo` is moved to `b` inside the
+    closure by default on assignment, and we can''t access `a` again. We get the following
+    output when compiling the preceding code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/a218189e-9151-48ee-a202-b56c3e09496c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'To have a copy of `a`, we can call `a.clone()` inside the closure and assign
+    it to `b` or place a move keyword before the closure, like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will make our program compile.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Note**: Closures take values differently depending on how a variable is used
+    inside the closure.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With these observations, we can already see that the ownership rule can be quite
+    restrictive as it allows us to use a type only once. If a function needs only
+    read access to a value, then we either need to return the value back again from
+    the function or clone it before passing it to the function. The latter might not
+    be possible if the type does not implement `Clone`. Cloning the type might seem
+    like an easy thing to get around the ownership principle, but it defeats the whole
+    point of the zero-cost promise as `Clone`  always duplicates types always, possibly
+    making a call to the memory allocator APIs, which is a costly operation involving
+    system calls.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With move semantics and the ownership rule in effect, it soon gets unwieldy
+    to write programs in Rust. Fortunately, we have the concept of borrowing and reference
+    types that relax the restrictions imposed by the rules but still maintains the
+    ownership guarantees at compile time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Borrowing
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The concept of borrowing is there to circumvent the restrictions with the ownership
+    rule. Under borrowing, you don't take ownership of values, but only lend data
+    for as long as you need. This is achieved by borrowing values, that is, taking
+    a reference to a value. To borrow a value, we put the  `&` operator before the
+    variable `&` is the *address of* operator . We can borrow values in Rust in two
+    ways.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Immutable borrows**: When we use the `&` operator before a type, we create
+    an immutable reference to it. Our previous example from the ownership section
+    can be re-written using borrowing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time, the program compiles, as the second line inside `main` has changed
+    to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice the `&` before the variable `foo`. We are borrowing `foo` and assigning
+    the borrow to `bar`. `bar` has a type of `&Foo`, which is a reference type. Being
+    an immutable reference, we cannot mutate the value inside `Foo` from `bar`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Mutable borrows**: Mutable borrows to a value can be taken using the `&mut`
+    operator. With mutable borrows, you can mutate the value. Consider the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we have a `String` instance declared as `a`. We also create a mutable
+    reference to it with `b` using `&mut a`. This does not move `a` to `b`,- only
+    borrows it mutably. We then push a `''!''` character to the string. Let''s compile
+    this program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2894603b-b6f4-4527-99ed-c0ca832245ee.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We have an error. The compiler says that we cannot borrow `a` mutably. This
+    is because mutable borrows require the owning variable itself to be declared with
+    the `mut` keyword. This should be obvious, as we can''t mutate something that''s
+    behind an immutable binding. Accordingly, we''ll change our declaration of `a`
+    to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: This makes the program compile. Here, `a` is a stack variable that points to
+    a heap allocated value, and `a_ref` is a mutable reference to the value owned
+    by `a`. `a_ref` can mutate the `String` value but it cannot drop the value, as
+    it's not the owner. The borrow becomes invalid if `a` is dropped before the line
+    that takes a reference.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we add a `println!` at the end of the previous program to print the modified
+    `a`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Compiling this gives us the following error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/88e93618-facf-47bb-88c2-37a23ed6b831.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Rust forbids this, thus borrowing the value immutably as a mutable borrow with
+    `a_ref` already is present in the scope. This highlights another important rule
+    with borrowing. Once a value is borrowed mutably, we cannot have any other borrows
+    of it. Not even an immutable borrow. Having explored borrowing, let's highlight
+    the exact borrowing rules in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Borrowing rules
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Similar to the ownership rule, we also have borrowing rules that maintain the
+    single ownership semantics with references, too. These rules are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A reference may not live longer than what it referred to. This is obvious, since
+    if it did, it would be referring to a garbage value.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If there's a mutable reference to a value, no other references, either mutable
+    or immutable references, are allowed to the same value in that scope. A mutable
+    reference is an exclusive borrow.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If there is no mutable reference to a thing, any number of immutable references
+    to the same value are allowed in the scope.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The borrowing rules in Rust are analyzed by a component of the compiler called
+    the borrow checker. The Rust community amusingly calls dealing with borrowing
+    errors as fighting the borrow checker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we're familiar with the rules, let's see what happens if we go against
+    the borrow checker by violating them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Borrowing in action
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rust's error diagnostics around the borrowing rules are really helpful when
+    we go against the borrow checker. In the following few examples, we'll see them
+    in various contexts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Borrowing in functions**: As you saw previously, moving ownership when making
+    function calls does not make much sense if you are only reading the value, and
+    is very limiting. You don''t get to use the variable after you call the function.
+    Instead of taking parameters by value, we can take them by references. We can
+    fix the previous code example that was presented in the ownership section to pass
+    the compiler without cloning, like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, `take_the_s` and `take_the_n` now take mutable references.
+    With this, we needed to modify three things in our code. First, the variable binding
+    will have to be made mutable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Second, our function changes to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Third, the call site would also need to change to this form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: Again, we can see that everything in Rust is explicit. Mutability is very visible
+    in Rust code for obvious reasons, especially when multiple threads come into play.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Borrowing in match**: In match expressions, a value is moved by default in
+    the match arms, unless it''s a `Copy` type. The following code, which was presented
+    in the previous section on ownership, compiles by borrowing in match arms:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: We made a slight change to the preceding code, which might be familiar to you
+    from the ownership section. For the second match arm, we prefixed a with `ref`.
+    The `ref` keyword is a keyword that can match items by taking a reference to them
+    instead of capturing them by value. With this change, our code compiles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Returning a reference from a function**: In the following code example, we
+    have a function that tries to return a reference to a value declared within the
+    function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This code fails to pass the borrow checker, and we are met with the following
+    error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/6203aefd-4a8a-47c2-b7b3-3a9e0e5a95a1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The error message says that we are missing a lifetime specifier. That doesn't
+    help much in regards to explaining what is wrong with our code. This is where
+    we need to acquaint ourselves with the concept of lifetimes, which we will cover
+    in the next section. Before that, let's expound on the kind of functions that
+    we can can have based on borrowing rules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Method types based on borrowing
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The borrowing rules also dictate how inherent methods on types are defined
+    and also instance methods from traits. The following are how they receive the
+    instance, presented by least restrictive to most restrictive:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`&self` methods: These methods only have immutable access to its members'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`&mut self` methods: These methods borrows the self instance mutably'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`self` methods: These methods takes ownership of the instance on which it is
+    called and the type is not available to be called later'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the case of user defined types, the same kind of borrowing applies also to
+    its field members.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Note**: Unless you''re deliberately writing a method that should move or
+    drop `self` at the end, always prefer immutable borrowing methods that is, having `&self`
+    as the first parameter.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lifetimes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The third piece in Rust's compile time memory safety puzzle is the idea of lifetimes
+    and the related syntactic annotation for specifying lifetimes in code. In this
+    section, we'll explain lifetimes by stripping them down to the basics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When we declare a variable by initializing it with a value, the variable has
+    a certain lifetime, beyond which it is invalid to use it. In general programming
+    parlance, the lifetime of a variable is the region in code in which the variable
+    points to a valid memory. If you have ever programmed in C, you should be acutely
+    aware of the case with lifetimes of variables: every time you allocate a variable
+    with `malloc`, it should have an owner, and that owner should reliably decide
+    when that variable''s life ends and when the memory gets freed. But the worst
+    thing is, it''s not enforced by the C compiler; rather, it''s the programmer''s
+    responsibility.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For data allocated on the stack, we can easily reason by looking at the code
+    and figure out whether a variable is alive or not. For heap allocated values,
+    though, this isn't clear. Lifetimes in Rust is a concrete construct and not a
+    conceptual idea as in C. They do the same kind of analysis that a programmer does
+    manually, that is, by examining the scope of value and any variable that references
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When talking about lifetimes in Rust, you only need to deal with them when you
+    have a reference. All references in Rust have an implicit lifetime information
+    attached to them. A lifetime defines how long the reference lives in relation
+    to the original owner of the value and also the extent of the scope of the reference.
+    Most of the time, it is implicit and the compiler figures out the lifetime of
+    the variables by looking at the code. But in some cases, the compiler cannot and
+    then it needs our help, or better said, it asks you to specify your intent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So far, we have been dealing with references and borrowing quite easily in
+    the previous code examples, but let see what happens when we try to compile the
+    following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code is very simple. We have a `SomeRef` struct, which stores a reference
+    to a generic type, `T`. In `main`, we create an instance of the struct, initializing
+    the `part` field with a reference to an `i32`, that is, `&43`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It gives the following error upon compilation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/56b8516a-dd2d-4326-ba68-639034260caa.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In this case, the compiler asks us to put in something called a lifetime parameter.
+    A lifetime parameter is very similar to a generic type parameter. Where a generic
+    type `T` denotes any type, lifetime parameters denote the region or the span where
+    the reference is valid to be used. It's just there for the compiler to fill in
+    with the actual region information later when the code is analyzed by the borrow
+    checker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A lifetime is purely a compile time construct that helps the compiler to figure
+    out the extent to which a reference can be used within a scope, and ensures that
+    it follows the borrowing rules. It can keep track of things like the origin of
+    references and whether they outlive the borrowed value. Lifetimes in Rust ensure
+    that a reference can't outlive the value it points to. Lifetimes are not something
+    that you as a developer will use, but it's for the compiler to use and reason
+    about validity of references.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lifetime parameters
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For cases where the compiler can''t figure out the lifetime of values by examining
+    the code, we need to tell Rust by using some annotations in code. To distinguish
+    from identifiers, lifetime annotations are denoted by a quirky symbol of prefixing
+    a letter with `''`. So, to make our previous example compile with a parameter,
+    we have added a lifetime annotation on our `StructRef`, like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: A lifetime is denoted by a `'`, followed by any sequence of valid identifiers.
+    But, by convention, most lifetimes used in the Rust code uses `'a`, `'b `and  `'c`
+    as lifetime parameters. If you have multiple lifetimes on a type, you can use
+    longer descriptive lifetime names such as `'ctx`, `'reader`, `'writer`, and so
+    on. It is declared at the same place and in the same way as generic type parameters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We saw examples where the lifetimes acted as a generic parameter for resolving
+    valid references later, but there''s a lifetime that has a concrete value. It
+    is shown in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `static` lifetime means that these references are valid for the entire duration
+    of the program. All literal strings in Rust have a lifetime of `'static` and they
+    go to the data segment of the compiled object code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lifetime elision and the rules
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Any time there's a reference in a function or a type definition, there's a lifetime
+    involved. Most of the time, you don't need to use explicit lifetime annotation
+    is you code as the compiler is smart to infer them for you as a lot of information
+    is already available at compile time about references.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In other words, these two function signatures are identical:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the usual case, the compiler has elided the lifetime parameter for  `func_one`
+    and we don't need to write it as `func_two`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But the compiler can elide lifetimes only in restricted places and there are
+    rules for elision. Before we talk about these rules, we need to talk about input
+    and output lifetimes. These are only discussed when functions that take references
+    are involved.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Input lifetime**: Lifetime annotations on function parameters that are references
+    are referred to as input lifetimes.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Output lifetimes**: Lifetime annotations on function return values that are
+    references are referred to as output lifetimes.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's import to note that any output lifetime originates from input lifetimes.
+    We cannot have a output lifetime that is independent and distinct from the input
+    lifetime. It can only be a lifetime that is smaller than or equal to the output
+    lifetime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following are the rules that are followed when eliding lifetimes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the input lifetime contains only a single reference, the output lifetime
+    is assumed to be the same
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For methods involving `self` and `&mut self`, the input lifetime is inferred
+    for the  `&self` parameter
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'But sometimes in ambiguous situations, the compiler doesn''t try to assume
+    things. Consider the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, `RefItem` stores a reference to any type,  `T`. In this
+    case, the lifetime of the return value isn''t obvious as there are two input references
+    involved. But, sometimes, the compiler is not able to figure out the lifetimes
+    of references, and then it needs our help and asks us to specify lifetime parameters.
+    Consider the following code, which does not compile:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/74eec68d-b419-4a41-9e54-fe1cf6d14ec5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The preceding program doesn't compile because Rust is unable to figure out the
+    lifetime of the return value and it needs our help here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, there are various places where we have to specify lifetimes when Rust
+    cannot figure them out for us:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Function signatures
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Structs and struct fields
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: impl blocks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Lifetimes in user defined types
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'If a struct definition has fields that are reference to any type, we need to
+    explicitly specify how long those references will live. The syntax is similar
+    to that of function signatures: we first declare the lifetime names on the struct
+    line, and then use them in the fields.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s what the syntax looks like in its simplest form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: The definition of `Number` lives as long as the reference for `num`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lifetime in impl blocks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When we create `impl` blocks for structs with references, we need to repeat
+    the lifetime declarations and definitions again. For instance, if we made an implementation
+    for the struct `Foo` we defined previously, the syntax would look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: In most of these cases, this is inferred from the types themselves and then,
+    we can omit the signatures with `<'_>` syntax.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multiple lifetimes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Just like generic type parameters, we can specify multiple lifetimes if we
+    have more than one reference that has different lifetimes. However, it can quickly
+    become hairy when you have to juggle with more than one lifetime in your code.
+    Most of the time, we can get away with just one lifetime in our structs or any
+    of our functions. But there are cases where we''ll need more than one lifetime
+    annotations. For example, say we are building a decoder library that can parse
+    binary files according to a schema and a given encoded stream of bytes. We have
+    a `Decoder` object, which has a reference to a `Schema` object and a reference
+    to a `Reader` type. Our Decoder definition will then look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding definition, it is quite possible that we get `Reader` from
+    the network while the `Schema` is local, and so their lifetimes in code can be
+    different. When we provide implementations for this `Decoder`, we can specify
+    relations with it by lifetime subtyping, which we will explain next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lifetime subtyping
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We can specify relation between lifetimes that specifies whether two references
+    can be used in the same place. Continuing with our `Decoder` struct example, we
+    can specify the lifetimes'' relations with each other in the `impl` block, like
+    so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We specified the relation in the impl block using the where clause as: ''a:
+    ''b . This is read as the lifetime `''a` outlives `''b` or in other words `''b`
+    should never live longer than `''a`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Specifying lifetime bounds on generic types
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Apart from using traits to constrain the types that can be accepted by a generic
+    function, we can also constrain generic type parameters using lifetime annotations.
+    For instance, consider we have a logger library where the `Logger` object is defined
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, we have a `Logger` struct with its name and a `Level`
+    enum. We also have a generic function called `configure_logger` that takes a type
+    `T` that is constrained with `Send + 'static`. In main, we create a logger with
+    a `'static`, string `"Global"`, and call `configure_logger` passing it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Along with the `Send` bound, which says that this thread can be sent to threads,
+    we also say that the type must live as long as the `''static` lifetime. Let''s
+    say we were to use a Logger that references a string of shorter lifetimes, like
+    so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will fail with the following error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/f39f3499-1ef1-4fdc-a1f1-dc3bb4b96ee6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The error message clearly say, that the borrowed value must be valid for the
+    static lifetime, but we have passed it a string, which has a lifetime called `'a`
+    from main, which is a shorter lifetime than `'static`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the concept of lifetimes under our belt, let's revisit pointer types in
+    Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pointer types in Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Our tale about memory management would be incomplete if we didn't include pointers
+    in the discussion, which are the primary way to manipulate memory in any low level
+    language. Pointers are simply variables that point to memory locations in the
+    process's address space. In Rust, we deal with three kinds of pointers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: References – safe pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'These pointers are already familiar to you from the borrowing section. References
+    are like pointers in C, but they are checked for correctness. They can never be
+    null and always point to some data owned by any variable. The data they point
+    to can either be on the stack or on the heap, or the data segment of the binary.
+    They are created using the `&` or the `&mut` operator. These operators, when prefixed
+    on a type `T`, create a reference type that is denoted by `&T` for immutable references
+    and `&mut T` for mutable references. Let''s recap on these again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`&T`: It''s an immutable reference to a type `T`. A `&T` pointer is a `Copy`
+    type, which simply means you can have many immutable references to a value `T`.
+    If you assign this to another variable, you get a copy of the pointer, which points
+    to the same data. It is also fine to have a reference to a reference, such as
+    `&&T`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`&mut T`: It''s an immutable pointer to a type `T`. Within any scope, you cannot
+    have two mutable references to a value `T`, due to the borrowing rule. This means
+    that `&mut T` types do not implement the `Copy` trait. They also cannot be sent
+    to threads.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Raw pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'These pointers have a quirky type signature of being prefixed with a `*`, which
+    also happens to be the dereference operator. They are mostly used in unsafe code.
+    One needs an unsafe block to dereference them. There are two kinds of raw pointers
+    in Rust:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`*const T`: An immutable raw pointer to a type `T`. They are also `Copy` types.
+    They are similar to `&T`, it''s just that `*const T` can also be null.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`*mut T`: A mutable raw pointer to a value `T`, which is non-`Copy`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'As an added note, a reference can be cast to a raw pointer, as shown in the
+    following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: However, we can't cast a `&T` to a `*mut T`, as it would violate the borrowing
+    rules that allow only one mutable borrow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For mutable references, we can cast them to `*mut T` or even `*const T`, which
+    is called pointer weakening, as we go from a more capable pointer `&mut T` to
+    a less capable `*const T` pointer. For immutable references, we can only cast
+    them to `*const T`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, dereferencing a raw pointer is an unsafe operation. We'll see how raw
+    pointers are useful when we get to [Chapter 10](9e9ce701-5f35-4351-b76b-a5f2bd541059.xhtml),
+    *Unsafe Rust and Foreign Function Interfaces*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Smart pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Managing raw pointers is highly unsafe and developers need to be careful about
+    a lot of details when using them. Uninformed usage may lead to issues such as
+    memory leaks, dangling references, and double frees in large code bases in non-obvious
+    ways. To alleviate from these issues, we can use smart pointers, which were popularized
+    by C++.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust also has many kinds of smart pointers. They are called smart because they
+    also have extra metadata and code associated with them that gets executed when
+    they are created or destroyed. Being able to automatically free the underlying
+    resource when a smart pointer goes out of scope is one of the major reasons to
+    use smart pointers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Much of the smartness in smart pointers comes from two traits, called the `Drop`
+    trait and the `Deref` trait. Before we explore the available smart pointer types
+    in Rust, let's understand these traits in detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Drop
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This is the trait we''ve been referring to quite a few times which does all
+    the magic of automatically freeing up the resources that are used when a value
+    goes out of scope. The `Drop` trait is akin to what you would call an `object
+    destructor` method in other languages. It contains a single method, `drop`, which
+    gets called when the object goes out of scope. The method takes in a `&mut self`
+    as parameter. Freeing of values with drop is done in **last in, first out**. That
+    is, whatever was constructed the last, gets destructed first. The following code
+    illustrates this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/b426f590-64c0-4736-aaa9-67c54eb60ad7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The drop method is an ideal place for you to put any cleanup code for your own
+    structs, if needed. It's especially handy for types where the cleanup is less
+    clearly deterministic, such as when using reference counted values or garbage
+    collectors. When we instantiate any `Drop` implementing value (any heap allocated
+    type), the Rust compiler inserts `drop` method calls after every end of scope,
+    after compilation. So, we don't need to manually call `drop` on these instances.
+    This kind of automatic reclamation based on scope is inspired by the RAII principle
+    of C++.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deref and DerefMut
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To provide similar behavior as normal pointers, that is, to be able to dereference
+    the call methods on the underlying type being pointed to, smart pointer types
+    often implement the `Deref` trait, which allows us to use the `*` dereferencing
+    operator with these types. While `Deref` gives you read-only access, there is
+    also `DerefMut`, which can give you a mutable reference to the underlying type.
+    Deref has the following type signature:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: If defines a single method called `Deref` that takes `self` by reference and
+    returns a immutable reference to the underlying type. This combined with the deref
+    coercion feature of Rust, reduces a lot of code that you have to write. Deref
+    coercion is when a type automatically gets converted from one type of reference
+    to some other reference. We'll look at them in [Chapter 7](63263043-9b5e-4711-b2e2-e44240a0e843.xhtml),
+    *Advanced Concepts*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Types of smart pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Some of the smart pointer types from the standard library as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Box<T>`: This provides the simplest form of heap allocation. The `Box` type
+    owns the value inside it, and can thus be used for holding values inside structs
+    or for returning them from functions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Rc<T>`: This is for reference counting. It increments a counter whenever somebody
+    takes a new reference, and decrements it when someone releases a reference. When
+    the counter hits zero, the value is dropped.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Arc<T>`: This is for atomic reference counting. This is like the previous
+    type, but with atomicity to guarantee multithread safety.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Cell<T>`: This gives us internal mutability for types that implement the `Copy`
+    trait. In other words, we gain the possibility to get multiple mutable references
+    to something.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`RefCell<T>`: This gives us internal mutability for types, without requiring
+    the `Copy` trait. It uses runtime locking for safety.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Box<T>
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The generic type `Box` in the standard library gives us the simplest way to
+    allocate values in the heap. It's simply declared as a tuple struct in the standard
+    library, and wraps any type given to it and puts it on heap. If you're familiar
+    with the concept of boxing and unboxing from other languages, such as Java where
+    you have Boxed integers as the *Integer* class, this provides a similar abstraction.
+    The ownership semantics with `Box` type depends on the wrapped type. If the underlying
+    type is `Copy`, the Box instance becomes copy, otherwise it moves by default.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To create a heap allocated value of type `T` using a `Box`, we simply call
+    the associated `new` method, passing in the value. Creating the `Box` value wrapping
+    a type `T` gives back the `Box` instance, which is a pointer on the stack that
+    points to `T`, which is allocated on the heap. The following example shows how
+    to use B`ox`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: In our main function, we created a heap allocated value in boxed_one by calling
+    `Box::new(Foo)`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Box` type can be used in the following situations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It can be used to create recursive type definitions. For example, here is a
+    Node type that represents a node in a singly linked list:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'On compiling, we are presented with this error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/5dbf582f-cc29-436c-aadf-f6cfbb7eb64b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We cannot have this definition of the `Node` type because `next` has a type
+    that refers to itself. If this definition is allowed, there is no end for the
+    compiler to analyze our Node definition as it will keep evaluating it until it
+    hits out of memory. This is better illustrated with the following snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This evaluation of the Node definition will keep on continuing until the compiler
+    runs out of memory. Also, as every piece of data needs to have a statically known
+    size at compile time, this is a non-representable type in Rust. We need to make
+    the `next` field something that has a fixed size. We can do this by putting `next`
+    behind a pointer because pointers are always fixed size. If you see the error
+    message, the compiler,  we''ll use the Box type Our new `Node` definition changes
+    like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Box` type is also used when defining recursive types that need to be hidden
+    behind a `Sized` indirection. So, an enum consisting of a variant with a reference
+    to itself could use the `Box` type to tuck away the variant in the following situations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you need to store types as trait objects
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When you need to store functions in a collection
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reference counted smart pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The ownership rule allows only one owner to exist at a time in a given scope.
+    However, there are cases where you need to share the type with multiple variables.
+    For instance, in a GUI library, each of the child widgets needs to have a reference
+    to its parent container widget for things like communicating to layout the child
+    widget based on resize events from the user. While lifetimes allow you to reference
+    the parent node from the child nodes by storing the parent as a `&'a Parent` (say),
+    it's often limited by the lifetime `'a` of the value. Once the scope ends, your
+    reference is invalid. In such cases, we need more flexible approaches, and that
+    calls for using reference counting types. These smart pointer types provide shared
+    ownership of values in the program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reference counting types enables garbage collection at a granular level. In
+    this approach, a smart pointer type allows you to have multiple references to
+    the wrapped value. Internally, the smart pointer keeps a count of how many references
+    it has given out and are active using a reference counter (hereby refcount), which
+    is just an integral value. As variables that reference the wrapped smart pointer
+    value go out of scope, the refcount value decrements. Once all of the references
+    to the object are gone and the refcount reaches `0`, the value is deallocated.
+    This is how reference counted pointers work in general.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rust provides us with two kinds of reference counting pointer types:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Rc<T>` : This is mainly for use in single threaded environments'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Arc<T>` is meant to be used in multi-threaded environments'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's explore the single threaded variant here. We'll take a visit to its multi-threaded
+    counterparts in [Chapter 8](8f3cb215-b8a0-4ed7-bce7-68570687fbd0.xhtml), *Concurrency*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rc<T>
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When we interact with an `Rc` type, the following changes happen to it internally:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you take a new shared reference to `Rc` by calling `Clone()`, `Rc` increments
+    its internal reference count. Rc internally uses the Cell type for its reference
+    counts
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When the reference goes out of scope, it decrements it
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When all shared references go out of scope, the refcount becomes zero. At this
+    point, the last drop call on `Rc` does its deallocation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Using reference counted containers gives us more flexibility in the implementation:
+    we can hand out copies of our value as if it were a new copy without having to
+    keep exact track of when the references go out of scope. That doesn''t mean that
+    we can mutably alias the inner values.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Rc<T>` is mostly used via two methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The static method `Rc::new` makes a new reference counted container.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `clone` method increments the strong reference count and hands out a new
+    `Rc<T>`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Rc` internally keeps two kinds of references: strong (`Rc<T>`) and weak (`Weak<T>`).
+    Both keep a count of how many references of each type have been handed out, but
+    only when the strong reference count reaches zero so that the values get deallocated.
+    The motivation for this is that an implementation of a data structure may need
+    to point to the same thing multiple times. For instance, an implementation of
+    a tree might have references to both the child nodes and the parent, but incrementing
+    the counter for each reference would not be correct and would lead to reference
+    cycles. The following diagram illustrates the reference cycle situation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/67567bee-43a2-477a-a975-60f87cc00bc7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In the preceding diagram, we have two variables, `var1` and `var2`, that reference
+    two resources, `Obj1` and `Obj2`. Along with that, `Obj1` also has a reference
+    to `Obj2` and `Obj2` has a reference to `Obj1`. Both `Obj1` and `Obj2` have reference
+    count of `2` when `var1` and `var2` goes out of scope, the reference count of
+    `Obj1` and `Obj2` reaches `1`. They won't get freed because they still refer to
+    each other.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reference cycle can be broken using weak references. As another example,
+    a linked list might be implemented in such a way that it maintains links via reference
+    counting to both the next item and to the previous. A better way to do this would
+    be to use strong references to one direction and weak references to the other.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see how that might work. Here''s a minimal implementation of possibly
+    the least practical but best learning data structure, the singly linked list:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The linked list is formed of two structs: `LinkedList` provides a reference
+    to the first element of the list and the list''s public API, and `Node` contains
+    the actual elements. Notice how we''re using `Rc` and cloning the next data pointer
+    on every append. Let''s walk through what happens in the append case:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`LinkedList::new()` gives us a new list. Head is `None`.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'We append `1` to the list. Head is now the node that contains `1` as data,
+    and next is the previous head: `None`.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We append `2` to the list. Head is now the node that contains `2` as data, and
+    next is the previous head, the node that contains `1` as data.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The debug output from `println!` confirms this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is a rather functional form of this structure; every append works by just
+    adding data at the head, which means that we don't have to play with references
+    and actual list references can stay immutable. That changes a bit if we want to
+    keep the structure this simple but still have a double-linked list, since then
+    we actually have to change the existing structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can downgrade an `Rc<T>` type into a `Weak<T>` type with the `downgrade`
+    method, and similarly a `Weak<T>` type can be turned into `Rc<T>` using the `upgrade`
+    method. The downgrade method will always work. In contrast, when calling upgrade
+    on a weak reference, the actual value might have been dropped already, in which
+    case you get a `None`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, let''s add a weak pointer to the previous node:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `append` method grew a bit; we now need to update the previous node of
+    the current head before returning the newly created head. This is almost good
+    enough, but not quite. The compiler doesn''t let us do invalid operations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/e9ae95d0-501b-4926-bd2d-967faa48b547.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We could make `append` take a mutable reference to `self`, but that would mean
+    that we could only append to the list if all the nodes' bindings were mutable,
+    forcing the whole structure to be mutable. What we really want is a way to make
+    just one small part of the whole structure mutable, and fortunately we can do
+    that with a single `RefCell`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add a `use` for the `RefCell`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Wrap the previous field in `LinkedListNode` in a `RefCell`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We change the `append` method to create a new `RefCell` and update the previous
+    reference via the `RefCell` mutable borrow:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: Whenever we're using `RefCell` borrows, it's a good practice to think carefully
+    that we're using it in a safe way, since making mistakes there may lead to runtime
+    panics. In this implementation, however, it's easy to see that we have just the
+    single `borrow`, and that the closing block immediately discards it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Apart from shared ownership, we can also get shared mutability at runtime with
+    Rust's concept of interior mutability, which are modeled by special wrapper smart
+    pointer types.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interior mutability
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As we saw previously, Rust protects us at compile time from the pointer aliasing
+    problem by allowing only a single mutable reference at any given scope. However,
+    there are cases where it becomes too restrictive, making code that we know is
+    safe not pass the compiler because of the strict borrow checking. For these situations,
+    one of the solutions is to move the borrow checking from compile time to runtime,
+    which is achieved with *interior mutability*. Before we talk about the types that
+    enable interior mutability, we need to understand the concept of interior mutability
+    and inherited mutability:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Inherited mutability**: This is the default mutability you get when you take
+    a `&mut` reference to some struct. This also implies that you can modify any of
+    the fields of the struct.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Interior mutability**: In this kind of mutability, even if you have a `&SomeStruct`
+    reference to some type, you can modify its fields if the fields have the type
+    as  `Cell<T>` or `RefCell<T>`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Interior mutability allows for bending the borrowing rules a bit, but it also
+    puts the burden on the programmer to ensure that no two mutable borrows are present
+    at runtime. These types offload the detection of multiple mutable references from
+    compile time to runtime and undergo a panic if two mutable references to a value
+    exist. Interior mutability is often used when you want to expose an immutable
+    API to users, despite having mutable parts to the API internally. The standard
+    library has two generic smart pointer types that provide shared mutability: `Cell`
+    and `RefCell`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cell<T>
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Consider this program, where we have a requirement to mutate `bag` with two
+    mutable references to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'But, of course, this does not compile due to the borrow checking rules:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/33ba5351-d6a9-4987-866e-a6f114f2995c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We can make this work by encapsulating the `bag` value inside a `Cell`. Our
+    code is updated as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: This works as you would expect, and the only added cost is that you have to
+    write a bit more. The additional runtime cost is zero, though, and the references
+    to the mutable things remain immutable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Cell<T>` type is a smart pointer type that enables mutability for values,
+    even behind an immutable reference. It provides this capability with very minimal
+    overhead and has a minimal API:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Cell::new` method allows you to create new instances of the `Cell` type by
+    passing it any type `T`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`get`: The `get` method allows you to copy of the value in the cell. This method
+    is only available if the wrapped type `T` is `Copy`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`set`: Allows you to modify the inner value, even behind a immutable reference.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RefCell<T>
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you need Cell-like features for non-Copy types, there is the `RefCell` type.
+    It uses a read/write pattern similar to how borrowing works, but moves the checks
+    to runtime, which is convenient but not zero-cost. RefCell hands out references
+    to the value, instead of returning things by value as is the case with the `Cell`
+    type. Here's a sample program that
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, we can borrow `bag`, mutably from `hand1` and `hand2` even though
+    they are declared as immutable variables. To modify the items in bag, we called
+    `borrow_mut` on `hand1` and `hand2`. Later, we borrow it immutably and print the
+    contents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `RefCell` type provides us with the following two borrowing methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `borrow` method takes a new immutable reference
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `borrow_mut` method takes a new mutable reference
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Now, if we try to call both of the methods in the same scope: by changing the
+    last line in the preceding code to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We get to see the following upon running the program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: A runtime panic ! This is because of the same ownership rule of having exclusive
+    mutable access. But, for `RefCell` this is checked at runtime instead. For situations
+    like this, one has to explicitly use bare blocks to separate the borrows or use
+    the drop method to drop the reference.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Note**: The Cell and RefCell types are not thread safe. This simply means
+    that Rust won''t allow you to share these types in multiple threads.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Uses of interior mutability
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous section, the examples on using `Cell` and `RefCell` were simplified,
+    and you most probably won't need to use them in that form in real code. Let's
+    take a look at some actual benefits that these types would give us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we mentioned previously, the mutability of a binding is not fine-grained;
+    a value is either immutable or mutable, and that includes all of its fields if
+    it's a struct or an enum. `Cell` and `RefCell` can turn an immutable thing into
+    something that's mutable, allowing us to define parts of an immutable struct as
+    mutable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following piece of code augments a struct with two integers and a `sum`
+    method to cache the answer of the `sum` and return the cached value if it exists:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following is the output of this program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/f41687f3-2ef4-48b0-8059-b0f3b30d1ce3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rust takes a low-level systems programming approach to memory management, promising
+    C-like performance, sometimes even better. It does this without requiring a garbage
+    collector through its use of ownership, lifetimes, and borrow semantics. We covered
+    a whole lot of ground here in a subject that's probably the heaviest to grasp
+    for a new Rustacean. That's what people familiar with Rust like to call themselves,
+    and you are getting close to becoming one! Getting fluent in this shift of thinking
+    of ownership at compile time takes a bit of time, but the investment in learning
+    these concepts pays off in the form of reliable software with a small memory footprint.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our next chapter will concern how fallible situations are handled in Rust. See
+    you there!
+  prefs: []
+  type: TYPE_NORMAL

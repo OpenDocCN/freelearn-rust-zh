@@ -1,0 +1,2531 @@
+- en: Using a Parser Combinator for Interpreting and Compiling
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust is a system programming language. A typical task of system programming
+    is processing *formal languages*. Formal languages are languages specified by
+    well-defined logical rules and used everywhere in computer technology. They can
+    be broadly classified into command, programming, and markup languages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To process formal languages, the first step is to parse. **Parsing **means analyzing
+    the grammatical structure of a piece of code to check whether it respects the
+    rules of the grammar it is supposed to use, and then, if the grammar is respected,
+    to generate a data structure that describes the structure of the parsed piece
+    of code, in a way that such code can be further processed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will see how to process text written in a formal language,
+    starting from the parsing step and proceeding with several possible outcomes—simply
+    checking the grammar, interpreting a program, and translating a program into the
+    Rust language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To show such features, an extremely simple programming language will be defined,
+    and four tools (syntax checker, semantic checker, interpreter, and translator)
+    will be built around it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, you will learn about the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining a programming language using a formal grammar
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Classifying programming languages into three categories
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Learning two popular techniques for building parsers—compiler-compilers and
+    parser combinators
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using a parser combinator library for Rust named **Nom**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Processing a source code to check its syntax following a **context-free grammar**,
+    using the Nom library (`calc_parser`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Verifying the consistency of variable declarations and their usage in some source
+    code, and at the same time preparing the required structure for optimal execution
+    of the code (`calc_analyzer`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Executing the preprocessed code, in a process named **inter****pretation** (`calc_interpreter`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Translating the preprocessed code into another programming language, in a process
+    named **compilation **(`calc_compiler`); as an example, translation to Rust code
+    will be shown
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: After reading this chapter, you will be able to write the grammar for a simple formal
+    language or understand the grammar for an existing formal language. You will also
+    be able to write an interpreter for any programming language by following its
+    grammar. Also, you will be able to write a translator for a formal language into
+    another formal language, following their grammar.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To read this chapter, knowledge of the preceding chapters is not required. Some
+    knowledge of formal language theory and techniques is useful but not required,
+    because the required knowledge will be explained in this chapter. The Nom library
+    will be used to build such tools, and so it will be described in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The complete source code for this chapter is in the `Chapter08` folder of the
+    GitHub repository, located at [https://github.com/PacktPublishing/Creative-Projects-for-Rust-Programmers](https://github.com/PacktPublishing/Creative-Projects-for-Rust-Programmers).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Project overview
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will build four projects of increasing complexity, listed
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first project (`calc_parser`) will just be a syntax checker for the `Calc`
+    language. Actually, it is just a parser, followed by a formatted debugging print of
+    the parsing result.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The second project (`calc_analyzer`) uses the parsing result of the first project
+    to add the verification of the consistency of the variable declarations and of
+    their usage, followed by a formatted debugging print of the analysis result.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The third project (`calc_interpreter`) uses the analysis result to execute the
+    preprocessed code, in an interactive interpreter.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The fourth project (`calc_compiler`) uses the analysis result again to translate
+    the preprocessed code into equivalent Rust code.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Introducing Calc
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To make the following explanations, we will first define a *toy* programming
+    language that we will name `Calc` (from the calculator). A toy programming language is
+    a programming language used to demonstrate or prove something, not designed to
+    develop real-world software. A simple program written in `Calc` is shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding program asks the user to type two numbers and then prints the
+    sum and the product of those numbers on the console. Let''s examine one statement
+    at a time, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first two statements (`@first` and `@second`) declare two variables. Any
+    variable in `Calc` represents a 64-bit floating-point number.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The third and fourth statements (`> first` and `> second`) are input statements.
+    Each of these prints a question mark and waits for the user to type a number and
+    press *Enter*. Such a number, if valid, is stored in the specified variable. If
+    no number or an invalid number is typed before pressing *Enter*, the value `0` is
+    assigned to the variable.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The fifth statement declares the `sum` variable.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The sixth statement (`sum := first + second`) is a Pascal-style assignment.
+    It computes the sum of the `first` and `second` variables and assigns the result
+    to the `sum` variable.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The seventh and eight statements perform output. The seventh statement (`< sum`)
+    prints on the console the current value of the `sum` variable. The eighth statement
+    (`< first * second`) computes the multiplication between the current values of
+    the `first` and `second` variables, and then prints on the console the result
+    of such multiplication.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `Calc` language has two other operators—`-` (minus) and `/` (divide)— to
+    specify subtraction and division, respectively. In addition, the following code
+    shows that the operations can be combined in expressions, and so these are valid
+    assignment statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Operations are performed left to right, but multiplication and division have
+    higher precedence than addition and subtraction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In addition to variables, numeric literals are also allowed. So, you can write
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This statement assigns `22.1` to `a`, as multiplication is performed before
+    addition. To force different precedence, parentheses are allowed, as illustrated
+    in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding code snippet assigns `30.5` to `a`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the preceding code snippet, there are no characters that separate a statement
+    from the next one, in addition to the newline characters. Actually, the `Calc`
+    language has no symbols used to separate statements, and also, it does not need
+    them. So, the first program should be equivalent to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code snippet, there is no ambiguity because the `@` character
+    marks the start of a declaration, the `>` character marks the start of an input
+    operation, the `<` character marks the start of an output operation, and a variable
+    in a location where the current statement does not allow a variable marks the
+    start of an assignment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To understand this syntax, some grammatical terms must be explained, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The whole text is a **program**.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Any program is a sequence of **statements**. In the first example program, there
+    is exactly one statement for each line.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In some statements, there can be an arithmetic formula that can be evaluated,
+    such as `a * 3 + 2`. This formula is an **expression**.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Any expression can contain sums or subtractions of simpler expressions. The
+    simpler expressions that contain neither sums nor subtractions are named **terms**.
+    Therefore, any expression can be a term (if it contains neither sums nor subtractions),
+    or it can be the sum of an expression and a term, or it can be the subtraction
+    of an expression and a term.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Any term can contain multiplications or divisions of simpler expressions. The
+    simpler expressions that contain neither multiplications nor divisions are named **factors**.
+    Therefore, any term can be a factor (if it contains neither multiplications nor
+    divisions), or it can be the multiplication of a term and a factor, or it can
+    be the division of a term and a factor. There are three possible kinds of factors,
+    listed here:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Names of variables, named **identifiers**
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Numerical constants, represented by sequences of digits, named **literals**
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Full expressions enclosed in parentheses, to force their precedence
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the `Calc` language, for the sake of simplicity and unlike in most programming
+    languages, digits and underscores are not allowed in identifiers. So, any identifier
+    is a non-empty sequence of letters. Or, put another way, any identifier can be
+    a letter or an identifier followed by a letter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The syntax of formal languages can be specified by a notation that is known
+    as **Backus–Naur** form. Using this notation, our `Calc` language can be specified
+    by the following rules:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The explanation for all the rules used in the preceding code snippet is described
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first rule specifies that a program is an empty string or a program followed
+    by a statement. This amounts to saying that a program is a list of zero or more
+    statements.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The second rule specifies that a statement is either a `@` character followed
+    by an identifier, a `>` character followed by an identifier, a `<` character followed
+    by an expression, or an identifier followed by the `:=` pair of characters and
+    then by an expression.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The third rule specifies that an expression is either a term or an expression
+    followed by the `+` character and a term, or an expression followed by the `-` character and
+    a term. This amounts to saying that an expression is a term followed by zero or
+    more term items, where a term-item is a `+` or a `-` operator followed by a term.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Similarly, the fourth rule specifies that a term is either a factor or a term
+    followed by the `*` character and a factor, or a term followed by the `/` character and
+    a factor. This amounts to saying that a term is a factor followed by zero or more
+    factor items, where a factor-item is a multiply or a divide operator followed
+    by a factor.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The fifth rule specifies that a factor is either an identifier or a literal,
+    or an expression enclosed in parentheses. This rule is satisfied only if the parentheses
+    are correctly paired in code.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The sixth rule specifies that an identifier is a letter or an identifier followed
+    by a letter. This amounts to saying that an identifier is a sequence of one or
+    more letters. This syntax does not specify how case-sensitiveness is handled,
+    but we will assume identifiers are case-sensitive.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'This syntax leaves undefined what is meant by the `<letter>` symbol and by
+    the `<literal>` symbol, therefore these are explained here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `<letter>` symbol means any character for which the `is_alphabetic` Rust
+    standard library function returns `true`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `<literal>` symbol means any floating-point number. In fact, as we are going
+    to use Rust code to parse it, store it, and handle it, the `Calc` definition of
+    `literal` is the same as the Rust definition of `f64` literals. For example `-4.56e300`
+    will be allowed, but `1_000` and `3f64` will not be allowed.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Another simplification has been done regarding white spaces. Spaces, tabs, and
+    newline characters are allowed in all positions of code, except inside an identifier,
+    inside a literal, and inside the `:=` symbol. They are optional, but the only
+    position where white space is required is between the ending identifier of a statement
+    and the beginning identifier of an assignment because, otherwise, the two identifiers
+    would merge into one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have defined the syntax of the `Calc` language. Such a formal
+    definition is called a **grammar**. It is a very simple grammar, but it is similar
+    to the grammar of real-world programming languages. Having a formal grammar for
+    a language is useful for building software that processes code written in such
+    a language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have seen our toy language, we are ready to process code written
+    in it. The first task is to build a syntax checker that verifies the structural
+    validity of any program in this language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding formal languages and their parsers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As we''ve seen, a typical task of system programming is processing *formal
+    languages*. Several kinds of operations are customarily performed in such formal
+    languages. The most typical ones are listed here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To check the syntax validity of a line or of a file
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To format a file according to formatting rules
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To execute a command written in a command language
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To interpret a file written in a programming language—that is, execute it immediately
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To compile a file written in a programming language—that is, translate it into
+    another programming language, such as an assembly language or a machine language
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To translate a markup file into another markup language
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To render a markup file in a browser
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'All these operations have in common the first step of the procedure—parsing. The
+    process of examining a string to extract its structure according to the grammar
+    is called **parsing**. There are at least three kinds of possible parsing techniques,
+    according to the category of the formal language we want to parse. These categories,
+    which we are going to see in this section, are: **regular languages**, **context-free
+    languages**, and **context-dependent languages**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Regular languages
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The category of the simplest languages is that of regular languages, which can
+    be defined using regular expressions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the simplest way, a regular expression is a pattern using the following
+    operators between substrings:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Concatenation** **(or sequence)**: This means that a substring must follow
+    another substring; for example, `ab` means that `b` must follow `a`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Alternation** **(or choice)**: This means that a substring can be used instead
+    of another substring; for example, `a|b` means that `a` or `b` can be used alternatively.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Kleene star** **(or repetition)**: This means that a substring can be used
+    zero or more times; for example, `a*` means that `a` can be used zero, one, two,
+    or more times.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To apply such operators, parentheses can be used. So, the following is a regular
+    expression:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*a(bcd|(ef)*)g*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This means that a valid string must begin with an *a*, followed by two possible
+    substrings— one is the string *bcd* and the other is an empty string or the string *ef*,
+    or any multiple repetitions of the string *ef,* and then, there must be *g*. The
+    following are some strings belonging to such regular languages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*abcdg*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*ag*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*aefg*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*aefefg*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*aefefefg*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*aefefefefg*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An advantage of regular languages is that their parsing requires an amount of
+    memory that depends only on the grammar and does not depend on the text being
+    parsed; so, typically, they require little memory even to parse huge texts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The regex crate is the most popular way to parse regular languages using regular
+    expressions. If you have regular languages to parse, then it is recommended to
+    use such a library. For example, detecting a valid identifier or a valid floating-point
+    number is a regular language parser's job.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Context-free languages
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Since programming languages are not simply regular languages, regular expressions
+    cannot be used to parse them. A typical language feature that does not belong
+    to regular languages is the use of parentheses. Most programming languages allow
+    the `((5))` string but not the `((5)` string because any open parenthesis must
+    be matched by a closing parenthesis. Such a rule cannot be expressed by a regular
+    expression.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A more general (and so more powerful) category of languages is that of context-free
+    languages. These languages are defined by grammar, as with the one seen in the
+    preceding section on the `Calc` language, including the fact that some elements
+    must be matched (such as parentheses, brackets, braces, and quotes).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Differing from regular languages, context-free languages require a variable
+    amount of memory depending on the parsed text. Every time an open parenthesis
+    is encountered, it must be stored somewhere to match it with the corresponding
+    closed parentheses. Although such memory usage is usually quite small and it is
+    accessed in a **Last-In-First-Out** (**LIFO**) fashion (as it would be in a stack
+    data structure), it is quite efficient because no heap allocation is required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even context-free languages are enough for real-world usage, though, because
+    real-world languages need to be context-dependent, as explained in the following
+    section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Context-dependent languages
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Unfortunately, even CFGs are not powerful enough to represent real-world programming
+    languages. The problem lies in the usage of identifiers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In many programming languages, before using a variable, you must declare it.
+    In any location of the code, only the variables defined up to that point can be
+    used. Such a set of available identifiers is taken as the context in which the
+    next statement is parsed. In many programming languages, such a context contains
+    not only the name of the variable but also its type, and the fact that it surely
+    has already received a value or it may be still uninitialized.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To capture such constraints, context-dependent languages can be defined, though
+    such formalism is quite unwieldy and the resulting grammar is inefficient to parse.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Therefore, the usual way to parse a programming language text is to split parsing
+    into several conceptual passes, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Pass 1**: Use regular expressions where you can—that is, to parse identifiers,
+    literals, operators, and separators. This pass generates a stream of *tokens*,
+    where each token represents one of the parsed items. So, for example, any identifier
+    is a different token, while white space and comments are skipped. This pass is
+    usually named **lexical analysis** or **lexing**.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Pass 2**: Use a context-free parser where you can—that is, to apply the grammar
+    rules to the stream of tokens. This pass creates a tree-shaped structure representing
+    the program. This structure is named a **syntax tree**. The tokens are stored
+    as the leaves (that is, terminal nodes) of this tree. This tree can still contain
+    context-dependent errors, such as the usage of an undeclared identifier. This
+    pass is usually named **syntax analysis**.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Pass 3**: Process the syntax tree to associate any variable use with the
+    declaration of such a variable, and possibly check its type. This pass creates
+    a new data structure, named **symbol table**, that describes all the identifiers
+    found in the syntax tree, and it decorates the syntax tree with references to
+    such a symbol table. This pass is usually named **semantic analysis** because
+    it usually also regards type checking.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'When we have a decorated syntax tree and its relative symbol table, the parsing
+    operation is completed. Now, the developer can perform the following operations with
+    such data structures:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Get the syntax errors, in case the code is invalid
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Get suggestions about how to improve the code
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Get some metrics about the code
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interpret the code (in case the language is a programming language)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Translate the code into another language
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In this chapter, the following operations will be performed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The lexical analysis pass and the syntax analysis pass will be grouped in a
+    single pass that will process source code and will generate a syntax tree (in
+    the `calc_parser` project).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The semantic analysis pass will use the syntax tree generated by the parser
+    to create a symbol table and a decorated syntax tree (in the `calc_analyser` project).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The symbol table and the decorated syntax tree will be used to execute the program
+    written in the `Calc` language (in the `calc_interpreter` project).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The symbol table and the decorated syntax tree will also be used to translate
+    the program into the Rust language (in the `calc_complier` project).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In this section, we have seen a useful classification of programming languages.
+    Even if every programming language belongs to the context-dependent category,
+    the other categories are still useful because interpreters and compilers use regular
+    grammars and CFGs as a part of their operation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But before seeing a complete project, let's have a look at the techniques used
+    to build a parser, and in particular, the technique used by the Nom library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Nom to build parsers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before starting to write a parser for the `Calc` language, let's have a look
+    at the most popular parsing techniques used for building both interpreters and
+    compilers. This is needed to understand the Nom library, which uses one of these
+    techniques.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Learning about compiler-compilers and parser combinators
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To obtain an extremely fast and flexible parser, you need to build it from
+    scratch. But for decades, an easier approach was used to build parsers by using
+    tools named **compiler-compilers** or **compiler generators**: programs that generate
+    compilers. These programs get input as a decorated specification of the syntax
+    and generate the source code of a parser for such a syntax. These generated source
+    code must then be compiled, together with other source files, to get an executable
+    compiler.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This traditional approach is now somewhat out of fashion and another one has
+    emerged, named **parser combinator**. A parser combinator is a set of functions
+    that allow several parsers to be combined to obtain another parser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have seen that any `Calc` program is just a sequence of `Calc` statements.
+    If we had a parser of single `Calc` statements and the ability to apply such a
+    parser in sequence, then we could parse any `Calc` program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We should know that any `Calc` statement is either a `Calc` declaration, a `Calc`
+    assignment, a `Calc` input operation, or a `Calc` output operation. If we had
+    a parser for each of such statements and the ability to apply any such parsers
+    alternatively, we could parse any `Calc` statement. We can go on until we get
+    to single characters (or to tokens if we use the output of a lexical analyzer).
+    So, a parser of a program can be obtained by combining the parsers of its component
+    items.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But what is a parser written in Rust? It is a function that gets a string of
+    source code as input and returns a result. The result can be `Err` (if that string
+    couldn't be parsed) or `Ok` (containing a data structure representing the parsed
+    item).
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, while normal functions receive data as input and return data as output, our
+    parser combinators receive one or more parsers that have functions as input and
+    return a parser as output. Functions that receive functions as input and return
+    a function as output are named **second-order** **functions** because they process
+    functions instead of data. In computer science, the concept of second-order functions
+    originates from functional languages, and the concept of parser combinators also
+    comes from such languages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Rust, second-order functions were not feasible before the 2018 edition, because
+    Rust functions could not return functions without allocating a closure. Therefore,
+    the Nom library (up to version 4) used macros instead of functions as combinators
+    to maintain top performance. When Rust introduced the `impl Trait` feature (included
+    in the 2018 edition), an efficient implementation of parser combinators using
+    functions instead of macros became possible. So, version 5 of Nom is entirely
+    based on functions, keeping macros only for backward compatibility.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will see the basic features of the Nom library, which
+    we are going to use to build both an interpreter and a compiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Learning the basics of Nom
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The Nom crate is essentially a collection of functions. Most of them are parser
+    combinators—that is, they get one or more parsers as arguments and return a parser
+    as a return value. You can think of them as machines that get one or more parsers
+    as input and emit a combined parser as output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some of the Nom function are parsers—that is, they get a sequence of `char`
+    values as an argument and return an error if the parse fails, or a data structure
+    representing the parsed text, in the case of success.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we''ll see the most basic features of Nom, using very simple programs.
+    In particular, we''ll see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `char` parser: To parse single fixed characters'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `alt` parser combinator: To accept alternative parsers'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `tuple` parser combinator: To accept a fixed sequence of parsers'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `tag` parser: To parse fixed strings of a character'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `map` parser combinator: To transform the output value of parsers'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `Result::map` function: To apply more complex transformations on the output
+    of a parser'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `preceded`, `terminated`, and `delimited` parser combinators: To accept
+    a fixed sequence of parsers and discard some of them from the output'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `take` parser: To accept a defined number of characters'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The `many1` parser combinator: To accept a sequence of one or more repetitions
+    of a parser'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Parsing an alternative of characters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As an example of a parser, let's see how to parse an alternative of fixed characters. We
+    want to parse an extremely simple language, a language that has only three words—*a*, *b*,
+    and *c*. Such a parser would succeed only if its input is the string *a* or the
+    string *b* or the string *c*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the parsing is successful, we want a couple of things as a result—the remaining
+    input (that is, after the valid part has been processed) and a representation
+    of the processed text. As our words are made up of single characters, we want
+    (as a representation of that) a value of the `char` type, containing just the
+    parsed character.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following snippet is our first code using Nom:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you compile this program, including the dependency of the Nom crate, and
+    you run it, it should print the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: We named our parser `parse_abc`. It gets a string slice as input and returns
+    a value of the `IResult<&str, char>` type. Such a return value type is a kind
+    of `Result`. The `Ok` case of such a `Result` type is a tuple of two values—a
+    string slice containing the remaining input, and a character—that is, the information
+    we got by parsing the text. The `Err` case of such a `Result` type is defined
+    internally by the Nom crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see in the output, the `parse_abc("a")` expression returns `Ok(("",
+    'a'))`. This means that when the `a` string is parsed, the parsing is successful;
+    no input is left to process, and the character extracted is `'a'`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead, the `parse_abc("x")` expression returns `Err(Error(("x", Char)))`.
+    This means that when the `x` string is parsed, the parsing fails; the `x` string
+    remains to process, and the kind of error is `Char`, meaning that a `Char` item
+    was expected. Notice that `Char` is a type defined by Nom.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lastly, the `parse_abc("bjk")` expression returns `Ok(("jk", 'b'))`. This means
+    that when the string `bjk` is parsed, the parsing is successful; the `jk` input
+    remains to be processed, and the character extracted is `'b'`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And now, let's see how our parser is implemented. The signature of all parsers
+    built for Nom must have a similar signature, and their body must be a function
+    call that has the function argument as its argument (in this case, `(input)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The interesting part is `alt((char('a'), char('b'), char('c')))`. This expression
+    means that we want to build a parser by combining the three parsers, `char('a')`, `char('b')`,
+    and `char('c')`. The `char` function (not to be confused with the Rust type having
+    the same name) is a built-in Nom parser that recognizes the specified character
+    and returns a value of the `char` type containing that character. The `alt` function
+    (short for alternative) is a parser combinator. It has just one argument, which
+    is a tuple composed of several parsers. The `alt` parser chooses one of the specified
+    parsers that match the input.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's your responsibility to guarantee that there is at most one parser accepting
+    the input, for any given input. Otherwise, the grammar is ambiguous. Here is an
+    example of an ambiguous parser—`alt((char('a'), char('b'), char('a')))`. The `char('a')`
+    sub-parser is repeated, but this will not be spotted by the Rust compiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will see how to parse a sequence of characters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Parsing a sequence of characters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Now, let''s see another parser, given as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After running it, it should print the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: This time, the letters `a`, `b`, and `c` must be in this exact sequence, and
+    a tuple containing these characters is returned by the `parse_abc_sequence` function.
+    For the `abc` input, there is no remaining input, and the `('a', 'b', 'c')` tuple
+    is returned. The `bca` input is not accepted, as it starts with a `b` character
+    instead of `a`. The `abcjk` input is accepted, as in the first case, but this
+    time, there is a remaining input.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The combination of parsers is `tuple((char('a'), char('b'), char('c')))`. This
+    is similar to the preceding program, but by using the `tuple` parser combinator,
+    a parser is obtained that requires that all the specified parsers are satisfied,
+    in their order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we'll see how to parse a fixed string of text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Parsing a fixed string
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In the `parse_abc_sequence` function discussed previously, to recognize the `abc` sequence,
+    the `char` parser had to be specified three times, and the result was a tuple
+    of `char` values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For longer strings (such as the keywords of a language), this is inconvenient,
+    as they are more easily seen as strings than as sequences of characters. The Nom
+    library also contains a parser for fixed strings, named `tag`. The preceding program
+    can be rewritten using this built-in parser, shown in the following code block:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It will print the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Instead of the `tuple((char('a'), char('b'), char('c')))` expression, there
+    is now a simple call to `tag("abc")`, and the parser returns a string slice, instead
+    of a tuple of `char` values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we'll see how to transform the value resulting from a parser
+    to another value, possibly of another type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mapping parsed items to other objects
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: So far, we get as a result just what we found in the input. But often, we want
+    to transform the parsed input before returning its result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Say that we want to parse alternatively three letters (`a`, `b`, or `c`) but
+    we want, as a result of the parsing, the number `5` for the letter `a`, the number
+    `16` for the letter `b`, and the number `8` for the letter `c`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, we want a parser that parses a letter, but, instead of returning that letter,
+    it returns a number, if the parsing is successful. We also want to map the character `a`
+    to the number `5`, the character `b` to the number `16`, and the character `c`
+    to the number `8`. The original result type was `char`, while the mapped result
+    type is `u8`. The following code block shows the program that performs such a
+    transformation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When it runs, it should print the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: For the `a` input, `5` is extracted. For the `x` input, a parse error is obtained.
+    For the `bjk` input, `16` is extracted, and the `jk` string remains as input to
+    be parsed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The implementation, for each one of the three characters, contains something
+    such as `map(char('a'), |_| 5)`. The `map` function is another parser combinator
+    that takes a parser and a closure. If the parser matches, then it generates a
+    value. The closure is invoked on such a value, and it returns a transformed value.
+    In this case, the argument of the closure was not needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An alternative equivalent implementation of the same parser is given as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: It defines the `transform_letter` inner function that applies the transformation
+    and passes just that function as the second argument of the `map` combinator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we'll see how to manipulate the output of a parser in a
+    more complex way, as we will be omitting or swapping some fields of the resulting
+    tuple.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating custom parsing results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: So far, the results of parsing have been determined by the parsers and combinators
+    used in it—if a parser uses the `tuple` combinator with three items, the result
+    is a tuple of three items. This is seldom what is desired. For example, we want
+    to either omit some items of the resulting tuple or add a fixed item, or to swap
+    the items.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Assume that we want to parse the `abc` string, but in the result we want to
+    omit `b`, keeping only `ac`. For that purpose, we must postprocess the result
+    of the parsing in the following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It will print the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Of course, the result of our parser now contains just a pair—`(char, char)`.
+    The postprocessing is seen in the second line of the body. It uses a `map` function
+    that is not the one seen in the preceding example; it belongs to the `Result`
+    type. Such a method receives a closure that gets the `Ok` variant of the result
+    and returns a new `Ok` variant with the appropriate types. If the type had been
+    made explicit, then that code would have been as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code, the call to `tuple` returns a result whose `Ok` variant
+    has the `(&str, (char, char, char))` type. The first element is the remaining
+    input, assigned to the `rest` variable, and the second element is the sequence
+    of parsed `char` values, assigned to the `result` variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, we must construct a pair with two items—that is, what we want as the *remaining
+    input*, and the pair of characters that we want as a *result*. As a remaining
+    input, we specify the same pair provided by `tuple`, while as a result, we specify `(result.0,
+    result.2)`—that is, the first and third parsed characters, which will be `'a'`
+    and `'c'`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Some of the following cases are quite typical:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A sequence of two parsers, needing to keep the result of the first parser and
+    discard the result of the second parser.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A sequence of two parsers, needing to discard the result of the first parser
+    and keep the result of the second parser.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A sequence of three parsers, needing to keep the result of the second parser
+    and discard the results of the first and third parsers. This is typical of parenthesized
+    expressions or quoted text.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For these previous cases, the mapping technique can be applied too, but Nom
+    contains some specific combinators, detailed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`preceded(a, b)`: This keeps only the result of `b`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`terminated(a, b)`: This keeps only the result of `a`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`delimited(a, b, c)`: This keeps only the result of `b`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the next section, we'll see how to parse a specified number of characters
+    and return the parsed characters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Parsing a variable text
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The parsing we have done so far is of very limited usefulness, as we just checked
+    that the input respected a language, without the possibility of accepting arbitrary
+    text or numbers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Say we want to parse a text that begins with an `n` character followed by two
+    other arbitrary characters, and we want to process only the latter two characters.
+    This can be done with the `take` built-in parser, shown in the following code
+    snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It will print the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first invocation is a successful one. The `n` character is skipped by `char('n')`,
+    and two other characters are read by `take(2usize)`. This parser reads as many
+    characters as specified by its argument (that must be an unsigned number), and
+    it returns this sequence of bytes as a string slice. To read a single character,
+    just call `take(1usize)`, which will return a string slice anyway.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second invocation fails because the starting `n` is missing. The third invocation
+    fails because after the starting `n`, there are fewer than two characters, and
+    so the `Eof` (short for **End-Of-File**) error is generated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will see how to parse a sequence of one or more patterns
+    by applying a given parser repeatedly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Repeating a parser
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: It is quite common to need to parse a sequence of repeated expressions, each
+    recognized by a parser. So, that parser must be applied several times, until it
+    fails. Such repetition is done by a couple of combinators—namely, `many0` and
+    `many1`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The former will succeed even if no occurrence of the expression is parsed—that
+    is, it is a zero-or-more combinator. The latter will succeed only if at least
+    one occurrence of the expression is parsed—that is, it is a one-or-more combinator. Let''s
+    see how to recognize a sequence of one or more `abc` strings, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It will print the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first invocation fails because the empty string does not contain any occurrences
+    of `abc`. If the `many0` combinator had been used, this invocation would have
+    succeeded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The two other invocations succeed anyway and return a `Vec` of the occurrences
+    found.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this section, we have presented the most popular parsing techniques: compiler-compilers
+    and parser combinators. They are useful both to build interpreters and compilers.
+    Then, we introduced the Nom parser combinator library that will be used in the
+    rest of this chapter, and also in part of the next chapter.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we have seen enough of Nom to begin to see the first project of this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The calc_parser project
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This project is a parser of the `Calc` language. It is a program that can examine
+    a string and detect if it respects the syntax of the `Calc` language, using a
+    context-free parser, and, in such cases, extracts the logical structure of such
+    a string, according to the grammar of the language. Such a structure is often
+    named a **syntax tree **as it has the shape of a tree, and it represents the syntax
+    of the parsed text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A syntax tree is an internal data structure, and so usually it is not to be
+    seen by a user, nor to be exported. For debugging purposes, though, this program
+    will pretty-print this data structure to the console.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The program built by this project expects a `Calc` language file as a command-line
+    argument. In the `data` folder of the project, there are two example programs—namely, `sum.calc`
+    and `bad_sum.calc`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first one is `sum.calc`, given as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: It declares the two variables `a` and `b`, then it asks the user to enter values
+    for them, and it prints the sum of their value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The other program, `bad_sum.calc`, is identical to the former, except for the
+    second line—that is, `@d`—representing a typo because later on, the undeclared
+    `b` variable is used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To run the project on the first example `Calc` program, go into the `calc_parser` folder, and
+    type the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Such a command should print the following text on the console:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code, first, there is a declaration of the `"a"` identifier,
+    then of the `"b"` identifier, then an input operation on a variable named `"a"`,
+    then one on a variable named `"b"`, and then there is an output operation with
+    a lot of parentheses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first open parenthesis under `OutputOperation` represents the beginning
+    of the expression item that, according to the grammar presented previously, must
+    appear in any output operation statement. Such an expression contains two items—a
+    term and a list of operator-term pairs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first term contains two items—a factor and a list of operator-factor pairs.
+    The factor is the `"a"` identifier, and the list of operator-factor pairs is empty.
+    Then, let's pass this to the list of operator-term pairs. It contains just one
+    item, in which the operator is `Add`, and the term is again a factor followed
+    by a list of operator-factor pairs. The factor is the `"b"` identifier, and the
+    list is empty.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the `cargo run data/bad_sum.calc` command runs, no error is detected, as
+    this program only performs a syntax analysis without checking the semantic context.
+    The output is the same, except for the sixth line—that is, `"d"` instead of `"b"`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let's examine the source code of the Rust program. The only external crate
+    is **Nom**, a library used just for the lexical and syntax analysis passes (and
+    therefore used by all the projects of this chapter, because all of them need parsing).
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are two source files—`main.rs` and `parser.rs`. Let's look at the `main.rs`
+    source file first.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the main.rs source file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The `main.rs` source file contains just the `main` function and the `process_file`
+    function. The `main` function just checks if the command line contains an argument
+    and passes it to the `process_file` function, together with the path of the executable
+    Rust program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `process_file` function checks that the command-line argument ends with
+    `.calc`—that is, the only expected file type, then it reads the contents of that
+    file into the `source_code` string and parses that string by calling `parser::parse_program(&source_code)`,
+    contained in the `parser.rs` source file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Such a file is, of course, a parser for the whole program, and so it returns
+    a `Result` value. The `Ok` variant of such a return value is a pair composed of
+    the remaining code and the syntax tree. The syntax tree is then pretty-printed
+    by the statement given as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: When the small `sum.calc` file, having only five lines and 17 characters, is
+    processed, this single `println!` statement emits the long output shown before,
+    having 35 lines and 604 bytes. Of course, the output is longer for longer programs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's look at the `parser.rs` source file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Learning about the parser.rs source file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The `parser.rs` source file contains a parser function for each syntax element
+    of the grammar of the language. These functions are detailed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Function** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_program` | This parses a whole `Calc` program. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_declaration` | This parses a `Calc` declaration statement, such as `@total`.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_input_statement` | This parses a `Calc` input statement, such as `>addend`.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_output_statement` | This parses a `Calc` output statement, such as  `<total`.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_assignment` | This parses a `Calc` assignment statement, such as `total
+    := addend * 2`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_expr` | This parses a `Calc` expression, such as  `addend * 2 + val
+    / (incr + 1)`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_term` | This parses a `Calc` term, such as `val / (incr + 1)`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_factor` | This parses a `Calc` factor, such as `incr`, or `4.56e12`,
+    or `(incr + 1)`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_subexpr` | This parses a `Calc` parenthesized expression, such as `(incr
+    + 1)`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `parse_identifier` | This parses a `Calc` identifier, such as `addend`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `skip_spaces` | This parses a sequence of zero or more white spaces. |'
+  prefs: []
+  type: TYPE_TB
+- en: With respect to the grammar previously declared, some explanation is due—the
+    `parse_subexpr` parser has the task to parse the  `( <expr> )` sequence, discarding
+    the parentheses and parsing the `<expr>` initial expression using `parse_expr`.
+    The `skip_spaces` function is a parser whose task is to parse zero or more white
+    spaces (spaces, tabs, newline characters), with the purpose of ignoring them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the other preceding functions, in the case of success, return a data structure
+    representing the parsed code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is no parser for literal numbers, as the built-in `double` parser will
+    be used to parse floating-point numbers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the types needed by the parser
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In this file, in addition to the parsers, several types are defined to represent
+    the structure of the parsed program. The most important type is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding code snippet just says that a parsed program is a vector of parsed
+    statements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice the lifetime specification. To keep the best performance, memory allocation
+    is minimized. Of course, vectors are allocated, but the parsed string is not allocated;
+    they are string slices referencing the input string. Therefore, the syntax tree
+    is dependent on the input string, and its lifetime must be shorter than that of
+    the input string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The preceding declaration uses the `ParsedStatement` type, which is declared
+    in the following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding code snippet says that a parsed statement can be one of the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A declaration encapsulating the name of the variable that is being declared
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An input statement encapsulating the name of the variable that is going to receive
+    an input value
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An output operation encapsulating a parsed expression whose value is going to
+    be printed
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An assignment encapsulating the name of the variable that is going to receive
+    a calculated value and a parsed expression, whose value is going to be assigned
+    to the variable
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'This declaration uses the `ParsedExpr` type, which is declared as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code snippet, a parsed expression is a pair composed of a
+    parsed term and zero or more pairs, with each pair composed of an expression operator
+    and a parsed term.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An expression operator is defined as `enum ExprOperator { Add, Subtract }`,
+    while a parsed term is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that a parsed term is a pair composed of a parsed factor and zero
+    or more pairs, with each pair composed of a term operator and a parsed factor.
+    A term operator is defined as `enum TermOperator { Multiply, Divide }`, while
+    a parsed factor is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: This declaration says that a parsed factor can be a literal encapsulating a
+    number, or an identifier encapsulating the name of that variable, or a subexpression
+    encapsulating a parsed expression.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice the use of `Box`. This is required because any parsed expression contains
+    a parsed term that contains a parsed factor of an `enum` capable of containing
+    a parsed expression. And so, we have an endless recursion of containment. If we
+    use a `Box`, we allocate memory out of the main structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we have seen all the definitions of the types that will be used by the parser
+    code. Now, let's see the code, in a top-down fashion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Looking at the parser code
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We can now see the code used to parse a whole program. The following code snippet
+    shows the entry point of the parser:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that its result type is `ParsedProgram`, which is a vector of parsed
+    statements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The body uses the `many0` parser combinator to accept zero or more statements
+    (an empty program is considered valid). Actually, to parse a statement, the `preceded`
+    combinator is used, to combine two parsers and discard the output of the first
+    one. Its first argument is the `skip_spaces` parser, and so it simply skips possible
+    spaces between statements. The second argument is the `alt` combinator, to accept
+    alternatively one of the four possible statements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `many0` combinator generates a vector of objects, with such objects generated
+    by the argument of the combinator. Such arguments generate parsed statements,
+    and so we have the needed vector of parsed statements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, to summarize, this function accepts zero or more statements, possibly separated
+    by white spaces. The accepted statements can be declarations, input statements,
+    output statements, or assignments. The value returned by the function in the case
+    of success is a vector whose elements are representations of the parsed statements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The parser of `Calc` declarations is given as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code snippet, a declaration must be a sequence of the `@`
+    character, optional spaces, and an identifier; so, the `tuple` combinator is used
+    to chain such parsers. However, we are not interested in that initial character
+    nor in those white spaces. We want just the text of the identifier, encapsulated
+    in `ParsedStatement`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Therefore, after applying the `tuple`, the result is mapped to a `Declaration`
+    object whose argument is the third item generated by the `tuple`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following code snippet shows the parser of a `Calc` input statement:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: The parser of a `Calc` input statement is quite similar to the preceding parser.
+    It just looks for the `>` character and returns an `InputOperation` variant that
+    encapsulates the string returned by `parse_identifier`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following code snippet shows the parser of a `Calc` output statement:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Also, the parser from the preceding code is similar to the two preceding parsers.
+    It just looks for the `<` character, parses an expression instead of an identifier,
+    and returns an `OutputOperation` that encapsulates the parsed expression returned
+    by `parse_expr`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The last kind of `Calc` statement is an assignment. Its parser is shown in
+    the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is somewhat different from the preceding statement's parsers. It chains
+    five parsers—for an identifier, some possible spaces, the `:=` string, some possible
+    spaces, and an expression. The result is an `Assignment` variant that encapsulates
+    the first and the last parsed items of the tuple—that is, the identifier string
+    and the parsed expression.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have encountered the use of the expression parser, which is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code, to parse an expression, a term must first be parsed
+    (`parse_term`), and then zero or more (`many0`) pairs (`tuple`) of an operator
+    and a term (`parse_term`). The operator can be preceded by white spaces (`skip_spaces`)
+    that must be discarded (`preceded`), and it can be alternatively (`alt`) a plus
+    character (`char('+'`) or a minus character (`char('-'`). But we want to replace
+    (`map`) such characters with the `ExprOperator` values. The resulting object already
+    has the expected type, and so no other `map` transformation is needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The parser of a term is similar to the parser of an expression. Here it is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The only differences between `parse_expr` and `parse_term` are the following
+    ones:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where `parse_expr` calls `parse_term`, `parse_term` calls `parse_factor`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Where `parse_expr` maps the `'+'` character to the `ExprOperator::Add` value,
+    and the `'-'` character to the `ExprOperator::Subtract` value, `parse_term` maps
+    the `'*'` character to the `TermOperator::Multiply` value, and the `'/'` character
+    to the `TermOperator::Divide` value.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Where `parse_expr` has a `ParsedExpr` type in the return value type, `parse_term`
+    has a `ParsedTerm` type.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The parser of a factor again follows the relative grammar rule, and the definition
+    of its return type, `ParsedFactor`, as illustrated in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: This parser discards possible initial spaces and then parses alternatively an
+    identifier, a number, or a subexpression. The parser of the number is `double`,
+    a Nom built-in function that parses numbers according to the syntax of Rust `f64`
+    literals.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the returned types of these parses are wrong, so, the `map` combinator is
+    used to generate their return value. For identifiers, it is enough to cite the
+    `Identifier` variant that will be constructed automatically using as an argument
+    the value returned by the `parse_identifier` function. An equivalent and more
+    verbose code would be `map(parse_identifier, |id| ParsedFactor::Identifier(id))`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Similarly, literals are converted from the `f64` type to the `ParsedFactor::Literal(f64)`
+    type, and subexpressions are boxed and encapsulated in a `SubExpression` variant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The parse of the subexpression must just match and discard spaces and parentheses,
+    shown in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The inner `parse_expr` parser is the only one that passes its output to the
+    result. To parse an identifier, a built-in parser is used, shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `alpha1` parser returns a string of one or more letters. Digits and other
+    characters are not allowed. Usually, this would not be named *parser*, but lexical
+    analyzer, or lexer, or scanner, or tokenizer, but Nom makes no distinction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'And lastly, the small parser (or lexer) to process spaces is shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: It uses a combinator we have not yet seen—`take_while`. It receives as argument
+    a closure returning a Boolean (that is, predicate). Such a closure is invoked
+    on any input character. If the closure returns `true`, the parser goes on or otherwise
+    stops. So, it returns the maximum sequence of input characters for which the predicate
+    value is *true*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our case, the predicate checks whether the character is contained in a slice
+    of four characters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we have seen all our parsers for the `Calc` language. Of course, real-world
+    parsers are much more complex, but the concepts are the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have seen how the Nom library can be used to parse a program
+    written in the `Calc` language, using a CFG. This is preliminary to applying a
+    **context-sensitive grammar** (**CSG**), and then an interpreter or a compiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice that this program parser considers any sequence of characters to be a
+    valid identifier, without checking whether a variable is defined before being
+    used, or whether a variable is not defined several times. For such checks, further
+    processing must be performed. This will be seen in the next project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The calc_analyzer project
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The preceding project followed a CFG to construct a parser. This is very nice,
+    but there is a big problem: the `Calc` language is not context-free. In fact,
+    there are two problems, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Any use of a variable in input statements, output statements, and assignments
+    must be preceded by a declaration of that variable.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Any variable must not be declared more than once.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Such requirements cannot be expressed in a context-free language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition, `Calc` has just one data type—that is, floating-point numbers—but
+    consider if it also had a string type. You can add subtract two numbers, but you
+    cannot subtract two strings. If a variable named `a` is declared of type `number`
+    and a variable named `b` is declared of type `string`, you cannot assign `a` to
+    `b`, or vice versa.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In general, the operations allowed on a variable depend on the type used to
+    declare that variable. And also, this constraint cannot be expressed in a CFG.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of defining a formal **context-dependent grammar** (**CDG**) that would
+    be hard to specify and to parse, the usual path is to define such rules, called *semantic*
+    rules, in an informal way, and then to postprocess the syntax tree to check the
+    validity of such rules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, we will call the module that performs such semantic checks `analyzer`
+    (using a semantic checker that verifies some constraints on variables, such as
+    the fact that they must be defined before being used, and the fact that variables
+    cannot be defined more than once), and `calc_analyzer` is the project that adds
+    the module to the parser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will see the architecture of the `analyzer` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Checking the variables of the parsed program
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The analyzer starts where the parser finished—with a syntax tree containing
+    strings of identifiers, values of literals, and operators. So, it no longer needs
+    the source code. To accomplish its task, it visits such a tree and, every time
+    it encounters a variable declaration, it must ensure that it has not been declared
+    already, while every time it encounters a variable use, it must ensure it has
+    already been declared.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To perform such tasks without wandering around the syntax tree, another data
+    structure is needed. Such a data structure is a collection of the variables already
+    declared so far, while the syntax tree is visited. When a variable declaration
+    is encountered, the analyzer looks in such a collection for a preceding declaration
+    of the same variable; if it is found, it is a double-declaration error; otherwise,
+    an entry is added to the collection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, when a variable use is encountered, the analyzer looks in such a collection
+    for a preceding declaration of the same variable, though this time, if it is not
+    found, it is a missing-declaration error. For our simple language, such a collection
+    contains only variables, but in more complex languages it will contain any kind
+    of identifiers—constants, functions, namespaces, and so on. An alternative name
+    for the identifier is a **symbol**; so, usually, this collection is named **symbol
+    table**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To perform variable checking of a `Calc` program, our symbol table just needs
+    to store the names of the variables, although we want our analyzer to perform
+    some other tasks, which will be useful if we want to build an interpreter. An
+    interpreter, when it is running a program, must store the *values* of the identifiers
+    somewhere, not only their name, and as we already have a collection of variables
+    storing the name of each variable, we can reserve space in the entry of a variable
+    for the value of each variable. This will be useful when we build an interpreter
+    for `Calc`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But that is more than what we can do in the analyzer, in preparation of an interpreter.
+    The interpreter must scan a kind of syntax tree to execute the statements, and
+    when it encounters a variable it must look for its value. The syntax tree generated
+    by the parser contains the identifiers of the variables, not their values, so
+    the interpreter, every time it finds a variable, should search the symbol table
+    for that string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But we want a fast interpreter, and string lookup is not so fast as using a
+    pointer or an index into an array. So, to prepare for fast interpretation, while
+    the analyzer visits the syntax tree, it replaces every identifier with an index
+    of its position in the symbol table. Well, a string cannot be replaced by a number
+    in Rust, so one possible technique would be to reserve an index field in the syntax
+    tree, and fill that index when the variable is found in the symbol table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, another technique has been chosen. The analyzer, while visiting the syntax
+    tree, constructs a parallel analyzed tree, very similar in structure, but having
+    indexes into the symbol table instead of identifiers. Such a tree, together with
+    the symbol table that reserves space for the values of the variables, will be
+    optimal for interpreting the program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, first of all, let''s see what is done by this project. Open the `calc_analyzer`
+    folder and type the following: `cargo run data/sum.calc`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following output should appear on the console:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding code program, as with the one before that, does not have an output
+    for the user. It parses the source code into a syntax tree, and then analyzes
+    that syntax tree, constructing a symbol table and an analyzed program. The output
+    is just the pretty-print of such data structures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first structure dumped is the symbol table. It has two entries—the `a` variable,
+    with `0.0` as its initial value, and the `b` variable, with `0.0` as its initial
+    value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, there is the analyzed program that is very similar to the parsed program
+    printed by the previous project. The only differences are that all the occurrences
+    of `"a"` are replaced by `0`, and all the occurrences of `"b"` are replaced by
+    `1`. These numbers are the positions of such variables inside the symbol table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The project extends the preceding project. The `parser.rs` source file is identical,
+    and two other files are added—`symbol_table.rs` and `analyzer.rs`. But let's start
+    with the `main.rs` file first.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the main.rs file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This file performs all that is done by the preceding project, except the final
+    pretty-print, which is replaced by the following lines:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code snippet, the two data structures constructed by the
+    analyzer are first declared—`analyzed_program` is the syntax tree with the indexes
+    to the variables, and `variables` is the symbol table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the analysis is performed by the `analyze_program` function. If it succeeds,
+    it will return the analyzed program, and, in the end, the two structures are printed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let's examine the symbol table (`symbol_table.rs`) implementation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Looking at the symbol_table.rs file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the `symbol_table.rs` file, there is an implementation of the `SymbolTable`
+    type, which is a collection of the identifiers found in the source code. Each
+    entry of a symbol table describes a variable. Such an entry must contain at least
+    the name of the variable. In a typed language, it must also contain a representation
+    of the data type of that variable, though `Calc` doesn't need that, as it has
+    only one data type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the language supports scoping in blocks, functions, classes, or larger structures
+    (compilation units, modules, namespaces, or packages), there must be several symbol
+    tables or a symbol table that specifies such scoping, though `Calc` doesn't need
+    that, as it has only one scope.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A symbol table is useful primarily for checking identifiers and for translating
+    code into another language, although it can also be used for interpreting code.
+    When an interpreter is evaluating an expression, it needs to get the current value
+    of the variables used in such an expression. A symbol table can be used to store
+    the current value of any variable and provide such values to the interpreter.
+    So, if you want to support an interpreter, your symbol table should also reserve
+    space for the current values of the defined variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next project, we will create an interpreter, and so, to support it, here,
+    we add to any entry of our symbol table a field where the current value of the
+    variable is stored. The type of each entry of our symbol table will be `(String,
+    f64)`, where the first field is the name of the variable, and the second one is
+    the current value of the variable. This value field will be accessed when interpreting
+    a program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'How can our code access the entries of a symbol table? When analyzing the program,
+    we must search for a string, and so a hash table would offer top performance.
+    However, when interpreting the code, we can replace identifiers with indexes,
+    and so using indexes into a vector would offer top performance. Here, for simplicity,
+    a vector has been chosen, which anyway is good enough if there aren''t many variables.
+    So, our definition is given as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For the `SymbolTable` type, three methods are implemented, as shown in the
+    following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `new` method simply creates an empty symbol table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `insert_symbol` method tries to insert the specified identifier into a symbol
+    table. If there is no identifier with such a name, an entry is added for that
+    name, with zero as the default value, and the `Ok` result is the index of the
+    new entry. Otherwise, the `Error: Identifier ''{}'' declared several times.` message is
+    returned in the `Err` result.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `find_symbol` method tries to find the specified identifier in the symbol
+    table. If it is found, the `Ok` result is the index of the found entry. Otherwise, the `Error:
+    Identifier ''{}'' used before having been declared.` error message is returned
+    in the `Err` result.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let's see the analyzer source file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Glancing at the analyzer.rs file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'As discussed before, the analysis phase reads the hierarchical structure created
+    by the parsing phase and constructs another hierarchical structure, having the `AnalyzedProgram` type.
+    So, this module must declare such a `type` and all the types it needs, paralleling
+    the `ParsedProgram` type, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Any analyzed program is a sequence of analyzed statements, as illustrated in
+    the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Any analyzed statement is any one of the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A declaration referring a variable by index
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An input operation referring a variable by index
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An output operation containing an analyzed expression
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An assignment referring a variable by index and containing an analyzed expression
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Any analyzed expression is a pair of an analyzed term and a sequence of zero
+    or more pairs of an expression operator and an analyzed term, as illustrated in
+    the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Any analyzed term is a pair of an analyzed factor and a sequence of zero or
+    more pairs of a term operator and an analyzed factor, as illustrated in the following
+    code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Any analyzed factor is a literal containing a 64-bit floating-point number,
+    or an identifier referring a variable by index, or a subexpression containing
+    a reference to a heap-allocated analyzed expression, as illustrated in the following
+    code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The entry point of the analyzer is shown in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `analyze_program` function, as with all the functions of this module, gets
+    a mutable reference to the symbol table, as they all must, directly or indirectly
+    read and write symbols. In addition, it gets a reference to a parsed program.
+    If the function is successful, it updates the symbol table and it returns an analyzed
+    program; otherwise, it may leave partially updated the symbol table and return
+    an error message.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The body simply creates an empty analyzed program and processes all the parsed
+    statements, by calling `analyze_statement`. Any parsed statement is analyzed,
+    and the resulting analyzed statement is added to the analyzed program. For any
+    failing analysis of a statement, the generated error is returned immediately as
+    an error of this function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, we need to know how to analyze statements, which is shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `analyze_statement` function matches the received parsed statements against
+    the four kinds of statements, extracting the member of the respective variants.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The identifier contained in declarations should never have been defined, and
+    so it should be absent from the symbol table. Therefore, when processing this
+    kind of statement, this identifier is inserted in the symbol table using the `let
+    handle = variables.insert_symbol(identifier)?` Rust statement. If the insertion
+    fails, the error is propagated out of this function. If the insertion succeeds,
+    the position of the symbol is stored in a local variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The identifier contained in assignments and in the input operations should have
+    already been defined, and so it should be contained in the symbol table. Therefore,
+    when processing this kind of statement, the identifiers are looked up in the symbol
+    table using the `let handle = variables.find_symbol(identifier)?` Rust statement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The expressions contained in assignments and in output operations are analyzed
+    by the `let analyzed_expr = analyze_expr(variables, expr)?` Rust statement. If
+    the analysis fails, the error is propagated out of this function. If the analysis
+    succeeds, the resulting analyzed expression is stored in a local variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For any of the four `Calc` statement kinds, if no errors have been encountered,
+    the function returns a success result containing the respective analyzed statement
+    variant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, we need to know how to analyze expressions, shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: The received parsed expression is a pair—`&parsed_expr.0` is a parsed term and
+    `&parsed_expr.1` is a vector of pairs of an expression operator and an analyzed
+    term. We want to construct an analyzed expression that has the same structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, first, the first term is analyzed. Then, an empty list of pairs of an expression
+    operator and an analyzed term is created; this is the analyzed vector. Then, for
+    each item of the parsed vector, an item is constructed and added to the analyzed
+    vector. Lastly, the pair of the first analyzed term and the vector of the other
+    analyzed terms are returned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, we need to know how to analyze terms, through the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding routine is quite similar to the one before that. The first parsed
+    factor is analyzed to get the first analyzed factor, and the other parsed factors
+    are analyzed to get the other analyzed factors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, we need to know how to analyze factors. This is shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The logic of the `analyze_factor` function is this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the parsed factor to analyze is a literal, an analyzed literal is returned,
+    containing the same value.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If it is an identifier, an analyzed identifier is returned, containing the index
+    into the symbol table where the parsed identifier is found. If it is not found,
+    an error is returned.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the parsed factor to analyze is a subexpression, a subexpression is returned,
+    containing a boxed analyzed expression, obtained by analyzing the parsed expression,
+    if successful. If it fails, an error is returned.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: So, we have completed the examination of the analyzer module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have seen how the result of the parser created in the previous
+    section can be analyzed, applying a CSG, which is needed to build an interpreter
+    or a compiler. The next project will show us how to use and execute an analyzed
+    program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The calc_interpreter project
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: At last, we have reached the project in which we can actually run our `Calc`
+    programs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To run it, enter the `calc_interpreter` folder, and type `cargo run`. After
+    compilation, the following text will appear on the console:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The first line is an introduction message, and the second one is a prompt.
+    Now, we type the following as an example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: After you press *Ent**er*, this `Calc` program is executed. The `a` variable
+    is declared, and when the input statement is executed, a question mark will appear
+    on the console. Type `5` and press *Enter*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The program goes on by declaring the `b` variable, assigning to it the value
+    of the `a + 2` expression,  and then printing `7` as the value of `b`. Then, the
+    program finishes, and the prompt reappears.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, on the screen, there will be the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The interpreter, in addition, has some specific commands to be able to run
+    `Calc` programs. If instead of a command, you type `v` (for *variables*) and then
+    *Enter*, you will see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: This command has dumped the contents of the symbol table, showing all the variables
+    declared so far, with their current value. Now, you can type other `Calc` commands,
+    using such variables with their current values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another interpreter command is `c` (for clear variables), which empties the
+    symbol table. The last one is `q` (for quit), which terminates the interpreter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And how are `Calc` commands executed? If you have an analyzed program tree,
+    and the associated symbol table containing space for the value of the variables,
+    it is quite easy. It is enough to apply semantics (that is, a behavior) to any
+    analyzed element, and the program will run by itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, this project extends the previous project. The `parser.rs` and `analyzer.rs`
+    source files are identical; some lines are added to the `symbol_table.rs` file,
+    and one other file is added—`executor.rs`. But let's start with the `main.rs` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Learning about the main.rs file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This file contains two functions in addition to the `main` functions—`run_interpreter` and
+    `input_command`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `main` function just calls `run_interpreter`, as that is the purpose of
+    an interpreter. This function has the following structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: After printing an introduction message and creating a symbol table, the function
+    enters an endless loop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first statement of the loop is a call to the `input_command` function, which
+    reads a command from the console (or from a file or a pipe, if the standard input
+    is redirected). Then, if EOF has been reached, the loop is exited, and so is the
+    whole program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Otherwise, the interpreter-specific commands are handled, and if in the input
+    text there is no such command, it is handled like a `Calc` program by parsing
+    it and then analyzing the parsed program, and then executing the analyzed program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following code block shows how interpreter commands are implemented:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: A `q` (quit) command simply breaks out from the loop. A `c` (clear) command replaces
+    the symbol table with a new one. A `v` (variables) command iterates the symbol
+    table entries, and prints the name and the current value of each of them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If the input text is not one of such one-letter commands, it is treated by
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `parser::parse_program` function, if successful, creates a parsed program
+    object. In the case of an error or in the case that some input remains to be parsed,
+    an error message is printed and the command is discarded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Otherwise, `analyzer::analyze_program` uses such a parsed program to create,
+    if successful, an analyzed program object. In the case of error, an error message
+    is printed and the command is discarded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lastly, the analyzed program is executed by the call to `executor::execute_program`.
+    Now, let's see what has changed in the `symbol_table.rs` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Glancing at the symbol_table.rs file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Three functions having the following signatures have been added to the implementation
+    of the `SymbolTable` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `get_value` function gets the value of a variable, given its index. The
+    `set_value` function sets the value of a variable, given its index and the value
+    to assign. The `iter` function returns a read-only iterator on the variables stored
+    in the symbol table. For each variable, a pair of the name and the value is returned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And next, we see the module that implements the core of the interpreter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the executor.rs file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This module does not declare types as it uses only the ones declared in the
+    other modules. The entry point is the function capable of executing whole programs,
+    shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: It receives a mutable reference to a symbol table and a reference to an analyzed
+    program, and simply calls the `execute_statement` function on any statement of
+    that program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following code block shows the last function (this is more complex):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: According to the kind of statement being used, it performs different actions. For
+    assignments, it calls the `evaluate_expr` function to get the value of the associated
+    expression and uses `set_value` to assign that value to the associated variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For declarations, nothing needs to be done, because the insertion of the variable
+    into the symbol table and its initialization has already been done by the analyzer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For input operations, a question mark is printed as a prompt, and a line is
+    read and parsed to an `f64` number. If the conversion fails, zero is used. The
+    value is then stored into the symbol table as a new value of the variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For output operations, the expression is evaluated and the resulting value
+    is printed. The following code shows how to evaluate `Calc` expressions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, the first term is evaluated by calling the `evaluate_term` function,
+    and its value is stored as a provisional result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, for every other term, the term is evaluated and the obtained value is
+    added or subtracted to the provisional result, according to the kind of expression
+    operator being used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following code block shows how to evaluate `Calc` terms:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding code block shows a function that is similar to the one before
+    it. It uses the `evaluate_factor` function to evaluate all the factors of the
+    current term, as illustrated in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: To evaluate a factor, the *kind of factor* is taken into account. The value
+    of `literal` is just the contained value. The value of `identifier` is obtained
+    for the symbol table, by calling `get_value`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The value of `SubExpression` is obtained by evaluating the expression contained
+    in it. So, we have seen all that is needed to execute a `Calc` program interactively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have seen how the result of the context-sensitive analysis
+    of a `Calc` program can be used to interpret that program. Such an interpretation
+    can be interactive, through a **read-eval-print loop** (**REPL**) or by processing
+    a file written in the `Calc` language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next project, we will see how to translate a `Calc` program into a Rust
+    program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The calc_compiler project
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Having an analyzed program (and its matching symbol table), it is easy also
+    to create a program that translates it into another language. To avoid introducing
+    a new language, the Rust language has been used here as a target language, but
+    translating to other high-level languages would be no more difficult.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To run it, go into the `calc_compiler` folder and type `cargo run data/sum.calc`.
+    After compiling the project, the program will print the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you go into the `data` subfolder, you will find the new `sum.rs` file, containing
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you like, you can compile it using the `rustc sum.rs` command, and then you
+    can run the executable generated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This file is always the same for any `Calc` program compiled, up to the line
+    containing `fn main() {`. The `input` routine is the `Calc` runtime library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The remaining part of the Rust-generated code corresponds to the `Calc` statements.
+    Notice that all variables are mutable and initialized to `0.0`, and so their type
+    is `f64`. The name of the variables begins with an underscore to prevent conflicts
+    with Rust keywords.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actually, this project also contains the interpreter seen in the preceding project.
+    If you run the project with no command-line argument, an interactive interpreter
+    starts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see the source code next. Also, this project extends the preceding project.
+    The `parser.rs`, `analyzer.rs`, and `executor.rs` source files are identical;
+    some lines are added to the `symbol_table.rs` file, and one other file is added—`compiler.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To the `symbol_table.rs` file, only one small function has been added. Its signature
+    is shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: It allows the name of an identifier to be obtained, given its index.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But let's start with the `main.rs` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Glancing at the main.rs file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The `main` function begins by examining the command-line arguments. If there
+    are no arguments, the `run_interpreter` function is called, identical to that
+    used in the `calc_interpreter` project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Instead, if there is one argument, the `process_file` function is called on
+    it. This is similar to that used in the `calc_analyzer` project. There are only
+    two differences. One is the insertion of the statement, shown in the following
+    code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This generates the path of the resulting Rust file. The other is the replacement
+    of the two ending statements, which print the result of the analysis, with the
+    following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: This performs the translation into Rust code, obtaining a multiline string,
+    and writes that string into the target file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we need to examine the `compiler` module, defined in the `compiler.rs` source
+    file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the compiler.rs file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This module does not define types, as it uses those defined in the other modules.
+    As with the parser, the analyzer, and the interpreter, it has a function for every
+    language construct, and it performs the translation by visiting the analyzed program
+    tree.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The entry point begins with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function, as with all the others in this module, gets immutable references
+    to the symbol table and to the analyzed program. It returns a `String` containing
+    Rust code. An empty string is first created, and then the required lines are appended
+    to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The final part of this function is shown in the following code block:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: For any `Calc` statement, the `translate_to_rust_statement` function is called,
+    and the Rust code returned by it is appended to the string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The body of the function that translates a `Calc` statement into Rust code
+    is shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: To translate an assignment, the name of the variable is obtained from the symbol
+    table by calling the `get_name` function, and the code corresponding to the expression
+    is obtained by calling the `translate_to_rust_expr` function. The same is done
+    for the other statements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To translate an expression, the following function is used:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: The terms are translated by calling the `translate_to_rust_term` function. The
+    additions and subtractions are translated using the `" + "` and `" - "` Rust string
+    literals.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The translation of a term is quite similar to that of an expression, but using
+    the term operators and calls to the `translate_to_rust_factor` function instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The body of this function is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: For translating a literal, it is converted to a string and `"f64"` is appended
+    to force its type. For translating an identifier, its name is taken from the symbol
+    table. For translating a subexpression, the inner expression is translated, and
+    the result is enclosed in parentheses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have seen how to build a program in Rust that reads a `Calc`
+    program and writes an equivalent Rust program. Such a resulting program can then
+    be compiled using the `rustc` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we have seen some amount of theory of programming languages
+    and the algorithms used to process them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In particular, we have seen that the syntax of programming languages can be
+    expressed using a formal grammar. There is a useful classification of formal grammars—regular
+    languages, context-free languages, and context-dependent languages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Programming languages belong to the third category, but usually, they are first
+    parsed as a regular language by a lexer. The result is parsed as a context-free
+    language by a parser and is then analyzed to keep into account the context-dependent
+    features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have seen the most popular techniques to process texts written in a formal
+    language, such as a programming language or a markup language—the compiler-compiler
+    and the parser combinator. In particular, we saw how to use the Nom crate, which
+    is a parser combinator library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We saw many built-in parsers and parser combinators of Nom, and how to use them
+    to create our own parsers, writing many Rust programs that used Nom to parse simple
+    patterns. We defined the grammar of an extremely simple programming language,
+    which we named `Calc`, and we built some tiny programs using it. We built a context-free
+    parser for `Calc` that dumped on the console the data structure resulting from
+    such a parsing (`calc_parser`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We built a context-dependent analyzer for `Calc` that dumped on the console
+    the data structure resulting from such an analysis (`calc_analyzer`). We built
+    an interpreter for `Calc`, using the parser and analyzer described in the preceding
+    projects (`calc_interpreter`). We built a compiler for `Calc` that could be used
+    to translate a `Calc` program to an equivalent Rust program (`calc_compiler`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will be seeing another use of Nom and of parsing techniques,
+    for processing binary data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: What are regular languages, context-free languages, and context-dependent languages?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the Backus-Naur form to specify the grammar of a language?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is a compiler-compiler?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is a parser combinator?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Why did Nom have to use only macros before the 2018 edition of Rust?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What do the `tuple`, `alt`, and `map` functions of the Nom library do?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What are the possible phases of an interpreter of a programming language, without
+    passing through an intermediate language?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What are the possible phases of a compiler?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the purpose of a symbol table, when analyzing the use of variables?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the purpose of a symbol table, when interpreting a program?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The Nom project can be downloaded from [https://github.com/Geal/nom](https://github.com/Geal/nom).
+    This repository also contains some examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are many textbooks about formal languages and about the software that
+    manipulates them. In particular, you may search Wikipedia for the following terms: compiler-compiler, parser
+    combinator, Backus-Naur form, syntax-directed translation.
+  prefs: []
+  type: TYPE_NORMAL

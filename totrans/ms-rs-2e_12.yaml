@@ -1,0 +1,739 @@
+- en: Network Programming in Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we'll take a look at what Rust has to offer for network programming.
+    We'll start by exploring existing networking primitives in the standard library
+    by building a simple Redis clone. This will help us get familiar with the default
+    synchronous network I/O model and its limitations. Next, we'll explain how asynchrony
+    is a better approach when dealing with network I/O on a large scale. In the process,
+    we'll get to know about the abstractions provided by the Rust ecosystem for building
+    asynchronous network applications and refactor our Redis server to make it asynchronous
+    using third-party crates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Network programming prelude
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Synchronous network I/O
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building a simple Redis server
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Asynchronous network I/O
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An introduction to `futures` and `tokio` crates
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Network programming prelude
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '"A program is like a poem: you cannot write a poem without writing it."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: – *E. W. Dijkstra*
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building a medium through which machines can communicate with each other over
+    the internet is a complicated task. There are different kinds of devices that
+    communicate over the internet, running different OS and different versions of
+    applications, and they need a set of agreed upon rules to exchange messages with
+    one another. These rules of communication are called network protocols and the
+    messages devices send to each other are referred to as network packets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the separation of concerns of various aspects, such as reliability, discoverability,
+    and encapsulation, these protocols are divided into layers with higher-layer protocols
+    stacked over the lower-layers. Each network packet is composed of information
+    from all of these layers. These days, modern operating systems already ship with
+    a network protocol stack implementation. In this implementation, each layer provides
+    support for the layers above it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the lowest layer, we have the Physical layer and the Data Link layer protocol
+    for specifying how packets are transmitted through wires across nodes on the internet
+    and how they move in and out of network cards in computers. The protocols on this
+    layer are the Ethernet and Token Ring protocols. Above that, we have the IP layer,
+    which employs the concept of unique IDs, called IP addresses, to identify nodes
+    on the internet. Above the IP layer, we have the Transport layer, which is a protocol
+    that provides point-to-point delivery between two processes on the internet. Protocols
+    such as TCP and UDP exist at this layer. Above the Transport layer, we have Application
+    layer protocols such as HTTP and FTP, both of which are used to build rich applications.
+    This allows for a higher level of communication, such as a chat application running
+    on mobile devices. The entire protocol stack works in tandem to facilitate these
+    kinds of complex interactions between applications running on computers, spread
+    across the internet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With devices connecting to each other over the internet and sharing information,
+    distributed application architectures started to proliferate. Two models emerged:
+    the decentralized model, popularly known as the peer-to-peer model, and the centralized
+    model, which is widely known as the client-server model. The later is more common
+    out of the two these days. Our focus in this chapter will be on the client-server
+    model of building network applications, especially on the Transport layer.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In major operating systems, the Transport layer of the network stack is exposed
+    to developers under a family of APIs named **Sockets**. It includes a set of interfaces,
+    which are used to set up a communication link between two processes. Sockets allow
+    you to communicate data back and forth between two processes, either locally or
+    remotely, without requiring the developer to have an understanding of the underlying
+    network protocol.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Socket API's roots lie in the **Berkley Software Distribution (BSD)**, which
+    was the first operating system to provide a networking stack implementation with
+    a socket API in 1983\. It serve as the reference implementation for networking
+    stacks in major operating systems today. In Unix-like systems, a socket follows
+    the same philosophy of *everything is a file* and exposes a file descriptor API.
+    This means that one can read and write data from a socket just like files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sockets are file descriptors (an integer) that point to a descriptor table of
+    the process that's managed by the kernel. The descriptor table contains a mapping
+    of file descriptors to **file entry** structures, which contains the actual buffer
+    for the data that's sent to the socket.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Socket API acts primarily at the TCP/IP layer. On this layer, the sockets
+    that we create are categorized on various levels:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Protocol**: Depending on the protocol, we can either have a TCP socket or
+    a UDP socket. TCP is a stateful streaming protocol that provides the ability to
+    deliver messages in a reliable fashion, whereas UDP is a stateless and unreliable
+    protocol.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Communication kind**: Depending on whether we are communicating with processes
+    on the same machine or processes on remote machines, we can either have internet
+    sockets or Unix domain sockets*.* Internet sockets are used for exchanging messages
+    between processes on remote machines. It is represented by a tuple of an IP address
+    and a port. Two processes that want to communicate remotely must use IP sockets.
+    Unix domain sockets are used for communication between processes that run on the
+    same machine. Here, instead of an IP address-port pair, it takes a filesystem
+    path. For instance, databases use Unix domain sockets to expose connection endpoints.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**I/O model**: Depending on how we read and write data to a socket, we can
+    create sockets of two kinds: blocking sockets and non-blocking sockets.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Now that we know more about sockets, let''s explore the client-server model
+    a bit more. In this model of networking, the usual flow of setting up two machines
+    to communicate with each other follows this process: the server creates a socket
+    and binds it to an IP address-port pair before specifying a protocol, which can
+    be TCP or UDP. It then starts listening for connections from clients. The client,
+    on the other hand, creates a connecting socket and connects to the given IP address
+    and port. In Unix, processes can create a socket using the `socket` system. This
+    call gives back a file descriptor that the program can use to perform read and
+    write calls to the client or to the server.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust provides us with the `net` module in the standard library. This contains
+    the aforementioned networking primitives on the Transport layer. For communicating
+    over TCP, we have the `TcpStream` and `TcpListener` types. For communicating over
+    UDP, we have the `UdpSocket` type. The `net` module also provides proper data
+    types for representing IP addresses and supports both v4 and v6 versions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building network applications that are reliable involves several considerations.
+    If you are okay with few of the packets getting dropped between message exchanges,
+    you can go with UDP sockets, but if you cannot afford to have packets dropped
+    or want to have message delivery in sequence, you must use TCP sockets. The UDP
+    protocol is fast and came much later to cater to needs where you require minimal
+    latency in the delivery of packets and can deal with a few packets being dropped.
+    For example, a video chat application uses UDP, but you aren't particularly affected
+    if a few of the frames drop from the video stream. UDPs are used in cases where
+    you are tolerant of no delivery guarantees. We'll focus our discussion on TCP
+    sockets in this chapter, as it's the most used protocol by the majority of network
+    applications that need to be reliable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another factor to consider, is how well and efficient your application is able
+    to serve clients. From a technical standpoint, this translates to choosing the
+    I/O model of sockets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I/O is an acronym for Input/Output, and in this context, it is a catch-all phrase
+    that simply denotes reading and writing bytes to sockets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choosing between blocking and non-blocking sockets changes its architecture,
+    the way we write our code, and how it scales to clients. Blocking sockets give
+    you a **synchronous I/O** model, while non-blocking sockets let you do **asynchronous
+    I/O**. On platforms that implement the Socket API, such as Unix, sockets are created
+    in blocking mode by default. This entails the default I/O model in major network
+    stacks following the synchronous model. Let's explore both of these models next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Synchronous network I/O
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we said previously, a socket is created in blocking mode by default. A server
+    in blocking mode is synchronous in the sense that each read and write call on
+    the socket blocks and waits until it is complete. If another client tries to connect
+    to the server, it needs to wait until the server is done serving the previous
+    client. This is to say that until the TCP read and write buffers are full, your
+    application blocks on the respective I/O operation and any new client connections
+    must wait until the buffers are empty and full again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The TCP protocol implementation contains its own read and write buffers on the
+    kernel level, apart from the application maintaining any buffers of its own.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust's standard library networking primitives provide the same synchronous API
+    for sockets. To see this model in action, we'll implement something more than
+    an echo server. We'll build a stripped down version of Redis. Redis is a data
+    structure server and is often used as an in-memory data store. Redis clients and
+    servers speak the RESP protocol, which is a simple line-based protocol. While
+    the protocol is agnostic of TCP or UDP, Redis implementations mostly use the TCP
+    protocol. TCP is a stateful stream-based protocol with no way for servers and
+    clients to identify how many bytes to read from the socket to construct a protocol
+    message. To account for that, most protocols follow this pattern of using a length
+    byte, followed by the same length of payload bytes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A message in the RESP protocol is similar to most line-based protocols in TCP,
+    with the initial byte being a marker byte followed by the length of the payload,
+    followed by the payload itself. The message ends with a terminating marker byte.
+    The RESP protocol supports various kinds of messages, ranging from simple strings,
+    integers, arrays, and bulk strings and so on. A message in the RESP protocol ends
+    with a `\r\n` byte sequence. For instance, a success message from the server to
+    the client is encoded and sent as `+OK\r\n` (without quotes). `+` indicates a
+    success reply, and then follows the strings. The command ends with `\r\n`. To
+    indicate if a query has failed, the Redis server replies with `-Nil\r\n`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Commands such as `get` and `set` are sent as arrays of bulk strings. For instance,
+    a `get foo` command will be sent as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding message, `*2` indicates that we have an array of `2` commands
+    and is delimited by `\r\n`. Following that, `$3` indicates that we have a string
+    of length `3`, i.e., the `GET` command followed by a `$3` for the string `foo`.
+    The command ends with `\r\n`. That's the basics on RESP. We don't have to worry
+    about the low-level details of parsing RESP messages, as we'll be using a fork
+    of a crate called `resp` to parse incoming byte streams from our client into a
+    valid RESP message.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building a synchronous redis server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To make this example short and easy to follow, our Redis clone will implement
+    a very small subset of the RESP protocol and will be able to process only `SET`
+    and `GET` calls. We'll use the official `redis-cli` that comes with the official
+    *Redis* package to make queries against our server. To use the `redis-cli`, we
+    can install Redis on Ubuntu by running `apt-get install redis-server.`
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create a new project by running `cargo new rudis_sync` and adding the
+    following dependencies in our `Cargo.toml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have named our project `rudis_sync`. We depend on two crates:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`lazy_static`: We''ll use this to store our in-memory database.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`resp`: This is a forked crate that resides on my GitHub repository. We''ll
+    use this to parse the stream of bytes from the client.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To make the implementation easier to follow, `rudis_sync` has very minimal error-handling
+    integration. When you are done experimenting with the code, you are encouraged
+    to implement better error-handling strategies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s start with the contents of our `main.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have a bunch of imports, followed by an in-memory `RUDIS_DB` hashmap that's
+    declared in a `lazy_static!` block. We are using this as an in-memory database
+    to store key and value pairs that are sent by clients. In our `main` function,
+    we create a listening address in `addr` from the user-provided argument or use
+    `127.0.0.1:6378` as the default. We then create a `TcpListener` instance by calling
+    the associated `bind` method, passing the `addr`. This creates a TCP listening
+    socket. Later, we call the `incoming` method on `listener`, which then returns
+    an iterator of new client connections. For each client connection `stream` that
+    is of the `TcpStream` type (a client socket), we call the `handle_client` function,
+    passing in the `stream`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the same file, the `handle_client` function is responsible for parsing queries
+    that are sent from the client, which would be one of the `GET` or `SET` queries:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `handle_client` function receives the client `TcpStream` socket in the `stream` variable.
+    We wrap our client `stream` in a `BufReader`, which is then passed as a mutable
+    reference to the `Decoder::new` method from the `resp` crate. The `Decoder` reads
+    bytes from the `stream` to create a RESP `Value` type. We then have a match block
+    to check whether our decoding succeeded. If it fails, we print an error message
+    and close the socket by calling `shutdown()` and requesting both the reader part
+    and writer part of our client socket connection to be closed with the `Shutdown::Both`
+    value. The `shutdown` method needs a mutable reference, so we call `get_mut()`
+    before that. In a real-world implementation, you obviously need to handle this
+    error gracefully.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If the decoding succeeds, we call `process_client_request`, which returns the
+    `reply` to send back to the client. We write this `reply` to the client by calling
+    `write_all` on the client `stream`. The `process_client_request` function is defined
+    in `commands.rs` as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function takes the decoded `Value` and matches it on the parsed query.
+    In our implementation, we expect the client to send an array of bulk strings,
+    so we match on the `Value::Array` variant of `Value`, using `if let`, and store
+    the array in `v`. If we match as an `Array` value in the `if` branch, we take
+    that array and match on the first entry in `v`, which will be our command type,
+    that is, `GET` or `SET`. This is again a `Value::Bulk` variant that wraps the
+    command as a string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We take the reference to the inner string as `s` and match only if the string
+    has a `GET` or `SET` as a value. In the case of `GET`, we call `handle_get`, passing
+    the `v` array, and in the case of `SET`, we call `handle_set`. In the `else` branch,
+    we simply send a `Value::Error` reply to the client with `invalid Command` as
+    the description.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The value that's returned by both branches is assigned to the `reply` variable.
+    It is then matched for the inner type `r` and turned into `Vec<u8>` by invoking
+    the `encode` method on it, which is then returned from the function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our `handle_set` and `handle_get` functions are defined in the same file as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In `handle_get()`, we first check whether the `GET` command has no key present
+    in the query and fails with an error message. Next, we match on `v[0]`, which
+    is the key for the `GET` command, and check whether it exists in our database.
+    If it exists, we wrap it in `Value::Bulk` using the map combinator, otherwise
+    we return a `Value::Null` reply:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: We then store it in a `reply` variable and return it as a `Result` type, that
+    is, `Ok(reply)`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A similar thing happens in `handle_set`, where we bail out if we don't have
+    enough arguments to the `SET` command. Next, we match on our key and value using
+    `&v[0]` and `&v[1]` and insert it into `RUDIS_DB`. As an acknowledgement of the
+    `SET` query., we reply with `Ok`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Back in our `process_client_request` function, once we create the reply bytes,
+    we match on the `Result` type and convert them into a `Vec<u8>` by calling `encode()`,
+    which is then written to the client. With that walk-through out of the way, it''s
+    time to test our client with the official `redis-cli` tool. We''ll run it by invoking `redis-cli
+    -p 6378`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/d782e87d-c9b7-4271-b22d-730d1142a9c0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'In the preceding session, we did a few `GET` and `SET` queries with an expected
+    reply from `rudis_sync`. Also, here''s our output log from the `rudis_server`
+    of our new connection(s):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/25c5a814-0b1d-4c5e-a664-4ff20689f2b8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'But the problem with our server is that we have to wait until the initial client
+    has finished being served. To demonstrate this, we''ll introduce a bit of delay
+    in our `for` loop that handles new client connections:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `sleep` call simulates a delay in request processing. To see the latencies,
+    we''ll start two clients at almost the same time, where one of them makes a `SET`
+    request and the other one makes a `GET` request on the same key. Here''s our first
+    client, which does the `SET` request:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/8266832f-8fdc-4618-bdd9-93013e591282.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Here''s our second client, which does a `GET` request on the same key, `foo`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0dbc71fc-b4e1-489e-acb4-725744aa02e2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see, the second client had to wait for almost three seconds to get
+    the second `GET` reply.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Due to its nature, the synchronous mode becomes a bottleneck when you need
+    to process more than 100,000 (say) clients at the same time, with each client
+    taking varying amounts of processing time. To get around this, you usually need
+    to spawn a thread for handling each client connection. Whenever a new client connection
+    is made, we spawn a new thread and offload the `handle_client` invocation from
+    the main thread, allowing the main thread to accept other client connections.
+    We can achieve this by using a single line change in our `main` function, like
+    so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This removes the blocking nature of our server, but introduces the overhead
+    of spawning a new thread every time a new client connection is received. First,
+    there is an overhead of spawning threads and, second, the context switch time
+    between threads adds another overhead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we can see, our `rudis_sync` server works as expected. But it will soon be
+    bottlenecked by the amount of threads our machine can handle. This threading model
+    of handling connections worked well until the internet began gaining a wider audience
+    and more and more clients connecting to the internet became the norm. Today, however,
+    things are different and we need highly efficient servers that can handle millions
+    of requests at the same time. It turns out that we can tackle the problem of handling
+    more clients on a more foundational level, that is, by using non-blocking sockets.
+    Let's explore them next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Asynchronous network I/O
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we saw in our `rudis_sync` server implementation, the synchronous I/O model
+    can be a major bottleneck in handling multiple clients in a given period of time.
+    One has to use threads to process more clients. However, there's a better way
+    to scale our server. Instead of coping with the blocking nature of sockets, we
+    can make our sockets non-blocking. With non-blocking sockets, any read, write,
+    or connect operation, on the socket will return immediately, regardless of whether
+    the operation completed successfully or not, that is, they don't block the calling
+    code if the read and write buffers are partially filled. This is the asynchronous
+    I/O model as no client needs to wait for their request completion, and is instead
+    notified later of the completion or failure of the request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The asynchronous model is very efficient compared to threads, but it adds more
+    complexity to our code. In this model, because an initial read or write call on
+    the socket is unlikely to succeed, we need to retry the interested operation again
+    at a later time. This process of retrying the operation on the socket is called
+    polling. We need to poll the sockets from time to time to see if any of our read/write/connect
+    operations can be completed and also maintain state on how many bytes we have
+    read or written so far. With large number of incoming socket connections, using
+    non-blocking sockets entails having to deal with polling and maintenance of state.This
+    soon blows up as a complex state machine. In addition to that polling  is a very
+    in-efficient operation. Even if we don't have any events on our sockets. There
+    are better approaches, though.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On Unix-based platforms, polling mechanism on sockets is done through `poll` and `select`
+    system calls, which are available on all Unix platforms. Linux has a better `epoll`
+    API in addition to them. Instead of polling the sockets by ourselves, which is
+    an inefficient operation, these APIs can tell us when the socket is ready to read
+    or write. Where poll and select run a for loop on each requested socket, `epoll`
+    runs in `O(1)` to notify any interested party of a new socket event.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The asynchronous I/O model allows you to handle a considerably larger amount
+    of sockets than would be possible with the synchronous model, because we are doing
+    operations in small chunks and quickly switching to serving other clients. Another
+    efficiency is that we don't need to spawn threads, as everything happens in a
+    single thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To write asynchronous network applications with non-blocking sockets, we have
+    several high quality crates in the Rust ecosystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Async abstractions in Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The async network I/O is advantageous, but programming them in their raw form
+    is hard. Fortunately, Rust provides us with convenient abstractions in the form
+    of third-party crates for working with asynchronous I/O. It alleviates the developer
+    from most of the complex state machine handling when dealing with non-blocking
+    sockets and the underlying socket polling mechanism. Two of the lower-layer abstractions
+    that are available as crates are the `futures` and `mio` crates. Let's understand
+    them in brief.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mio
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When working with non-blocking sockets, we need a way to check whether the socket
+    is ready for the desired operation. The situation is worse when we have thousands,
+    or more, sockets to manage. We can use the very inefficient way of running a loop,
+    checking for the socket state, and performing the operation once it's ready. But
+    there are better ways to do this. In Unix, we had the `poll` system call, to which
+    you give the list of file descriptors you want to be monitored for events. It
+    was then replaced by the `select` system call, which improved things a bit. However,
+    both `select` and `poll` were not scalable as they were basically for loops under
+    the hood and the iteration time went up linearly as more and more sockets were
+    added to its monitor list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Under Linux, then came `epoll`, which is the current and most efficient file
+    descriptor multiplexing API. This is used by most network and I/O applications
+    that want to do asynchronous I/O. Other platforms have similar abstractions, such
+    as **kqueue** in macOS and BSD. On Windows, we have **IO Completion Ports (IOCP)**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is these low-level abstractions that `mio` abstracts over, providing a cross-platform,
+    highly efficient interface to all of these I/O multiplexing APIs. Mio is quite
+    a low-level library, but it provides a convenient way to set up a reactor for
+    socket events. It provides the same kind of networking primitives such as the
+    `TcpStream` type as the standard library does, but these are non-blocking by default.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Futures
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Juggling with mio''s socket polling state machine is not very convenient. To
+    provide a higher-level API that can be used by application developers, we have
+    the `futures` crate. The `futures` crate provides a trait named `Future`, which
+    is the core component of the crate. A `future` represents the idea of a computation
+    that is not immediately available, but might be available later. Let''s look at
+    its type signature of the `Future` trait to get more information about it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A `Future` is an associated type trait that defines two types: an `Item` type
+    representing the value that the `Future` will resolve to and an `Error` type that
+    specifies what error type the future will fail with. They are quite similar to
+    the `Result` type in the standard library, but instead of getting the result right
+    away, they don''t compute the immediately.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A `Future` value on its own cannot be used to build asynchronous applications.
+    You need some kind of reactor and an event loop to progress the future toward
+    completion. By design, the only way to have them succeed with a value or fail
+    with an error is to poll them. This operation is represented by the single require
+    method known as `poll`. The method `poll` specifies what should be done to progress
+    the future. A future can be composed of several things, chained one after another.
+    To progress a future, we need a reactor and an event loop implementation, and
+    that is provided by the `tokio` crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tokio
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Combining both of the above mentioned abstractions, and along a work stealing
+    scheduler, event loop and a timer implementation we have the `tokio` crate, which
+    provides a runtime for driving these futures to completion. With the `tokio` framework,
+    you can spawn many futures and have them run concurrently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `tokio` crate was born to provide a go-to solution for building robust and
+    high-performance asynchronous networking applications that are agnostic of the
+    protocol, yet provides abstractions for general patterns that are common in all
+    networking applications. The `tokio` crate is technically a runtime consisting
+    of a thread pool, and event loop, and a reactor for I/O events based on mio. By
+    runtime, we mean that every web application developed with tokio will have the
+    mentioned components above running as part of the application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Futures in the tokio framework run inside a task. A task is similar to a user
+    space thread or a green thread. An executor is responsible for scheduling tasks
+    for execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When a future does not have any data to resolve or is waiting for data to arrive
+    at the socket in case of a `TcpStream` client read, it returns a `NotReady` status.
+    But, in doing this it also needs to register interest with the reactor to be notified
+    again of any new data on the server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When a future is created, no work is performed. For the work defined by the
+    future to happen, the future must be submitted to an executor. In tokio, tasks
+    are user-level threads that can execute futures. In its implementation of the
+    `poll` method, a task has to arrange itself to be polled later in case no progress
+    can be made. For doing this it has to pass its task handler to the reactor thread.
+    The reactor in case of Linux is mio the crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building an asynchronous redis server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Now that we''re familiar with the asynchronous I/O solutions that the Rust
+    ecosystem provides, it''s time to revisit our Redis server implementation. We''ll
+    port our `rudis_sync` server to the asynchronous version using the `tokio` and
+    `futures` crates. As with any asynchronous code, using `futures` and `tokio` can
+    be daunting at first, and it can take time getting used to its API. However, We''ll
+    try to make things easy to understand here. Let''s start by creating our project
+    by running `cargo new rudis_async` with the following dependencies in `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are using a bunch of crates here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`futures`: Provides a cleaner abstraction for dealing with async code'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`tokio`: Encapsulates mio and provides a runtime for running asynchronous code'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`lazy_static`: Allows us to create a dynamic global variable that can be mutated'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`resp`: A crate that can parse Redis protocol messages'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`tokio-codec`: This allows you to convert a stream of bytes from the network
+    into a given type, which is parsed as a definite message according to the specified
+    codec. A codec converts stream of bytes into a parsed message termed as a **Frame**
+    in the tokio ecosystem.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`bytes`: This is used with the tokio codec to efficiently convert a stream
+    of bytes into a given *Frame*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Our initial code in `main.rs` follows a similar structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have a bunch of imports and the same `RUDIS_DB` in a `lazy_static!` block.
+    We then have our function `main`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: We parse the string that's been passed in as an argument or use a default address
+    of `127.0.0.1:6378`. We then create a new `TcpListener` instance with `addr`.
+    This returns us a future in `listener`. We then chain on this future by calling
+    `incoming` on and invoke `for_each` on it which takes in a closure and call `handle_client`
+    on it. This future gets stored as `server_future`.In the end, we call `tokio::run`
+    passing in `server_future`. This creates a main tokio task and schedules the future
+    for execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the same file, our `handle_client` function is defined like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: In `handle_client`, we first split our `TcpStream` into a writer (`tx`) and
+    reader (`rx`) half by first converting the stream to a framed future calling framed
+    on `RespCodec` receives the `client` connection and converts it into a framed
+    future by calling framed on `RudisFrame`. Following that, we call `split` on it,
+    which converts the frame into a `Stream` and `Sink` future, respectively. This
+    simply gives us a `tx` and `rx` to read and write from the client socket. However,
+    when we read this, we get the decoded message. When we write anything to `tx`,
+    we write the encoded byte sequence.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On `rx`, we call `and_then` passing the `process_client_request` function, which
+    will resolve the future to a decoded frame. We then take the writer half `tx`,
+    and call `send_all` with the `reply`. We then spawn the future task by calling
+    `tokio::spawn`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our `codec.rs` file, we have defined `RudisFrame`, which implements `Encoder`
+    and `Decoder` traits from the `tokio-codec` crate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `Decoder` implementation specify how to parse incoming bytes into a `resp::Value`
+    type, whereas the `Encoder` trait specifies how to encode a `resp::Value` to a
+    stream of bytes to the client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our `commands.rs` file implementation is the same as the previous one so we''ll
+    skip going through that. With that said, let''s try our new server by running
+    `cargo run`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/29a2da81-24b7-486d-90bd-114ef84b39e5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'With the official redis-cli client, we can connect to our server by running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s a session of running `redis-cli` against `rudis_async` server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/b063d555-3e61-454c-a1c7-d34439dbc648.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rust is very well-equipped and suitable for providing higher-performance, quality,
+    and security for network applications. While built-in primitives are well-suited
+    to a synchronous application model, for asynchronous I/O, Rust provides rich libraries
+    with well-documented APIs that help you build high-performance applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we'll step up the network protocol stack and and learn
+    how to build web applications with Rust.
+  prefs: []
+  type: TYPE_NORMAL

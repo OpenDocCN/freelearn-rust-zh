@@ -1,0 +1,802 @@
+- en: '15'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Accepting TCP Traffic with Tokio
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we managed to get actors running in different threads
+    to send messages to each other. While it is exciting to code the building blocks
+    for async programming, we left that chapter with a not-very-practical application.
+    In this chapter, we will be creating a server with Tokio that listens to **TCP**
+    traffic on a port. If messages are sent, our TCP server will process the incoming
+    data, perform operations through a series of actors and threads, and then return
+    the updated data to the client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring TCP
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Accepting TCP
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Processing bytes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Passing TCP to an actor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Keeping track of orders with actors
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Chaining communication between actors
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Responding with TCP
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sending different commands via the client
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will understand how to use TCP and how to package
+    and unpack data sent via TCP with bytes. With this knowledge, you will be able
+    to create a server using Tokio to listen to incoming messages, process those messages,
+    and then perform units of computation based on the incoming message through a
+    series of threads and actors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will be building on the code from [*Chapter 14*](B18722_14.xhtml#_idTextAnchor279),
+    *Exploring the Tokio Framework*. This can be found at the following URL: [https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter14/working_with_actors](https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter14/working_with_actors).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code for this chapter can be found at [https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter15](https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter15).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring TCP
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '**TCP** stands for **transmission control protocol**. TCP is one of the most
+    widely used transfer protocols on the internet. TCP is essentially a protocol
+    that transports bytes over a socket from one program or computer to another using
+    an **internet protocol** (**IP**). TCP is used for the world wide web, email,
+    remote administration, and file transfer. The **transport layer security/secure
+    sockets layer** (**TLS/SSL**) protocols are built on top of TCP. This means that
+    HTTP and HTTPS are built on top of TCP.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'TCP is a connection-oriented protocol. This is where a connection between the
+    client and server is established before any data is transferred. This is achieved
+    by a three-way handshake:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**SYN**: Initially, the client sends a SYN to the server. The SYN is a message
+    with a random number to ensure that the same client is communicating with the
+    server.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**SYN-ACK**: The server then responds to the client with the initial sequence
+    number and an additional random number known as the ACK.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**ACK**: Finally, the client returns the ACK to the server to establish that
+    the connection has been acknowledged.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '*Steps 1* and *2* establish and acknowledge the sequence number from the client
+    and the server. *Steps 2* and *3* establish and acknowledge the sequence number
+    from the server to the client:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 15.1 – A TCP handshake](img/Figure_15.1_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 15.1 – A TCP handshake
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will be converting the actor model we built in the previous
+    chapter so that it accepts TCP traffic from outside of our program as commands.
+    First, we need to get our program to accept TCP connections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accepting TCP
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before we write any TCP code, we must acknowledge that our code is at risk
+    of becoming bloated due to all the code being in one file. To prevent the `src/main.rs`
+    file from becoming bloated, we must copy all the code apart from the main function
+    from the `src/main.rs` file into a file called `src/actors.rs`. Now, we can wipe
+    our `src/main.rs` file completely and fill it with the following outline:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we imported a TCP listener to listen to incoming traffic. We also imported
+    structs that enable us to perform a sleep function from the `Tokio` crate and
+    define our `main` runtime function. In our `main` function, we define our address
+    and bind it to a TCP listener. We directly unwrap this because if we fail to bind
+    the address, there is no point in continuing with the program. You could handle
+    the outcome of binding the address by increasing the port number by 1 until you
+    find an open port number, but for this example, we should keep our implementation
+    of the server simple. Then, we have a `while` loop that continues to accept new
+    connections throughout the lifetime of the program, which can be infinite if the
+    program is not interrupted or there is no problem with the socket. Once we get
+    a connection, we spawn a new thread and process the incoming message.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For now, for our incoming message, we will merely sleep for 5 seconds, as seen
+    in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we print when the thread is starting and finish printing the time duration
+    at the end. The duration should be more than the delay. We also make the thread
+    sleep. The printout statements and sleep functionality will enable us to trace
+    what is happening when we send multiple messages from different programs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have defined our program, which accepts TCP traffic, we can create
+    a new Rust cargo project in a different directory for the client, which will send
+    messages to the server. In this new project, the `Cargo.toml` file will contain
+    the same dependencies as those in the TCP server. Inside the `main.rs` file, we
+    have the following simple program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This program merely makes a connection with the TCP server and then writes
+    `hello world` in bytes to the TCP stream. Once the bytes have been written, we
+    finish. Now, we can test our server. First, we need to run our server, which will
+    give us the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The terminal should now be hanging, which means we can run our client in a
+    different terminal three times in a row as quickly as possible to get three requests
+    in before the first thread stops sleeping. This will allow us to see the effect
+    the sleeping threads have on our application. Our client printout should look
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we wait for 7 seconds, we can inspect our server terminal, which should
+    have the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we can see that each process has a port on the local host. As expected
+    with spawning threads to handle the incoming messages, the messages were handled
+    in an async manner. We could handle many more connections if needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have managed to accept bytes through TCP, we will process these
+    bytes in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Processing bytes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Why do we send bytes through the TCP channel as opposed to the string itself?
+    We send bytes because they have a standardized way of being encoded and decoded.
+    For instance, in this chapter, we are creating a client that is written in Rust.
+    However, the client might be written in JavaScript or Python. Primitive data structures
+    such as string characters can be encoded into bytes and then decoded when received
+    by the TCP server. Because of the UTF-8 standard, we can use these strings anywhere.
+    Our data could be saved in a file by one text editor and loaded by another text
+    editor because they are both using the same encoding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we keep exploring the concept of bytes, we will conclude that the only data
+    that a computer can store is bytes. MP3, WAV, JPEG, PNG, and so on are all examples
+    of encoding. If you save any file, you will encode the data into bytes. If we
+    load any file, we will be decoding the data from bytes. Now, let us decode our
+    byte string that was sent over TCP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our `main.rs` file in the TCP server project, we first need to import the
+    following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `BufReader` struct essentially adds a buffer to any reader, which improves
+    the speed of small frequent reads from the same file or socket. While this greatly
+    helps us as we are expecting multiple small messages to be sent down the same
+    TCP socket, it will not give us any speed improvement if we are trying to read
+    a large stream of data in one go from a file or socket. The other two import traits
+    must be imported to enable the `BufReader` struct to read or write.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we must wipe all code in our thread spawn section of the code to start
+    again as we will be doing a range of different processes. First, inside our thread
+    spawn code, we must print out that we are starting the thread by splitting our
+    stream into a reader and writer, and then creating our buffer reader from the
+    reader and an empty vector to store the processed incoming data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we have everything ready for reading, we can continuously read one
+    line at a time, telling the reader to stop reading once it hits the EOF condition,
+    `''b\n''`, from our stream:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that if there is an error, we will print it out. However, the rest
+    of the code that we are concerned with when it comes to processing bytes is in
+    our `Ok` code block.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Inside our `Ok` code block, we initially need to check to see if the stream
+    has closed by checking if zero bytes are received:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`EOF` stands for *end-of-file*. EOF is the standard way of declaring that we
+    have come to the end of the file or that the data stream has finished. Once we
+    get past the preceding code block, we know that we have some bytes to process.
+    We must convert our incoming bytes into a string using the UTF-8 encoding:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The lossy reference in the preceding code is where nonstandard characters are
+    replaced with a placeholder, so nonstandard characters are lost in translation.
+    This is not going to be an issue for us as we are sending over standard characters.
+    With our string data, we are going to separate values in a message with a `;`
+    delimiter. We will split our string into a vector of strings, replacing all new
+    lines with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can print out the processed message and then clear the buffer so that
+    the line that we are processing does not get caught up in the next processing
+    step:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are now at the end of the loop. Right outside the loop, we must print out
+    that the thread is finished with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With that, we have finished our server for now as we can process bytes. Now,
+    we can go to the `main.rs` file in our client project and write the following
+    byte string:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What outcome do you think we will get from this byte string? If we look at
+    the byte string, we will see that there is a new line, so we are sending two messages
+    in one packet over the TCP connection. Each message has two values due to the
+    `;` delimiter. When we spin up our server and run the client, we will get the
+    following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that our server processed two messages in the same thread before
+    we closed the thread. With this, we can see that we have a lot of flexibility
+    with TCP sockets. We are now ready to route TCP traffic to our actors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Passing TCP to an actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When it comes to routing TCP data to actors, we need to import our actors and
+    channels into the `main.rs` file in our server project with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we have to construct our *order book* actor and run it. However, as you
+    may recall, we merely ran the *order book* actor at the end of the Tokio runtime.
+    However, if we apply this strategy here, we will block the loop from executing,
+    so we can listen to incoming traffic. If we run the *order book* actor after the
+    loop, the *order book* actor will never run as the loop runs indefinitely in a
+    `while` loop and thus blocks the execution of any code following it. In our case,
+    there is a further complication. This complication is that the actor run function
+    enters a `while` loop, which further explains the need to put this entire code
+    in a separate spawned Tokio task. Because of this, we must spawn a thread before
+    the loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note that we directly move the `tx` receiver into the Tokio task without cloning
+    it because `OrderBookActor` is the only actor taking full exclusive ownership
+    of the receiver. Here, we can see that the TCP listener is the same. Then, we
+    create the `mpsc` channel, which we use to create and run our *order book* actor
+    in the first thread that we spawn. Then, we enter the `while` loop to listen for
+    TCP traffic. Note that the clone of the sender of the mpsc channel for the *order
+    book* actor is cloned straight away. This is because we are going to have to clone
+    it again in the reading loop on every next iteration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Inside the `Ok` block in our loop, we process our byte string, create the new
+    *buy order* actor, and then send the message to the *order* *book* actor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And this should be it. We can see that the actors that we defined in a standard
+    Tokio runtime without listening to traffic can be plugged into our TCP network
+    application. There is only one thing left to do, and that is to update the message
+    being sent in the client `main.rs` file with the following content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we are sending two buy orders (`BYND` and `PLTR`). If we run our server
+    and then run our client, we will get the following printout for the server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With this printout, we can see that we run our *order book* actor and listen
+    to TCP traffic before we process incoming traffic. Then, we accept our packet,
+    process the data, and send our data into the actor system. Overall, our application
+    flow takes the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 15.2 – Our TCP application flow](img/Figure_15.2_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 15.2 – Our TCP application flow
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we now have a network application that accepts TCP traffic and passes
+    the processed data from the incoming bytes to our actor system. We create *buy
+    order* actors on the fly when we accept a new message via TCP, while our *order
+    book* actor continues to run throughout the lifetime of our program. If we were
+    to add another order book or a different type of actor, we could simply spin off
+    another thread where we construct and run the actor. There is no limit to this,
+    so our system can scale.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Right now, our client does not know what happened. Therefore, our server must
+    reply to our client about what happened. However, before we can do this, we must
+    keep track of our stock orders so that we can return the state of our orders when
+    we need them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Keeping track of orders with actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When it comes to keeping track of our orders, we could simply add a HashMap
+    to our order book and add a couple of other messages that can be sent to the *order
+    book* actor. This is one approach. We are getting into territory where there are
+    no clear correct approaches, and people within the community debate on the best
+    approaches to solve problems. In this chapter, we will get used to creating actors
+    and managing multiple actors in Tokio by creating two new actors. One actor will
+    merely keep track of our stock purchases, while the other actor will send messages
+    to the order tracker to get the state of our orders.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we need to create a separate file in `src/order_tracker.rs`. In this
+    file, we initially need to import what we need to handle the collection of stocks
+    and the channels that enable the connections between the actors:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we need to create the message struct for the messages sent to our tracker
+    actor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we need to pass in a command. This command is needed because the tracker
+    actor can perform multiple actions, such as `BUY` and `GET`. If the command is
+    just a `GET`, then we do not need anything else, which is why the rest of the
+    fields are optional.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With this message defined, we can build the most basic actor, which merely
+    sends a `get` message to the tracker actor and returns the state of our orders:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we can see that no state is held by `GetTrackerActor`. We could just
+    make this whole actor a function in another actor. However, as stated, we want
+    to get comfortable with managing multiple actors in an async system in this chapter.
+    To enable our `GetTrackerActor` to get data, we must create a `send` function
+    that will send a `GET` command to the tracker actor and return the state of the
+    tracker actor as a string:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: This method should be familiar to you now. We created a one-shot channel so
+    that the tracker actor could send a message back to the `GetTrackerActor` actor.
+    Then, we sent the `GET` message and waited for a response. You may have also noticed
+    that we are printing out that the `send` function is firing. We will be peppering
+    the code with print statements throughout so that we can track how the `async`
+    code runs in the printout and in what order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We are now at the stage where to need to create our *order tracker* actor.
+    We need a HashMap and a channel to receive messages, which we can create with
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This actor is more complex as we need the actor to run to receive messages,
+    handle the messages, and send the state of the order, which takes the following
+    outline:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you wish to test your handle on actors, now is a good time to try and implement
+    the preceding functions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you have attempted these functions, they should be implemented similarly
+    to what’s shown in the following code, which we are going to cover here. First,
+    our constructor takes the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: This constructor should not be a surprise for anyone. We need a HashMap with
+    a string as a key to denote the ticker and a float for the number of stocks we
+    own for that ticker. We also accept a channel receiver to receive messages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next process we need to define is how to package our data into a string
+    so that we can send it over TCP. We can do this with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we create a vector that holds our data. Then, we loop through our HashMap,
+    which is logging our stock holdings. We can see that we separate the ticker from
+    the amount with a `:`, and then we separate the individual stock tickers with
+    counts with a `;`. At this point, our response should be something like `"BYND:8;PLTR:9;\n"`,
+    which means that we have 8 of BYND and 9 of PLTR. Once we have stored the entire
+    state in a vector of strings, we join the vector into one string and then send
+    that string over a channel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We now have everything we need to handle an incoming message, which can be
+    handled with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we match the command being passed via the incoming message. If a `GET`
+    command is passed, we merely return the state with the address to respond to extracted
+    from the incoming message. If a `BUY` command is passed, we extract the parameters
+    for the purchase order from the message and try and get the ticker from the HashMap.
+    If the ticker is not present, we create a new entry. If the ticker is present,
+    we merely increase the count of the ticker that we have bought.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have now handled our messages and state. There is only one thing left to
+    do and that is to run the actor; this can be achieved with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With this, our tracker actor is fully working, so it is time to stand back
+    and look at our system and how we envision it to work, as shown in the following
+    diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 15.3 – Interactions between actors](img/Figure_15.3_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 15.3 – Interactions between actors
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, we can see that there must be an interaction between the *order book*
+    actor and the *tracker actor* when a buy order is executed. Therefore, we need
+    to refactor our *order book* actor to enable chained communication between multiple
+    actors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Chaining communication between actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As we can see in *Figure 15**.2*, our *order book* actor is running and accepting
+    orders. The *order book* actor then sends a message to the *tracker* actor, updating
+    the state once the `BUY` order is processed. This means that our actor needs to
+    manage two channels. To handle two channels, inside the `src/actors.rs` file,
+    we need to import the tracker message with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we must hold two channels, resulting in our `OrderBookActor` struct having
+    the following fields:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, the fields are essentially the same, but we are holding onto a sender
+    that sends messages to the tracker. We can see how helpful different messages
+    are. We know exactly where the message is destined to be. With this extra field,
+    we need to slightly change the constructor for `OrderBookActor` with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There is only one other behavior that we must add. Remember that we process
+    our incoming messages in the `handle_message` function. Here, we must send a `TrackerMessage`
+    to the tracker actor with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we can see, the logic for deciding whether a buy order is going to be processed
+    is the same, but if the buy order is processed, we merely construct a `TrackerMessage`
+    and send it to the *tracker* actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that our actors have been built and refactored, our actor system will behave
+    as shown in *Figure 15**.2*. We can now implement our new actor system so that
+    we can respond to the TCP traffic with TCP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Responding with TCP
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When it comes to responding to TCP, we must implement our actor system in the
+    `src/main.rs` file. First, we need to import our new actors with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we must construct our extra channel in the `main` function with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we have a `tracker` channel. With the `tracker` and `main` channels,
+    we can spin up two different threads with the *tracker* actor and *order book*
+    actor with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With this, we now have two of our actors running, awaiting incoming messages.
+    Now, we must manage our incoming TCP traffic and spin up different actors, depending
+    on the command passed in. As a design choice, we are going to have the first string
+    passed in via TCP to be the command that our application has:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we must match our command with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For our buy order, we still simply spin up the *buy order* actor and send it
+    to the *order* *book* actor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The main change here is how we manage the incoming data, and this is because
+    we have introduced the `command` parameter. For the `get` command, we create `GetTrackerActor`,
+    which sends a message to the tracker actor. Then, we write the state that we got
+    from the *tracker* actor with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: With this, our server can now accept different commands and track all the buy
+    orders that we have made.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though our server is now fully functional, our client will not work. This
+    is because we have not updated our client with the commands. In the next section,
+    we will update our client, which can send multiple different commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sending different commands via the client
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Our client is simple, and it is going to stay simple. First, we must ensure
+    our read and write traits are imported as this time, we will be reading a response.
+    Our imports in the `src/main.rs` file should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we must write a series of messages to our connection and then read until
+    we get a new line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With this, we are done. All we must do now is run the server and then run the
+    client. The client has the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we get the state of our stock orders after sending our orders. Even though
+    this state is in a single string, we have delimiters so that we can split our
+    data up into something useful. Once our client has run, our server will have the
+    following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is a long printout, but we can see how our order message got converted
+    into a vector. We can also see how the state of our tracker changes over time,
+    and at the end, we can see how our `get` command is processed with the *get state*
+    actor and *tracker* actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we managed to bring our Tokio async program to the next level
+    by accepting incoming TCP traffic. Then, we processed our TCP traffic, which was
+    packaged in bytes, essentially creating a protocol for processing buy orders for
+    stocks. We must note that we have a lot of flexibility with this approach. We
+    managed to stuff multiple buy orders and then a `get` command into one message.
+    We can become creative with our message structure as there is little constraint
+    in how to package our message and unpack it in the server if the protocols are
+    consistent between the server and the client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, we added more threads and actors to our system to handle multiple commands
+    passed into our server. We finished up this chapter by updating our client and
+    returning the state of our orders. The result is a highly async-safe network application
+    that accepts messages via TCP. This network application is not just for running
+    on our local computers. We can wrap this TCP Tokio network application in Docker
+    and deploy it on a server. You now have the tools to build lower-level network
+    applications to aid your web applications. Considering that our distroless Rust
+    servers are roughly 50 MB in size, these network applications will be an inexpensive
+    aid to whatever problems you are trying to solve.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While having a protocol is useful and gives us more freedom, we will take our
+    protocol processing of TCP traffic to the next level in the next chapter with
+    framing, enabling us to have even more control over how we process and package
+    our messages as they’re being sent via TCP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Tokio TCP documentation: [https://docs.rs/tokio/latest/tokio/net/struct.TcpStream.html](https://docs.rs/tokio/latest/tokio/net/struct.TcpStream.html).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: How do we create an actor that accepts messages and sends messages to other
+    actors?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Why do we need to spin our long-running actors up in their own threads?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can we have multiple actors processing the same type of job?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We create an actor that has a minimum of two fields. These two fields hold the
+    sender for the channel of the actor we are sending messages to and the receiver
+    of the channel we are receiving messages from. Then, we need a `run` function
+    to enable our actor to run awaiting incoming messages.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If we do not create a thread to run our long-running actors, our main runtime
+    will be blocked by this actor running. If only one actor is running after the
+    server is listening, this is OK; however, if there are multiple actors or a loop
+    that is accepting TCP traffic, then we have a problem as the system will essentially
+    be gridlocked and our actor system will not work.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We can build an actor that essentially acts like a router. It can keep track
+    of incoming messages and alternate sending messages to multiple different actors
+    who do the same type of job. However, do not do this if multiple actors rely on
+    the internal state.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

@@ -1,0 +1,815 @@
+- en: Concurrency in Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Computers have come a long way in the last 35 years or so. Originally, we had
+    the likes of the 6502, 6809, and Z80 processors. These were known as **single
+    processing units**; they could only run a single program at a time and software
+    ran in a linear fashion (this meant that performing two tasks at once wasn't possible).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Processors moved on, and from the single processing units (single-core), we
+    moved on to processors that contained multiple processing units (multi-core).
+    Programming languages evolved to allow for this form of processor, and running
+    multiple operations (threads) at the same time became a reality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust, being a very modern language, also has this ability to multiprocess. All
+    of the benefits are available that you would expect from Rust (such as memory
+    safety and avoiding race conditions), but there are some other things that you
+    need to be aware of.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understand the mechanisms by which Rust performs concurrent processes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Learn how to use threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: See the difference between different threading models
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A bit of a story
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The Mystery Mobile was heading down a very dark road. There was no way of knowing
+    what was ahead. At a certain point, they came to a point in the road with three
+    roads coming off. Each road had a sign on them saying *Exit*. Being the intrepid
+    type, Freddie sent Velma down one road, Shaggy and Scooby down the second and
+    Daphne down the third. Being the brave sort, Freddie would drive down the road.
+    They did know, though, that the roads would feed back into the main road at some
+    point.
+  prefs: []
+  type: TYPE_NORMAL
+- en: They agreed that whoever reached the exit first would send a message to the
+    others. They synchronized their watches and moved off, not knowing who would reach
+    the exit first or even if the exit could be reached at all.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What was that all about?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In roughly two paragraphs, I've illustrated three very important aspects of
+    concurrency in Rust: Send (shown in the message being sent to the others from
+    the Mystery Mobile), Sync, and Threads (each road donates a thread, and really,
+    there is no real way to know when a thread will rejoin the sender, which can cause
+    no ends of problems!).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's deal with each aspect in turn.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Send
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Send transfers the type safely to another thread—in other words, if type `T`
+    implements Send, then it means `T` has been passed safely to another thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are a couple of caveats on using Send:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You don't use it for a process that is not thread safe (such as FFI)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Send has to be implemented for the type
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sync
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Sync is considered the uber-safe option. When `T` implements Sync, there is
+    a guarantee of memory safety. However, before we go any further, we need to consider
+    the following question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When is an immutable variable not an immutable variable?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Up to this point, we have considered variables to be either mutable or immutable,
+    and that's it. However, this is not the case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Consider the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: What does this actually mean? First, we create a mutable binding to `a` that
+    initially contains the value `10`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we create an immutable binding to `b` that contains a reference to the
+    mutable value of `a`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And it's obviously mutable, it has mut in the definition
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s consider a different example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: This example is not what it seems. When the clone trait is called, `vc` has
+    to update its reference count. The problem is, `vc` is not mutable, yet this code
+    compiles and runs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To understand how, we have to know how the borrowing system works (for more
+    information on borrowing, please refer to [Chapter 8](part0175.html#56SIE0-a5175cb437d742a9aed0ea574000ee2d),
+    *The Rust Application Lifetime*) in this instance. Borrowing has two very clear
+    modes of operation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One (or more) references to the resource
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Exactly one mutable reference
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Really, then, when we talk about immutability, we're not really talking about
+    whether a variable is fixed, but whether it is safe to have more than one reference
+    to the variable. In the preceding case, the mutation occurs within the vector
+    structure and we have the `&T` from there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As the vector structure is not user facing, it is called as **exterior mutable**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interior mutability
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The opposite (interior mutability) can be found in this example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, `RefCell` gives the `&mut` when `borrow_mut()` is called. It works well,
+    but will cause a panic if a second `borrow_mut()` is called on `x`; you are only
+    allowed a single reference to a mutable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Back to sync
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: For sync to occur, we cannot have any type that uses interior mutability (which
+    also includes some of the primitive types).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When it comes to sharing across threads, Rust uses `Arc<T>`. This is a wrapper
+    type that implements `send` and `sync` if the following condition is met: `T`
+    must implement both `send` and `sync`. `RefCell` uses interior mutability, so
+    `Arc<RefCell<T>>` won''t implement `sync`, which also means `send` can''t be used—therefore
+    `RefCell` can''t be passed around threads.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using `send` and `sync` provides the strong guarantees of safety Rust relies
+    upon to ensure the code is rock solid when using a threading system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A beginner's guide to threading in Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Threads allow multiple processes to execute at the same time. The following
+    is a very simple example of a threaded program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Code files can be found in `Chapter11/SimpleThreadExample`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When compiled, you may expect the `println!` to show. However, what you get
+    is this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00088.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why is the `println!` not showing?
+  prefs: []
+  type: TYPE_NORMAL
+- en: An easy approach to thinking about how threads work.
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Threads are more easily thought of graphically (at least I think so). We start
+    with our main thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00089.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2
+  prefs: []
+  type: TYPE_NORMAL
+- en: The main thread goes from the start of the application to the end of the application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At any point on our main thread, we can create a new thread (or new threads,
+    if required).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00090.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 3
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'These two new threads can do anything the application needs them to do. There
+    is a simple rule though: The threads can only last as long the application does.
+    As *Figure 3* shows, the threads start and carry on their merry way; there is
+    nothing to say the thread has to rejoin the main thread, nor is there any rule
+    to say at what point the thread returns (which can cause some very large thread
+    safety issues, leading to panics).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It goes without saying that each thread can also spawn their own threads to
+    perform sub-processes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00091.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you're accustomed to threading in the likes of C, C++, and C#, you'll already
+    know that a thread can return to the main thread at any time and that this *at
+    any time* can be disastrous to the safe running of the application. It is different
+    in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When a thread in Rust is spawned from either the main thread (or any subthread)
+    a handle is created. Rust then uses this token to retrieve the thread at a given
+    point; therefore, the issue of a race condition (where one thread returns before
+    another, leading to crashes) is essentially removed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Joining threads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To retrieve the spawned thread, Rust uses the `join()` trait and then unwraps
+    the result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00092.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 5
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To make our small example application output, we therefore need to join the
+    spawned thread back to the main thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Code for the alterations can be found in `Chapter11/joined_thread`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When we run the code, this time we see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00093.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hold on. That code isn't the same! This is true, and it is due to the spawn
+    accepting a closure (`||`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Closures
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Closures are a powerful piece of code present in many languages. Essentially,
+    a closure wraps code or variables used only within the scope of the current code
+    in a neat little package.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In its simplest form, we can have something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The part within the `| |` defines a variable called `x` that is only used within
+    the scope of the calculation, and it is of type `i32`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Okay, that may not seem that useful—after all, what we're doing here is adding
+    two numbers together. Hold on though—if `x` is only defined within the scope of
+    the calculation, what does `x` actually equal?
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is where closures come into their own. Typically, when we create a binding,
+    we create a binding to something definite. Here, we are creating a binding, but
+    binding it to the content of the closure. Anything between the pipes (`| |`) is
+    an argument, with the expression being whatever follows the end pipe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you think about it, you''ve actually created something closer to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In answer to our question "what does `x` actually equal?", here it is equal
+    to the only known parameter, `t`. Therefore, `x + t` is the same as saying `t
+    + t`. The add variable isn''t being bound directly (that is, in the same way that
+    we bind under normal conditions), but is borrowing the binding. This means that
+    we have to apply the same borrowing rules as before. Say that we have the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will give the following error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00094.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will find an example of this error in `Chapter 11/close_mut_error`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The important part of the throwback is that we''re trying to borrow something
+    that is being borrowed in an immutable line. We can fix this by changing the scope
+    of the closure, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will result in the error going.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With that in mind, we can start to expand on this. If the value between the
+    pipes is the argument, then we can clearly do some interesting things with closures
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code for this part can be found in `Chapter11/closures`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Take this code, for example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Rather than create a whole new function, we use the closure and create the function
+    inline with `result` and `x` only existing within the scope of the enclosure `{
+    }`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A closure without any arguments is the inline equivalent of the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Closures aren't all they first appear to be
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Closures are known as **syntax sugar** (they effectively sweeten the bitterness
+    of whatever they coat) for the underpinning trait they cover. This makes closures
+    in Rust different to closures in other languages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Given this premise, we can also use closures as arguments, as well as returning
+    them from a function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Closures as function arguments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Consider the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code for this section can be found in `Chapter 11/close_fn_args`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We call `call_with_three` and pass in the closure as the parameter. The function
+    `call_with_three` takes a parameter of type `F`. So far, it''s no different from
+    any other function taking a generic value as an argument. However, we''re binding
+    `F` to be a function of type `i32`, which returns a value of type `i32`. We have
+    created an inline function to be a parameter for a called function! When the code
+    is compiled, we get the expected value on screen—13:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00095.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 8
+  prefs: []
+  type: TYPE_NORMAL
+- en: Closures with explicit lifetimes – a special case
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As we saw back in [Chapter 8](part0175.html#56SIE0-a5175cb437d742a9aed0ea574000ee2d),
+    *The Rust Application Lifetime*, there are two main types of scope: global and
+    local. A variable that has a local scope goes out of bounds as soon as it is finished
+    with, whereas a global scope variable is cleaned up when the application terminates.
+    A global scope variable is also given the lifetime marker, `''`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Closures also have different scopes. Typically, they will only be for the lifetime
+    if they are called in, but they can also be global.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A "normal" function (as shown previously) would be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Conversely, for a lifetime scope, we would have the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: However, this won't compile. The problem is with the scope.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our first example, the scope is purely for the lifetime of the invocation.
+    In the second, it's for the lifetime of the function (and that is for the entirety
+    of the function), which means that the compiler will see a mutable reference at
+    the same lifetime as the immutable reference.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Although Rust does still allow us to use this, we need to use something called
+    a **higher-ranked trait bounds** (in simple terms, it means that, in order of
+    importance, this trumps something below it). This works by telling the compiler
+    to use the minimum lifetime for the closure to run, which in turn should satisfy
+    the borrow-checker. In this case, we use `for<...>`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Returning a closure
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As threads within Rust use a return from a closure, it makes sense for us to
+    consider that it is entirely possible to return a closure. However, returning
+    a closure is not as straightforward as you'd expect.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s consider a normal function first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will output the value `10`. It''s not rocket science. Let''s change this
+    to a closure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code for the example can be found in `Chapter 11/return_closure_one`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When we run this, though, we don''t get the expected answer of `10`—instead
+    we get this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00096.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So what has gone wrong? When we return from a function, we have to tell the
+    compiler the type we''re returning. However, `Fn` is a trait, so we have to somehow
+    satisfy this requirement. We could always have it return a reference:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will generate another compiler error as it needs a lifetime expectancy
+    applied.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We could always make the function return a lifetime static reference:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'However, this will produce a different error, which may look somewhat confusing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00097.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why are the types mismatched? It's expecting an `i32`, but has found a closure.
+    Makes sense really, but why is this happening?
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is down to how Rust works. For a closure, it generates its own struct and
+    implementation of `Fn` (and anything else required) therefore, we're dealing not
+    with a literal, but something else.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Trying to return a trait object (such as `Box`) won''t work either as the function
+    relies on the `num` binding (which is stack allocated). However, if we move from
+    the stack to the heap, we can now return the closure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: The source for this can be found in `Chapter 11/return_closure_three`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This will now compile and give the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00098.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is the move parameter?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The `move` parameter forces the closure to take ownership of whatever is contained
+    within. Let''s look at that a bit closer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, `myMove` takes ownership of `myNum`. The value of `myNum` implements `Copy`,
+    which is assigned to the binding. This is the same as the operation of any variable,
+    so there has to be something to differentiate `move` from anything else.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look at a slightly different example and see if we can see what is actually
+    going on:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ve seen this before, so it should not be too hard to understand. This would
+    give the answer `7`. If we used `move`, however, the answer may not be as expected:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code for this example is in `Chapter 11/move_closure_one`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When compiled, you may expect the answer `7`, but instead you get:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00099.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12
+  prefs: []
+  type: TYPE_NORMAL
+- en: How can we have a value of `10`?
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the nonmove version, we borrow the value of the mutable. With `move`, we
+    take ownership of a copy. In practical terms, we have created a completely new
+    stack frame for the closure. The `sub_num()` call is still being executed, but
+    when it is called, the value returned is not the expected one, but the ownership
+    of the copy of the original value (`10`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Back to threading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now we have seen how closures work and their importance, we can continue with
+    threading.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we consider *Figure 5*, we can use a closure to return a value from one
+    of the subthreads:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Will this work as is? Unfortunately not. We are borrowing `x`, which we can''t
+    do because of ownership problems. However, we could add `move` to the invocation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The thread will take ownership of the copy of `x` rather than borrow the value.
+    By taking ownership, Rust prevents a common issue with any form of threading:
+    race conditions. If you recall, from the start of this chapter I said that conventional
+    threading has no guarantees of when a thread will return, which can cause all
+    sorts of issues. Typically, other languages use mutexes to try and prevent the
+    race condition (`mutex` stands for mutual exclusion, which should give an idea
+    as to how they work). By taking ownership, Rust does a lot to prevent racing.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ownership has its advantages
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With the Rust ownership system, we can largely negate what many other languages
+    have issues with, that of shared mutable states. Developers in other languages
+    would usually rather chew off their legs than have to deal with a shared mutable
+    state; they're inherently problematic—how can you share a mutable and not have
+    problems with the return of the thread?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust doesn't have this issue, as the shared part is sorted with the ownership
+    system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reference counter
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Consider the following piece of code. It won''t work because there are multiple
+    owners of the `vec`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: There has to be a way to get this compile, and there is. Rust provides us with
+    a reference counter called `Rc`. The reference count has to have a type associated
+    with it, and so it is commonly quoted as `Rc<T>`. This can be used to keep track
+    of each reference. Every time we execute a clone on the execution, the reference
+    count is incremented (and a new owned reference created), so the compiler always
+    knows when something is returned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The only problem with using `Rc<T>` is that it doesn't implement send. Therefore,
+    we use `Arc<T>` (the `A` stands for atomic—it is Rust's own reference count and
+    can be accessed across threads).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Arc<T>`, though, has its own problem: by default, the contents are immutable.
+    You can share data with `Arc<T>`, but *shared* mutable values—that''s a different
+    matter. Mutable shared values give rise to race conditions and that is what we
+    are most certainly not after.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are alternatives to `Arc<T>` (namely `RefCell<T>` and `Cell<T>`, but neither
+    of these implement sync, and so they can't be used with threading).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Problem solved – use Mutex
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Rust provides us with `Mutex<T>`. This works in much the same way as other
+    languages by locking the thread. We implement `mutex` in our code like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code for this example is in `Chapter 11/mutex`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By using `lock`, we only allow a single thread to have access to that data at
+    any one time (it has mutual exclusion). No other thread has access to that value,
+    and if any other thread tries to access the value, it has to wait until the lock
+    is released. When data goes out of scope (when `i` is incremented), the lock is
+    released.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why do we put the thread to sleep?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Usually, the use of `thread::sleep` allows the execution to pause for a finite
+    amount of time as an extra protection against racing. This is not always a good
+    plan as there isn't any real way to tell how long a thread is going to take, so
+    it's at best a guess. As with all guesses, they can be wildly inaccurate (it is
+    used here as we're not doing anything with the data value).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In real systems, the preferred method, to ensure that the correct amount of
+    time is given to ensure that everything has worked is to synchronize the threads
+    using channels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thread synchronization
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The best way to think of a channel is to see it as a walkie-talkie. At one
+    end you have the transmitter (send) and at the other end, the receiver:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code for this example is in `Chapter 11/channels`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When we run this, we get the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00100.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thread panics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As with anything in Rust (and pretty much any language), things can go wrong
+    and the application will throw a panic. As with any other time a panic occurs,
+    we can use panic! to catch the panic and then test the result to see if the thread
+    did indeed panic. We do this using a construct such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `join()` will return `Result<T,E>`, which can then be checked to see if
+    there is an exception.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have seen in this chapter how Rust deals with threading within an application.
+    Be under no illusion of the power threading has and the inherent issues it gives
+    rise to. However, when used correctly, threading can greatly improve the performance
+    of your application. Think of a web browser if you need further proof; imagine
+    the speed of one if everything was performed on a single thread—a simple page
+    could take over a minute to render!
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have also looked at closures and the power behind them. Put the two together
+    and you can appreciate how powerful threading and inline functions can be.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We're taking a break in the next chapter to access how your Rust skills are
+    progressing with another project task that will build upon the ones performed
+    in [Chapter 6](part0121.html#3JCK20-a5175cb437d742a9aed0ea574000ee2d), *Creating
+    Your Own Rust Applications*. After that, we'll be concluding the book with a look
+    at the standard libraries and using external libraries to further improve your
+    Rust applications by interfacing with them.
+  prefs: []
+  type: TYPE_NORMAL

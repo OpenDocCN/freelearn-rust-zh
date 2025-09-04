@@ -1,0 +1,1623 @@
+- en: '*Chapter 4*: Managing Animations with State Machines'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the last chapter, we created a minimal game *engine*, allowing for moving
+    our main character around and playing a simple animation, but it's far from full-featured.
+    There's no world to navigate, the only animation that plays is running, and **Red
+    Hat Boy** (**RHB**) doesn't respond to any physics. At this point, if we wanted
+    to retitle our game, it would be called *Red Hat Boy and the Empty Void*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While that might be a fun title, it wouldn't make for a fun game. Ultimately,
+    we'll want RHB to chase his dog through a forest with platforms to jump on and
+    slide under, and to do that we'll need to make sure he slides, jumps, and runs.
+    We'll also need to make sure that he looks, acts, and behaves differently when
+    he does those things.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we're going to introduce a common game development pattern
+    to manage all that, the state machine, implemented in `if` statements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''re going to cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing state machines
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Managing animation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Adding states to walk the dog
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Idle`, `Running`, `Sliding`, and `Jumping` animations'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of the chapter, you will be able to use state machines to cleanly
+    transition between animations while always playing the correct one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There are no new crates or other technical requirements in this chapter. The
+    source code for this chapter is available at [https://github.com/PacktPublishing/Game-Development-with-Rust-and-WebAssembly/tree/chapter_4](https://github.com/PacktPublishing/Game-Development-with-Rust-and-WebAssembly/tree/chapter_4).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check out the following video to see the Code in Action: [https://bit.ly/35sk3TC](https://bit.ly/35sk3TC)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing state machines
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Games, web applications, heck, even cryptocurrency miners, have to manage the
+    *state* of the system. After all, if the system isn''t doing something right now,
+    if it doesn''t have a current state, then it''s not running, is it? The state
+    is also fractal. In our game, we have a state of `playing`, and another one of
+    `game over`. Once we add menu items, we''ll have even more states. Meanwhile,
+    our RHB also has states: he''s running, sliding, jumping, dying, and dead. Let''s
+    say unconscious, that''s less dark.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The point is our game is doing a lot of things and is maintaining a large game
+    state with a lot of mini-states inside it. As the application moves from one state
+    to another, the rules of the system change. For example, when RHB is running,
+    the *spacebar* might make him jump, but when he''s jumping, hitting the *spacebar*
+    doesn''t do anything. The rule is you can''t jump when you''re already jumping.
+    One way you can maintain that state is through a large structure with a bunch
+    of values or Booleans, such as `jumping = true`, and in a Rust program, you might
+    store that in an enumerated type like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: This works reasonably well in small programs but for larger programs, there
+    are two things that you'll want to manage. The first, which I've already hinted
+    at, is that there may be rules about going between states. Maybe you can't go
+    right from `Jumping` to `Sliding`, but an `enum` doesn't prevent that. The second
+    is that, in addition to the rules being different for each state, frequently things
+    happen on the *transitions* between states, things such as playing a sound effect
+    or updating a score; for that, you need a state machine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining a state machine
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Perhaps the most confusing thing about state machines is the naming, as there
+    are state machines, finite state machines, the state pattern, and more, all of
+    which frequently get used interchangeably by programmers. So, for the sake of
+    clarity, let''s define them this way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**State machines**: A model of the state of a system, represented by a list
+    of states and the transitions between them'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`trait` object, which you can find here: [https://doc.rust-lang.org/book/ch17-03-oo-design-patterns.html](https://doc.rust-lang.org/book/ch17-03-oo-design-patterns.html).
+    It''s quite good but is not idiomatic Rust, and we won''t be using it.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The state machine both helps us keep a mental model of the system in our heads
+    and prevents us from making foolish mistakes in code, such as playing the running
+    animation while RHB is jumping. The drawback, of course, is that you need to understand
+    state machines, so let''s get that covered. We''ll use RHB as our example. RHB
+    can be **Running**, **Idle**, **Jumping**, **Sliding**, **Falling**, or **KnockedOut**.
+    We can use a state **transition table** to list those:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/Table_4.1.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: The transition table only has three columns for now, which are a start state,
+    the event that causes a transition, and the state it transitions to. Events differ
+    from transitions in that events are what happens to the system to *cause* a transition,
+    but transitions are what happens *during* the state change.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It''s a subtle difference, and sometimes it gets used interchangeably because
+    the names will frequently be the same. Let''s work through a state transition
+    to clarify this. RHB starts in the `Idle` state, where he stands in place with
+    an `run`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/Table_4.2.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'When moving to `Running`, we actually do something on the transition. Specifically,
+    we start moving to the right; we increase the velocity in `x`. You can name this
+    transition in the table:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/Table_4.3.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: While this is correct, often we don't bother naming the transitions and the
+    events because they become redundant. While we could continue adding to this table,
+    we can also model a state machine with several types of diagrams. I'm partial
+    to simple circles and lines, where the circles are the states and the lines are
+    the transitions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.1 – A state machine diagram'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/Figure_4.01_B17151.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.1 – A state machine diagram
+  prefs: []
+  type: TYPE_NORMAL
+- en: This diagram is a fleshed-out version of the previous table, with all of the
+    entries completed. It starts at the **Idle** state and transitions to the **Running**
+    state via the **Run** event. From there, it can go in several directions. If the
+    player *slides*, it can go into the **Sliding** state; if the player *jumps*,
+    it can go into the **Jumping** state. Both of those eventually return to the **Running**
+    state when sliding or jumping is over. **Running**, **Sliding**, and **Jumping**
+    can all transition into the **Falling** state when they crash into something.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This does result in a lot of transitions across the middle of the diagram. Finally,
+    the **Falling** state transitions into the **KnockedOut** state when **Falling**
+    is over, via the **End** event. If you're familiar with this type of diagram,
+    you might point out that I could have used a *superstate* to contain **Running**,
+    **Jumping**, and **Sliding** and used one event to transition all of those to
+    **Falling**. You'd be right, but we won't need to concern ourselves with that
+    for our implementation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might be asking, what's the benefit of all this? Does this really fit the
+    *minimal architecture* that we covered in the last chapter? Answering the second
+    question first, the answer is, uh…maybe? I find that state machines help me keep
+    code together that belongs together, rather than sprinkling `match` statements
+    throughout my code base as I might have to when using a simple `enum`. That doesn't
+    mean we won't have those `match` statements; they'll just be in one place.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I also find it fits my mental model of how code works well, and it helps prevent
+    errors because you simply *can't* perform an action that's invalid because it's
+    not available for that given state. Frankly, the state machine exists whether
+    or not we model it, and it's cleaner if we can also model it in code rather than
+    having it emerge accidentally. So, those are the benefits, and that's why I think
+    it fits in our minimal architecture. Now it's time to implement it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementing with types
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The **Object-Oriented** (**OO**) state pattern is typically implemented as
+    a variation on the strategy pattern, where you swap out different objects that
+    all implement the same state interface at runtime based on the various transitions.
+    The diagram looks something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.2 – State pattern](img/Figure_4.02_B17151.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4.2 – State pattern
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the OO version of the pattern, `enum`, which we can use to enumerate the
+    states in a clearer fashion than traditional objects. The second is **generic
+    types**, which we'll use to model each state as a **typestate**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The original state machine implementation I wrote was largely based on this
+    excellent article by Ana Hobden, a.k.a. Hoverbear, at [https://hoverbear.org/blog/rust-state-machine-pattern/](https://hoverbear.org/blog/rust-state-machine-pattern/).
+    While this book no longer uses that pattern, I encourage you to read it for an
+    alternative approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The typestate pattern
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**Typestate** is a fancy name for embedding the state of an object in its type.
+    The way it works is that you have a generic structure with one generic parameter
+    representing the state. Then, each state will have methods that can return new
+    states. So, instead of each state having common methods, as they do, as shown
+    in *Figure 4.2*, each state has its own methods that return the new state. The
+    states in *Figure 4.2* might look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.3 – Typestate pattern](img/Figure_4.03_B17151.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4.3 – Typestate pattern
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this diagram, `State<GenericStateOne>` has a `next` method, which consumes
+    `self` and returns `State<GenericStateTwo>`. Meanwhile, `State<GenericStateTwo>`
+    only has an `update` method, which takes a mutably borrowed `self`. The implications
+    of this are that the compiler will catch you if you try to call `next` on `State<GenericStateTwo>`.
+    In the traditional OO pattern, all states must handle all the same methods because
+    they share an interface, so this kind of defense isn't possible. Often, this means
+    implementing methods you don't actually care about, and either returning an error
+    state or `Self`, and then debugging at runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition, we can use the `mod` keyword and Rust's rules about privacy to
+    make it impossible to create any state in an invalid state. We can make it impossible
+    to move from `GenericStateOne` to `GenericStateTwo` without calling `next` by
+    keeping the internals of `State` private so you can't just construct it. This
+    is called **making illegal states unrepresentable**, and it's a great way to make
+    sure you don't make mistakes in your programs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: I tracked down the *making illegal states unrepresentable* phrasing to Yaron
+    Minsky ([https://blog.janestreet.com/effective-ml-revisited/](https://blog.janestreet.com/effective-ml-revisited/));
+    however, it's quite likely the practice and phrasing are older than that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Typestates are intimidating because they are both a new concept and new jargon,
+    so don't worry if you feel a little confused.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs: []
+  type: TYPE_NORMAL
+- en: There's a lot of great information on typestates in Rust. There's an excellent
+    talk by Will Crichton from Strange Loop (https://youtu.be/bnnacleqg6k?t=2015),
+    as well as blogs at [https://docs.rust-embedded.org/book/static-guarantees/typestate-programming.htm](https://docs.rust-embedded.org/book/static-guarantees/typestate-programming.htm)
+    and [http://cliffle.com/blog/rust-typestate/](http://cliffle.com/blog/rust-typestate/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you want to forget all about generics and type theory for a minute, they
+    can be summarized as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each state of the object is represented by a separate struct.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can only advance from one state to another by methods on that struct.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can guarantee you can only create valid states using privacy rules.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The rest are just details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we're going to need an `enum` to *hold* our typestate. Each state is
+    generic, so to continue in our preceding example, any struct that will interact
+    with our state machine will need to hold *either* `State<GenericStateOne>` or
+    `State<GenericStateTwo>`. In order to do that, we would either need to make the
+    containing `struct` generic as well, and then create new versions of the containing
+    `struct` every time the state changes, or wrap the generic object in an `enum`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll use an `enum` because it prevents the generic nature of the typestate
+    from propagating throughout the program, allowing the typestate to be an implementation
+    detail. We're going to write the kind of state machine that Rust is very good
+    at. Let's get to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing animation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll create our state machine to manage the different animations. Specifically,
+    when RHB isn't moving, he's `Idle`, but when he's moving, he's `Running`. When
+    he jumps, he's `Jumping`. You get the idea.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Those different RHB states correspond to the different animations managed using
+    a state machine. We'll first create the RHB with a state machine and then integrate
+    it into our current application. We'll implement this *top-down*, starting with
+    a struct that represents RHB and letting the compiler errors drive further development.
+    This is sometimes called **Compiler-Driven Development** although it's not a formalized
+    approach such as **Test-Driven Development**. It can work extremely well in a
+    language with a robust type system and great compiler errors, such as Rust. Let's
+    start with how we'll represent RHB.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `RedHatBoy` struct will contain the state machine, the sprite sheet, and
+    the image because eventually, it will draw itself:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: All of this code belongs in the `game` module. That means you can put it in
+    the `game.rs` file or if you so choose, put it in a separate file and bring it
+    into the `game` module with the `mod` keyword. I'll leave that up to you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Of course, this won''t work because you haven''t created the state machine
+    yet. You do have the `Sheet` structure from [*Chapter 3*](B17151_03_Final_PG_ePub.xhtml#_idTextAnchor063),
+    *Creating a Game Loop*. Let''s create `RedHatBoyStateMachine`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Seeing the `enum` we discussed earlier, it might still be unclear why we''re
+    using it when we''ll be creating all of these typestate structures. `RedHatBoyState`,
+    which doesn''t exist yet, is a generic type that contains another type, where
+    those types represent the various states. So, why the redundant `enum`? Because
+    we want to be able to switch easily between the states without using the heap
+    or dynamic dispatch. Let''s imagine we defined the `RedHatBoy` struct in the following
+    way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now the state is fixed to a state. We could, of course, define things in the
+    following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: But of course, now `RedHatBoy` has to also be a generic type. You can make this
+    work without the `enum` using `Box<dyn State>`, but that's not very ergonomic
+    and it would require implementing the same methods on every state, so we'll stick
+    with the `enum`. I have to acknowledge that I don't like the stutter in the types
+    such as `*Idle*(RedHatBoyState<*Idle*>)`, but we'll see that the `enum` wrapper
+    becomes extremely useful as we implement the state machine. Make sure that the
+    `enum` is `Copy,Clone` as well, for reasons you'll see shortly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you''re interested, *The Rust Programming Language* has a chapter that describes
+    how to implement a state pattern in a traditional OO way. Interestingly, they
+    eventually abandon it in favor of using an `enum`. You can find that here: [https://bit.ly/3hBsVd4](https://bit.ly/3hBsVd4).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Of course, this code still doesn''t compile, because we haven''t created either
+    of those states or the `RedHatBoyState` `x`. This is what I meant by Compiler-Driven
+    Development. We can start by creating `RedHatBoyState`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: All the code relating to the individual states will go in its own module, `red_hat_boy_states`,
+    so that we can only make public the methods required by the rest of the `game`
+    module. This will make it impossible to accidentally create a state without using
+    the methods provided, and therefore, impossible to accidentally make an invalid
+    transition. The only way to transition from `RedHatBoyState<Idle>` to `RedHatBoyState<Running>`
+    is going to be through the methods on `RedHatBoyState<Idle>`. It's important that
+    both `RedHatBoyState` and `RedHatBoyContext` are public but their members are
+    private, so we can use them as intended.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Inside the new module, `RedHatBoyState` is a simple generic type that contains
+    `_state`, which is never read, hence the underscore, and `RedHatBoyContext`. Now,
+    `RedHatBoyContext` is a structure with data that''s common to all the states.
+    In this case, that''s the frame being rendered, the position, and the velocity.
+    We''ll need it so that the state transitions can modify the state of RHB. Putting
+    all of this in the `red_hat_boy_states` module means that we haven''t changed
+    the compiler error message. We need to import that module into the `game` module
+    with `use self::red_hat_boy_states::*;`, which you can add anywhere in the `game`
+    module. This gets us partway there, but if we look at the following compiler output,
+    we''re still not finished:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There''s also a corresponding `enum` variant for `Running(RedHatBoyState<Running>)`.
+    Both `Idle` and `Running` don''t exist. We can create both of these easily, with
+    empty structures inside the `red_hat_boy_states` module. Note that both of these
+    must also be `Clone`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Transitioning between states
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Congratulations! You''ve created two states for RHB. This achieves…nothing.
+    There''s a bit missing. For starters, we can''t transition from `Idle` to `Running`,
+    and those states don''t actually do anything when they aren''t transitioning.
+    Let''s take care of a transition right now. We''ll add a method on `RedHatBoyState<Idle>`
+    to go from `Idle` to `Running`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is the transition from `Idle` to `Running`, and the `run` method is where
+    the magic happens. This is just a function that takes a `RedHatBoy<Idle>` state
+    and converts it to a `RedHatBoy<Running>` state, and for now, doesn't change any
+    `RedHatBoyContext` data. You might wonder then, what magic?
+  prefs: []
+  type: TYPE_NORMAL
+- en: This means that to transition from `Idle` to `Running`, you can use `run`, but
+    it also means you can't transition from `Running` back into `Idle`, and that makes
+    sense because the game doesn't allow that behavior. The function also takes `mut
+    self`, so that when it's called, it consumes the current state. This means that
+    if you want to somehow keep `Idle` around after transitioning to `Running`, you
+    have to clone it, and if you do that, you probably really meant to do it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You also can't create the `Running` state directly, because its data members
+    are private, which means you can't just create that state by mistake. You can't
+    create the `Idle` state either, and that's a problem because it's the start state.
+    We'll address that in a moment, but first, let's dive into how we'll interact
+    with the states through our state machine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing the state machine
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Initially, we might be tempted to implement our state machine by adding methods
+    on the `RedHatBoyStateMachine` `enum`, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: This isn't terrible, but it means that every method on our state machine will
+    likely need to match the current variant of the `RedHatBoyStateMachine` `enum`.
+    Then, it would return the new variant based on either the transition or `self`
+    when the transition isn't currently valid. In other words, while the compiler
+    will error if we call `run` on the `Running` state, it won't error if we call
+    `run` on `RedHatBoyStateMachine` when the current variant is `Running`. This kind
+    of error, where we call `run` by mistake on the wrong state, is exactly what we're
+    trying to get away from with our typestates. We'd go to all the trouble of writing
+    these typestates only to immediately throw away one of the benefits in every method
+    on the `RedHatBoyStateMachine` `enum`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Unfortunately, we can''t completely get away from that problem, because we
+    are using an `enum` to contain our states. There''s no way to implement methods
+    on variants of an `enum` as we can with generic structures, and if we''re going
+    to wrap the state in an `enum`, we''ll have to match on the variant. What we can
+    do is *reduce* the surface area of that kind of error by reducing the number of
+    methods that operate in the states. Specifically, instead of calling `run` on
+    the `enum`, we''ll create a `transition` function that takes `Event`. That is
+    going to look like the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: We've solved the problem caused by the `enum` with another `enum`! This is very
+    *Rusty* of us. In this case, we've created an `enum` named `Event` to represent
+    every event that could happen to our machine and replaced the method named `run`
+    with a method named `transition`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, instead of many small methods for run, jump, and similar, we will have one
+    method named `transition` and a bunch of `Event` variants. How does this improve
+    things? Because there is only one `match` statement that we have to update when
+    we want to add a transition, instead of potentially adding multiple little `match`
+    statements. Keep in mind that this function takes `mut` `self`, which means calling
+    `transition` will consume `self` and return a new `RedHatBoyStateMachine` just
+    as the `run` method does on `RedHatBoyState<Idle>`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Into for clean code
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We can actually improve the ergonomics of this method using the `From` trait.
+    If you're unfamiliar, the `From` trait is a Rust feature that lets us define how
+    to convert from one type to another. Implementing the `From` trait on your type
+    will also implement the `Into` trait, which will provide an `into` method that
+    will make it easy to convert from one type to another.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We know that if we have `RedHatBoyState<Running>`, it will convert into the
+    `RedHatBoyStateMachine::Running` variant, and if we write the conversion by implementing
+    the `From` trait, we will be able to replace that wrapping with a call to `into`.
+    That was a lot of words for a little bit of code, so the following is what the
+    implementation of the `From` trait looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This can be placed right under the implementation of `RedHatBoyStateMachine`.
+    It defines how to convert from `RedHatBoy<Running>` to `RedHatBoyStateMachine`,
+    and it''s the same small amount of code we wrote in the `transition` method. Because
+    we have this now, we can make that method a little more succinct, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Replacing calls like `RedHatBoyStateMachine::Idle::Running(state.run)` with
+    `into` isn't just prettier and more concise; it also means that if `run` changes
+    to return a different state, the `transition` method can stay the same, as long
+    as a `From` trait has been written to go from the state to the `RedHatBoyStateMachine`
+    `enum`. It's a nice little change that makes our code more flexible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's a little odd that the `RedHatBoyStateMachine` `enum` is what we call our
+    state machine because we don't normally associate enumerated types with behavior,
+    but this method is why we call it a machine. We use `enum` to hold the various
+    generic states, and we use the ability to add methods to an `enum` to make it
+    a lot more ergonomic to use. The various states know how to transition from one
+    state to another, and the machine knows when to do the transitions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating the state machine
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now that we've built a state machine, albeit one with two states, we need to
+    actually use it for something. Recall our current game, let RHB run throughout
+    a meaningless void. We're going to want to change it so that RHB starts in the
+    left corner and begins running when the user hits the *right arrow key*. In other
+    words, they will transition from `Idle` to `Running`. When that happens, we'll
+    also want to make sure we're showing the appropriate animation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll start by putting `RedHatBoy` in the `WalkTheDog` game:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'RHB will need to be an `Option` for now because `RedHatBoy` contains a sprite
+    sheet. Since the sprite sheet isn''t available until the image is loaded in `initialize`,
+    we have to make `rhb` an `Option` type. We''ll want to initialize the machine
+    in the `initialize` function, and for that purpose, we''ll want to create a convenient
+    `new` method for the `Idle` state:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Because `Idle` is the initial state, it's the only state that will get a `new`
+    function, as mentioned earlier. We've also introduced a constant called `FLOOR`
+    that marks the bottom of the screen, where RHB will land when he jumps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I''ll show it here as if it''s defined right at the top of the `red_hat_boy_states`
+    module. Now, in `Game` `initialize`, we still have a compiler error because we
+    haven''t set up `RedHatBoy` in the game. We can do that right after we''ve loaded
+    the sprite sheet, and we''ll keep two copies of the sprite sheet around; not because
+    we want two copies, but because we''ll delete all the old code when we''ve successfully
+    replaced it with the new code. You can see the changes here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We had to change a surprising amount of code here, because of Rust''s borrowing
+    rules. Our intent is to `clone` `sheet` and `image` and send those into the `RedHatBoy::new`
+    method. However, if we do that, we also need to clone `image` and `sheet` when
+    setting the fields for `image` and `sheet` on `WalkTheDogStruct`. Why? Because
+    the `image: image` line is a move, and can''t be accessed after that. That''s
+    the borrow after move error. Instead we clone `image` and sheet and move the cloned
+    instances into WalkTheDog. Then when creating the RedHatBoy we clone them again.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The same goes for `sheet`. We also have to explicitly call out the type of `sheet`
+    when we assign it in the first place because the compiler can't infer the type
+    anymore. Fortunately, this is an intermediate step; we are working past the compiler
+    errors and will eventually reduce this code to what we actually need. We can't
+    yet because we've replaced one compiler error with two!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before, the `rhb` field wasn't filled in when we created `WalkTheDog`, so that
+    didn't compile. In order to set the `rhb` field to something, we are presuming
+    a `RedHatBoy::new` method exists, but it doesn't, so that doesn't compile. We
+    are also passing the soon-to-exist constructor clones of `sheet` and `image`.
+    The `Sheet` type doesn't support `clone` yet, so that doesn't compile either.
+    We'll need to fix both of these compiler errors to move forward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we continue, I want to note how we use the `ok_or_else` construct on
+    each `clone` call, and then the `?` operator. `RedHatBoy` doesn't need to hold
+    `Option<Sheet>` or `Option<HtmlImageElement>`, so its constructor will take `Sheet`
+    and `HtmlImageElement`. Calling `ok_or_else` will convert `Option` into `Result`,
+    and `?` will return from the `initialize` method with `Error` if the value isn't
+    present. This prevents the rest of the code from having to continually validate
+    that the `Option` type is present, so the code will be a little bit cleaner. The
+    `Option` type is great, but at any time you can replace working with an `Option`
+    type with the actual value it's wrapping.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The easiest of the two compiler errors to fix is the fact that `sheet` doesn''t
+    implement `clone`. Many in the Rust community derive `Clone` on any public type,
+    and while I won''t be following that practice in this book, there''s no reason
+    not to add it to `Sheet` and the types it references, as shown here. Remember,
+    `Sheet` is in the `engine` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we''re down to one compiler error, `RedHatBoy` doesn''t have a `new` function,
+    so let''s create an `impl` block for the `RedHatBoy` struct and define that, as
+    shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: This creates a new `RedHatBoy` with a state machine in the `Idle` state. We've
+    also loaded `sprite_sheet` and `image` in the `initialize` function and passed
+    them to this constructor. Congratulations! Our code compiles!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Drawing RedHatBoy
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Unfortunately, this still doesn't do much. `RedHatBoy` is never drawn! The interface
+    we want is to say `self.rhb.draw()` and see RHB drawing the idle animation. We
+    also want to call the `run` function when we push the *right arrow* and see RHB
+    run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s start by implementing `draw` on `RedHatBoy`. We''ll create a draw function
+    that will mimic the draw function in `WalkTheDog` only using the shared `RedHatBoyContext`
+    that''s in `RedHatBoyState`. That code is as follows, written as part of the `impl
+    RedHatBoy` block:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is nearly identical to the code that exists in the `draw` function already
+    for our happily running RHB. Instead of always using the `frame_name` function,
+    which doesn't exist yet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''re also getting `position` and `frame` off `context()`, another function
+    that doesn''t exist yet. Again, we''ll let the compiler guide us to create both
+    of these functions; Compiler-Driven Development strikes again! The `RedHatBoyStateMachine`
+    `enum` needs to provide a way to return `RedHatBoyContext` and `frame_name`. We
+    can add those implementations, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: I admit I don't love either of these methods and did consider creating a trait
+    that the various states would implement as an alternative. After some thought,
+    I decided this was simpler, and because the Rust compiler will fail if you don't
+    match every single `enum` variant, I'm willing to accept these duplicate *case*
+    statements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `frame_name` and `context` methods both delegate to the currently active
+    `state` to get the data that's required. In the case of `frame_name`, this will
+    be a method that returns the name of the animation in `rhb.json` for a given state
+    as defined on each state. The `context` method is particularly odd because we
+    always return the same field for every single state and always will, as that data
+    is shared across all the states. That's going to require a generic implementation,
+    which we'll write in a moment. An exercise for you would be to simplify these
+    functions with a macro, but we won't do that here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might have noticed that the line `self.state_machine.context().position.x`
+    violates the `self` should only talk to `state_machine` (its friend) but instead,
+    it talks to `position` via `context`. This couples `RedHatBoy` to the internal
+    structure of `RedHatBoyContext` in a way that could be avoided by adding getters
+    for `position_x` and `position_y` on `state machine`, which would delegate to
+    `context`, which would, in turn, delegate to `position`. The Law of Demeter is
+    a great guideline when setting values, and you should almost always follow it
+    for mutable data, but in this case the data is immutable. We can't change the
+    context through this getter, and the downsides of violating the Law of Demeter
+    are not as relevant. I don't feel it's necessary to create more delegating functions
+    just to avoid violating an arbitrary guideline, but if it becomes a problem, we
+    can always change it. For more information on this, go to [https://wiki.c2.com/?LawOfDemeter](https://wiki.c2.com/?LawOfDemeter).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Following the compiler again, we''ve moved the errors from the `draw` method
+    on `RedHatBoy` into `RedHatBoyStateMachine` because none of the states have methods
+    for `frame_name` or `context`. Out of these two methods, `frame_name` is more
+    straightforward, so we''ll implement it first. It''s a getter of the name of the
+    frame in the `rhb.json` file, and it''s different for every state, so we''ll put
+    that method on every state, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: We've added two constants, `IDLE_FRAME_NAME` and `RUN_FRAME_NAME`, which correspond
+    to the names of the frames for the `Idle` and `Run` sections of our sprite sheets,
+    respectively. We then created a new method, `frame_name`, on `RedHatBoyState<Idle>`
+    as well as an entirely new implementation for `RedHatBoyState<Running>`, which
+    also has a `frame_name` method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's worth thinking about whether we could use a trait object ([https://bit.ly/3JSyoI9](https://bit.ly/3JSyoI9))
+    instead of our `enum` for `RedHatBoyStateMachine`, and it probably is possible.
+    I've experimented with it and didn't come to a satisfying solution, but I would
+    encourage you to give it a shot. You'll learn a lot more from this book if you
+    experiment with the code on your own.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we''ve handled the `frame_name` method, we''ll want to add a `context`
+    method. That method is going to do the same thing for every state, return the
+    context, and we can write it generically for all of them, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is a pretty cool feature of Rust. Since we have a generic struct, we can
+    write methods on the generic type, and it will apply to all the types. Finally,
+    there is one more compiler error, in the `draw` function where we reference the
+    frame or position fields on context. These fields are private, but as long as
+    `RedHatBoyContext` is an immutable type, we can each make of those public, as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we need to call that method on `RedHatBoy` in the `WalkTheDog#draw`
+    function. You can add that in this, admittedly awkward, one-liner right at the
+    end of the `draw` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you''ve followed along successfully, you should see the following screen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.4 – RHBs'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/Figure_4.04_B17151.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.4 – RHBs
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the top we have our old, endlessly running RHB, and at the bottom our new
+    RHB just standing still. The new version has fewer features; we've gone backward,
+    but why? This prepared us for what we're going to do next, moving him around and
+    changing animations. Speaking of animations, the `Idle` version of RHB isn't doing
+    anything yet, because `frame` never changes. When RHB is idle, he stands while
+    breathing slowly, so let's get that started, shall we?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Updating RHB
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Our `RedHatBoy` struct is going to have an `update` function, which will, in
+    turn, delegate to an `update` function on the state machine. It''s a new method
+    because every state is going to need to update, in order to advance the animation.
+    We''ll call `update` on `RedHatBoy` from `update` on `WalkTheDog`. That''s a lot
+    of updates, but it''s really just delegation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the `update` function on `WalkTheDog`, we''ve only added one new line, at
+    the end of the `update` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: It's funky because of the fact that `rhb` is `Option`, and we'll fix that in
+    a little bit. We've added another small function to the `RedHatBoy` `struct` `update`
+    that simply updates `state_machine` via the state machine's `update` function.
+    This one line, and others like it, are why the state machine needs to be `Copy`.
+    If it's not, then because `update` consumes `self` via the parameter of `mut self`,
+    you'd have to use something like `Option` to move `self` into `update`, and then
+    reset it again. By making everything `Copy`, you get a much more ergonomic `update`
+    function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, the meat of the behavior is in the `RedHatBoyStateMachine#update` function.
+    Here, we match on `self` and update the current frame on a mutable `state` parameter,
+    and then return a new `Idle` state with a moved `context` with an updated frame.
+    Unfortunately, this code doesn't compile; `context` isn't a public data member
+    so you can't assign it. For now, we'll go ahead and make `context` public, but
+    this should bother you. Remember that Law of Demeter guideline I mentioned earlier.
+    It's one thing to get an immutable data value, another thing entirely to set a
+    mutable value. This is the kind of coupling that could cause real problems down
+    the line. We're *not* going to fix it right now, so go ahead and make `context`
+    public, but we will be keeping a very close eye on this code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, if you look at `update` for `WalkTheDog` and `update` for `RedHatBoyStateMachine`,
+    you'll see similarities. One is updating the running RHB in the upper left corner,
+    and one is updating the idle RHB in the lower left. The time has come to begin
+    combining these two objects. Let's go ahead and do that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding the Running state
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One thing to keep in mind about states is that they exist whether you implement
+    a state machine or not. While we haven't implemented anything in `RedHatBoyState<Running>`,
+    the `Running` state currently exists in `WalkTheDog`; RHB is running all around
+    the void right now! We just need to move the details into our state machine, so
+    that we as programmers can actually see the states and what they do as one coherent
+    unit. Plus, then we'll stop having a sad and lonely boy who is running in place
+    in the left-hand corner of the screen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can do that quickly by just modifying `update` in `RedHatBoyStateMachine`
+    to match the version in `Idle`, with the different frame count for the run animation.
+    That''s shown as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, the state machine is theoretically capable of drawing the run animation,
+    but we haven't written anything to cause that transition. The other thing missing
+    is potentially more subtle. The `Running` animation has `23` frames, and the `Idle`
+    animation has `29`. If we were to transform from `Idle` to `Running` with the
+    frame count at `24`, the game would crash.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, I think we can all agree that the kind of duplication that we have
+    here can be improved. The only difference between the two functions is the frame
+    count. So, we have a few things to do:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Refactor the duplicated code.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The code that updates `context.frame` suffers from a code smell called `update`
+    function is operating over and over again on `context`. Why not move that function
+    to `RedHatBoyContext`? That''s shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`RedHatBoyContext` now has an `update` function that increments the frame,
+    looping it back to `0` when the total frame count is reached. Note how it works
+    the same way as our transitions, consuming `self`, and returning a new `RedHatBoyContext`,
+    although in reality, it''s the same `instance` the entire time. This gives us
+    the same kind of *functional* interface that we''re using elsewhere. The total
+    frame count changes with each state, so we pass that in as a parameter, using
+    constants for clarity.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fix the Law of Demeter violation.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Looking at the two arms of each `match` statement, they are nearly identical,
+    both mutating `context` in the way we didn''t like earlier. Now is a good time
+    to address it, which we can do by making the field private on `RedHatBoyState<S>`
+    again, and creating new methods on the respective `RedHatBoy` state implementations,
+    as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: There! That's better. `context` is no longer inappropriately public, and each
+    individual state handles its own updating. The only difference between them is
+    the constant they use, and it's fitting to have that bundled with the implementation
+    itself. Speaking of which, make sure you move the `RUNNING_FRAMES` and `IDLE_FRAMES`
+    constants into the `red_hat_boy_states` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll need to modify the `update` method on `RedHatBoyStateMachine` to call
+    this new method on each of the states:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: Each of the arms in update now updates the state, and then returns the state.
+    There's some duplication here that's a little suspicious; we'll take another look
+    at that shortly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Move RHB on every `update`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If RHB is going to run in the running state, it needs to respect the velocity.
+    In other words, update animates the frame, but it doesn''t move, so let''s add
+    that to the `RedHatBoyContext` `update` method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: Of course, RHB won't move yet because we aren't changing the velocity. That
+    will come soon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensure that the frame count resets to `0` when transitioning between states.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: There are two categories of changes on the game object that can happen in our
+    state machine. There are changes that happen when the state doesn't change. That's
+    what `update` is and right now those are written in `RedHatBoyStateMachine`. There
+    are also changes that happen on a transition, and those happen in the transition
+    functions that are defined as methods of the type classes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We already transitioned from `Idle` to `Running` via the `run` method, and
+    we can make sure to reset the frame rate on the transition. That''s a small change
+    you can see here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`RedHatBoyContext` has grown a function called `reset_frame`, which resets
+    its frame count to `0` and returns itself. By returning itself, we can chain calls
+    together, which will come in handy shortly. The `run` method has also evolved
+    to call `reset_frame()` on `RedHatBoyContext` and use that new version of `context`
+    in the new `RedHatBoyState` struct.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Start Running on transition.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Now that we have prevented crashes by restarting animations on transitions,
+    let''s start running forward on a transition. This is going to be very short:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: We've sprouted another method on `RedHatBoyContext` called `run_right`, which
+    simply adds forward speed to the velocity. Meanwhile, we've chained a call (see!)
+    to `run_right` in the transition. Don't forget to add the `RUNNING_SPEED` constant
+    to the module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Start Running on the *right* arrow.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Finally, we actually need to call this event when the `ArrowRight` button is
+    pressed. At this point, we can follow along with where we''re doing this in the
+    `WalkTheDog` implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will now start our RHB running, so much so that he'll run right off the
+    screen!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.5 – This could be a problem](img/Figure_4.05_B17151.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4.5 – This could be a problem
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'At this point, we could re-establish *moonwalking*, to bring RHB back on screen,
+    but that doesn''t really serve the purpose of the game. You can either create
+    an event that resets horizontal velocity every update, just like the current code
+    does, or you could track when a key goes up to remove some velocity. The second
+    one feels better but will cause us to write a few events and possibly a transition
+    from `Running` to `Idle`. No, we''ll go to a third approach: ignore it and hit
+    refresh! We don''t need to move backward in our actual game, nor stop, so we won''t.
+    Let''s not spend any more time writing code, that we''ll just delete anyway. Speaking
+    of that.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Delete the original code.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Now that the new and improved RHB is moving, it''s time to get rid of all the
+    references in `WalkTheDog` to the sheet, the element, the frame…basically anything
+    that isn''t the `RedHatBoy` `struct`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Rather than boring you with endless deletes, I'll simply say you can delete
+    all the fields that aren't `rhb` and follow the compiler errors to delete the
+    rest of the code. When you're done, `WalkTheDog` becomes very short, as it should
+    be. As for the arrow keys, you only need to worry about the `ArrowRight` key,
+    and moving to the right.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs: []
+  type: TYPE_NORMAL
+- en: As I said, we won't be restoring moving backward, up, or down here, but you
+    could certainly consider restoring the walking backward functionality by extending
+    the state machine. Doing so will help you internalize the lesson here and save
+    you the trouble of refreshing all the time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, now RHB can run across the screen, but that's not much fun. Let's add sliding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Transitioning to sliding
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Transitioning from running to sliding will involve adding a new state for sliding,
+    so that we see the sliding action, but also checking for when a slide is complete
+    and transitioning back into the running state. This will mean sliding will have
+    its own variation on the `update` function. We can start by adding sliding on
+    the *down* arrow and treating it all just like running. We''ll go through this
+    quickly because most of it is familiar. Let''s start by adding sliding on the
+    *down* arrow in the `update` method of `WalkTheDog`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It''s time to follow the compiler. RedHatBoy doesn''t have a `slide` method,
+    so let''s add that, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Transitioning via `Event::Slide` doesn''t exist. There''s no `Event::Slide`
+    at all, so let''s add those next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's nothing new in the preceding code block. When RHB is `Running`, it can
+    transition to `Sliding` via the `Event::Slide` event and the `slide` method, which
+    doesn't exist on the `RedHatBoyState<Running>` typestate. This is all very similar
+    to how we went from `Idle` to `Running`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To continue with the compiler, we need to add a `slide` method to the `RedHatBoyState<Running>`
+    typestate, as in the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `slide` method on `RedHatBoyState<Running>` converts the state into `RedHatBoyState<Sliding>`,
+    only calling `reset_frame` on `context` to make sure the sliding animation starts
+    playing at frame `0`. We also call `into` on the `slide` method, which needs to
+    convert `RedHatBoyState<Sliding>` into a `RedHatBoyStateMachine` variant. That
+    means we need to create the variant and create a `From` implementation for it,
+    as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At this point, you''ll see errors on the `frame_name`, `context`, and `update`
+    methods of `RedHatBoyStateMachine` because their corresponding `match` calls don''t
+    have cases for the new `Sliding` variant. We can fix that by adding cases to those
+    `match` statements, which will mimic the other cases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once again, we''ve replaced one compiler error with another. There is no `Sliding`
+    state, and it doesn''t have the methods we assumed it would. We can fix that by
+    filling it in, adding some constants for good measure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you look through this code, you''ll see it''s very similar to our already
+    existing running code. If you followed along, you''ll see RHB start skidding across
+    the floor until he goes past the right edge of the screen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.6 – Safe'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/Figure_4.06_B17151.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.6 – Safe
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Stopping RHB from sliding is a little different than what we''ve done before.
+    What we need to do is identify when the slide animation is complete, then transition
+    right back into running without any user input. We''ll start by checking whether
+    the animation is done in the `update` method of the `enum`, which represents our
+    machine, and then create a new transition from sliding back into running. We can
+    do that by modifying the `RedHatBoyStateMachine` `update` method to check after
+    updating in the sliding branch, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: This doesn't compile yet, because stand isn't defined yet and because `SLIDING_FRAMES`
+    is in the `red_hat_boy_states` module. You might think that we can make `SLIDING_FRAMES`
+    public and define a `stand` method, or we could move `SLIDING_FRAMES` into the
+    `game` module. These will both work but I think it's time to look a little more
+    holistically at our `update` method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Every arm of the `match` statement updates the current state and then returns
+    a new state. In the case of `Running` and `Idle`, it was always the same state,
+    but in the case of `Sliding`, sometimes it''s the `Running` state. It turns out
+    `update` is a transition, just one that sometimes transitions to the state it
+    started from. In a state diagram, it looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.7 – Sliding to Running](img/Figure_4.07_B17151.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4.7 – Sliding to Running
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we wanted to be strict about it, we could say that `Updating` state when
+    it gets an **Update** event, then it can transition back to **Sliding** or **Running**.
+    This is a case where the state exists, at least conceptually, but we don't actually
+    have to create it in our code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`update` on the `Sliding` state is really best modeled as a transition because
+    it''s a method that ultimately returns a state. Come to think of it, that''s exactly
+    what the other arms in the `update` method are too! Yes, they don''t ever transition
+    to another state, but each branch calls `update` and then returns a state. So,
+    before we add `Sliding` to the `update` method, let''s refactor to make `update`
+    a transition for both of the other states.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since we''re using Compiler-Driven Development, we''ll change the `update`
+    method to work as if `update` is already a transition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With these changes, we''ve turned `Update` into `Event` and added two more
+    arms to `match` in the `transition` method. Both of those arms work the same way
+    as the other transitions: they call a method on the typestate and then convert
+    the state into the `RedHatBoyStateMachine enum` with the `From` trait. The compiler
+    error you get now might be a little strange; it looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You may have expected that the error would say something about the `update`
+    method not returning anything, but remember all Rust functions return something;
+    they just return `Unit` when they don''t return anything else. So, this error
+    is telling you there''s no way to convert from the `()`, or `Unit`, to a value
+    of the `RedHatBoyStateMachine` type. That''s not what we want to fix; we want
+    to make both of the `update` calls on the states return new states. Those changes
+    are next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: The changes are small but important. The `update` method for `RedHatBoyState<Idle>`
+    and `RedHatBoyState<Running>` both return `Self` now, because even though the
+    state doesn't change, these are still typestate methods that return a new state.
+    They also take `mut self` now instead of `&mut self`. You can't return `self`
+    if you mutably borrow it, so this method stopped compiling. More importantly,
+    this means these methods don't make unnecessary copies. They take ownership of
+    `self` when called, and then return it. So, if you're worried about an optimization
+    problem because of extra copies, you don't have to be.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we''re down to one compiler error, which we''ve seen before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We didn''t implement a conversion from the `Idle` state back to the `RedHatBoyStateMachine
+    enum`. That''s similar to the other ones we wrote, implementing `From<RedHatBoyState<Idle>>`,
+    as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: Remember that these implementations of the `From` trait are not in the `red_hat_boy_states`
+    module. The `red_hat_boy_states` module knows about the individual states but
+    does not know about `RedHatBoyStateMachine`. That's not its job.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we've refactored the code, our little RHB doesn't slide anymore. Instead,
+    he kind of sits down because the `Sliding` state doesn't handle the `Update` event.
+    Let's fix that now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Transitioning to sliding and back again
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Part of the reason we used the typestate pattern for our individual states is
+    so that we get compiler errors when we make a mistake. For instance, if we call
+    `run` when we are in the `Running` state, it won't even compile because there
+    is no such method. There is one place this doesn't hold, the `transition` method
+    on the `RedHatBoyStateMachine` `enum`. If you call `transition` with a `RedHatBoyStateMachine`
+    variant and an `Event` variant pair that don't have a match, it returns `Self`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's why our RHB is sitting down. He transitions to `Sliding` and then stops
+    updating, staying in the same state forever. We'll fix that by adding the match
+    for the `Update` event and then, you guessed it, follow the compiler to implement
+    the sliding animation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This starts by adding the match to the transition method, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This match is just like the others; we match on `Sliding` and `Update` and
+    call `update`. Just like before, we''ll get an error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `Sliding` state still has an update method that doesn't return a state.
+    That's not going to work with our current setup, but it's not as simple as making
+    the `update` method return `Self`, as on the other two states.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Remember, there are two possible states that can come from the `update` method
+    on `Sliding`: `Sliding` and `Running`. How is that going to work with our current
+    setup? What we''ll need to do is have `update` return an `SlidingEndState` `enum`
+    that can be either `Sliding` or `Running`, and then we''ll implement a `From`
+    trait that will convert that into the appropriate variant of `RedHatBoyStateMachine`.
+    That''s odd to explain, so let''s see it in action. We can modify the `update`
+    method on `RedHatBoyState<Sliding>` to work like the one we proposed at the beginning
+    of this section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ve taken the code that we originally considered putting in the `RedHatBoyStateMachine`
+    `update` method and moved it into the `update` method of `RedHatBoyState<Sliding>`.
+    This makes sense conceptually; the state should know how it behaves. On every
+    update, we update `context`, and then check whether the animation is complete,
+    with `if self.context.frame >= SLIDING_FRAMES`. If the animation is complete,
+    we return one variant of this new `enum` that doesn''t exist yet: `SlidingState`.
+    The `SlidingState` variant can either be `Complete` or `Sliding`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's definitely a little strange that the `update` method doesn't return another
+    state here, and probably means we aren't using a *pure* typestate method. An alternative
+    might have been to return the next `Event` from `update` and send that back into
+    a call to the `transition` method on `RedHatBoyStateMachine`. That implementation
+    ends up looking very strange because states are returning `Events` that are only
+    used by `RedHatBoyStateMachine` and are otherwise unreferenced in the `red_hat_boy_states`
+    module. Regardless of whether the strange return value of `update` makes you uncomfortable,
+    I would encourage you to try other approaches. Maybe yours is better than mine!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Following the compiler yet again, we have two obvious problems: there is no
+    `stand` method and there is no `SlidingEndState` `enum`. We can handle both of
+    these right here, next to the code we just wrote, as shown:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only side effect of the transition to `Running` is that we call `reset_frame`
+    again on `context`. Remember this has to be done on every transition, otherwise,
+    the program can try to animate the new state with `frame`, which isn't valid and
+    will crash. So, we'll reset the frame back to `0` on every transition.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This leaves us with a compiler error to fix once again. This time, it''s the
+    following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Pay close attention to that source trait. It''s not coming from one of the
+    states but from the intermediate `SlidingEndState`. We''ll solve it the same way
+    as before, with a `From` trait, but we''ll need to use a `match` statement to
+    pull it out of the `enum`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we match on `end_state` to get the actual `State` out of `enum`, and then
+    call `into` on that state again to get to `RedHatBoyStateMachine`. A little boilerplate,
+    but it makes it easier to do the conversion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'And now we have it! Run the game now and you''ll see RHB take a short slide
+    and pop back up again to the running state. Now that we''ve added three animations,
+    it''s time to deal with these ugly lines in the `WalkTheDog` implementation: `self.rhb.as_mut().unwrap().slide()`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We treat `rhb` as an `Option` type, not because it's ever really going to be
+    `None`, but because we don't have it yet before the `WalkTheDog` `struct` is initialized.
+    After `WalkTheDog` is initialized, `rhb` can never be `None` again because the
+    state of the system has changed. Fortunately, we now have a tool for dealing with
+    that, the good old state machine!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every little thing I think I see
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '`WalkTheDog` can be in two states, `Loading` or `Loaded`, after it''s initialized.
+    Fortunately, we accounted for this when we wrote our `GameLoop`. Remember that
+    `GameLoop` returns `Result<Game>` from `initialize`; we''re just currently always
+    returning `Ok(WalkTheDog)`. What if we made `WalkTheDog` an `enum` and returned
+    a different state of our game instead? That would mean `WalkTheDog` would be a
+    state machine, with two states, and `initialize` would become the transition!
+    That''s exactly what we''re going to do. Modify `WalkTheDog` so it is no longer
+    a `struct` but an `enum`, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is great; now everything is broken! Whoops! We''ll need to adjust the
+    `WalkTheDog` implementation to account for the two variants. First, we''ll change
+    the `initialize` function on `WalkTheDog`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Remember in [*Chapter 3*](B17151_03_Final_PG_ePub.xhtml#_idTextAnchor063),
+    *Creating a Game Loop*, where we made this function return `Game`? This was why!
+    In order to ensure `initialize` is only called once, `initialize` has to match
+    `self` on its variants, and if we call `initialize` twice, we''ll return an error
+    via `anyhow!`. Otherwise, everything inside the `Loading` branch is the same as
+    before, except we return `WalkTheDog::Loaded` instead of `WalkTheDog`. This does
+    cause a compiler warning, which will become an error in future versions of Rust
+    because `RedHatBoy` isn''t public but is exposed in a public type. To get rid
+    of that warning, you''ll need to make `RedHatBoy` public, and that''s fine; go
+    ahead and do that. We also need to change the `new` constructor to reflect the
+    new type, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `WalkTheDog` `enum` starts in `Loading`, nothing fancy there. The `update`
+    and `draw` functions now both need to reflect the changing states; you can see
+    those changes here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: You could argue this isn't really a change on the `Option` type, as we still
+    need to check the state of `Game` each time we operate on `rhb`, and that's true,
+    but I think this more clearly reveals the intent of the system. It also has the
+    benefit of getting rid of the `as_ref`, `as_mut` code, which is often confusing.
+    Now that we've cleaned up that code, let's add one more animation to RHB. Let's
+    see this boy jump!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Transitioning to jumping
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Going through each and every change yet again for the jump is redundant. Instead,
+    I can recommend you make the following change:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: You should be able to follow the compiler errors all the way through, creating
+    a transition from `Running` to `Jumping`. You can also look up the constant values
+    you need directly out of `rhb.json`. The number of frames is the number of images
+    in `Jump` in the animation multiplied by `3`, and subtracting `1`, and the name
+    of the animation is `Jump`. Make sure you handle the `update` event in the transition
+    method for `Jumping`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Do all that and you see RHB skidding across the ground, doing a kind of dance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.8 – That''s...not jumping](img/Figure_4.08_B17151.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4.8 – That's...not jumping
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you get stuck, the answers to this are available at [https://github.com/PacktPublishing/Rust-Game-Development-with-WebAssembly/tree/chapter_4/](https://github.com/PacktPublishing/Rust-Game-Development-with-WebAssembly/tree/chapter_4/).
+    However, I strongly recommend trying to do this without checking first. Look at
+    what we did for the first three transitions and try to understand what we did.
+    Even if you get stuck, the time spent practicing is valuable here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you've correctly implemented the code for transitioning to the jumping state,
+    our RHB will play his jumping animation, forever, while skidding across the ground.
+    We've seen this before with the slide state, so it's time to figure out what's
+    different about jumping. Of course, we know exactly what's different about jumping
+    – you go up! Well, at least a little.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are three things we need to do. First, we give RHB vertical velocity
+    when he jumps; second, we need to add gravity so that RHB will actually come down
+    when he jumps. And finally, we need to transition running when we land, using
+    our ever-durable state machine:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Going up on `Jump`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Take a moment and think, where does this belong? Should it go in the `update`
+    function, the `jump` event, or maybe in the `enum` implementation? No, this is
+    a transition change because it happens on `jump`, and it belongs in the `jump`
+    method on the `Running` type class. You should already have a transition from
+    running to jumping, so let''s update that function to add vertical velocity:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: Remember in our 2D coordinate system, `y` is `0` at the top, so we need a negative
+    velocity to go up. It also resets the frame so that the jump animation starts
+    at frame `0`. The implementation in `RedHatBoyContext` is using the same pattern
+    of accepting `mut self` and returning a new `RedHatBoyContext`. Now, if you let
+    the app refresh, RHB will take off like Superman!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding gravity.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'In order to have a natural jump, we''ll apply gravity on every update. We''ll
+    do this *regardless of state* because later, we''ll need to have RHB fall off
+    of platforms and cliffs, and we don''t want to have to constantly pick and choose
+    when we''re applying gravity. This will go in the `update` function of `RedHatBoyContext`,
+    right at the top:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you refresh the page right now, you'll get a blink-and-you'll-miss-it problem,
+    and you'll probably be greeted with a blank screen. The screen isn't really blank;
+    RHB just fell right through the ground!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.9 – Tell my family I love them](img/Figure_4.09_B17151.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4.9 – Tell my family I love them
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll need to address this with our first case of **collision resolution**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Landing on the ground.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'This is a bit of a spoiler for the next chapter, but collision detection happens
+    in two steps. The first is detection, finding places where things collide, and
+    the second is resolution, where you do something about the collision. Since there
+    isn''t anything to collide with in RHB''s empty void, we can just do a simple
+    check in the same `update` function to see whether his new position is past the
+    floor and update the position back to the floor. Keep in mind, you do this *after*
+    you update to a new position:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: This may feel redundant, but we can't know gravity pulled RHB past the ground
+    without actually calculating where he ends up, and we don't draw the in-between
+    state, so the performance cost is minimal. This change prevents RHB from falling
+    through the ground and causes a nice jumping arc, but he keeps performing the
+    jumping animation for eternity. We need to change the state from `Jumping` back
+    to `Running`, and we need to make that decision in `RedHatBoyStateMachine` because
+    it's a conditional state change based on a condition just like the one that transitioned
+    from `Sliding` to `Running`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That''s a change to the state machine, much like the one we did for `Sliding`,
+    as seen here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'So, if the position is on the floor, we need to transition to `Running` via
+    the `stand` method, only we can''t! We never wrote a transition from `Sliding`
+    to `Running`, just the other way around. We also never wrote a `JumpingEndState`
+    enum, or a way to convert out of it via `From`. So, right now, you should see
+    several compiler errors about all of that, the first being the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There''s the compiler error, but there''s no `land` method. So, go write it.
+    *I''m serious: go write it yourself. I''m not going to reproduce it here*. You
+    can go ahead and follow along with the previous methods we wrote and implement
+    them. You can do it; I believe in you. When you do, you''ll have a clean animation
+    from `Idle` to `Running`, then `Jumping`, and back to `Running` again. Then, you''ll
+    wander off the screen because we don''t have a full scene yet, but we''re getting
+    there!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you get stumped, you can always check the source code for this chapter in
+    the repository at [https://github.com/PacktPublishing/Rust-Game-Development-with-WebAssembly/tree/chapter_4/](https://github.com/PacktPublishing/Rust-Game-Development-with-WebAssembly/tree/chapter_4/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This chapter covered one topic, but one of the most important topics in game
+    development. State machines are everywhere in games, which we saw when we implemented
+    a small one to manage the `Loaded` and `Loading` states of the `WalkTheDog` `enum`
+    itself. They are a particularly nice way to implement animation states that must
+    correspond with what the player is doing, and Rust has great ways to implement
+    this pattern. We used two: the simple one for `WalkTheDog`, and the much more
+    complex `RedHatBoyStateMachine` that uses the typestate pattern. The typestate
+    pattern is a commonly used pattern in Rust, both inside and outside of game development,
+    so you can expect to see it in many Rust projects.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also used the compiler to drive development, over and over again. It's an
+    incredibly useful technique, where you can start with what you want the code to
+    look like and use the compiler's error messages to help you fill in the rest of
+    the implementation. The code becomes like a paint by numbers picture, where you
+    use higher-level code to draw the lines and the compiler error messages tell you
+    how to fill them in. Rust has very good compiler error messages, getting better
+    with every release, and it will pay huge dividends for you to pay close attention
+    to them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that our RHB can run and jump, how about he runs and jumps on something?
+    We'll put him in a scene and have him jump on it in the next chapter.
+  prefs: []
+  type: TYPE_NORMAL

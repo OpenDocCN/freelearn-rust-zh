@@ -1,0 +1,1020 @@
+- en: Background Tasks and Thread Pools in Microservices
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, you'll learn how to use background tasks in microservices.
+    In [Chapter 5](ed541ef5-4701-4e70-aabf-14882b4cecb3.xhtml), *Understanding Asynchronous
+    Operations with the Futures Crate,* we created a microservice that provides a
+    feature that enables the user to upload images. Now, we'll create another version
+    of this service, which loads an image and returns a resized version of that image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To utilize the available resources fully, microservices have to be implemented
+    with asynchronous code, but not every part of a microservices can be asynchronous.
+    For example, parts that require massive CPU load or parts that have to use shared
+    resources should be implemented in a separate thread or use a pool of threads
+    to avoid blocking the main threads that are used to process the event loops used
+    by asynchronous code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we''ll cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to interact with spawned threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to use the `futures-cpupool` and `tokio-threadpool`crates
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we'll improve the images microservice from [Chapter 5](ed541ef5-4701-4e70-aabf-14882b4cecb3.xhtml), *Understanding
+    Asynchronous Operations with the Futures Crate,* by adding an image-resizing feature.
+    To compile the examples, you need the Rust compiler, version 1.31 or newer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can get the sources of the examples in this chapter from the project on
+    GitHub: [https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter10](https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter10).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interacting with threads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll first implement this using a separate thread that will resize all incoming
+    images. After that, we'll improve the microservice with multiple threads using
+    thread pools. In this section, we'll start to use threads to perform tasks in
+    the background.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Synchronous or asynchronous?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this book, we prefer to create asynchronous microservices, because these
+    can handle a lot of concurrent requests. Not every task, however, can be handled
+    in an asynchronous way. Whether we can use an asynchronous microservice depends
+    on the kind of task and the resources it needs. Let's explore the difference further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: IO-bound versus CPU-bound tasks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There are two types of tasks. If a task doesn't carry out many calculations,
+    but it does do a lot of input/output operations, it's called an I/O-bound task.
+    Since CPU is much faster than input/output buses, we have to wait a long time
+    for a bus or device to be available for reading or writing. I/O-bound tasks can
+    be handled well in an asynchronous way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If a task does a lot operations using CPU, it's called a CPU-bound task. For
+    example, image resizing is a kind of CPU-bound task, because it recalculates the
+    pixels from an original image, but only saves the result when it's ready.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The difference between I/O-bound and CPU-bound tasks isn't obvious and not every
+    task can be classified strictly to an I/O or CPU domain. To resize an image, you
+    have to keep the whole image in the memory, but if your service transcodes video
+    streams, it may take a lot of I/O and CPU resources simultaneously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Synchronous tasks inside asynchronous contexts
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's say you know which class the task belongs to, either I/O or CPU. IO tasks
+    can be handled in a single thread, because they have to wait for a lot of I/O
+    data. If your hardware has multicore CPUs and a lot of I/O devices, however, a
+    single thread isn't enough. You may decide to use multiple threads with a single
+    asynchronous context, but there's a problem—not every asynchronous task can be
+    transferred between threads. For example, SQLite-embedded databases stores service
+    data in thread-local storage, and you can't use the same database handle with
+    multiple threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: SQLite can't work with databases asynchronously; it has asynchronous methods
+    that interact with instances that run in a separate thread, but you have to remember
+    that not every task can be run in multithreaded contexts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A good solution if we have a multicore hardware is to use a thread pool to handle
+    connections. You can transfer connection contexts to any thread from the pool,
+    which can handle connections asynchronously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rust and well-written crates prevent you from making mistakes; in my opinion,
+    Rust is the best tool in existence for writing fast and secure software. However,
+    it''s important to be aware of a certain situation that''s hard to detect with
+    a compiler, which occurs when you call a blocking operation in an asynchronous
+    context. Asynchronous applications use a reactor that calls the necessary code
+    when a piece of data is ready to read or write, but if you''ve called the blocking
+    method, the reactor can''t be called and all connections that are handled by the
+    blocked thread will be blocked as well. Even worse, the application might be completely
+    blocked if you call a synchronous method related to the reactor. For example,
+    if you try to send a message to a receiver handled by a reactor, but the channel
+    is full, the program will be blocked, because the reactor must be called to drain
+    the channel, but this can''t be done because the thread is already blocked by
+    the message being sent. Take a look at the following example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The conclusion is simple—only use asynchronous operations in asynchronous contexts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The limitations of using IO operations on files
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As mentioned, some libraries, such as SQLite, use blocking operations to perform
+    queries to a database and get the result back, but this depends on what kind of
+    IO they use. A network stack is completely asynchronous in modern operating systems,
+    but the input/output of files is harder to use asynchronously. Operating systems
+    contain functions to carry out asynchronous reading or writing, but it's hard
+    to implement this with cross-platform compatibility. It's simpler to use a separate
+    thread to handle hard-drive IO interactions. The `tokio` crate uses a separate
+    thread to handle the IO of files. Other platforms, such as Go or Erlang, do the
+    same thing. You can use asynchronous IO for files for specific operating systems,
+    but this isn't a very flexible approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you know the difference between synchronous and asynchronous tasks,
+    we're ready to create an asynchronous service that uses a separate thread for
+    the CPU-bound task of resizing images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spawning a thread for image processing
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In our first example, we''ll create a microservice that expects a request with
+    an image, loads it completely to the memory, sends it to a thread for resizing,
+    and waits for the result. Let''s start by creating a thread that expects image
+    data and responses. To receive the request, we''ll use the `mpsc::channel` module
+    and `oneshot::channel` for responses, because multiple clients can''t send requests
+    and we only expect one response per image. For the requests, we''ll use the following
+    struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`WorkerRequest` contains the `buffer` field for binary image data, the desired
+    `width` and `height` of the resized image, and a `tx` sender of the `oneshot::Sender` type for
+    sending a `WorkerReponse` response.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The response is presented by a type alias to the `Result` type, which holds
+    the successful result with the binary data of the resized image or an error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now create a thread that supports these messages and carries out resizing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since we use a single thread for all resizing requests, we can use the `wait`
+    method of the `Sender` and `Receiver` for interacting with clients. The preceding
+    code creates a `channel` from the `mpsc` module that can keep one message in a
+    buffer. We don't need more space in the buffer for the message, because resizing
+    takes a long period of time and we just need to send the next message to a receiver
+    while we're processing an image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We use the `thread::spawn` method to spawn a new thread with a processing function.
+    The `Receiver::wait` method converts a `Receiver` to a blocking iterator of the
+    incoming messages. We use a simple loop to iterate over all the requests. The
+    reactor isn't needed here. If the message is received successfully, we'll process
+    the request. To convert the image, we use the `convert` method that's described
+    in the following code snippet. We send the result to `oneshot::Sender`, which
+    doesn't have a `wait` method; all we need to do is call the `send` method, which
+    returns a `Result`. This operation won't block and doesn't need a reactor, because
+    it uses `UnsafeCell` internally to provide a value for the `Receiver` that implements
+    the `Future` trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To resize the image, we use an `image` crate. This contains a rich set of methods
+    for image transformation and supports multiple image formats. Take a look at the
+    implementation of the `convert` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The function expects binary data of an image, related to its width and height.
+    The `convert` function returns an `ImageResult`, which is a type alias for `Result`
+    with `ImageError` as the error type. We use this error type, because some methods
+    inside the `convert` function implementation can return errors of this type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first line of the implementation tries to guess the format of incoming data with
+    the `guess_format` function. We can use this format value later on to use the
+    same format for the output image. After that, we use the `load_from_memory` function
+    to read an image from a data vector. This call reads the data and actually doubles
+    the amount of consumed memory for the image – be aware of this if you want to
+    process multiple images simultaneously. After resizing, we write the scaled image
+    to a vector and return it as a `Result`. The scaled image also consumes some memory,
+    meaning we're almost tripling the consumption. It's better to add limits for the
+    size of the incoming message, the width, and the height to prevent memory overflow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now implement the `main` function, which spawns a worker thread and
+    starts a server instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only difference here from the `main` function of the previous chapter is
+    that we call the `start_worker` function and use the returned `Sender` as a parameter
+    for the handler function along with a request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's look at an implementation of `microservice_handler` and learn how it interacts
+    with a worker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interacting with a thread in an asynchronous way
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The handler function of the image-resizing microservice contains two branches:
+    one for the index page and one for the resize request. Take a look at the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the `resize` branch part of the handler, we have to carry out various actions:
+    extract parameters, collect a body from a stream, send a task to a worker, and
+    generate a body. Since we use asynchronous code, we''ll create a chain of method
+    calls to construct the necessary `Future` object.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To extract the parameters, we use the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We use the `query` part of `uri` and the `parse` function of the `queryst`
+    crate to parse the parameters to `Json::Value`. After that, we can extract the
+    necessary values by index because the `Value` type implements the `std::ops::Index`
+    trait. Taking a value by index returns a `Value`, which will be `Value::Null`
+    if the value isn''t set. The `to_number` function tries to represent a value as
+    a string and parse it to the `u16` value. Alternatively, it returns a default
+    value, which you set as a second parameter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: By default, we'll use an image size of 180 × 180 pixels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next part of the handling branch creates the body of the response using
+    the size parameters we extracted from the query string. The following code collects
+    a stream of the request to a vector and uses a worker instance to resize an image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: To interact with a worker, we create a `oneshot::channel` instance and a `WorkerRequest`
+    with the necessary parameters. After that, we `send` a request to a worker using
+    the `tx` variable, which is a `Sender` instance connected to a worker and was
+    provided with the `microservice_handler` function call. The `send` method creates
+    a future that succeeds if a message is sent successfully. We add a step to this
+    future with the `and_then` method, which reads a value from a `oneshot::Recevier`
+    that implements the `Future` trait as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When the scaled message is ready, we take it as a result of `Future` and `map`
+    it to a response.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Test the example by sending an image using `curl`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: We've sent `image.jpg` from the media folder and saved the result to the `files/resized.jpg`
+    file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The major drawback of this microservice is that it only uses a single thread,
+    which will quickly become a bottleneck. To prevent this, we can use multiple threads
+    to share CPU resources to handle more requests. Let's now look at how to use thread
+    pools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using thread pools
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To use thread pools, you don't need a special library. Instead, you can implement
+    a scheduler that sends requests to a bunch of threads. You can even check the
+    responses of workers to decide which thread to choose for processing, but there
+    are ready-to-use crates that help to solve this issue more elegantly. In this
+    section, we're going to look at the `futures-cpupool` and `tokio-threadpool` crates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CpuPool
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Here, we''ll reuse an existing microservice and remove the `start_worker` function,
+    and the `WorkerRequest` and `WorkerResult` types. Keep the `convert` function
+    and add a new dependency to `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Import the `CpuPool` type from that crate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The pool is now ready to use in the request handler. We can pass it as a parameter,
+    like we did with the `Sender` of the worker thread in the previous example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we created a thread pool with four threads and passed
+    it to the `serve` function to `clone` it for the handler. The handler function
+    takes a pool as the first argument:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We use the same branches and the code to extract the width and height parameters.
+    We change how we convert the image, however:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code of this implementation has become more compact and accurate. In this
+    implementation, we also collect a body to a `Vec` binary, but to convert the image
+    we use a lazy `Future` that spawned in a thread pool using the `spawn` method
+    of `CpuPool`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We use the `future::lazy` call to postpone the execution of the `convert` function.
+    Without the `lazy` call, the `convert` function will be called immediately and
+    will block all IO activities. You can also set specific parameters for `CpuPool`
+    using `Bulder`. This helps to set the quantity of threads in a pool, the stack
+    size, and the hooks that will be called after the start of a new thread and before
+    it stops.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`CpuPool` is not the only way to use pools. Let''s look at another example.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The blocking section
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The `tokio-threadpool` crate contains a `blocking` function that''s declared
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function expects any function that performs blocking operations and runs
+    it in a separate thread, providing a `Poll` result that can be used by a reactor.
+    It is a slightly low-level approach but it's actively used by `tokio` and other
+    crates (to perform IO operations on files).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The positive side of this approach is that we don''t need to create a thread
+    pool manually. We can use the simple `main` function, as we''ve done before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To spawn a task that calls the `convert` function, we can use the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `blocking` function call delegates the task execution to another thread
+    and returns a `Poll` for every call until the result of the execution is ready.
+    To call a raw function that returns a `Poll` result, we can wrap that function
+    with a `future::poll_fn` function call that converts any polling function to a
+    `Future` instance. Looks simple, doesn't it? We didn't even create a thread pool
+    manually.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, the `tokio-fs` crate uses this method to implement IO operations
+    on files:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`would_block` is a wrapper over the blocking function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: You now know how any blocking operation can be joined with an asynchronous reactor.
+    This approach is used not only to interact with filesystems, but also for databases
+    and other crates that don't support the `futures` crate or that need massive calculations
+    with CPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Threads and thread pools are good ways to utilize more resources of a server,
+    but it''s a tedious programming style. You have to think about a lot of details:
+    sending and receiving messages, load distribution, and respawning failed threads.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There''s another approach to run tasks concurrently: actors. The actors model
+    is a computational model that uses computational primitives called **actors**.
+    They work in parallel and interact with each other by passing messages. It''s
+    a more flexible approach than using threads or pools, because you delegate every
+    complex task to a separate actor that receives messages and return results to
+    any entity that sent a request to an actor. Your code becomes well structured
+    and you can even reuse actors for different projects.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We already studied `futures` and `tokio` crates, which are tricky to use directly,
+    but they''re a good foundation to build asynchronous computational frameworks,
+    and especially it''s good to implement actors model. The `actix` crate already
+    did that: it''s based on both crates to bring an actors model to Rust. Let''s
+    study how we can use actors to perform background tasks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll re-implement the resizing microservice, but add three actors: a resizing
+    actor, a counting actor, which counts the amount of requests, and a logging actor,
+    which will write the count values to `syslog`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basics of the actix framework
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `actix` crate provides a well-organized actors model that's simple to use.
+    There are main concepts you should remember. At first, the `actix` crate has the `System`
+    type, which is the main type to maintain actors system. You have to create the `System`
+    instance before you create and spawn any actor. Actually, `System` is an `Actor`
+    that controls the whole process and can be used to stop an application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Actor` is the most-used trait of the framework. Every type that implements
+    the `Actor` trait can be spawned. We''ll implement this trait for our types later
+    in this chapter. Also, the `actix` crate contains the `Arbiter` type, which is
+    an event loop controller that have to be one per thread. There''s `SyncArbiter`
+    to run CPU-boud tasks, and this arbiter uses pools of threads to perform actors.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every `Actor` has to work in a `Context`, which is an environment to a runtime
+    and can be used to spawn other tasks. Also, every `Actor` instance takes an `Address`
+    and you can use it to send messages to actors and receive responses. We'll store
+    in our example addresses of all necessary actors to a shared state to use them
+    from different handlers in parallel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Address` provides a `send` method that expects a type that implements the `Message`
+    trait. To implement message-handling for `Actor`, you have to implement the `Handler`
+    trait for the actor''s type.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create three actors for our resizing microservice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementing actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'First, we have to import all necessary dependencies. We''ll use the same common
+    dependencies from previous examples in this chapter, but you also have to add
+    the following dependencies to `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added the `actix` crate. It's the main crate for the current example. Also,
+    we imported the `failure` crate, because we'll use the `Fail` trait to get access
+    to the `compat` method, which converts any error type that implements the `Fail`
+    trait into a `Compat` type that implements the `std::error::Error` trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, we'll use `syslog` and we added the `syslog` crate to access the system
+    API. `syslog` is a standard of system logging. We'll use it to demonstrate how
+    actors can perform separate tasks of the whole process. Now we can add the `actors`
+    module to our example and add three actors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The count actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The first actor we'll implement is a counter. It takes a message with a string
+    and counts the number of the same strings. We will use it to count the amount
+    of requests of specified paths.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Types
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Create the `src/actors/count.rs` module and import the following types:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: We'll use the `Actor` trait to implement an actor's behavior, which works in
+    a `Context` and receive a `Message` and handle it by the `Handler` trait implementation.
+    Also, we need `HashMap` to store all counts. We also add the `Value` types alias
+    and use it as a type for counting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Actor is a struct that implements the `Actor` trait. We''ll use a struct with
+    `HashMap` inside to count the number of incoming strings:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added a new method to create an empty `CountActor` instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we can implement the `Actor` trait for our struct. The implementation is
+    simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We specify a context and set it to the `Context` type. The actor trait contains
+    the default implementation of different methods that help you to react on lifetime
+    events of your actor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`started`: This is called when the `Actor` instance starts.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`stopping`: This is called when the `Actor` instance switches to the Stopping
+    state (if `Context::stop` is called, for example).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`stopped`: This is called when the `Actor` instance stops.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now, let's add a message type that will be handled by the actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Message
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The counting actor expects a message with a string, and we''ll add the following
+    struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `Count` struct has a single filed with the String type and implements the
+    `Message` trait of the Actix framework. This implementation allows us to send
+    `Count` instances using the address of the actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Message trait needs type of associated type `Result`. This value will be
+    returned after the message is processed. We'll return a counter value for the
+    provided string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handler
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To add support for incoming message types, we have to implement the `Handler`
+    trait for our actor. Let''s implement `Handler` of `Count` messages for our `CountActor`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: We also have to set the associated type with the same type of a result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handling occurs in the body of the `handle` method of the `Handler` trait. We'll
+    get entry for a provided String value with the `Count` message and extract the
+    entry of `HashMap`. If no entry is found, we'll get a default value that equals
+    0 for `u64` type (`Value` alias) and add `1` to that `value`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now `ConnActor` is ready to use. We can instantiate it and use the address of
+    the actor to count the paths of HTTP requests. Let's add two more actors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The log actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The logging actor will add records to `syslog`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Types
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We need basic types from the `actix` crate and import some types from the `syslog`
+    crate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: We don't need to study the `syslog` crate in detail, but let's discuss basic
+    some types.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can also use `use actix::prelude::*;` to import all most-used types from
+    the `actix` crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Logger` is a main struct that allows writing methods to add records to `syslog`.
+    It includes logging the methods order by level from highest to lowest: `emerg`,
+    `alert`, `crit`, `err`, `warning`, `notice`, `info`, `debug`. The `LoggerBackend`
+    enum specifies the type of a connection to a logger. It can be a socket or UNIX
+    socket. The `Facility` enum specifies the type of application which writes logs.
+    `Formatter3164` specifies the format of logging.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two `Syslog` protocols described in two RFCs: `3164` and `5424`.
+    That''s why formatters have such strange names.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we can implement the logging actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The main type is the `LogActor` struct, which contains a `Logger` instance
+    in the `writer` field:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll use this logger in the `Handler` trait implementation to write messages,
+    but now we need a constructor for our struct, because we have to configure `Logger`
+    on start:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added new method that fills the `Formatter3164` struct with the `Facility`
+    value and process name. Other fields are set to blank values. We create a `Logger`
+    instance by calling the `syslog::unix` method and providing a formatter to it.
+    We store the `Logger` in the writer field and return an instance of the `LogActor`
+    struct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To add the actor''s behavior, we''ll implement the `Actor` trait for the `LogActor`
+    struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since this actor will work in the same thread with a server instance and a counting
+    actor, we'll use the basic `Context` type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Message
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We need a message to send messages for writing them to `syslog`. It''s enough
+    to have a simple struct with one public `String` filed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: We added the `Log` struct and implemented the `Message` trait for it. We don't
+    need the return value for this message since logging will be a one-way process
+    and all errors will be ignored, since they aren't critical for a microservice
+    application. But if your microservice has to work with a strict security environment,
+    you'll also have to inform an administrator about logging issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handler
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Handler` of the `Log` messages is quite simple. We call the info method of
+    `Logger` with a provided message and ignore errors with by converting a `Result` into
+    an `Option`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: The last actor we have to implement is the resizing actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The resize actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The resizing actor resizes incoming messages and return resized messages to
+    a client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Types
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We don''t need any special types and will use basic types of the `actix` crate
+    and import types from the `image` crate that we''ve used before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: We'll convert the function body from previous examples in this chapter in handler
+    implementation that's why we imported types from the `image` crate. We added the `Buffer`
+    alias to the `Vec<u8>` type for convenience.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We need a struct without any fields, because we''ll use it with `SyncArbiter`,
+    which runs multiple actors in multiple threads. Add the `ResizeActor` struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: We don't need a special constructor and we implemented the `Actor` trait with
+    the `SyncContext` type for the associate  `Context` type. We'll use this context
+    type to make this actor suitable for the synchronous environment of `SyncArbiter`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Message
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We don''t use the convert function in this example, but we need the same parameters
+    and we''ll take them from the `Resize` struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: We provide a `buffer` with the image data, and the desired `width` and `height`.
+    In the `Message` trait implementation of the `Resize` struct, we use the `ImageResult<Buffer>`
+    type. The same result type that the `convert` function returns. We'll get this
+    value from the actor in the HTTP handler implementation later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handler
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We implement the `Handler` of the `Resize` message for `ResizeActor`, but use
+    the body of the `convert` function with fields of the passed message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: We also use `SyncContext` instead of `Context`, like we did for previous actors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'All actors are ready and you need to add all modules to the `src/actors/mod.rs`
+    file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we can implement a server with actors that perform resizing and other tasks
+    for every request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the server with actors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Import all necessary types for a server. It''s worth noting only those with
+    which you''re unfamiliar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Addr` is an address of an actor. `SyncArbiter` is a synchronous event-loop
+    controller that handles every message synchronously. We need it for resizing actors.
+    Also, add the `actors` module and import all the types we declared in the submodules:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We need a shared state to keep all the addresses of the actors that we''ll
+    use to handle requests:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Addr` type is cloneable and we can derive the `Clone` trait for our `State`
+    struct, because we have to clone for every service function of `hyper`. Let''s
+    implement the `main` function with a new shared `State`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we have to start the event loop. This makes with `actix::run` method
+    call. We pass a closure that prepares all actors and return a `Future` to run.
+    We'll use the `Server` type of **`hyper`**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In closure, we start `SyncArbiter` with a function that produces a `ResizeActor`
+    instance. With the first argument, we set the amount of thread that `SyncArbiter`
+    will use to process requests. The `start` method returned an address of an arbiter
+    that will route the message to both resizing actors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To start other actors, we can use the start method of the `Actor` trait, because
+    the `actix::run` method creates a `System` instance and a default `Arbiter` for
+    us. We created `CountActor` and `LogActor` this way. The `start` method of the `Actor`
+    trait also returns the addresses of actors. We put them all into a new `State`
+    struct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After, we create a `Server` instance, like we did in the previous example, but
+    also pass a reference to the cloned `State`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Requests handler
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before we implement a handler of HTTP requests, let''s add a function that
+    uses `State` to send a message to `CountActor` and use the returned value to print
+    it with `LogActor`. Look at the following function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: We converted the path into a `String`, because we need this type for the `Count`
+    message, and to move it to a `Future` that sends a `Log` message to `LogActor`.
+    Also, we have to clone `Addr` to `LogActor`, because we'll need it later in the
+    closure after the counter value become available. Now let's create a `Future`
+    that sends the `Count` message and the `Log` message in turn.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Addr` struct has a `send` method that returns a `Request` instance that
+    implements the `Future` trait. `Request` will return a counter value when it's
+    available. We use the `and_then` method of `Future` to add extra `Future` to a
+    chain. We need to prepare a message for `syslog` and `send` it to `LogActor` using
+    the cloned `Addr`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also convert error to `io::Error`, but the send method returns `MaiboxError`
+    as an error type that implements the `Fail` trait, but not implement `Error` trait
+    from standard library and we have to use the `compat` method to convert an error
+    to the `Compat` type of the `failure` crate that implements the standard `Error`
+    trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll use the `count_up` method for both paths, `/` and `/resize`. Look at
+    the `microservice_handler` implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: It remains the same in some parts, but now it takes a reference to `State` as
+    a first argument. Since this handling function has to return a `Future` implementation,
+    we can use the value returned by the `count_up` function call, but replace the
+    value to `Response`. We already did it for the root path. Let's add a resizing
+    functionality using `Addr` of  `ResizeActor`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To send an image buffer to an actor, we have to collect it from `Body` of `Request`
+    using the `collect2` method, like we did before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: After that, we create the `Resize` message and send it to `ResizeActor` using
+    the cloned `Addr` of that actor. We convert all errors to `io::Error`. But wait,
+    we haven't added requests counting and logging. Add the `count_up` function call
+    at the end and put it before the `Future` that resizes images by creating a chain
+    using the `and_then` method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's all! Now every request send path to `CountActor` than send an informational
+    message to `LogActor` and the resizing request also connect all data and send
+    it for resizing to `ResizeActor`. It's time to test it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building and running
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Build and run the code using the `cargo run` subcommand. When the server starts
+    use the `curl` command to send `POST` request with an image. You can find example
+    of parameters for this preceding command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, I requested the root path five times with a browser and sent a
+    resizing request once. It stored resized message to the `files` folder. Yeah,
+    it works! Now we can check that the logging actor adds records to `syslog`. Use
+    this command to print logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can find the following records:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, we have five requests to the root path and one to the `/resize`
+    path.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you don't have the `jounrnalctl` command, you can try to print logs with
+    the `less /var/log/syslog` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This example used actors to run concurrent activities. Actually, only `ResizeActor`
+    used a separate thread with `SyncArbiter`. `CountActor` and `LogActor` used the
+    same thread with the `hyper` server. But it's OK, since neither actors don't load
+    a lot of CPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we looked at how to use thread pools in microservices. We
+    investigated three approaches: using plain threads, using the `futures-cpupool`
+    crate, and using the `tokio-threadpool` crate. We used channels from the `futures`
+    crate to interact with threads from asynchronous code. Special crates do all the
+    interaction automatically; all you need to do is call a function that will be
+    executed in a separate thread.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, we got acquainted with the `actix` crate and the actors model, which helps
+    to split and run tasks as separate units that are managed by a smart runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we'll learn how to interact with different databases using
+    Rust, including PostgreSQL, MySQL, Redis, MongoDB, and DynamoDB.
+  prefs: []
+  type: TYPE_NORMAL

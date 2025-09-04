@@ -1,0 +1,645 @@
+- en: Talking HTTP in the Internet
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The single most important application-layer protocol that has changed our lives
+    heavily has to be the HTTP. It forms the backbone of the World Wide Web (WWW).
+    In this chapter, we will look at how Rust makes writing fast HTTP servers easier.
+    We will also look at writing clients to communicate with these servers over a
+    network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A short introduction to Hyper, one of the most widely used crates for writing
+    HTTP servers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will study Rocket, a new crate that has become widely popular owing to its
+    simpler interface
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will move on to reqwest, an HTTP client library
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Introducing Hyper
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Hyper is arguably the most stable and well-known of Rust-based HTTP frameworks.
+    It has two distinct components, one for writing HTTP servers and one for writing
+    clients. Recently, the server component was moved to a new async programming model
+    based on tokio and futures. As a result, it is well-suited for high-traffic workloads.
+    However, like a lot of other libraries in the ecosystem, Hyper has not hit Version
+    1.0 yet, so one should expect breaking API changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will start with writing a small HTTP server in Hyper. Like always, we will
+    need to set up our project using Cargo.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let us now add dependencies that will include `hyper` and `futures`. The `Cargo.toml`
+    file will look as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our main file is pretty simple. In the real world, HTTP servers often talk to
+    a backend, and all that can take a while to complete. Thus, it is common for replies
+    to be a bit delayed. We will simulate that using a function that sleeps for 200
+    ms each time it is called, and then returns a fixed string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: As Hyper heavily relies on `tokio` to do asynchronous handling of requests,
+    an HTTP server in Hyper needs to implement a built-in trait called `Service` from
+    `tokio`. This is essentially a function that maps a `Request` to a `Response`
+    via an implementation of the `call` method. This method returns the result as
+    a `Future`, indicating eventual completion of the given task. In that implementation,
+    we match the method and path of the incoming request. If the method is `GET` and
+    the path is `/data`, we call `heavy_work` and get the result. We then compose
+    a response by setting the `Content-Length` header to the size of the string we
+    are returning and the body of the response. In our `main` function, we construct
+    our server by binding it to a known port. At the end, we call `run` on it to start
+    the server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Interacting with the server is easy with `curl`; a session should look like
+    this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let us benchmark our server. For this, we will install ApacheBench ([https://httpd.apache.org/docs/trunk/programs/ab.html](https://httpd.apache.org/docs/trunk/programs/ab.html)).
+    We will run 1,000 total requests from 100 clients in parallel by passing some
+    command-line parameters to ApacheBench. This will take a while to complete, and
+    we are waiting 200 ms before returning each response. So, for 1,000 requests,
+    we will wait for at least 200 seconds. On one run, the output looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that, across all requests, the server takes around 103.4 ms to reply
+    back. This matches our expectation of 100 ms with the extra time being spent on
+    other things. Also, our server is processing 4.92 requests per second, which is
+    way too low for a reasonable server. This is all because our server is single-threaded,
+    and only one thread serves all clients. This server also ignores the fact that
+    multiple CPU cores are available on the host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us go ahead and write a server that largely does the same thing, the difference
+    being that this one uses multi-threading heavily and uses all CPU cores. Cargo
+    setup should be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will need to add some more crates as dependencies, and our `Cargo.toml`
+    should be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have a number of extra things here. `tokio-core` will be used to run an
+    event loop (as we did in mio, in [Chapter 3](part0046.html#1BRPS0-e803f047c8b7448c90887daa96419287), *TCP
+    and UDP Using Rust*), `net2` will be used for some advanced socket configuration,
+    and `num_cpus` will be used to figure out the number of CPU cores on the machine.
+    Having set those up, our main file is pretty simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Functionally, this server is exactly the same as the last one. Architecturally,
+    they are very different. Our implementation of `Service` is the same. What changed
+    majorly is that we split starting the server into two functions; the serve function
+    creates a new event loop (and a handle to it). We create our listener using `net2`
+    so that we can set a bunch of options on it using the `TcpBuilder` pattern. Specifically,
+    we set `SO_REUSEPORT` on the socket so that under high loads the OS can distribute
+    connections to all threads fairly. We also set a backlog of 128 for the listening
+    socket. We then loop over incoming connections on the listener and, for each,
+    we run our service implementation. Our `start_server` method takes in an integer
+    that corresponds to the number of cores on the host and an address as a string.
+    We then start a loop and run the serve method in new threads. In this case, our
+    `Http` instance will be passed to multiple threads. Thus, we need to wrap it in
+    an **Automatically Reference Counting** (**ARC**) pointer because that guarantees
+    thread safety of the underlying type. Finally, we call `start_server` in our `main`
+    function, using `num_cpus::get` to get the number of cores on the machine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Benchmarking this in the same way as last time shows these results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This server's throughput is around double the last one, primarily because it
+    uses threading better. Requests still take just over 100 ms to process, as expected.
+    Note that the actual time taken by this will depend on the hardware and conditions
+    of the machine running this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing Rocket
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Perhaps the most widely known web framework for Rust is Rocket. It started as
+    a one-man project and gradually evolved into a simple, elegant, and fast framework
+    over the last year or so. Rocket focuses a lot on simplicity, something that a
+    lot of Flask users will appreciate. Like Flask uses python decorators to declare
+    routes, Rocket uses custom attributes to the same effect. Unfortunately, this
+    means that Rocket has to make heavy use of nightly-only features. Thus, as of
+    now, Rocket applications can only be built using nightly Rust. However, as more
+    and more things are stabilized (moved to stable Rust), this restriction will eventually
+    go away.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us start with a basic example of Rocket, beginning with setting up the
+    project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our Cargo setup needs to add Rocket components as dependencies, and should
+    look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let us look at the main file. As we will see, Rocket needs a bit of boilerplate
+    setup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The function called `blast_off` defines a route, a mapping between an incoming
+    request and an output. In this case, a **GET** request to the `/` route should
+    return a static string. In our main function, we initialize Rocket, add our routes,
+    and call `launch`. Run it using Cargo:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In another terminal, if we use curl to hit that endpoint, this is what we should
+    see:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Experienced Python users will find Rocket similar to the framework called Flask.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us now look at a more complex example: writing an API server using Rocket.
+    Our application is a blog server that has the following endpoints:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Endpoint** | **Method** | **Purpose** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `/posts` | `GET` | Get all posts |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `/posts/<id>` | `GET` | Get the post with the given ID |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `/posts` | `POST` | Add a new post |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `/posts/<id>` | `PATCH` | Edit a post |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `/posts/<id>` | `DELETE` | Delete the post with the given ID |'
+  prefs: []
+  type: TYPE_TB
+- en: For this example, we will use SQLite Version 3 as our database. A real application
+    should use a more scalable database, such as PostgresSQL or MySQL. We will use
+    the diesel crate as our **Object-Relational Mapping** (**ORM**) tool, and r2d2
+    for connection-pooling to the database. The first step for this is to install
+    the diesel CLI to work with database schema migrations. This can be installed
+    using Cargo.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'SQLite Version 3 must be installed on the host''s system for this to work.
+    For more information, visit the following link:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://www.sqlite.org/download.html](https://www.sqlite.org/download.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we can set up our database using diesel CLI. It will read our migration
+    scripts and create the whole schema. As SQLite is a file-based database, it will
+    also create an empty `db` file, if one does not exist already.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Remember that the last command must be run from the directory that has the
+    migrations directory, otherwise it will fail to find the migrations. We will use
+    Cargo to set up the project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will then add a number of dependencies here; `Cargo.toml` should look like
+    the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This app is a bit more complex than our previous example. This is composed
+    of multiple modules, each doing a specific thing. Here is how the `src` directory
+    looks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The first step in running this is to set up connection to the database. We
+    will use r2d2 for database pooling; all the `db` setup-related operations will
+    be in `db.rs`. This will look like the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our `DB` struct has an instance of the database pool and returns that on calling
+    the function called `conn`. `FromRequest`. This is a request guard trait from
+    Rocket that makes sure that particular requests can be fulfilled by the handler
+    that matched. In our case, we use it to make sure a new connection is available
+    in the pool, and we return an HTTP 500 error if that is not the case. Now this
+    trait will be used for all incoming requests throughout the life of the program.
+    Thus, for this to work correctly, the reference to the database pool must live
+    throughout the program and not the local scope. We use the `lazy_static!` crate
+    to make sure the constant `DB_POOL` is initialized only once and lives throughout
+    the life of the program. In the macro, we set up `dotenv`, which will be used
+    later to parse the database location and also the connection pool with a size
+    of 32 connections. We also implement the `Deref` trait for our database wrapper
+    so that `&*DB` is transparently translated to a `&SqliteConnection`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next step is to set up the database schema in code. Luckily, `diesel` makes
+    that very easy, as it can read the database schema and generate Rust code to represent
+    that accordingly. The generated Rust code is put in a module corresponding to
+    the name of the file it is in (in this case, the module will be called `schema`).
+    We use the `dotenv` crate to pass this information to a `diesel` macro. This is
+    done in the file `schema.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that once the new macro system is functional, this call will use the `dotenv!`
+    macro. We can then use the generated schema to build our models. This is done
+    in `models.rs`. This file will look like the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have two major structures here: the `Post` structure represents a blog post
+    in the database, and the `PostData` structure represents a blog post as seen in
+    an incoming create request. As a `PostData` has not been saved in the database
+    yet, it does not have an ID. Diesel necessitates that all types that can be queried
+    should implement the `Queryable` trait, which is done automatically using `#[derive(Queryable)]`.
+    We also enable serialization and deserialization using serde, as this will be
+    passed as JSON to the API. In contrast, the `PostData` struct does not derive
+    `Queryable`; it derives some other traits. The `Insertable` trait indicates that
+    this struct can be used to insert a row of data in a table (with the specified
+    table name). Because we will only need to deserialize this struct from an incoming
+    request, we only implement `Deserialize` on it. Lastly, the `AsChangeSet` trait
+    enables this struct to be used to update records in the database.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `FromData` trait is from Rocket, which is used to validate incoming data,
+    making sure it parses into JSON correctly. This is in relation to a feature called
+    data guards. When Rocket finds a suitable handler for an incoming request, it
+    calls the data guard of the data type specified in the request handler on the
+    incoming data. The route is actually invoked only if the data guard succeeds.
+    These guards are implemented using the `FromData` trait. In our case, the implementation
+    tries to parse the input as a JSON (using SerDe). In the success case, we return
+    the JSON for further processing, or we return a `Status::BadRequest`, which sends
+    back an HTTP 400 error.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The only database-related thing required now is the model. This will define
+    a number of convenience methods that can be used to manipulate records using diesel.
+    The file `post.rs` hosts these, and it looks like the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: The function names are very self-explanatory. We make abundant use of a number
+    of diesel APIs that help us to interact with the database without writing SQL
+    directly. All of these functions take in a reference to the database connection.
+    The `get_post` function takes in an additional post ID that it uses on the posts
+    table to look up posts using the `find` method, and then returns the first result
+    as an instance of `Post`. The `get_posts` function is similar, except it returns
+    all records in the posts table as a vector of `Post` instances. `create_post`
+    takes in a reference to `PostData` and inserts that record into the database.
+    This function returns a `bool` indicating success or failure. `delete_post` takes
+    in a post ID and tries to delete it in the database. `update_post` again takes
+    in a reference to `PostData` and a post ID. It then tries to replace the post
+    with the given ID with the new `PostData`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let us move on to defining errors for our API. This will be located in the file
+    called `error.rs`. As will see here, the errors will need to implement a number
+    of traits to be used seamlessly in Rocket and Diesel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our error is an `enum` called `ApiError`; for simplicity's sake, we will only
+    return an object-not-found error and a catch-all internal server error. As we
+    have seen in previous chapters, to declare an error in Rust, we will need to implement
+    `fmt::Display` and `std::error::Error` on that type. We also implement `From<DieselError>`
+    for our type so that a failure in the database lookup can be reported appropriately.
+    The final trait we need to implement is `Responder` from Rocket, which enables
+    us to use this as the return type of a request handler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Having done all the groundwork, the last part of the system is our main file
+    that will run when invoked with Cargo. It should look like the following code
+    snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The most important things here are the route handlers. These are just regular
+    functions with special attributes that determine the path, the format, and the
+    arguments. Also, notice the use of instances of `DB` as request guards in the
+    handlers. We have a helper function called `rocket` that sets up everything, and
+    the `main` function just calls the `ignite` method to start the server. When `rocket`
+    sees an incoming request, this is how a response is generated:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It goes over the list of all handlers and finds one that matches the HTTP method,
+    type, and format. If one is found, it ensures that the handler's parameters can
+    be derived from the data in the request using `FormData`. This process continues
+    till a handler works or all handlers have been exhausted. In the latter case,
+    a 404 error is returned.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The handler function then receives a copy of the data parsed into the given
+    data type. After it has done processing, it must use the `Responder` implementation
+    to convert the output to a valid return type.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Finally, `Rocket` sends back the response to the client.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Having set up everything, running the server is very easy:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For comparison, here is how a load testing session looks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, to be fair to our earlier servers, we had a delay of 100 ms there. In this
+    case, each request takes around 21 ms on average. So, hypothetically, if each
+    request took 100 ms, we would have one fifth of the throughput. That comes up
+    to be around 950 requests per second—way faster than our earlier servers!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, obviously, an HTTP server cannot be all about REST endpoints. It must
+    be able to serve static and dynamic content as well. For that, Rocket has a bunch
+    of features to be able to generate HTML. Let us look at an example, which is a
+    simple web page that takes in a name as a URL parameter and outputs that. The
+    page also counts the total number of visits and displays that as well. The Cargo
+    setup for this project is simple: we just run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time, we will just need Rocket in our `Cargo.toml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our web page will be generated from a template. We will use a templating engine
+    called Tera, which is inspired by Jinja2 and is written in Rust. Rocket supports
+    templates in a different crate called `rocket_contrib`, which we will pull in
+    with required features. Our template is pretty simple and should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that the template has to be in a directory called `templates` in the project
+    root, otherwise `Rocket` will not be able to find it. In this case, the template
+    is pretty simple. It needs to be a complete HTML page, as we intend to display
+    it in a browser. We use two temporary variables, `name` and `visitor_number`,
+    that will be replaced during execution. Our main file will look like the following
+    code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our setup is pretty much the same as last time; the only difference being, we
+    have used the template fairing, which is like a middleware in Rocket. To use this,
+    we needed to call `attach(Template::fairing())` on the rocket instance. Another
+    difference is the use of managed state, which we use to manage our counter automatically.
+    This is achieved by calling `manage` on the instance and passing an initial state
+    for the managed object. Our counter is a struct, having only one element that
+    holds the current count. Now our counter will be shared between multiple threads,
+    all running rocket instances. To make the counter thread safe, we have used the
+    primitive `AtomicUsize`, which guarantees thread safety. In our route, we match
+    on the `GET` verb and we take in a name as a URL parameter. To render our template,
+    we will need to build a context and populate it. Whenever an incoming request
+    matches this route, we can insert the name in our context. We then call `fetch_add`
+    on the underlying counter. This method increments the counter and returns the
+    previous value, which we store in the context against a key called `visitor_number`.
+    Once done, we can render our template, which is returned to the client. Note the
+    use of `Ordering::SeqCst` in `fetch_add`, which guarantees a sequentially consistent
+    view of the counter across all competing threads. Also note that the names of
+    the keys in the context have to match the temporary variables used in the template,
+    otherwise rendering will fail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Running this is easy; we just need to use `cargo run`. This is what we see
+    on the CLI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then use a web browser to access the page to see something like the
+    following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00015.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Notice that the counter resets when the `Rocket` instance is restarted. A real-world
+    application may decide to persist such a metric in a database so that it is not
+    lost between restarts. This also works with `curl`, which just dumps the raw HTML
+    in the console:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last experiment with this piece of code is performance analysis. As always,
+    we will fire up apache bench and point it to the endpoint. This is what one run
+    shows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Performance in this case is comparable to last time, as measured in requests
+    per second. This one is slightly slower, as it has to increment the counter and
+    render the template each time. This is also reflected in mean time per request,
+    which increased by 2 ms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rocket has a ton of other features, from cookies to streaming data. It also
+    supports SSL out of the box by reading a special config file that can be placed
+    in the root directory of the application. However, those advanced features are
+    outside the scope of this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing reqwest
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'So far, we have only talked about writing servers and used `curl` to access
+    those. Sometimes, programmatically accessing a server becomes a necessity. In
+    this section, we will discuss the `reqwest` crate and look at how to use it; this
+    borrows heavily from the requests library in Python. Thus, it is very easy to
+    set up and use, starting first with the project setup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next step for our demo is to include our dependencies. Our Cargo config
+    should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we will use Serde to serialize and deserialize our data to JSON. Very
+    conveniently, we will use the `Rocket` server we wrote in the last section. Our
+    main file will look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: We start with a struct to represent our blog post, which is exactly the same
+    as the one in the last section. In our `main` function, we create an instance
+    of our client and, using the builder pattern, pass on our post as a JSON to it.
+    Finally, we call `send` on it and print out the return status. Make sure to change
+    the `url` to point to the location where `Rocket` is running. We then issue a
+    `GET` request on the same endpoint. We deserialize the response to a list of `Post`
+    objects and print those out in a loop. Internally, reqwest uses SerDe to serialize
+    and deserialize to/from JSON, making the API very user-friendly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is an example session running the preceding code. In our server, we already
+    had two existing entries and, in our code, we added one more. Then, we got back
+    all three, which are printed here. Take a look at the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Recently, `reqwest` added asynchronous programming support using tokio. All
+    those APIs are located in `reqwest::unstable` and, as the name suggests, those
+    are not stable yet. Let''s look at using the asynchronous client for the same
+    purpose. In this case, we will use the futures and tokio crates, thus we will
+    need to include those in our cargo manifest, which will look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will need to activate the feature called unstable in reqwest. Our main file
+    will look like the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: Admittedly, this is way more convoluted than the previous version! Some scaffolding
+    for the `Post` struct is the same, and we pull in all the extra libraries we need.
+    In our `main` function, we create a tokio core and then an asynchronous client
+    based on that core. We chain the `json` and `send` methods like last time. Things
+    diverge from there; for the asynchronous client, the `send` call returns a future.
+    Once that future has resolved, the `and_then` call executes another future based
+    on the first one. In here, we print out the status that we got back and resolve
+    the future by returning an `Ok(())`. Finally, we run our future on the core.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Getting data back from the endpoint is a bit more involved, because we have
+    to deal with returned data as well. Here, we chain calls to `get` and `send`.
+    We then chain another future that collects the response body. The second future
+    is then chained to another one that consumes that body and copies it over to a
+    `Vec<u8>` named `writer`. We then convert the vector to a `str` using `std::str::from_utf8`.
+    The `str` is then passed to `serde_json::from_str`, which tries to deserialize
+    it into a vector of `Post` objects that we can then print out by iterating over
+    those. At the end, we resolve the chain of futures by returning an `Ok(())`. On
+    running, this behaves exactly like the last one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we covered a number of crates that help with dealing with HTTP-based
+    REST endpoints in Rust, using Hyper and Rocket. We also looked at programmatically
+    accessing these endpoints, using request, which is largely based on Hyper. These
+    crates are at various stages of development. As we saw, Rocket can only run on
+    nightly, because it uses a bunch of features that are not stable yet. We also
+    glossed over tokio, which powers both Hyper and Rocket.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, tokio, being the defacto asynchronous programming library in Rust, deserves
+    all the attention it can get. So, we will discuss the tokio stack in detail in
+    the next chapter.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,1551 @@
+- en: '9'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Coroutines, Self-Referential Structs, and Pinning
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we’ll start by improving our coroutines by adding the ability
+    to store variables across state changes. We’ll see how this leads to our coroutines
+    needing to take references to themselves and the issues that arise as a result
+    of that. The reason for dedicating a whole chapter to this topic is that it’s
+    an integral part of getting async/await to work in Rust, and also a topic that
+    is somewhat difficult to get a good understanding of.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason for this is that the whole concept of pinning is foreign to many
+    developers and just like the Rust ownership system, it takes some time to get
+    a good and working mental model of it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fortunately, the concept of pinning is not that difficult to understand, but
+    how it’s implemented in the language and how it interacts with Rust’s type system
+    is abstract and hard to grasp.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While we won’t cover absolutely everything about pinning in this chapter, we’ll
+    try to get a good and sound understanding of it. The major goal here is to feel
+    confident with the topic and understand why we need it and how to use it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As mentioned previously, this chapter is not only about pinning in Rust, so
+    the first thing we’ll do is make some important improvements where we left off
+    by improving the final example in [*Chapter* *8*](B20892_08.xhtml#_idTextAnchor138).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, we’ll explain what self-referential structs are and how they’re connected
+    to futures before we explain how pinning can solve our problems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter will cover the following main topics
+  prefs: []
+  type: TYPE_NORMAL
+- en: Improving our example 1 – variables
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Improving our example 2 – references
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Improving our example 3 – this is… not… good…
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Discovering self-referential structs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pinning in Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Improving our example 4 – pinning to the rescue
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The examples in this chapter will build on the code from the previous chapter,
+    so the requirements are the same. The examples will all be cross-platform and
+    work on all platforms that Rust ([https://doc.rust-lang.org/stable/rustc/platform-support.html](https://doc.rust-lang.org/stable/rustc/platform-support.html))
+    and mio ([https://github.com/tokio-rs/mio#platforms](https://github.com/tokio-rs/mio#platforms))
+    support. The only thing you need is Rust installed and this book’s GitHub repository
+    downloaded locally. All the code in this chapter can be found in the `ch09` folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To follow the examples step by step, you’ll also need `corofy` installed on
+    your machine. If you didn’t install it in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
+    install it now by going into the `ch``07``/corofy` folder in the repository and
+    running the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We’ll also use `delayserver` in this example, so you need to open a separate
+    terminal, enter the `delayserver` folder at the root of the repository, and write
+    `cargo run` so that it’s ready and available for the examples going forward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember to change the port number in the code if you have to change what port
+    `delayserver` listens on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Improving our example 1 – variables
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'So, let’s recap what we have at this point by continuing where we left off
+    in the previous chapter. We have the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A `Future` trait
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A coroutine implementation using coroutine/await syntax and a preprocessor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A reactor based on `mio::Poll`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An executor that allows us to spawn as many top-level tasks as we want and schedules
+    the ones that are ready to run
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An HTTP client that only makes HTTP GET requests to our local delayserver instance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It’s not that bad – we might argue that our HTTP client is a *little* bit limited,
+    but that’s not the focus of this book, so we can live with that. Our coroutine
+    implementation, however, is severely limited. Let’s take a look at how we can
+    make our coroutines slightly more useful.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The biggest downside with our current implementation is that nothing – and I
+    mean nothing – can live across wait points. It makes sense to tackle this problem
+    first.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s start by setting up our example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll use the “library” code from `d-multiple-threads example` in [*Chapter*
+    *8*](B20892_08.xhtml#_idTextAnchor138)(our last version of the example), but we’ll
+    change the `main.rs` file by adding a shorter and simpler example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s set up the base example that we’ll iterate on and improve in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up the base example
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find this example in this book’s GitHub repository under `ch``09``/a-coroutines-variables`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Perform the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a folder called `a-coroutines-variables`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Enter the folder and run `cargo init`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Delete the default `main.rs` file and copy everything from the `ch``08``/d-multiple-threads/src`
+    folder into the `ch10/a-coroutines-variables/src` folder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Open `Cargo.toml` and add the dependency on `mio` to the dependencies section:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You should now have a folder structure that looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We’ll use `corofy` one last time to generate our boilerplate state machine
+    for us. Copy the following into `main.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch09/a-coroutines-variables/src/main.rs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time, let’s take a shortcut and write our *corofied* file directly back
+    to `main.rs` since we’ve compared the files side by side enough times at this
+    point. Assuming you’re in the base folder, `a-coroutine-variables`, write the
+    following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last step is to fix the fact that `corofy` doesn’t know about `Waker`.
+    You can let the compiler guide you to where you need to make changes by writing
+    `cargo check`, but to help you along the way, there are three minor changes to
+    make (note that the line number is the one reported by re-writing the same code
+    that we wrote previously):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Program starting
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP/1.1 200 OK
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[==== ABBREVIATED ====]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HelloAsyncAwait
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: All tasks are finished'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: coroutine fn async_main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("Program starting");
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = Http::get("/600/HelloAsyncAwait").wait;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{txt}");
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = Http::get("/400/HelloAsyncAwait").wait;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{txt}");
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: coroutine fn async_main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut counter = 0;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("Program starting");
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = http::Http::get("/600/HelloAsyncAwait").wait;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{txt}");
+  prefs: []
+  type: TYPE_NORMAL
+- en: counter += 1;
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = http::Http::get("/400/HelloAsyncAwait").wait;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{txt}");
+  prefs: []
+  type: TYPE_NORMAL
+- en: counter += 1;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("Received {} responses.", counter);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: struct Coroutine0 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'stack: Stack0,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'state: State0,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '#[derive(Default)]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: struct Stack0 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'counter: Option<usize>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: impl Coroutine0 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: fn new() -> Self {
+  prefs: []
+  type: TYPE_NORMAL
+- en: Self {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'state: State0::Start,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'stack: Stack0::default(),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: State0::Start => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: // initialize stack (hoist variables)
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.stack.counter = Some(0);
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---- Code you actually wrote ----
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("Program starting");
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---------------------------------
+  prefs: []
+  type: TYPE_NORMAL
+- en: let fut1 = Box::new( http::Http::get("/600/HelloAsyncAwait"));
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.state = State0::Wait1(fut1);
+  prefs: []
+  type: TYPE_NORMAL
+- en: // save stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: State0::Wait1(ref mut f1) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: match f1.poll(waker) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::Ready(txt) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: // Restore stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut counter = self.stack.counter.take().unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---- Code you actually wrote ----
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{txt}");
+  prefs: []
+  type: TYPE_NORMAL
+- en: counter += 1;
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---------------------------------
+  prefs: []
+  type: TYPE_NORMAL
+- en: let fut2 = Box::new( http::Http::get("/400/HelloAsyncAwait"));
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.state = State0::Wait2(fut2);
+  prefs: []
+  type: TYPE_NORMAL
+- en: // save stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.stack.counter = Some(counter);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::NotReady => break PollState::NotReady,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: State0::Wait2(ref mut f2) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: match f2.poll(waker) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::Ready(txt) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: // Restore stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut counter = self.stack.counter.take().unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---- Code you actually wrote ----
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{txt}");
+  prefs: []
+  type: TYPE_NORMAL
+- en: counter += 1;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!(«Received {} responses.», counter);
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---------------------------------
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.state = State0::Resolved;
+  prefs: []
+  type: TYPE_NORMAL
+- en: // Save stack (all variables set to None already)
+  prefs: []
+  type: TYPE_NORMAL
+- en: break PollState::Ready(String::new());
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::NotReady => break PollState::NotReady,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: …
+  prefs: []
+  type: TYPE_NORMAL
+- en: HelloAsyncAwait
+  prefs: []
+  type: TYPE_NORMAL
+- en: Received 2 responses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: All tasks are finished'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: use std::fmt::Write;
+  prefs: []
+  type: TYPE_NORMAL
+- en: coroutine fn async_main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut buffer = String::from("\nBUFFER:\n----\n");
+  prefs: []
+  type: TYPE_NORMAL
+- en: let writer = &mut buffer;
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("Program starting");
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = http::Http::get("/600/HelloAsyncAwait").wait;
+  prefs: []
+  type: TYPE_NORMAL
+- en: writeln!(writer, "{txt}").unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let txt = http::Http::get("/400/HelloAsyncAwait").wait;
+  prefs: []
+  type: TYPE_NORMAL
+- en: writeln!(writer, "{txt}").unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{}", buffer);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: use std::fmt::Write;
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '#[derive(Default)]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: struct Stack0 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'buffer: Option<String>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'writer: Option<*mut String>,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: State0::Start => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: // initialize stack (hoist variables)
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.stack.buffer = Some(String::from("\nBUFFER:\n----\n"));
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.stack.writer = Some(self.stack.buffer.as_mut().unwrap());
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---- Code you actually wrote ----
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("Program starting");
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---------------------------------
+  prefs: []
+  type: TYPE_NORMAL
+- en: let fut1 = Box::new(http::Http::get("/600/HelloAsyncAwait"));
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.state = State0::Wait1(fut1);
+  prefs: []
+  type: TYPE_NORMAL
+- en: // save stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: State0::Wait1(ref mut f1) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: match f1.poll(waker) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::Ready(txt) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: // Restore stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: let writer = unsafe { &mut *self.stack.writer.take().unwrap() };
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---- Code you actually wrote ----
+  prefs: []
+  type: TYPE_NORMAL
+- en: writeln!(writer, «{txt}»).unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---------------------------------
+  prefs: []
+  type: TYPE_NORMAL
+- en: let fut2 = Box::new(http::Http::get("/400/HelloAsyncAwait"));
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.state = State0::Wait2(fut2);
+  prefs: []
+  type: TYPE_NORMAL
+- en: // save stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.stack.writer = Some(writer);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::NotReady => break PollState::NotReady,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: State0::Wait2(ref mut f2) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: match f2.poll(waker) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::Ready(txt) => {
+  prefs: []
+  type: TYPE_NORMAL
+- en: // Restore stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: let buffer = self.stack.buffer.as_ref().take().unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let writer = unsafe { &mut *self.stack.writer.take().unwrap() };
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---- Code you actually wrote ----
+  prefs: []
+  type: TYPE_NORMAL
+- en: writeln!(writer, «{txt}»).unwrap();
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{}", buffer);
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ---------------------------------
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.state = State0::Resolved;
+  prefs: []
+  type: TYPE_NORMAL
+- en: // Save stack / free resources
+  prefs: []
+  type: TYPE_NORMAL
+- en: let _ = self.stack.buffer.take();
+  prefs: []
+  type: TYPE_NORMAL
+- en: break PollState::Ready(String::new());
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::NotReady => break PollState::NotReady,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: Program starting
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'BUFFER:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '----'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP/1.1 200 OK
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-length: 15'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'connection: close'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-type: text/plain; charset=utf-8'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'date: Thu, 30 Nov 2023 22:48:11 GMT'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HelloAsyncAwait
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP/1.1 200 OK
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-length: 15'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'connection: close'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-type: text/plain; charset=utf-8'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'date: Thu, 30 Nov 2023 22:48:11 GMT'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HelloAsyncAwait
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: All tasks are finished'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'pub fn block_on<F>(&mut self, future: F)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: where
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'F: Future<Output = String> + ''static,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '{'
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ===== OPTIMIZATION, ASSUME READY
+  prefs: []
+  type: TYPE_NORMAL
+- en: let waker = self.get_waker(usize::MAX);
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut future = future;
+  prefs: []
+  type: TYPE_NORMAL
+- en: match future.poll(&waker) {
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::NotReady => (),
+  prefs: []
+  type: TYPE_NORMAL
+- en: PollState::Ready(_) => return,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: // ===== END
+  prefs: []
+  type: TYPE_NORMAL
+- en: spawn(future);
+  prefs: []
+  type: TYPE_NORMAL
+- en: loop {
+  prefs: []
+  type: TYPE_NORMAL
+- en: …
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Program starting
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: /400/HelloAsyn
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'free(): double free detected in tcache 2'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Aborted
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: …
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'error: process didn''t exit successfully: `target\release\c-coroutines-'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'problem.exe` (exit code: 0xc0000374, STATUS_HEAP_CORRUPTION)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: use std::{marker::PhantomPinned, pin::Pin};
+  prefs: []
+  type: TYPE_NORMAL
+- en: '#[derive(Default)]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: struct Foo {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'a: MaybeSelfRef,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'b: String,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: impl MaybeSelfRef {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn init(self: Pin<&mut Self>) {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: unsafe {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let Self { a, b, .. } = self.get_unchecked_mut();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*b = Some(a);'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn b(self: Pin<&mut Self>) -> Option<&mut usize> {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: unsafe { self.get_unchecked_mut().b.map(|b| &mut *b) }
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: fn main() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut x = Box::pin(MaybeSelfRef::default());
+  prefs: []
+  type: TYPE_NORMAL
+- en: x.as_mut().init();
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{}", x.as_ref().a);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*x.as_mut().b().unwrap() = 2;'
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{}", x.as_ref().a);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finished dev [unoptimized + debuginfo] target(s) in 0.56s
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running `target\debug\x-pin-experiments.exe`
+  prefs: []
+  type: TYPE_NORMAL
+- en: '0'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '2'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: fn stack_pinning_manual() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut x = MaybeSelfRef::default();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut x = unsafe { Pin::new_unchecked(&mut x) };
+  prefs: []
+  type: TYPE_NORMAL
+- en: x.as_mut().init();
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{}", x.as_ref().a);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*x.as_mut().b().unwrap() = 2;'
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("{}", x.as_ref().a);
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finished dev [unoptimized + debuginfo] target(s) in 0.58s
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running `target\debug\x-pin-experiments.exe`
+  prefs: []
+  type: TYPE_NORMAL
+- en: '0'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '2'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: use std::mem::swap;
+  prefs: []
+  type: TYPE_NORMAL
+- en: fn stack_pinning_manual_problem() {
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut x = MaybeSelfRef::default();
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut y = MaybeSelfRef::default();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '{'
+  prefs: []
+  type: TYPE_NORMAL
+- en: let mut x = unsafe { Pin::new_unchecked(&mut x) };
+  prefs: []
+  type: TYPE_NORMAL
+- en: x.as_mut().init();
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*x.as_mut().b().unwrap() = 2;'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: swap(&mut x, &mut y);
+  prefs: []
+  type: TYPE_NORMAL
+- en: println!("
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'x: {{'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '+----->a: {:p},'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|      b: {:?},'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|  }}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|  y: {{'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|      a: {:p},'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '+-----|b: {:?},'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}}",'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '&x.a,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: x.b,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '&y.a,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: y.b,
+  prefs: []
+  type: TYPE_NORMAL
+- en: );
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finished dev [unoptimized + debuginfo] target(s) in 0.58s
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running `target\debug\x-pin-experiments.exe`
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'x: {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '+----->a: 0xe45fcff558,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|      b: None,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|  }'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|  y: {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|      a: 0xe45fcff570,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '+-----|b: Some(0xe45fcff558),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: '#[derive(Default)]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: struct Foo {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'a: MaybeSelfRef,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'b: String,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: impl Foo {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn a(self: Pin<&mut Self>) -> Pin<&mut MaybeSelfRef> {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: unsafe {
+  prefs: []
+  type: TYPE_NORMAL
+- en: self.map_unchecked_mut(|s| &mut s.a)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'fn b(self: Pin<&mut Self>) -> &mut String {'
+  prefs: []
+  type: TYPE_NORMAL
+- en: unsafe {
+  prefs: []
+  type: TYPE_NORMAL
+- en: '&mut self.get_unchecked_mut().b'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: use std::pin::Pin;
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'fn poll(self: Pin<&mut Self>, waker: &Waker) -> PollState<Self::Output>;'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: use crate::{future::PollState, runtime::{self, reactor, Waker}, Future};
+  prefs: []
+  type: TYPE_NORMAL
+- en: use mio::Interest;
+  prefs: []
+  type: TYPE_NORMAL
+- en: use std::{io::{ErrorKind, Read, Write}, pin::Pin};
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'fn poll(self is now Pin<&mut Self>, there are several small changes we need
+    to make so that the borrow checker stays happy. Let’s start from the top:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ch09/e-coroutines-pin/src/http.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: The reason for assigning `id` to a variable at the top is that the borrow checker
+    gives us some minor trouble when trying to pass in both `&mut self` and `&self`
+    as arguments to the register/deregister functions, so we just assign `id` to a
+    variable at the top and everyone is happy.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'There are only two more lines to change, and that is where we create a `String`
+    type from our internal buffer and deregister interest with the reactor:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch09/e-coroutines-pin/src/http.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Notice that this future is `Unpin`. There is nothing that makes it `unsafe`
+    to move `HttpGetFuture` around, and this is indeed the case for most futures like
+    this. Only the ones created by async/await are self-referential by design. That
+    means there is no need for any `unsafe` here.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Next, let’s move on to `main.rs` since there are some important changes we need
+    to make there.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Main.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Let’s start from the top and make sure we have the correct imports:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch09/e-coroutines-pin/src/main.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: Wait1(Pin<Box<dyn Future<Output = String>>>),
+  prefs: []
+  type: TYPE_NORMAL
+- en: Wait2(Pin<Box<dyn Future<Output = String>>>),
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: struct Coroutine0 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'stack: Stack0,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'state: State0,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '_pin: PhantomPinned,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: impl Coroutine0 {
+  prefs: []
+  type: TYPE_NORMAL
+- en: fn new() -> Self {
+  prefs: []
+  type: TYPE_NORMAL
+- en: Self {
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'state: State0::Start,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'stack: Stack0::default(),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '_pin: PhantomPinned,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: fn poll(this, which replaces self everywhere in the function body.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I won’t go through every line since the change is so trivial, but after the
+    first line, it’s a simple search and replace everywhere `self` was used earlier,
+    and change it to `this`:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch09/e-coroutines-pin/src/main.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: The important line here was `let this = unsafe { self.get_unchecked_mut() };`.
+    Here, we had to use `unsafe` since the pinned value is `!Unpin` because of the
+    marker trait we added.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Getting to the pinned value is `unsafe` since there is no way for Rust to guarantee
+    that we won’t move the pinned value.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The nice thing about this is that if we encounter any such problems later, we
+    know we can search for the places where we used `unsafe` and that the problem
+    must be there.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The next thing we need to change is to have the futures we store in our wait
+    states pinned. We can do this by calling `Box::pin` instead of `Box::new`:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch09/e-coroutines-pin/src/main.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: match f1.as_mut().poll(waker)
+  prefs: []
+  type: TYPE_NORMAL
+- en: match f2unsafe here since these futures are !Unpin.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last place we need to change a few lines of code is in `executor.rs`, so
+    let’s head over there as our last stop.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: executor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The first thing we must do is make sure our dependencies are correct. The only
+    change we’re making here is adding `Pin` from the standard library:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch09/e-coroutines-pin/src/runtime/executor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next line we’ll change is our `Task` type alias so that it now refers to
+    `Pin<Box``<``…>>`:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last line we’ll change for now is in our spawn function. We have to pin
+    the futures to the heap:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we try to run our example now, it won’t even compile and give us the following
+    error:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: It won’t even let us poll the future anymore without us pinning it first since
+    `poll` is only callable for `Pin<&mut Self>` types and not `&mut` `self` anymore.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: So, we have to decide whether we pin the value to the stack or the heap before
+    we even try to poll it. In our case, our whole executor works by heap allocating
+    futures, so that’s the only thing that makes sense to do.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Let’s remove our optimization entirely and change one line of code to make
+    our executor work again:'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ch09/e-coroutines-pin/src/runtime/executor.rs
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finished dev [unoptimized + debuginfo] target(s) in 0.02s
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running `target\debug\e-coroutines-pin.exe`
+  prefs: []
+  type: TYPE_NORMAL
+- en: Program starting
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: FIRST POLL - START OPERATION
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: 1 pending tasks. Sleep until notified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'BUFFER:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '----'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP/1.1 200 OK
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'content-length: 15'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[=== ABBREVIATED ===]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'date: Sun, 03 Dec 2023 23:18:12 GMT'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HelloAsyncAwait
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main: All tasks are finished'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE

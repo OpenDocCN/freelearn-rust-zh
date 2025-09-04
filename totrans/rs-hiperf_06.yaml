@@ -1,0 +1,517 @@
+- en: Benchmarking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We have learned how to profile our application and how to find and fix the
+    main bottlenecks, but there is another step in this process: checking whether
+    our changes have improved the performance.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, you will learn how to benchmark your application so that you
+    can measure your improvements. This can meet two objectives: firstly, to check
+    whether a new version of your application runs faster than an older version, and
+    secondly, if you are creating a new application to solve a problem an existing
+    application already solves, to compare the efficiency of your creation to the
+    existing application.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this context, you will learn about the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Selecting what to benchmark
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Benchmarking in nightly Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Benchmarking in stable Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Continuous integration for benchmarks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Selecting what to benchmark
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Knowing whether your program improves efficiency for each change is a great
+    idea, but you might be wondering how to measure that improvement or regression
+    properly. This is actually one of the bigger deals of benchmarking since, if done
+    properly, it will clearly show your improvements or regressions but, if done poorly,
+    you might think your code is improving while it's even regressing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Depending on the program you want to benchmark, there are different parts of
+    its execution you should be interested in benchmarking. For example, a program
+    that processes some information and then ends (an analyzer, a CSV converter, a
+    configuration parser...), would benefit from a whole-program benchmark. This means
+    it might be interesting to have some test input data and see how much time it
+    takes to process it. It should be more than one set, so that you can see how the
+    performance changes with the input data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A program that has an interface and requires some user interaction, though,
+    is difficult to benchmark this way. The best thing is to take the most relevant
+    pieces of code and benchmark them. In the previous chapter, we learned how to
+    find the most relevant pieces of code in our software. With profiling techniques,
+    we can understand which functions and code pieces impact the execution of our
+    application the most, so we can decide to benchmark those.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Usually, you will want to mostly have fine-grained benchmarks. This way, you
+    will be able to detect a change in one of the small pieces of code that affect
+    the overall performance of the application. If you have broader benchmarks, you
+    might know that the overall performance of one part of the application has regressed,
+    but it will be difficult to tell what in the code has made that happen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In any case, as we will see later, having continuous integration for benchmarks
+    is a good idea, creating alerts if a particular commit regresses the performance.
+    It's also important for all benchmarks to run in as similar as possible environments.
+    This means that the computer they are running on should not change from one run
+    to the next, and it should be running only the benchmarks, so that the results
+    are as real as possible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another issue is that, as we saw in the previous chapter, the first time we
+    run something in a computer, things go slower. Caches have to be populated, branch
+    prediction needs to be activated, and so on. This is why you should run benchmarks
+    multiple times, and we will see how Rust will do this for us. There is also the
+    option to warm caches up for some seconds and then start benchmarking, and there
+    are libraries that do this for us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, for the rest of the chapter, you should take all this into account. Create
+    small micro-benchmarks, select the most relevant sections of your code to benchmark,
+    and run them in a known non-changing environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, note that creating benchmarks does not mean that you should not write
+    unit tests, as I have seen more than once. Benchmarks will only tell you how fast
+    your code runs, but you will not know whether it does it properly. Unit testing
+    is out of the scope of this book, but you should test your software thoroughly
+    before even thinking about benchmarking it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Benchmarking in nightly Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you search online for information on how to benchmark in Rust, you will probably
+    see a bunch of guides on how to do it in nightly Rust, but not many on how to
+    do it in stable Rust. This is because the built-in Rust benchmarks are only available
+    on the nightly channel. Let's start by explaining how the built-in benchmarks
+    work, so that we can then find out how to do it in stable Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First of all, let''s see how to create benchmarks for a library. Imagine the
+    following small library (code in `lib.rs`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, I added some unit tests so that we can be sure that any modifications
+    we make to the code will still be tested, and checked that the results were correct.
+    That way, if our benchmarks find out that something improves the code, the resulting
+    code will be (more or less) guaranteed to work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `fibonacci()` function that I created is the simplest recursive function.
+    It is really easy to read and to understand what is going on. The Fibonacci sequence,
+    as you can see in the code, is a sequence that starts with `0` and `1`, and then
+    each number is the sum of the previous two.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we will see later, recursive functions are easier to develop, but their performance
+    is worse than iterative functions. In this case, for each calculation, it will
+    need to calculate the two previous numbers, and for them, the two before, and
+    so on. It will not store any intermediate state. This means that, from one calculation
+    to the next, the last numbers are lost.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, this will push the stack to the limits. For each computation, two functions
+    have to be executed and their stack filled, and, in each of them, they have to
+    recursively create new stacks when they call themselves again, so the stack usage
+    grows exponentially. Furthermore, this computation could be done in parallel since,
+    as we discard previous calculations, we do not need to do them sequentially.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In any case, let''s check how this performs. For this, we''ll add the following
+    code to the `lib.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will need to add `#![feature(test)]` to the top of the `lib.rs` file (after
+    the first comment).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's first understand why we created these benchmarks. We are testing how long
+    it takes for the program to generate the numbers with index `0`, `1`, `2`, `10`,
+    and `20` of the Fibonacci sequence. But, the issue is that if we directly provide
+    those numbers to the function, the compiler will actually run the recursive function
+    itself, and directly only compile the resulting number (yes, **Low Level Virtual
+    Machine** (**LLVM**) does this). So, all benchmarks will tell us that it took
+    0 nanoseconds to calculate, which is not particularly great.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, for each number we add an iterator that will yield all numbers from `0`
+    to the given number (remember that ranges are non-inclusive from the right), calculate
+    all results, and generate a vector with them. This will make LLVM unable to precalculate
+    all the results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, as we discussed earlier, each benchmark should run multiple times so that
+    we can calculate a median value. Rust makes this easy by giving us the `test`
+    crate and the `Bencher` type. The `Bencher` is an iterator that will run the closure
+    we pass to it multiple times.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As you can see, the map function receives a pointer to the `fibonacci()` function
+    that will transform the given `u32` to its Fibonacci sequence number. To run this,
+    it''s as simple as running `cargo bench`. And, the result is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/e3c13942-6d78-4be7-8d9b-c34bab3d54ea.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: So, this is interesting. I selected those numbers (`0`, `1`, `2`, `10` and `20`)
+    to show something. For the `0` and the `1` numbers the result is straightforward,
+    it will just return the given number. From the second number onward, it needs
+    to perform some calculations. For example, for the number `2`, it's just adding
+    the previous two, so there is almost no overhead. For the number `10` though,
+    it has to add the ninth and the eighth, and for each of them, the eighth and the
+    seventh, and the seventh and the sixth respectively. You can see how this soon gets out
+    of hand. Also, remember that we discard the previous results for each call.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, as you can see in the results, it gets really exponential for each new number.
+    Take into account that these results are on my laptop computer, and yours will
+    certainly be different, but the proportions between one another should stay similar.
+    Can we do better? Of course we can. This is usually one of the best learning experiences
+    to see the differences between recursive and iterative approaches.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, let''s develop an iterative `fibonacci()` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this code, for the first two numbers, we simply return the proper one, as
+    before. For the rest, we start with the sequence status for the number 2 (0, 1,
+    1), and then iterate up to number `n` (remember that the range is not inclusive
+    on the right). This means that for the number `2`, we already have the result,
+    and for the rest, it will simply add the two numbers again and again until it
+    gets the result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this algorithm, we always remember the previous two numbers, so we do not
+    lose information from one call to the next. We also do not use too much stack
+    (we only need three variables for the number 2 onward and we do not call any function).
+    So it will require less allocation (if any), and it should be much faster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, if we give it a much bigger number, it should scale linearly, since it
+    will calculate each previous number only once, instead of many times. So, how
+    much faster is it?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ac3ca992-b4a6-406d-8db7-2fee4df1b72a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Wow! The results have really changed! We now see that, at least until the 10th
+    number, the processing time is constant and, after that, it will only go up a
+    little bit (it will multiply by less than 10 for calculating 10 more numbers).
+    If you run `cargo test`, you will still see that the test passes successfully.
+    Also, note that the results are much more predictable, and the deviation from
+    test to test is much lower.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But, there is something odd in this case. As before, 0 and 1 run without doing
+    any calculation, and that's why it takes so much less time. We could maybe understand
+    that for the number 2, it will not do any calculations either (even though it
+    will need to compare it to see if it has to run the loop). But, what happens with
+    number 10?
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this case, it should have run the iteration seven times to calculate the
+    final value, so it should definitely take more time than not running the iteration
+    even once. Well, an interesting thing about the LLVM compiler (the compiler Rust
+    uses behind the scenes) is that it is pretty good at optimizing iterative loops.
+    This means that, even if it could not do the precalculation for the recursive
+    loop, it can do it for the iterative loop. At least seven times.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How many iterations can LLVM calculate at compile time? Well, it depends on
+    the loop, but I've seen it do more than 10\. And, sometimes, it will unroll those
+    loops so that if it knows it will be called 10 times, it will write the same code
+    10 times, one after the other, so that the compiler does not need to branch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Does this defeat the purpose of the benchmark? Well, partly, since we no longer
+    know how much difference it makes for the number 10, but for that, we have the
+    number 20\. Nevertheless, it tells us a great story: if you can create an iterative
+    loop to avoid a recursive function, do it. You will not only create a faster algorithm,
+    but the compiler will even know how to optimize it.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Benchmarking in stable Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Until now, we have seen how to benchmark our code using the nightly release
+    channel. This is because Rust requires the `test` nightly feature for benchmarks
+    to run. It's where the `test` crate and the `Bencher` types can be found. If you
+    still want to be able to use the stable compiler for everything except benchmarks,
+    you can put all your benchmarks in the `benches` directory. The stable compiler
+    will ignore them for normal builds, but the nightly compiler will be able to run
+    them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But, if you really want to use the stable compiler to run benchmarks, you can
+    use the `bencher` crate. You can find it in `crates.io`, and using it is really
+    similar to using the built-in nightly benchmarks, since this crate is just a stable
+    port of the benchmarking library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To use it, you will need to first change the `Cargo.toml` file to make sure
+    it looks like the following after the package metadata and dependencies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we create a benchmark with an example name, and specify not to create
+    a harness around it. Then, create the `benches/example.rs` file with the following
+    content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: And, finally, remove the benchmark module. This will create a benchmark for
+    each of the previous functions. The main difference is that you need to import
+    the crate you are benchmarking, you do not add the `#[bench]` attribute to each
+    function, and you use two macros to make the benchmark run. The `benchmark_group!`
+    macro will create a group of benchmarks with the first argument for the macro
+    as its name and with the given functions. The `benchmark_main!` macro will create
+    a `main()` function that will run all the benchmarks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look at the results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/1057263e-2aec-4539-91a4-4884bcc7b0c5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see, this approach does not give us beautiful colors and it adds
+    some extra overhead to the native method, but the results are still equivalent.
+    In this case, we can see that the 10th number will actually not be calculated
+    at compile time. This is because, on stable Rust, using an external crate, the
+    compiler is not able to compute everything at compile time. Still, it gives us
+    really good information about how different each option's performance is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Continuous integration for benchmarks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Once we know how to benchmark (and I will use the nightly way from now on),
+    we can set up our continuous integration environment so that we can get alerts
+    when a performance regression occurs. There are multiple ways of achieving something
+    like this, but I will be using the Travis-CI infrastructure, some Bash, and a
+    Rust library to do it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Travis-CI integration
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's first start by thanking the great work of Lloyd Chan and Sunjay Varma,
+    who were the first to suggest this approach. You can find the code we will be
+    using in Sunjay's blog ([http://sunjay.ca/2017/04/27/rust-benchmark-comparison-travis](http://sunjay.ca/2017/04/27/rust-benchmark-comparison-travis)).
+    Nevertheless, it makes sense to check it, understand it, and see how it works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The idea is simple: on Travis-CI builds, you can build against multiple Rust
+    channels. When a pull request is received when building against the nightly channel,
+    let''s run all the benchmarks and then compare them to benchmarks we will run
+    on the pull request target branch. Finally, output the comparison results in Travis-CI''s
+    build logs.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s start by configuring our Travis-CI build script. For that, we will need
+    a `.travis.yml` file similar to the following one in our repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let's see what this code does. First of all, if you never used Travis-CI for
+    your continuous integration, you should know that the `.travis.yml` YAML file
+    contains the build configuration. In this case, we tell Travis-CI that we want
+    to build a Rust project (so that it sets up the compiler by itself) and we tell
+    it that we want to build against nightly, beta, and stable release channels. I
+    usually like to add the minimum supported Rust version, mostly to know when it
+    breaks, so that we can advertise the minimum Rust compiler version in our documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We then export the `cargo` binary path so that we can add `cargo` binaries by
+    installing them in the build. This will be needed for the benchmark comparison
+    script. Then, we tell Travis-CI to build the library/binary crate, we tell it
+    to package it to check that a valid package will be generated, and we finally
+    run all the unit tests. So far, nothing too different from a normal Travis-CI
+    Rust build.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Things change once we get to the `after-success` section. We call a shell script
+    that we haven't defined yet. This script will contain the logic of the benchmark
+    comparison.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before writing all the code, let's first learn about a library that will make
+    things much easier for us. I'm talking about the `cargo-benchcmp`, `cargo` binary.
+    This executable can read outputs from Rust benchmarks and compare them. To install
+    it, you only need to run `cargo install cargo-benchcmp`. It also has some great
+    command-line arguments that can help us get the output we want.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To get the results of a benchmark in a file, it's as simple as doing `cargo
+    bench > file`. In this case, we will have two benchmarks, the *control* benchmark,
+    a benchmark that we decide will be the reference; and a *variable* benchmark,
+    the one we want to compare. Usually, a pull request will have the target branch
+    as a control benchmark and the pull request branch as a variable benchmark.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the executable is as easy as running `cargo benchcmp control variable`.
+    This will show a great output with a side-by-side comparison. You can ask the
+    tool to filter the output a bit, since you probably don't want to see tens of
+    benchmarks with really similar values, and you are probably interested in big
+    improvements or regressions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To see the improvements, add the `--improvements` flag to the command line and,
+    to see the regressions, add the `--regressions` flag. You can also set up a threshold
+    as a percentage, and benchmarks that change below that threshold won't show, to
+    avoid non-changing benchmarks. For that, use the `--threshold {th}` syntax, where
+    `{th}` is a number higher than 0 representing the percentage change that should
+    be taken into account.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we understand this, let''s see the code that will be in the `travis-after-success.sh`
+    file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let's see what this script is doing. The `set -e` and `set -x` commands will
+    simply improve how the commands are shown in Travis-CI build logs. Then, only
+    for nightly, it will clone the repository in a new location. If it's a pull request,
+    it will clone the base branch; if not, it will clone the master branch. Then,
+    it will run benchmarks in both places and compare them using `cargo-benchcmp`.
+    This will show the results in the build logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This script can, of course, be modified to suit any needs and, for example,
+    use a different branch to the master branch as a default branch, or filter the
+    output of the comparison, as we saw earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Benchmark statistics with Criterion
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If we want to know more about benchmark comparison, there is no better library
+    than **Criterion**. It will generate statistics that you can use to compare benchmarks
+    from multiple commits, and not only that, it will also enable you to show plots
+    if you have `gnuplot` installed. It requires Rust nightly to run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see how to use it. First, you will need to add Criterion as a dependency
+    in your `Cargo.toml` file and create a benchmarks file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, you will need to create a benchmark. I will be using the Fibonacci function
+    that we saw earlier to demonstrate the behavior. The way to declare the benchmarks
+    is almost exactly the same as the Rust stable `bencher` crate. Let''s write the
+    following code in the `benches/example.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we now run `cargo bench`, we will see a similar output to this one (with
+    the recursive version):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/d3507a8c-049d-4d23-8f9c-1dc4b7338e87.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see, we get tons of information here. First, we see that Criterion
+    warms the processor for three seconds so that it can load the caches and set up
+    branch prediction. Then, it gets 100 measurements of the function, and it shows
+    us valuable information about the sample.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can see how much time it takes to run an iteration (about 42 microseconds),
+    the mean and the median of the sample, the number of outliers (significantly different
+    samples), and a slope with its `R²` function. Until now, it only gives some extra
+    information regarding the benchmark. If you check the current directory, you will
+    see that it created a `.criterion` folder, which stores previous benchmarks. You
+    can even check the JSON data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s run the benchmark again, by replacing the recursive function with the
+    iterative function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/a2cc5c46-37d8-44f8-8e76-44cbd749be84.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Wow! Lots more data! Criterion compared this new benchmark with the previous
+    one and saw that there is strong evidence to reject that this improvement is just
+    a statistical anomaly. The benchmarks have improved by 99.96%!
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see, Criterion gives us a better informative approach than the built-in
+    benchmarks for statistical analysis. Running this tool once in a while will show
+    us how the performance of our application changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The library allows for function comparison, graph creation, and more. It can
+    be configured for each benchmark, so you will be able to fine-tune your results
+    according to your needs. I recommend you check the official documentation of the
+    project for further insights ([https://crates.io/crates/criterion](https://crates.io/crates/criterion)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: To include this in your Travis-CI builds, it's as simple as modifying the previous
+    shell script. Just call `cargo bench` instead of `cargo benchcmp` and make sure
+    that you move the `.criterion` folder to where you run the benchmarks (since it
+    downloads two repositories).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, you learned how to benchmark your Rust application. You saw
+    the different options and found out what was best for your particular needs. You
+    also learned about some libraries that will help you compare the results of the
+    benchmarks and even how to use them in your continuous integration environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the next chapter, you will enter the world of metaprogramming by learning
+    about Rust's macro system and the macros built in to the standard library.
+  prefs: []
+  type: TYPE_NORMAL

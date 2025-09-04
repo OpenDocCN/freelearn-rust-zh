@@ -1,0 +1,2216 @@
+- en: Creating a Computer Emulator Using Nom
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the last chapter, we saw how to parse text files—in particular, how to program
+    source files in a simple programming language. Text files aren't the only thing
+    you could need to parse—several kinds of system software need to parse binary
+    files (such as binary executables, multimedia files, and inter-process communication
+    messages).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will look at how to cope with the need for parsing binary
+    files and how the `nom` library can be used to ease this task. First, we will
+    look at how to parse and interpret a very simple machine language without using
+    an external library, and then how the `nom` library can be used to ease this task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To do this, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing a very simple machine language using only 16-bit words
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Writing a couple of programs in this language
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Writing a parser and an interpreter for this language and running it on the
+    previously presented programs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Defining a byte-addressing machine language derived from the previous one
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Explaining the addressing issue (endianness) that emerges when a byte-addressing
+    machine language must handle words containing several bytes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Presenting a version in the new machine language of the previously presented
+    machine language program
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Writing a parser and an interpreter for this language using the `nom` library
+    and running it on the machine language program
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Writing a translator for the C language that converts the machine language program
+    into an equivalent C language program
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Writing a couple of disassemblers—programs that convert machine language programs
+    into assembly language—and applying them to our machine language program
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will have learned the main concepts of CPU architectures,
+    interpretation, and translating machine language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: For the parts of this chapter referring to the `nom` library, knowledge of the
+    preceding chapter is required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The complete source code for this chapter is found in the `Chapter09` folder of
+    the repository at [https://github.com/PacktPublishing/Creative-Projects-for-Rust-Programmers](https://github.com/PacktPublishing/Creative-Projects-for-Rust-Programmers).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Project overview
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, first, the general concepts regarding machine languages will
+    be presented. Then, a very simple machine language will be presented. Of course,
+    this will be quite unrealistic to use as no real hardware exists to run it. It
+    will simply be used to demonstrate how to process it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, a very simple algorithm will be written in the machine language—a formatter
+    of integer numbers. A Rust program to interpret this program will be written without
+    using an external library (`word_machine_convert`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, a more complex program will be written in this machine language—the famous
+    algorithms invented by Eratosthenes to find prime numbers (named the **sieve of
+    Eratosthenes**). The previous Rust program will be used to interpret this machine
+    language program (`word_machine_sieve`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Afterward, a somewhat more realistic machine language will be defined that is
+    capable of addressing single bytes instead of words. The issues raised by this
+    machine language will be explained. A new version of the sieve of Eratosthenes will
+    be written in this updated machine language and an interpreter will be written
+    in Rust to run it. In addition, this Rust program will translate the machine language
+    program into C language. This interpreter and compiler will use the `nom` library,
+    already introduced in the previous chapter, to generate an intermediate version
+    of the program. This intermediate data structure will be both interpreted and
+    compiled to the C language (`nom_byte_machine`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, a **disassembler** will be built for this machine language (`nom_disassembler`).
+    It will again use the `nom` library and it will show two kinds of disassembling—one
+    meant to aid debugging and the other meant to generate source code for an assembler;
+    that is, a program that translates symbolic code to machine language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing a very simple machine language
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Real machine languages and real computers are way too complex to be covered
+    in a single chapter; therefore, we will use a toy machine language that is easier
+    to process and understand. In fact, two machine languages will be used:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first language that we will use is the simpler one. For simplicity, it addresses 16-bit
+    words, instead of memory bytes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The second language presented can address single bytes, as most modern computers
+    do.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Therefore, any program of the first language that we will use is just a sequence
+    of 16-bit words, and any program written in it can only manipulate 16-bit words.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both machine languages use just one memory segment containing both machine code
+    and data. Here, there is no real distinction between code and data; instructions
+    can read or write both code and data and data can wrongly be executed as if it
+    were instructions. Usually, code, and some data as well (the so-called **constants**),
+    is not meant to change, but here, there is no guarantee.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In most computer architecture, the memory used by any process is composed of
+    several portions, named **segments**. The most common memory segments are machine
+    code (often named text), static data, heaps, and stacks. Some segments can be
+    read-only, while others may be writable. Some segments may have a fixed size and
+    others may be resized. Some segments can be shared with other processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look at some reasons why we might need to process machine language software:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running a binary program for a computer when that computer is not available
+    (because it is too costly to buy or because it has not yet been built)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Debugging or analyzing a binary program when its source code is not available
+    and the computer that must run it is so resource-constrained that no debugger
+    can run on it
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Disassembling machine code—that is, translating it into assembly code
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Translating a binary program into another machine language to run it natively in
+    a much faster way than by interpreting it
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Translating a binary program into a high-level programming language to change
+    it easily and then to recompile it into any machine language
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Writing a program directly in machine code is very error-prone, so no one does
+    it. Anyone that needs to write some machine language first writes that code in
+    a symbolic language, named **assembly language**, and then translates it into
+    machine language. This translation can be done manually or by using a specific
+    program, named an **assembler**. Here, we don't have an assembler for our programs,
+    so we will translate the assembly code manually. However, before describing our
+    machine languages, let's look at some concepts relating to machine language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The most important concepts relating to machine language
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In any programming language, you need a way to specify variables and statements.
+    In addition, to document your code, you need a way to insert comments into the
+    program. The following code is a very simple program in assembly language, containing
+    the declaration of some variables, some instructions, and some comments:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The double backslashes (`//`) begin the comments. The first comment declares
+    (for humans) where the `data` section starts. The second comment declares where
+    the `code` section starts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice that, apart from comments, some lines are indented and others aren't.
+    Actual declarations and instructions must be indented. Lines written in the first
+    column are **labels **that mark positions in the program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the preceding code, there is some data, as shown in the first line. Every
+    data item is a word, and so it is declared using the `word` keyword. At position
+    `n`, there is a word whose initial value is `17`. At position `m`, there is another
+    word whose initial value is `9` and at position `sum`, there is a word whose initial
+    value is `0`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, there are four instructions, each on a different line. Each instruction
+    has two parts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Operation Code** (**opcode**): This is a command for the processor.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Operand**: This is the argument for an opcode command—that is, the data on
+    which the command operates.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'All machine language is designed for specific computer architecture. The computer
+    meant to run this program has just two 16-bit CPU registers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One to keep the data word to manipulate, named the **accumulator**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: One to keep the address of the next instruction to execute, named the **instruction
+    pointer** (or **program counter**)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The first instruction of the program is `load n`. This instruction is equivalent
+    to the `accumulator = n;` Rust statement. It copies the current value of the word
+    that is at the address labeled with `n` in the accumulator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second instruction is `add m`. This is equivalent to the `accumulator +=
+    m;` Rust statement. It adds the value of the word that is at the address labeled
+    with `m` to the value currently contained in the accumulator and it stores the
+    result into the accumulator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third instruction is `store sum`. This is equivalent to the `sum = accumulator;` Rust
+    statement. It copies the current value of the accumulator into the word that is
+    at the address labeled with `sum`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last instruction is `terminate 0`. This terminates the execution of the
+    program (returning control to the operating system, if there is one) and it returns
+    a value of `0` to the process that launched this program (if there is one).
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, if we follow the effect of the instructions on the data, we find that this
+    program starts with the three data words containing `17`, `9`, and `0` and ends
+    with them containing `17`, `9`, and `26`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, to run this program, we need to translate it into machine language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, a distinction between the words **program** and **process** is needed.
+    A machine language program is the machine code that exists before running it. `t`
+    is either stored in a storage device or ROM. Instead, a process is found in the
+    RAM area in which the program is loaded and run. This distinction is particularly
+    important in multiprocessing systems, where you may have several processes running
+    on the same program, but it is also important in systems running one process at
+    a time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s assume that our machine requires any program to have the following structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|  Length of the process |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  First instruction |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  Second instruction |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  Third instruction |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  ... |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  Last instruction |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  First word of data |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  Second word of data |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  Third word of data |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  ... |'
+  prefs: []
+  type: TYPE_TB
+- en: This table shows that the first word of the program is meant to be the length
+    of the whole process in words. The words after it are meant to be instructions
+    in machine language. The words that follow the last instruction of the program
+    are meant to be data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the preceding program, we have four instructions, and each of them uses one
+    word for the opcode and one for the operand. Therefore, eight words are occupied
+    by four instructions. If we add together the initial word containing the length
+    of the process and the three words occupied by the three variables (one word per
+    variable), we get *1 + 8 + 3 = 12* words. This is the size of the memory space
+    used by this program, measured in words. If we set this number as the initial
+    word of the program, it means that we need exactly that memory in our process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we lay out the instructions and data, we get the following array of words
+    for our process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Position** | **Contents** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `0` | The length of the process |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `1` | The opcode of the `load` instruction |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `2` | The `n` operand |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `3` | The opcode of the `add` instruction |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `4` | The `m` operand |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `5` | The opcode of the `store` instruction |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `6` | The `sum` operand |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `7` | The opcode of the `terminate` instruction |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `8` | The `0` operand |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `9` | Data 17 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `10` | Data 9 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `11` | Data 0 |'
+  prefs: []
+  type: TYPE_TB
+- en: The position of any word is its distance from the beginning of the program measured
+    in words. Any position is named the **address** of the word, as this number allows
+    us to access the word in the process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Machine language does not use labels; it only uses addresses. So, to translate
+    the assembly code into machine language, we must replace the use of labels with
+    memory addresses. The address of the first word is, by definition, `0`. The address
+    of the first instruction is `1`. Any instruction is two-words long, and so the
+    address of the second instruction is *1 + 2 = 3*. The address after the last instruction—that
+    is, the address of the first data word, labeled by `n`—is `9`. The address of
+    the second data word, labeled `m`, is `10`. The address of the last data word,
+    labeled `sum`, is `11`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After adding the initial length, moving the instructions before the data, and
+    replacing the labels, our program becomes the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then, we must replace every symbolic code with its corresponding machine language
+    opcode, which is a unique number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s assume the following correspondence between the opcode and symbolic
+    instruction code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `word` keyword does not actually generate instructions. So, our program
+    becomes the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Of course, these numbers will be stored as a vector of binary numbers. So,
+    in Rust, it will be the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, we have been able to manually translate an assembly language program into
+    a machine language program. However, we used a very small machine language containing
+    only four kinds of instructions—that is, only four different opcodes. To carry
+    out useful work, some more kinds of instructions are needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Extending our machine language
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The machine language that we saw in the preceding section is only capable of making
+    additions and it has no input/output capabilities. Such a limited language is
+    not very interesting. So, to have a language that can be used to build meaningful
+    programs, let's add some kinds of instruction to our machine language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our assembly language (and its corresponding machine language) is defined by
+    the following table:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Opcode** | **Assembly syntax** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `0` | `terminate operand` | This terminates the program, returning the operand
+    to the caller. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `1` | `set operand` | This copies the operand to the accumulator. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `2` | `load address` | This copies the value at this address to the accumulator.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `3` | `store address` | This copies the value of the accumulator to this
+    address.  |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `4` | `indirect_load address` | This copies the value whose address is specified
+    at this address to the accumulator. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `5` | `indirect_store address` | This copies the value of the accumulator
+    to the address specified at this address.   |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `6` | `input length` | This asks the user for console input until the *Enter*
+    key is pressed. Then, at most, the `length` characters of the input line are copied
+    into consecutive memory words. This sequence of memory words begins at the address
+    contained in the accumulator. Each memory word contains exactly one character.
+    If the user types less than length characters, the remaining words are set to
+    binary zero (`0`). So, in any case, `length` memory words are set by this instruction.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `7` | `output length` | This emits to the console the `length` ASCII characters
+    whose codes are in consecutive memory words. This sequence of memory words to
+    output begins at the address contained in the accumulator. Only 7-bit ASCII characters
+    are correctly supported. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `8` | `add address` | This adds the value at this address to the value of
+    the accumulator and keeps the result in the accumulator. It uses 16-bit integer
+    arithmetic with a wraparound—that is, in the case of integer overflow, the value
+    modulo of 65,536 is obtained.  |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `9` | `subtract address` | This subtracts the value at this address from the
+    value of the accumulator, using wrap-around arithmetic, and keeps the result in
+    the accumulator. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `10` | `multiply address` | This multiplies the value of the accumulator
+    by the value at this address, using wrap-around arithmetic, and keeps the result
+    in the accumulator. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `11` | `divide address` | This divides the value of the accumulator by the
+    value at this address using integer arithmetic (truncation) and keeps the result
+    in the accumulator (quotient). |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `12` | `remainder address` | This divides the value of the accumulator by
+    the value at this address using integer arithmetic (truncation) and keeps the
+    integer remainder in the accumulator.  |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `13` | `jump address` | This proceeds to the execution of the instruction
+    present at `address`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `14` | `jump_if_zero address` | This proceeds to the execution of the instruction
+    present at `address`, but only if the value of the accumulator is equal to `0`.
+    Otherwise, it proceeds to the next instruction. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `15` | `jump_if_nonzero address` | This proceeds to the execution of the
+    instruction present at `address` if the value of the accumulator is not `0`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `16` | `jump_if_positive address` | This proceeds to the execution of the
+    instruction present at `address` if the value of the accumulator is a positive
+    number. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `17` | `jump_if_negative address` | This proceeds to the execution of the
+    instruction present at `address` if the value of the accumulator is a negative
+    number. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `18` | `jump_if_nonpositive address` | This proceeds to the execution of
+    the instruction present at `address`, but only if the value of the accumulator
+    is non-positive—that is, if it is a negative number or it is equal to `0`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `19` | `jump_if_nonnegative address` | This proceeds to the execution of
+    the instruction present at `address` if the value of the accumulator is non-negative—that
+    is, if it is a positive number or it is equal to `0`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  – | `word value` | This reserves a word for data. Its initial content is
+    specified by `value`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '|  –  | `array length` | This reserves an array of `length` words. All these
+    words are initialized to `0`. |'
+  prefs: []
+  type: TYPE_TB
+- en: Notice that the `set` instruction type (opcode `1`) is quite simple; it assigns
+    the operand to the accumulator. Almost all the other assignment and arithmetic
+    instruction types have one level of indirectness—their operand is the memory address
+    of the data that must be operated on. However, the two instructions—`indirect_load`
+    (opcode `4`) and `indirect_store` (opcode `5`)—have two levels of indirectness.
+    Their operand is the memory address of a word—that is, the memory address of the
+    data that must be operated on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have a powerful enough machine language, we can write a meaningful
+    program using it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing a very simple program
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To show you how to use this language, let's write some code with it. We will
+    create a program that, when given a positive integer number in a memory word (in
+    binary format), prints it in decimal notation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s assume that the number to print is hardcoded as `6710`. When we write
+    the algorithm in Rust, it is as shown in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, the `n` variable is the unsigned 16-bit number to convert
+    and print. The `digits` variable is a buffer that will contain the ASCII values
+    of the generated digits. As a 16-bit number can have, at most, five decimal digits,
+    an array of five digits is enough. The `pos` variable is the position of the current
+    digit in the `digits` array.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `number_base` variable is `10` as we are using decimal notation. The `ascii_zero`
+    variable contains the ASCII code for the zeroth character (which is `48`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first loop computes any ASCII decimal digit by computing the remainder of
+    `n` divided by 10 using the `%` operator, and by adding it to `ascii_zero`. Then,
+    `n` is divided by the `number_base` variable to remove the least significant decimal
+    digit from it. The second loop prints the five generated digits to the console.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem with this program is that it needs to use array indexing. Actually, `pos` is
+    an index to the `digits` array. Machine language uses addresses, not indices;
+    so, to mimic machine language, we must replace the type of `pos` with that of
+    raw pointers, whose dereference operation is unsafe in Rust. Instead of counting
+    up to five, we set an `end` pointer. When `pos` reaches this pointer, it will
+    have finished the array.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, let''s translate our Rust program into a format that is more similar to
+    what can be translated into machine language using raw pointers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding program, the unsafe `offset` method of raw pointers is used.
+    When given a raw pointer, it generates another raw pointer by advancing by the
+    specified number of positions in memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To have a program that is even more similar to a machine language program, we
+    should split all the Rust statements into elementary statements that correspond
+    to machine instructions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, there is another problem—our accumulator register will sometimes contain
+    numbers and other times addresses. Using Rust, this is inconvenient because numbers
+    and addresses have different types in Rust. Therefore, here, we will use two variables—`acc` (which
+    represents the accumulator when it is used to store a number) and `ptr_acc` (which
+    represents the accumulator when it is used to store an address—that is, a memory
+    pointer).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is the obtained program, which is quite similar to a machine language
+    program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that now, the statements after the empty line, except for the final `for`
+    loop, are quite simple. They are only assignments, possibly combined with one
+    operation, such as `%=`, `+=`, or `/=`. In addition, there is one `if` statement
+    used to break the loop when the `n` variable is `0`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This can be easily translated into our assembly language, as shown:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This assembly language program can be manually translated into machine language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As there are 5 data words, 1 data array of five words, 16 instructions occupying
+    two words each, and the initial word, we have a total of *5 + 1 * 5 + 16 * 2 +
+    1 = 43* words. This number will be the value of the first word of our program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, considering the required layout (the process length, followed by the
+    instruction, followed by the data), we can compute the addresses of the jump destinations
+    and the addresses of the data, obtaining the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, notice that the symbolic names of the addresses are commented
+    out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, by replacing the symbolic codes with the opcodes and by removing the
+    comments and line addresses, we get the machine language program as a comma-separated
+    list of decimal numbers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For example, we start with the following line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding line becomes the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Because the `1:` line address has been removed, the `set` symbolic code has
+    been replaced by its opcode (`1`), the `// pos` comment has been removed, and
+    two commas have been added to separate the numbers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we can build a Rust program that interprets this program. You can find
+    it in the `word_machine_convert` project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you execute the `cargo run` command on this project, the program is compiled
+    in a short time because it has no dependencies. The execution will simply print `6710` with
+    a leading space. The name of this project means to convert a number using a machine
+    language that uses word addressing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `main` function of this Rust program just passes the preceding list of numbers
+    to the `execute` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This function begins with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: The previously mentioned function (`execute`) emulates an extremely simple machine
+    language processor that addresses memory as a slice of 16-bit words. This function,
+    if it returns, returns the operand of the `terminate` instruction that it may
+    execute.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `acc` variable represents the accumulator register. The `process` variable
+    represents the actual runtime content of memory. Its size, in words, is the number
+    specified by the first word of the program. It makes no sense to have a process
+    shorter than the program that it runs because some data would be lost.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, it makes sense to have a process larger than the programs that it runs
+    because in doing so, it allocates memory that will be used by code with no need
+    to declare it in the program. In this way, you can have a program with a few words
+    using a memory space of up to 65,536 words, which is 128 **Kibibytes** (**KiB**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first part of the `process` variable is initialized with the contents of
+    `program`, received as an argument of the `execute` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `ip` variable is the instruction pointer, which is initialized to `1`—that
+    is, it points to the second word, where there is a first instruction to execute.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, there is the processing loop. Every instruction has exactly one opcode
+    and one operand, and so they are loaded into the respective variables. Then, there
+    is a debugging statement that is commented out; this can be useful if your program
+    does not do what you hoped.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After executing any instruction, the instruction that follows it will usually be
+    executed, and so the instruction pointer is incremented right away by two words
+    to skip the current instruction. The exceptions are the `jump` instructions and `terminate`
+    instructions. The `jump` instructions, if their condition is satisfied, will change
+    the instruction pointer again and the `terminate` instruction will jump out of
+    the processing loop, and out of the `execute` function, too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The rest of the function is a large `match` statement, which is needed to process
+    the current instruction. Here are its first few lines:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: The behavior of each arm of this kind of a `match` statement is quite simple
+    as it is meant to be executed by hardware. For example, if the current instruction
+    is `terminate`, the function returns the operand; if it is `set`, the operand
+    is assigned to the accumulator; if it is `load`, the memory word whose address
+    is the operand is assigned to the accumulator; and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a pair of arithmetic instructions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In all modern computers, integer numbers are stored in two complementary formats
+    and they perform their operations accordingly. This has several advantages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A single arithmetic operation can work if the operands are both interpreted
+    as signed numbers or unsigned numbers (but not one signed number and the other
+    unsigned).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If an addition or subtraction causes an integer to overflow and then another
+    operation causes the result to go back into the allowed range, the result is still
+    valid.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In high-level languages, such as Rust, arithmetic overflow is usually not allowed
+    by default. In Rust, the arithmetic of overflow of basic operators causes panic
+    when it shows a message such as `attempt to add with overflow`. To allow two complementary
+    arithmetics, the Rust standard library provides the corresponding wrapping method for
+    any operator, which is the one usually implemented in machine language. To use
+    it, instead of writing `a + b`, you write `a.wrapping_add(b)`; instead of writing `a
+    - b`, you write `a.wrapping_sub(b)`, and so on for the other operators.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `jump` instructions are a bit different from other instructions, as shown:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, the `jump_if_nonzero` instruction checks the value of
+    the accumulator and sets the instruction pointer to the specified value only if
+    this value is not `0`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `jump_if_positive` instruction checks whether the value of the accumulator
+    is positive, interpreting it as a signed number. Without the `as i16` clause,
+    the check would always succeed as the `acc` variable is unsigned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice that in Rust, an unsigned number can be converted into a signed one,
+    even if the result is negative; for example, the expression `40_000_u16 as i16
+    == -25_536_i16` is true.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `input` and `output` instructions are unusually complex, and they even interact
+    with the operating system. Of course, they are not real-world machine language
+    instructions. They were added to this pseudo-machine language just to be able
+    to write a complete program with reasonable effort. In practice, in a real-world
+    machine language, I/O is performed using a convoluted sequence of instructions
+    or by calling an operating system service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we have seen how to interpret a machine language program. It was quite a
+    trivial program, however; so, in the next section, we'll look at a more interesting
+    and complex machine language program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A more complex program – the sieve of Eratosthenes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now, let's consider a more realistic but challenging problem—implementing an
+    algorithm to print all the prime numbers that are less than a number, *N*, where *N* is
+    typed in by the user at runtime. This is called the **sieve of Eratosthenes **algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is the Rust version of this program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, the first 14 lines of the `main` function ask the user
+    to type in a number until the typed number is between `2` and `32767`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next group of statements allocates a vector of bytes to store the numbers
+    that have been detected as non-primes. Initially, it contains all zeros, meaning
+    that every number in the required range could be a prime. Then, all the numbers
+    of the range are scanned in increasing order, and for each of them, if it is still
+    considered a prime number, all of its multiples are marked as non-primes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last group of statements again scans all the numbers and prints only those
+    that are still marked as prime numbers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The difficulty of this program is that it needs to allocate memory to be used
+    by a vector. Our machine language does not allow memory allocation. We can pre-allocate
+    an array with the maximum desired size, say, 400 words.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To pre-allocate such an array, it is enough to specify that the process size
+    is equal to the program size plus 400 words. In doing this, when the process begins
+    its execution, it will allocate the required space and it will initialize it to
+    be a sequence of zeros.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can imagine, the corresponding assembly and machine language program
+    is quite complex. It can be found in the `word_machine_sieve` project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you run it and then type in a number that isn't larger than 400, all the
+    prime numbers that are smaller than the typed number will be printed to the console.
+    The interpreter is identical to the one used in the preceding projects, but there
+    is another machine language program in the `main` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This machine language program is much larger than that of the preceding project,
+    and it is explained by comments. The assembly language is equivalent in any instruction
+    or data item in a comment. Here is the initial part, containing four instructions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The process size, `600`, is 400 words, which is larger than the program size
+    by 200 words.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are some explanatory comments interleaved, such as those in the second
+    and fifth lines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third line is a `set` instruction (opcode 1), with operand `190`. The comment
+    explains that this instruction begins at address `1` and corresponds with the `set
+    digits` assembly instruction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can imagine, it is almost impossible to write a machine language program directly without
+    passing through its assembly language version, and it is an error-prone choreto
+    manually translate an assembly language into machine language. Fortunately, it
+    is rather easy to write an assembler program that does this for you. You can do
+    this by using the compiling techniques explained in the preceding chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will look at a more realistic machine language and how
+    to use the `nom` parsing library to ease its interpretation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining a byte-addressing machine language
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In the preceding section, we saw a different kind of machine language. However,
+    this kind of machine language is quite unrealistic for several reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It addresses memory word by word. This was common in the early days of computer
+    technology, until around 1970\. Then, it became more and more common to have processors
+    that address single bytes of memory. Today, probably every processor in production
+    can address single bytes of memory.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It has instructions of the same length. There has probably never been a machine
+    language where all the instructions are of the same length. A very simple instruction,
+    such as a **No-Operation** (**NOP**), can stay in a single byte, while there are
+    processors that have instructions spanning many bytes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Any kind of operation operates on a 16-bit word for real-world processors, for
+    any kind of operation—for example, addition. There can be an instruction that
+    operates on single bytes, adding an 8-bit byte to another byte, another instruction
+    that does the same thing but on 16-bit words, adding a word to another word, another
+    instruction for 32-bit double-words, and even instructions that operate on larger
+    bit sequences.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It has just one processor register—the accumulator. Real-world processors have
+    much more processor registers.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It has few operations available. Real-world machine languages have more possible
+    operations, such as logical operations, function calls and function return instructions,
+    stack manipulation operations, and increment and decrement operators.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Here, we will change our machine language to introduce the following missing
+    features:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Byte addressing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Variable-length instructions
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Instructions to load or store a single byte, in addition to those to load or
+    store words
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'So, we apply the following changes to our byte-addressing machine language:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every address represents the position of a memory byte, not the position of
+    a memory word.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Every opcode occupies only one byte, instead of the word as was the case in
+    the preceding language.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While most instruction types still have a one-word operand, three instruction
+    types have a 1-byte operand. They are `terminate operand`, `input length`, and `output length`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Four instruction types are added to the language to manipulate a single byte.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To understand this new machine language, it is important to realize that every
+    16-bit word contains 2 bytes, one containing the eight least significant bits
+    of the number and the other containing the eight most significant bits of the
+    number. The first byte is named the **low byte** and the other is named the **high
+    byte**. When a byte inside a word is manipulated, it is important to know whether
+    it is the low byte or the high byte of that word.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The new instruction types are defined in the following table:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Opcode** | **Assembly syntax** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `20` | `load_byte address` | This copies the value of the byte at that address to
+    the low byte of the accumulator. The high byte of the accumulator is set to `0`.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `21` | `store_byte address` | This copies the low byte of the value of the
+    accumulator to that address. The high byte of the accumulator is not used. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `22` | `indirect_load_byte address` | This copies the byte value whose address
+    is specified at that address to the low byte of the accumulator. The high byte
+    of the accumulator is set to `0`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `23` | `indirect_store_byte address` | This copies the low byte of the value
+    of the accumulator to the address specified at that address. The high byte of
+    the accumulator is not used. |'
+  prefs: []
+  type: TYPE_TB
+- en: These four instructions are needed because the `load`, `store`, `indirect_load`,
+    and `indirect_store` instruction types still transfer whole words, while we also
+    need to read or write a single byte of memory without reading or writing the byte
+    next to the specified address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a result of these changes, in the previous machine language, every instruction
+    occupied four bytes. However, in this new language, the three instruction types—`terminate`,
+    `input`, and `output`—occupy only 2 bytes and all the other instruction types occupy
+    3 bytes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice that all the other instruction types remain unchanged and the size of
+    the accumulator and the instruction pointer is still 16 bits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having byte-addressing capability, together with words spanning several bytes,
+    raises an issue, however. This is the so-called **endianness** issue, described
+    in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Coping with the endianness issue
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Consider a word in the accumulator with a value of `256`. The low byte of this
+    word is `0` and the high byte is `1`. This word will be stored at the `1000` memory
+    address. Because this address now refers to a single byte, not to a two-byte word,
+    the `store` instruction must also access another memory byte to store a word.
+    For every computer system, the other byte that is needed is one with the following
+    consecutive address, and so it is at address `1001`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, our accumulator will be stored in the 2 bytes with addresses `1000` and
+    `1001`. However, the low byte of number `256`, whose value is `0`, could be stored
+    at address `1000` or at address `1001`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the first case, when the low byte is stored at address `1000`, the high
+    byte, whose value is `1`, will be stored at address `1001`. Here is the memory
+    layout of this case:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Address** | **Memory content** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `1000` | 00000000 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `1001` | 00000001 |'
+  prefs: []
+  type: TYPE_TB
+- en: 'In the second case, when the low byte is stored at address `1001`, the high
+    byte will be stored at address `1000`. Here is the memory layout of this case:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Address** | **Memory contents** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `1000` | 00000001 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `1001` | 00000000 |'
+  prefs: []
+  type: TYPE_TB
+- en: This is just a matter of convention.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unfortunately, some important computer vendors chose one convention and some
+    other important computer vendors chose the other. Some computer hardware can even
+    be programmed to change convention at runtime, and so it is up to the operating
+    system to choose the convention.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The convention where the low byte has a lower memory address is named **little-endian**,
+    which is shown in the first of the previous two tables. The other convention, where
+    the high byte has a lower memory address, is named **big-endian**, and it is shown
+    in the second of the preceding two tables. The issue itself is named the **endianness**
+    issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For our machine language, we chose little-endian.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have defined the new byte-addressing machine language and we have
+    chosen to adopt the little-endian convention for it, we can write an interpreter
+    for this machine language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The nom_byte_machine project
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we have a new machine language, we can write some programs using it
+    and try to build an interpreter for these programs. In addition, it is possible
+    to use the `nom` library, already seen in [Chapter 8](24e48581-b784-455c-bb17-b08a380cdab7.xhtml),
+    *Using a Parser Combinator for Interpreting and Compiling*, to ease the building
+    of this sort of interpreter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, before we start coding, let''s consider the possible techniques to execute
+    a machine language program. In fact, there are at least three possible ways to
+    execute a machine language program without having real hardware:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Technique 1**: Interpreting it just as the hardware would interpret it. This
+    is the technique used in the previous sections to interpret the sieve of Eratosthenes program
+    in the `word_machine_sieve` project.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Technique 2**: First, parsing it all and transforming it into a high-level
+    data structure, then interpreting this data structure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Technique 3**: Translating it into another programming language, and then
+    using an interpreter or a compiler for this programming language.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Technique 1* is the only one of the three that can obtain the correct result
+    for any possible program. The other two techniques only work if the program is
+    well formed, following these rules:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It begins with a little-endian word containing the size of the process in bytes.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: After the initial word, there is a sequence of valid machine language instructions,
+    with no interleaved spaces or data.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The `Terminate` instruction occurs once—and only once—as the last instruction
+    so that it marks the end of the sequence of instructions. After this, there is
+    only data left.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: No statement writes on the instructions; only the data can be changed. So, the
+    program is not self-modifying; or, said in another way, the program instructions
+    are the same as the process instructions.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The `nom_byte_machine` project implements all three techniques and applies them
+    to a well-formed machine language program. This program is a version of the sieve
+    algorithm seen in the preceding section, implemented for the byte-addressing machine
+    language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First of all, let''s try to build and run the project by typing `cargo run` in
+    the `project` folder. The build will take some time because it uses the `nom`
+    library. The execution starts by creating the `prog.c` file, containing a C language
+    version of the machine language program, and printing the following on the console:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then, the program interprets the program using the first technique described
+    earlier. This causes it to wait until the user types in a number. You should type
+    in a number between `0` and `400` and press *Enter*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some prime numbers will be printed using *Technique 1*, and then the program
+    interprets the same program using *Technique 2*, and, therefore, it waits again
+    until the user types in a number. You should type in a number again and press
+    *Enter*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, if you entered `100` the first time and the second time you entered `40`,
+    then the console should display this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After executing it, the `prog.c` file will exist in the `project` folder. Using
+    a Unix-like environment, you can compile it with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will create the `prog.exe` file. Then, you can run it with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Of course, this program has the same behavior as the previously interpreted
+    program. It first asks for a number, and if, for example, you type in `25`, the
+    output is this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As this project is somewhat complex, its source code has been split into several
+    source files. They are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`main.rs`: This contains the machine language program and the calls to the
+    functions contained in the other source files.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`instructions.rs`: This contains the definitions of the machine language instructions
+    and the `nom` parsers to recognize them.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`emulator.rs`: This is a low-level interpreter of the machine code. Every instruction
+    is first parsed and then executed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`parsing_interpreter.rs`: This first parses all the instructions of the machine
+    code, constructing a data structure, and then executes this data structure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`translator.rs`: This translates all the instruction of the machine code into
+    C language code and adds some C language lines to create a valid C program.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's look at each of the files in the following sections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the main.rs source file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The `main.rs` file contains the `main` function, which begins with the following
+    lines:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: This machine language program is similar to the one used in the `word_machine_sieve` project.
+    While in those programs the numbers represented words (`u16`), now they represent
+    bytes (`u8`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, read the comments, except for the descriptive comments that are on their
+    own in a line. These comments contain the address of the current instruction or
+    data, followed by a colon, followed by an assembly statement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first line represents what starts at address `0`. In this case, this is
+    number `699`, which is the required length of the process. As we said in the previous
+    section, we adopted the little-endian convention to store words, and so this number
+    is stored as the pair of bytes, `187, 2`, which means *2 x 256 + 187*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second line is a descriptive comment. The third line represents what starts
+    at address `2`, which in little-endian notation is `2, 0`. The content is the `set` instruction,
+    with the address of the `digits` label as its operand. The opcode of the `set`
+    instruction is `1` and the `digits` label is at address `284`, which in little-endian
+    notation is `28, 1`. So, we have, `1, 28, 1` on this line.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fourth line represents what starts at address `5`, which is an instruction
+    that in assembly is `input 5` and in machine code is `6, 5`. The rest of the program
+    is similar.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The last part of the program is the data section. Here is a snippet of it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first line represents an array of 5 bytes, all of them initialized to `0`.
+    Its label is `digits` and its address is `284`, which is represented by the `28,
+    1` pair.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second line represents a word initialized to `0` whose label is `pos` and
+    address is the `33, 1` pair, which is 5 bytes after the `digits` address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third line represents a word initialized to 10 (represented by the `10,
+    0` pair) whose label is `number_base` and whose address is the `35, 1` pair, which
+    is two bytes after the `pos` address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The main function ends with the following lines:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code, the first statement invokes a function that translates
+    the `prog` machine language program into a C language file with the specified
+    name.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second statement interprets the program using the first technique instruction
+    by instruction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last block of statements first invokes the `parse_program` statement, which
+    translates the program into a data structure and stores it in the `parsed_program`
+    variable, and then the `execute_parsed_program` function is invoked to execute
+    this data structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rest of the Rust program implements these functions and we are going to
+    use the `nom` library for this purpose.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the Nom library
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The code that will implement what is described in this section can be found
+    in the `instructions.rs` source file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the preceding chapters, we saw how to use the `nom` library to parse text,
+    which is string slices. Well, `nom` is not limited to text, however; it can also
+    be used to parse binary data, which is byte slices. In fact, it was created just
+    for that, and the capability to parse strings was added later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, we are going to use the binary parsing capability of `nom` to process
+    our machine language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Parsing a binary file is no more difficult than parsing a text file. The only
+    difference between them is that when parsing a text file, the parsed text is a
+    reference to a string slice, with an `&str` type, while when parsing a binary
+    file, the parsed text is a reference to a slice of bytes, with an `&[u8]` type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, this is the signature of a parser that recognizes an `add` instruction:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `parse_add` function takes a reference to a slice of bytes as input and,
+    of course, its remaining sequence is still a reference to a slice of bytes. We
+    want its return value to fully describe the parsed instruction, and so the custom `Instruction`
+    type is used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This type can be defined in the following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code snippet, every instruction type is a variant of the
+    `Instruction` enum, and these variants have a parameter to store the value of
+    the operator. The `Terminate`, `Input`, and `Output` variants have a `u8` parameter,
+    while the other instruction types have a `u16` parameter. Notice that the last
+    variant is not an instruction; it is `Byte(u8)`, which represents a data byte
+    contained in the process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using a Rust enum, it is quite easy to encapsulate the operands of the instructions in
+    a variant, even if there are more than one, as is typical of real-world machine
+    languages. The operands are always rather small objects, and so it is efficient
+    to derive the `Copy` trait for the `Instruction` enum.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The body of the `parse_add` function is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `preceded` parser combinator, already seen in preceding chapters, gets two
+    parsers, applies them in sequence, discards the result of the first one, and returns
+    the result of the second one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Its first parser is `tag("\x08")`. In the preceding chapters, we already saw
+    the `tag` function used as a parser that can recognize a literal string slice.
+    In fact, it can also recognize a literal sequence of bytes, specified as a literal
+    string. To specify a byte using a number instead of an ASCII character, a hexadecimal
+    escape sequence is appropriate. So, this parser recognizes a byte as having a
+    value of `8`, which is the opcode of the `add` instruction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second parser processed by `preceded` must recognize a little-endian 2-byte
+    operand. So, the `le_u16` parser is used for this. Its name means little-endian
+    u16\. There is also a corresponding `be_u16` to recognize a word using the big-endian
+    byte order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `le_u16` parser just returns a `u16` value. However, we want an `Instruction::Add`
+    object to encapsulate this value. So, the `map` function is used to create an
+    `Add` object containing the parsed word.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, the body of the `parse_add` function first checks whether there are 8 bytes,
+    then discards them; then, it reads a pair of bytes to build a 16-bit number according
+    to the little-endian byte order, then returns an `Add` object containing this
+    word.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For all the instructions with a word operand, a similar parser can be created.
+    However, for the instructions with a byte operand, a different operand parser
+    must be used. When parsing a single byte, there is no endianness issue; however,
+    for terminological consistency, the `le_u8` parser will be used, even if the `be_u8`
+    parser could have been used just as well as it is identical to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, here the parser is used to recognize a `terminate` instruction, with opcode
+    `0`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: We invoke `parse_add` when we want to recognize an `add` instruction and `parse_terminate` when
+    we want to recognize a `terminate` instruction; however, when we want to recognize
+    any possible instruction, we must combine all the parsers for all the instructions as
+    alternatives using the `alt` parser combinator, already seen in the preceding
+    chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This parser combinator has a limitation, however—it cannot combine more than
+    20 parsers. Actually, we have 24 instruction types, and so 24 parsers to combine.
+    This issue can easily be overcome by nesting the use of `alt`. Here is the resulting
+    function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the preceding code, the `parse_instruction` function uses `alt` to combine
+    just two parsers; the first one uses `alt` to combine the parsers for 20 instructions
+    and the other one uses `alt` to combine the parsers for the remaining 4 instructions.
+    When a byte slice is passed to this function, it returns the only instruction
+    that can be parsed from it or an error if no instruction is recognized.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Instruction` enum implements the `len` method, which is useful to find
+    out the length of the instruction. It is given as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, `Byte` occupies `1` byte, the `Terminate`, `Input`, and
+    `Output` instructions occupy `2` bytes, and the other instructions occupy `3`
+    bytes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `get_process_size` function is useful for reading the length of the process
+    from the first two bytes of the program. Notice that all the parsers (of this
+    module) are private, except for `parse_instruction`, so that we can parse machine
+    code instructions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have a parser for the instructions, we can build a low-level interpreter
+    (that is, an emulator) using it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The emulator.rs source file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This emulator is implemented in the `emulator.rs` source file. The entry point
+    of the interpreter is the following function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding function receives a program as an argument and executes it by
+    parsing and executing one instruction at a time. If any parse error occurs because
+    of a malformed instruction, the function returns that parse error. If no parse
+    error occurs, the program goes on until a `Terminate` instruction is encountered.
+    Then, the program returns the operand of the `Terminate` instruction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first statement gets the required size of the process. Then, a `process`
+    variable is created as a vector of bytes, with the specified length. The content
+    of the program is copied into the first part of the process, then the rest of
+    the process is initialized to zeros.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, at the eighth line of the preceding code, the `registers` variable is
+    declared with a `RegisterSet` type, declared as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this simple machine architecture, there is no big gain in encapsulating the
+    instruction pointer and the accumulator in a struct, but with more complex processors
+    with many registers, it would be convenient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'At last, there is the interpretation loop. It consists of two steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The call to `parse_instruction` parses the process from the current position
+    of the instruction pointer and returns `Instruction`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The call to `execute_instruction` executes the instruction generated by the
+    preceding step, taking into account the whole process and the register set.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The `execute_instruction` function is just a large `match` statement that begins
+    with the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For each instruction type, the appropriate action is taken. Notice the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Terminate` instruction causes the function to return `Some`, while for
+    any other instruction, `None` is returned. This allows the caller to terminate
+    the execution loop.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `Set` instruction sets the accumulator (`r.acc`) to the operand value.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `Load` instruction uses the `get_le_word` function to read a little-endian
+    word from the `address` position of `process` and assigns it to the accumulator.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `Store` instruction uses the `set_le_word` function to assign a little-endian
+    word taken from the accumulator to the `address` position of `process`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All the instructions increment the instruction pointer (`r.ip`) by the length
+    of the instruction itself.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Let''s see the auxiliary functions used every time an instruction needs to
+    read or to write a word in memory, respectively:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, the `get_le_word` function gets a byte at `address` and
+    another byte at the next position. The second one is the most significant in little-endian
+    notation, and so its value is shifted to the left by 8 bits before adding it to
+    the other byte.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`set_le_word` saves a byte, along with the address position, and another one
+    at the next position. The first one is obtained by converting the word into a
+    `u8` type, and the second one is obtained by shifting the word to the right by
+    8 bits.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Of course, the `jump` instructions are different. For example, look at the
+    following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Consider the `JumpIfPositive` instruction's operand as a signed number. If this
+    value is positive, the instruction pointer is set to the operand. Otherwise, the
+    usual increment is performed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As another example, let''s see how to indirectly load a byte:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using the `get_le_word` function, the 16-bit value at the `address` position is
+    read from `process`. This value is an address of a byte, and so the `get_byte`
+    function is used to read this byte to assign it to the accumulator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, in this section, we have seen the first execution technique—the one that
+    parses and executes one instruction at a time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The parsing_interpreter.rs source file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now, we can look at the other execution technique—the one that first parses
+    the whole program and then executes the result of the parsing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `parsing_interpreter` module has two entry points:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`parse_program`'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '`execute_parsed_program`'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The first one calls `get_process_size` once to get the process size from the
+    first two bytes, then it parses the program instructions using the following loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the following code, the data structure that we are going to build is the
+    `parsed_program` variable. That variable is a vector of instructions or byte data.
+    It is initialized by single data bytes with zero value, but then some of these
+    bytes are replaced with instructions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Starting at position `2`, the program is repeatedly parsed using the `parse_instruction`
+    function. This function returns an instruction that is stored in the vector at
+    the position corresponding to its position in the program. When the `Terminate`
+    instruction is parsed, the loop ends.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `parse_instruction` function is the same as the one we saw in the `instructions`
+    module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After this loop, we need to set the data values into the vector. This is done
+    by using the following loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This replaces any byte of the vector with another byte whose value is taken
+    from the program. The `execute_parsed_program` function has the following body:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding code defines a register set and then calls `execute_parsed_instruction` repeatedly until
+    it returns `Some`. This function is very similar to the `execute_instruction`
+    functions of the `emulator` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The main differences are in the use of the `get_parsed_le_word`, `set_parsed_le_word`,
+    `get_parsed_byte`, and `set_parsed_byte` functions, instead of `get_le_word`,
+    `set_le_word`, `get_byte`, and `set_byte`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These functions, instead of getting or setting the `u8` values in a slice of
+    `u8` objects, get or set the `Instruction::Byte` values in a slice of the `Instruction`
+    objects. This slice is the parsed program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will now move on to the last technique.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The translator.rs source file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now, we can look at the last execution technique—the one that translates the
+    program into a C language program so that it can be compiled with any C compiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `translator.rs` module has just one entry point:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function gets the machine language program to translate the program and
+    the path of the file to create and return a result that indicates its success
+    or failure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Its body creates a text file and writes into it using statements such as this
+    one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It writes a string into the `file` stream. Notice that the `writeln` macro,
+    in a similar way to the `println` macro, supports string interpolation through
+    pairs of braces:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Therefore, any real brace must be doubled:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The translation algorithm is quite simple. First, the declaration of a global
+    byte array is emitted:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we have the definitions of two utility functions. Their signatures are
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first one reads the two bytes in the `memory` array at two positions—`address`
+    and `address + 1`—and, interpreting them as a little-endian 16-bit number, returns
+    the number. The second one generates the two bytes that comprise the `operand`
+    value and writes them in memory as a little-endian 16-bit number at the `address`
+    and `address + 1` positions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, the `main` C function is emitted. It begins by declaring the `acc` variable,
+    which will be used as an accumulator register.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It may be surprising that there is no need for a variable containing the instruction
+    pointer. This means that during the execution of the C program, the current C
+    language statement corresponds to the current machine language instruction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The machine language jumps are implemented using the infamous `goto` statement.
+    To be able to jump to any instruction, the instructions that are the destination
+    of a jump must be preceded by a C language unique label. For simplicity, when
+    translating any instruction, a different label is generated, even if most of them
+    will never be used by a `goto` statement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As an example, let''s consider the `store pos` assembly language instruction,
+    corresponding to the `3, 33, 1` machine language instruction, where `3` is the
+    opcode of the `store` instruction and `33, 1` represents `289` in little-endian
+    notation. Assume that this instruction starts at position `10` of the program.
+    For this instruction, the following C language statement will be generated:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, there is the label as a target of a possible `jump` instruction. Labels
+    are created, concatenating the position of the instruction to the `addr_` constant.
+    Then, there is a function call that copies the value of the `acc` variable to
+    the bytes at positions `289` and `230` of the `memory` array in little-endian
+    notation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To create these statements, a loop is performed that parses an instruction at
+    a time using the `parse_instruction` function, and then generates the corresponding
+    C language statement using the `translate_instruction_to_c` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This function contains a large `match` statement, with a branch for every instruction
+    type. For example, the branch that translates the `Store` instructions is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: After the `Terminate` statement has been processed by the loop, the `main` C function
+    is closed and the `memory` array, which was only just declared, is now defined
+    and initialized using the entire content of the machine language program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In fact, the machine language instructions could be omitted from this array
+    as they are not used by the C language code, but this way is simpler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we have seen how to generate an equivalent C language program from a machine
+    language program, assuming it is well formed. This technique could be used to
+    generate programs in other programming languages, as long as there is a `goto`
+    statement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have seen several ways to execute machine language programs, we
+    can look at another use of a machine language parser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The nom_disassembler project
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have seen that usually, machine language programs are written in assembly
+    language and are then translated into machine language. So, if we want to understand
+    or debug a machine language program written by our company, we should look at
+    the assembly language program used to generate it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, if this program wasn''t written by our company and we don''t have
+    its assembly language source code available, it is useful to have a tool that
+    tries its best to translate machine language programs into the corresponding assembly
+    language programs. This tool, named a disassembler, cannot create an excellent
+    assembly language program for the following reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: No meaningful comments can be inserted into the code.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Data variables have no symbolic name to make sense of them. They are just bytes
+    of memory positions where some data is placed, and so they are referenced by their
+    address.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The destinations of jumps have no symbolic names to make sense of them. They
+    are just memory positions where some instruction begins, and so they are referenced
+    by their address.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Regarding 16-bit words, sometimes it is useful to see them as single numbers
+    and sometimes as pairs of bytes. If you are disassembling a program to apply some
+    changes to it and then submit the changed assembly program to an assembler (to
+    obtain a changed machine language program), it is better to only generate a single
+    number for every 16-bit number (in little-endian notation, for our kind of processor).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead, if you are disassembling a program just to understand it deeply, it
+    is better to generate both a single number notation and a pair of its bytes for
+    every 16-bit number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Typical disassemblers use hexadecimal notation. A 16-bit number is represented
+    by four hexadecimal digits, where two digits represent one byte and the other two digits
+    represent the other byte.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Instead, to continue with decimal notation, the `nom_disassembler` project
+    generates two outputs from the same machine language program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A `FOR DEBUG` output, where every 16-bit number is shown both as a single number
+    and as a pair of bytes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A`FOR ASSEMBLING`output, where every 16-bit number is shown only as a single
+    number
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will now learn how to run the project in the next subsection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running the project
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If you type in `cargo run` for this project, you''ll see a long output that
+    begins with the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After a few lines, you''ll find the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At the end, you''ll find the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first part of the output is the `FOR DEBUG` disassembly. After showing the
+    size of the program and the process, the disassembled instructions begin. The
+    first one is a `Set` instruction, whose 16-bit operand is number `284`, which
+    is composed of the `28` and `1` bytes in little-endian order. The second instruction
+    is `Input`, which has an 8-bit operand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Any instruction is preceded by the address of the first byte of the instruction.
+    So, `Set` is preceded by `2` (it is the third byte of the program), and `Input`
+    is preceded by `5` (it is the sixth byte of the program).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The program ends with a sequence of bytes. As machine language has no concept
+    of word data, the data is just a sequence of bytes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The second part of the output is the `FOR ASSEMBLING` disassembly. This differs
+    from the first kind of disassembling technique by the following aspects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is no program size. Any assembler program can compute the size of the
+    corresponding machine language program. There is no need to specify it in the
+    source for the assembler.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Instructions' symbolic names only contain lowercase letters and they can be
+    composed of several words, separated by spaces. In this way, they are easier to
+    read and to write. Instead, the `FOR DEBUG` output uses just the names of the
+    variants of the instruction enum.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The operands are a single number.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will now take a look at the source code to help us understand it further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Examining the source code
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Now, let''s see how this project obtained this output by examining the source
+    code, which is all in the `main.rs` file. This function, after defining the `prog`
+    variable as in the preceding project, contains just these statements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `disassembly_program_for_debug` function produces the first kind of output
+    and the `disassembly_program` function produces the second kind of output. Let's
+    see what these functions do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Generating disassembly code that is useful for debugging
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The interesting part of the `disassembly_program_for_debug` function is the
+    following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding code, there is first a loop that parses each instruction using
+    the `parse_instruction` function, and then there is a loop that scans each data
+    byte. For every parsed instruction, the obtained instruction is printed by `println` and
+    its size is added to the current position inside the program, named `offset`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This loop ends when the `Terminate` instruction is found. For the data bytes,
+    a `Byte` variant is built and it is printed in a similar way. This raises the
+    question of how an object of the `Instruction` type can be printed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To be printed using the `{:?}` placeholder of `println`, the `Debug` trait
+    must be implemented. However, if you print an `Instruction` object such as those
+    defined in the preceding chapters, we don''t get the output we want. For example, if
+    you execute the `print!("{:?}", Instruction::Set(284))` statement, you will get
+    the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'But instead, we want the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To obtain the desired formatting, a new type must be defined in the following
+    way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Word` type encapsulates all the `u16` arguments of the variants of `Instruction` in
+    the following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: Of course, this causes any construction of an `Instruction` object to construct
+    a `Word` object inside of it, and every trait implemented by `Instruction` must
+    be implemented also by `Word`. The `Copy` and `Clone` traits are implemented using
+    default derivations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Instead, the `Debug` trait is implemented in the following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: The body of the `fmt` function writes three numbers—the whole argument (`self.0`),
+    its low byte (`self.0 as u8`), and its high byte (`self.0 >> 8`). In this way,
+    we get the desired formatting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Instruction` objects are created by the instruction parsers. So, these parsers
+    must be changed, with respect to the project, `nom_byte_machine`. In that project,
+    we saw that some parsers accept 16-bit numbers, such as this one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For all of these parsers, the use of the `le_u16` parser must be replaced with
+    the use of the `le_word` parser, obtaining the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This parser is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: It still calls the `le_u16` parser, but then it gets the generated `(input,
+    output)` pair and encapsulates the `output` item in a `Word` object, obtaining
+    an `(input, Word(output))` pair.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have seen how to convert a machine language program into a kind of assembly
+    code. That disassembled code is useful for debugging purposes, but it is not easy
+    to change and reassemble it to generate a new machine language program. In the
+    next section, we will look at another kind of disassembly code that is useful
+    for assembling it again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Generating disassembly code that is useful for reassembling
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Regarding the other kind of output, `FOR ASSEMBLING`, we must examine the `disassembly_program`
+    function, which is quite similar to the corresponding part of the `disassembly_program_for_debug`
+    function. The only differences are the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The program size is not emitted.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The format strings of the two `println` statements are `"{:5}: {}"`, instead
+    of `"{:5}: {:?}"`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For this kind of format placeholder, the `Display` trait must be implemented
+    by the `Instruction` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For any variant, the `write` macro is used to emit the symbolic name of the
+    instruction, followed by the formatted value of the byte or word. This formatting also requires
+    the implementation of the `Display` trait for the arguments. Bytes are of the `u8` type,
+    which already implements the `Display` trait. Instead, for words, the following
+    declaration is required:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: This simply produces the numeric value encapsulated in a `Word` object. So,
+    we have seen how to transform a machine language program into two possible formats
+    of disassembled text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have also seen another kind of disassembling. As an exercise, you should
+    write an assembler for this machine language, run it on the code generated by
+    this disassembler, and check that the resulting machine code is identical to the
+    original one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we first defined an extremely simple toy machine language,
+    and then a slightly more complex one to experiment with techniques of machine
+    language manipulation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first machine language defined assumes that memory is just a sequence of
+    16-bit words and that any instruction is composed of two parts of one word each—an
+    opcode and an operand. The second machine language assumes that memory is a sequence
+    of bytes and some instructions can manipulate single bytes, while other instructions
+    can manipulate whole words.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This introduced the endianness issue, which concerns how to interpret two consecutive
+    bytes as a word. As an example, the sieve of Eratosthenes algorithm was first written
+    in Rust and then translated into both machine languages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the first machine language, an interpreter was written without using any
+    external library. It was used to first interpret a small number conversion program
+    (`word_machine_convert`) and then the more complex sieve algorithm (`word_machine_sieve`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the second machine language, three procedures were written in a single project
+    (`nom_byte_machine`). All of these procedures used the `nom` parsing library.
+    The first procedure was an instruction-by-instruction interpreter. The second
+    procedure first parsed the whole program and then interpreted the parsed program.
+    The third procedure translated the program into C language.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the second machine language, two kinds of disassemblers were built using
+    the `nom` library (`nom_disassembler`)—one disassembler emitted output useful
+    for debugging and the other emitted output useful for reassembling it after editing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, after reading this chapter, you should now understand what a machine language
+    is, what its corresponding assembly language is, how to translate assembly language
+    into machine language and vice versa, how to translate machine language into C
+    language, how to interpret machine language, and how to use the `nom` parsing
+    library to carry out these tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will learn how to create a Linux kernel module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: How can a machine language emulator be useful?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the accumulator of a processor?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the instruction pointer of a processor?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Why is it very difficult to write directly in machine language and, therefore,
+    better to use an assembler?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can a Rust enum represent a machine language instruction?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is little-endian notation and what is big-endian notation?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the difference between a `nom` parser that accepts text and one that
+    accepts binary data?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Which rules must be respected by a machine language program to be able to parse
+    it all or to be able to translate it into another programming language?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Why might different kinds of output, or a hexadecimal output format, be preferred
+    for a disassembler?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can a single number be printed in different ways?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

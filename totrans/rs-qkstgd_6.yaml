@@ -1,0 +1,891 @@
+- en: Heap Memory and Smart Pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We've talked about the stack, and how it is the place where Rust stores data
+    and keeps track of what needs to be kept around and what needs to be cleaned up.
+    It's a powerful, useful mechanism, but it's not right for everything.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imagine we have a variable that contains an image. It takes up several megabytes
+    of memory, and we need to transfer ownership of it between various parts of our
+    program at different times. If we just put it on the stack, and allow Rust to
+    move it into new scopes as needed, everything will work, but it will be slowed
+    down by the need to copy those megabytes of data every time it moves the value
+    to a new owner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's not the only scenario where storing information on the stack isn't ideal,
+    but it's a good illustration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the other hand, the last thing we want to do is to break the stack and scope-based
+    ownership model, which gives Rust so much of its power.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Fortunately, there''s a way to store data outside of the stack, and still have
+    it act as though it were part of a scope: smart pointers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Rust standard library includes several different kinds of smart pointer,
+    meant to address different needs. Smart pointer values themselves are stored in
+    the stack, just like other data values are, but they include the necessary instrumentation
+    to allocate a chunk of *heap* memory when they are created, and release it back
+    to the system when their lifetimes end. A data value stored in that heap memory
+    can be accessed through the smart pointer, as if it was stored inside the smart
+    pointer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **heap** is the counterpoint to the stack. Where the stack has a specific
+    structure that helps Rust keep track of which operations are safe and which are
+    not at any given time, the heap can be thought of as unorganized memory. In general,
+    a program can ask for a section of heap memory to be reserved for use at any time,
+    and can release it back to the system at any time. Now imagine what happens when
+    a section of heap memory is allocated too late, or released too soon, or not released
+    when it should be. Mistakes with memory allocation and deallocation are one of
+    the main reasons programs crash.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thanks to smart pointers, the lifetime of values stored in heap memory mirror
+    the lifetimes of values that follow Rust's normal rules, but with the big advantage
+    that the section of heap memory does not have to be copied when the smart pointer
+    is moved to a new scope. Our multi-megabyte image can be moved around between
+    scopes for the cost of moving a few bytes, because the image itself does not have
+    to move, just the smart pointer that controls it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Box
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The most straightforward of the standard smart pointers is the `Box`. A `Box`
+    does what we''ve been discussing so far: it stores a data value on the heap, while
+    ensuring that it still follows the lifetime rules as if it were actually part
+    of the `Box` value itself.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s an example. First, we''ll create a data type for the data we want to
+    store on the heap:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, creating and using the `Box` itself is easy:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first line creates a `Box`. We have to give it a data value to store, because
+    one thing Rust is not okay with is an empty `Box`, so we initialize a `Person`
+    object and pass it to the function, which creates a new `Box` to be used as its
+    internal value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why does Rust not allow an empty `Box`, or any other kind of smart pointer,
+    for that matter? Because if it did, then it would have to worry about whether
+    a given smart pointer referred to initialized memory or not whenever that smart
+    pointer's contents were accessed. Requiring that as long as the smart pointer
+    exists the memory it manages must contain a valid data value simplifies many things
+    and makes a common kind of error impossible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once we have an initialized the `Box`, we can mostly treat it as if it was
+    a normal borrow of the contained data. We can move the data back out onto the
+    stack by dereferencing it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: This moves the `Person` value from inside the `Box` named `jack` to the `x`
+    variable, and renders `jack` unusable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can also access the contained data value''s data and functions through the
+    `Box`, again as if it were a borrow of the contained data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we''re asking to borrow `jack.name` into `x`, then printing out that
+    name. We could have also gotten the same result by doing the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: But that actually works in a very different way. The first example borrows the
+    name, and then prints out that borrowed `String` value. The second one actually
+    calls a function called `jack.name.fmt`, which has an immutable borrow as its
+    `self` parameter. This works out because Rust is smart about dereferencing and
+    function calls.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where did `fmt` get called? The answer is that `println!` is a *macro*, which
+    means that it's not actually a function, but instead is kind of like pasting some
+    code right into the program here. The pasted code calls `fmt`, so it's as if we
+    called `fmt` ourselves. In Rust, we can recognize macros because their names always
+    end with `!`, and function names never do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Box and variable size
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We've previously bumped into the need for Rust to know exactly how many bytes
+    a particular data value can occupy. Most of the time, Rust can figure that out,
+    and most of the time, it's not a problem, but there are a few cases where it's
+    impossible to define a fixed size for a data value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One fundamental example is a data structure, such as the following one, where
+    an instance contains other instances of itself:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That looks reasonable at first glance, but Rust quite rightly points out that
+    the calculated size is infinite (because the size of a `TreeNode` is the size
+    of two `TreeNodes` plus `32` bits):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/b2cba01a-667a-40e2-ba7b-61bb6c478338.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Just as the compiler suggests, we can fix this with a `Box`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, the size of a `TreeNode` is the size of two Boxes plus 32 bits, which is
+    entirely reasonable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Box and Any
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When a variable's type is `Box<dyn Any>`, it acts much like an `&dyn Any`, but
+    gains a new feature. A normal `&dyn Any` has a `downcast_ref` function that we
+    can use to get a reference to the contained value, if we know what type to use
+    to extract it. Now, `&dyn mut Any` adds a `downcast_mut` that we can use to get
+    a mutable reference. When we have a `Box<dyn Any>`, we have access to both of
+    those functions, but we can also call a plain `downcast` function to move the
+    contained value out of the `Any` and into a variable of the correct type. This
+    consumes the `Box` and the `Any`, and gives us back a new `Box` containing the
+    data value with its correct data type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Don't forget that we need to have `use std::any::Any;` in our code if we're
+    going to use the `Any` trait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can create a boxed `Any` almost the same way we created a boxed `Person`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only difference here is that we're telling Rust that we want the `jill`
+    variable to contain a `Box<dyn Any>` instead of letting it decide for itself that
+    the variable contains a `Box<Person>`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, to access the contained `Person`, we can do this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Like the other downcast functions, we need to specify which concrete data type
+    we're downcasting for. The downcast function returns a `Result`, which contains
+    a `Box<Person>` if it's successful. Once we have a `Box<Person>`, we can do whatever
+    we like with the `Person` value it contains.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `unwrap` function we're calling here consumes a `Result` and returns its
+    contained value if it's a success, or terminates the program with an error message
+    if it's a failure. We use `unwrap` to handle a `Result` when we're very sure that
+    it's going to be a success.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Vec and String
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When a data value might *change* size, it pretty much has to be stored on the
+    heap. For this reason, the Rust prelude includes the `String` and `Vec` types,
+    which are smart pointers specialized for storing text and variable-length arrays,
+    respectively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: String
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We've already seen `String` several times, when we used it to simplify the ownership
+    of text strings. There are other things we can do with it, though, because the
+    text stored in a `String` can be changed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here, we''re changing a `String` several times, as shown in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s take a look at that step by step:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the first line, we're creating an empty `String`, and storing it in a mutable
+    variable. It has to be mutable, because we're going to change the stored value.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: On the second line, we're appending a single character to the `String`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: On the third line, we're appending the whole contents of an `&str` to the `String`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: On the fourth line, we're inserting the whole contents of an `&str` at byte
+    offset `11` in the string. Remember that Rust starts counting from zero, so the
+    offset of the `W` in the string is `0`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: On the fifth line, we're replacing the characters in a range of offsets with
+    a new sequence of characters. The specific range we're using is `28..`, which
+    means the range beginning at `28` and going on to infinity (or the end of the
+    `String`, whichever comes first).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Last, we print out the final result of all our manipulations.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We have to be careful about using byte offsets with `String`, because the `String`
+    type always stores text encoded with the `UTF-8` encoding. That means that the
+    number of bytes any single character might use can be as little as one, and as
+    large as four bytes. If we try to use an offset that is in the middle of a character,
+    the program will terminate with an error message. `String` and `&str` have an
+    assortment of functions that let us find valid byte offsets within a `String`,
+    or manipulate it without using offsets at all, such as `find`, `lines`, `split_whitespace`,
+    `contains`, `starts_with`, `ends_with`, `split`, `trim`, and `char_indices`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using our `text` variable, the data type of `&text` can be `&String` *or* `&str`.
+    Rust's type inference system makes that decision, based on the data type of the
+    variable where the value will be stored, or the function parameter that it will
+    be assigned to, and so on. That also means that any functions that are implemented
+    for `&str` or that take an `&str` parameter can be used on a `String` as well.
+    For example, `str` has a `lines(&self)` function, so we can call `text.lines()`.
+    Further, we can pass a `String` as the text parameter to the `push_str`, `insert_str`,
+    and `replace_range` functions we saw in this example, just as if it was a real
+    `&str`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Vec
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `Vec` data type stores a *vector*, which is a word commonly used in programming
+    to indicate a one-dimensional, variable-size array. Like actual arrays, they can
+    store multiple data values, as long as those data values all have the same data
+    type. Like `Strings`, `Vecs` can change size, and so they are specialized smart
+    pointers that store their contained values on the heap.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To create an empty `Vec`, we can use `Vec::new()`, like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then we can append a data value to it using `push`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, so far, we haven't said a word about what type of data the vector can contain,
+    and Rust is perfectly happy because we didn't *need* to. Everything we wrote is
+    consistent with the vector containing one of the floating point primitive data
+    types, so that's what Rust figures it contains.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What happens if we do something that isn't consistent, such as try to store
+    an `&str` in the vector?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now Rust can''t figure out what data type the vector is supposed to contain,
+    so it refuses to compile:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/1eecb891-377b-426c-b184-815c363aabfd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'However, we can do something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we've got a variable named `x` that has `f64` for its data type. That's
+    compatible with the "some kind of floating point number" that Rust was able to
+    figure out before, so adding it to the vector doesn't cause any problems. In fact,
+    it tells Rust that our earlier `1.5` should be treated as an `f64` too, and that
+    the vector contains `f64` values, specifically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We used numbers for that example, but Rust can store any data type in a `Vec`,
+    as long is we follow the rule of only one data type per vector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Adding an `&str` to our vector of numbers was a problem, but we can create
+    a vector of `&str` without any trouble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can access elements contained in a vector using the same syntax we would
+    use for an array:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Vec` implements a number of functions for accessing the stored data values,
+    such as the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`pop`, which removes and returns the last item in the vector'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`remove`, which removes the item at a specific index'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`insert`, which adds an item at a specific index, pushing the item that was
+    at that index and everything after it back one'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`append`, which moves values out of another vector and adds them at the end'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`len`, which just tells us how many items are in the vector'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`iter`, which returns an iterator for the contained data'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Creating an empty vector and then pushing a bunch of values to it can get a
+    little bit tedious, so there''s a macro to make things easier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We recognize the macro by its `!` as always, but this time it's not really pretending
+    to be a function. Instead, it almost looks like a prefixed array expression. Macros
+    have a lot of flexibility about how they look, and for this one, looking similar
+    to an array expression makes sense. The end result of this is just like we'd created
+    a vector with `new` and then added information to it with `push`. It's just a
+    more convenient way of writing the same thing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rc
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There are times when Rust's insistence that each data value has only one owner
+    just doesn't fit our program's data model. What if we're writing a word processing
+    engine, and we wanted people to be able to include the same image in multiple
+    places without wasting memory on duplicates; or what if we were modeling an organization
+    where one person might be referenced by multiple roles?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We could have one definitive owner of the shared information, and use borrows
+    everywhere else, and if that works, it''s probably the way to go. There are two
+    situations where it doesn''t work, though:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We don't know how long the lifetimes of each of the users of the shared data
+    value will be
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We need write access to the shared data in at least one of the users
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A word processing engine is a good example of problem number one: An image
+    may be used more than once in the same document, but we never know when the user
+    might decide to delete one of them, nor do we know which one will be deleted.
+    Maybe all of them will be deleted, and who knows what order that will happen in
+    or what the timing will be like.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To fully address problem number two, we'll need both the `Rc` and `RefCell`
+    data types, so we'll talk about that later in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we find ourselves in a situation where we need to share information without
+    knowing about the relative lifetimes of the various borrows of that information,
+    we can use the `Rc` smart pointer to make everything work. `Rc` stands for "reference
+    counted," and what it does is keep track of how many copies of itself exist. When
+    that number reaches zero, the lifetime of the contained data value ends.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look at creating some reference-counted smart pointers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the first `Rc` values using `Rc::new`, on the first two lines of
+    the function body. Both of them contain a `String` value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After that, we used `Rc::clone` to create several duplicates of each `Rc`. Keep
+    in mind that the `String` values are *not* being duplicated, just the `Rc` smart
+    pointer. The returned vector contains four `Rc`s that share access to the same `ada`
+    string, and three that share access to the same `mel` string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then the function's scope ends, and so does the lifetime of the original `ada`
+    and `mel` reference-counted smart pointers. However, the various copies are part
+    of the return value, so their lifetimes do not end, and as a consequence the reference
+    counts of the two string values are still greater than zero, and their lifetimes
+    also do not end.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We used `Rc::clone` here, but if we'd written `ada.clone()` or `mel.clone()`,
+    it would have produced the same result. People usually prefer to write it as `Rc::clone`
+    to make it plain that we're cloning the `Rc`, and not the data value the `Rc`
+    contains.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we'll write a short program that relies on user input to determine when
+    the lifetime of each of the `Rc` copies ends. There's no fixed order in which
+    the `Rc`s are to be removed, so the compiler can't know ahead of time when it's
+    safe to clean up their shared data values, but thanks to the reference counting
+    mechanism, the `String` values are retained as long as they are needed, and then
+    their lifetime ends.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here, we remove elements from the vector based on the user input:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we call our `make_vector_of_rcs` function to create the initial vector
+    of reference-counted smart pointers to the shared data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, we loop as long as there are any values still stored in the vector. Within
+    the loop, we first print out the current vector (the `{:?}` code tells Rust to
+    print out the `'debug'` representation of the vector, which looks like a Rust
+    array expression). Then we print out a prompt, and flush the output stream to
+    make sure the prompt is actually displayed. Then we read a line from the input
+    stream, parse it into an integer, and use that integer as an index to remove an
+    element from the vector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When we run that program, it looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/8602814b-242b-41a5-b7cd-57772c25200c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: When the last `Rc` that references the `"Mel"` value is removed, the lifetime
+    of that `String` finally ends, and the same goes for the `String` containing `"Ada"`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We used `unwrap` a lot in that code, and really, we overused it. Unwrapping
+    the results of `flush` and `read_line` makes sense; if those return a failed `Result`,
+    the program should probably terminate because something has gone wrong on the
+    operating system level. However, unwrapping the result of `parse` is not such
+    a good idea, because a failed result there just means that the user entered something
+    unexpected. We really should have used `match` to respond by printing out a message
+    when the input doesn't parse properly. We also should have checked that the number
+    was the index of a value that was actually within the vector, and not off beyond
+    one of the ends. Rust won't let us access an invalid index, but trying to do so
+    will terminate the program with an error message, which isn't great.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Parsing means taking information encoded as a text string, and turning it into
+    a data value we can actually work with; for example, turning `"5"` into the number `5`.
+    The `parse` function is pretty wild, because it figures out what kind of information
+    we want based on the data type of the variable we're assigning its return value
+    to, and then figures out which function to use to turn a string into that kind
+    of data value. Of course, it can't write that function for us, so it only works
+    for data types that have such a function in the first place. Also, it's really
+    the Rust compiler doing all of the figuring out. The `parse` function just takes
+    advantage of the compiler's rules and inference system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Weak references
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Reference counting has one fatal flaw, which is the reason why it''s not used
+    by default for all variables in every programming language: cycles. If two or
+    more reference counted values somehow refer to each other, their lifetimes would
+    never end. They form what is called a *cycle*.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It isn't always obvious when a cycle happens. If A refers to B, which refers
+    to C, which refers to D, which refers to A, we still have a cycle.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can break cycles by using *weak references*, which are an ancillary data
+    type for `Rc`. When we have an `Rc`, we can call its `downgrade` function (for
+    example, `let weak_mel = Rc::downgrade(&mel)`) to retrieve a `Weak` data value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can't actually do anything with a `Weak` except retrieve an `Rc` by calling
+    its `upgrade` function (for example `weak_mel.upgrade()`), but using a `Weak`
+    lets us keep track of a reference-counted value without actually referencing it,
+    which means we can avoid creating cycles while still organizing our information
+    in the way that seems natural.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the number of `Rcs` that reference a data value is zero, that data value's
+    lifetime ends, *even if there are still* `Weaks` *that reference the value*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because the referenced value might not exist anymore, the `upgrade` function
+    returns an `Option`. When we call `upgrade`, we'll either get a `Some` containing
+    our `Rc`, or we'll get `None`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, the pattern here is that we use `Rc` when we want to make sure that the
+    data value sticks around as long as we need it, and `Weak` when we *know* it's
+    going to stick around (for example, when it's referring to the parent node in
+    a tree structure) or when we *don't care* whether it sticks around (for example,
+    when it's a cached value that we can regenerate if it's missing).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cell and RefCell
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rust's rule that only one block of code can have write access to a data value
+    at any one time is a good one, but sometimes the restrictions that are needed
+    to be sure *when the compiler is running* that this rule will always be followed
+    are too tight. Sometimes, we need the extra freedom that comes from having the
+    rule checked *while the program is running*, instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The compiler checks would ensure that the program *can't* break the rule, while
+    the runtime checks ensure that the program *doesn't* break the rule, giving us
+    more flexibility at the cost of some overhead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To support this option, Rust provides us with the `Cell` and `RefCell` data
+    types, which are smart pointers that allow us to change their contents, even if
+    they are not stored in a mutable variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cell
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The `Cell` type stores a single data value, which we can move in and out of
+    the `Cell` even if the `Cell` is not marked as mutable. To move a value into the
+    `Cell`, we can use the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Cell::new`, because the initial value was moved into the cell when the cell
+    is created'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`set`, to move a new value into the cell, and end the lifetime of the value
+    already stored there'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`replace`, to move a new value into the cell, and move the old value into the
+    current scope'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To move a value out of the `Cell`, we can use the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`replace`, to move a new value into the cell, and move the old value into the
+    current scope'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`into_inner`, to consume the cell, and return the value it contained'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Cell`s don''t support any operations that would allow us to have an empty
+    `Cell`: they always have to contain something, just like the other smart pointer
+    types.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at a cell in action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that the `cell` variable *is not mutable*. Here, we're setting up a cell,
+    using `replace` a couple of times to retrieve the old value from the `cell` at
+    the same time that we set a new one, and then using `set` to set a new value while
+    discarding the old one, and finally using `into_inner` to get rid of the `cell`
+    while extracting its contained value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `into_inner` function moves the contained value out of the `cell`, but
+    that doesn''t create an empty `cell` because the `cell` no longer exists. If we
+    tried to access it after calling `into_inner`, we''d get an error from the compiler,
+    as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/8a5ccd98-2829-485e-aed6-421c44daa6a7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'There''s one more function that we can use to access the data value contained
+    in a `Cell`, but only if the contained data type has the `Copy` trait: `get`.
+    We could do something like `println!("{}", cell.get())` to leave the content of
+    the `cell` in place while retrieving a copy of it, but only if copying the data
+    value is actually possible.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What's the point?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Okay, so what's this actually good for? We could have just used a mutable variable,
+    and produced the same result with less overhead. `Cell` (and `RefCell`) are mostly
+    for use with `Rc` and similar data types. The `Rc` type follows Rust's normal
+    rules about mutability, and since it's meant to be a mechanism for accessing a
+    shared data value in many places, that means that the shared value must be immutable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unless that value is a `Cell` or `RefCell` containing the *real* shared value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Cell` or `RefCell` ensures that only one block of code at a time *actually*
+    modifies the shared value, but any of the blocks that have access to it through
+    a clone of the `Rc` have the *ability* to do so.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RefCell
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Cell`''s semantics of moving the stored data value in and out of the `cell`
+    are not always convenient to work with, and for large data values, moving them
+    can be an expensive operation that we don''t want to keep repeating over and over
+    without need. `RefCell` to the rescue!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `RefCell` type supports `RefCell::new`, `replace`, and `into_inner`, just
+    as `Cell` does, but it also has functions that allow us to borrow the contained
+    value, either mutably or immutably.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s give `RefCell` a whirl:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we created a new `RefCell`, containing a text string. After that, we
+    used the `try_borrow` function to retrieve an immutable borrow of the contained
+    data value. The rules about borrowing are still enforced, meaning we can't borrow
+    a value if it's mutably borrowed, and we can't mutably borrow a value if the value
+    is already borrowed at all, which means that `try_borrow` might not actually succeed.
+    Therefore, we have to handle the possibility that it fails, which we're doing
+    here by using a `match` expression.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we retrieve a mutable borrow and store it in a local variable. The previous
+    borrow's lifetime ended at the end of the chosen block in the `match` expression,
+    so there are no live borrows and we expect the `try_borrow_mut` to succeed, but
+    we still need to handle the possibility of failure. In this case, we're using
+    `?` to handle the returned `Result`, which will extract the value of a success,
+    or return a failure to the function that called our current function. If the `try_borrow_mut`
+    succeeds as expected, that leaves the `borrowed_mutably` variable containing a
+    mutable reference to `refcell`'s contained data value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then we again try to borrow the contained data value, immutably. Since immutable
+    borrows are not compatible with mutable borrows, and our mutable borrow is still
+    around, we expect this attempt to fail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Arc
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'There''s another layer of complexity when it comes to sharing data between
+    multiple code blocks: threads and multithreading. `Rc`, `Cell`, and `RefCell`
+    are all impossible to share between threads, but the ideas they represent would
+    be useful for enabling communication between threads.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There''s a direct equivalent of `Rc` for use with threads: `Arc`. An `Arc`
+    is an *atomic reference-counted smart pointer*, which is valid for sharing between
+    threads thanks to that *atomic*, which basically means that even if two threads
+    try to use it at the same time, it''s not going to get messed up or confused.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Arc` has a different name and works differently inside, but on the surface
+    it''s just like `Rc`. The things we''ve learned about how to use an `Rc` apply
+    to an `Arc` as well.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's hard to demonstrate the special features of `Arc` without using `Mutex`
+    or `RwLock` as well, so see the next section for some example code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mutex and RwLock
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Mutex` and `RwLock` are both similar to `RefCell` in some ways, but not as
+    closely related as `Arc` is to `Rc`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's `Mutex's` job to make sure that only one thread has access to the contained
+    data at a time. Since it guarantees that only one block of code has access at
+    all at any given time, a `Mutex` can safely provide both read and write access
+    without breaking Rust's rules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the following example, we have `Mutex` and `Arc` in action, and some very
+    basic multithreading:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first thing we're doing is creating a new `Arc` containing a `Mutex`, which
+    in turn contains an integer. So, our integer can only be accessed by one thread
+    at a time, but it can be shared among many and its lifetime will not end until
+    all of them are done with it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we have a `for` loop, which goes through 10 cycles, and launches a thread
+    on each cycle. Notice how we're creating a clone of the `Arc` *before* we call
+    `thread::spawn`. That's because we're using a *closure* to define what the threads
+    should do. A closure is like a function in a lot of ways, but it can borrow or
+    move local variables into its own scope when it's defined. We need to create the
+    `Arc` value that it's going to move into its own scope, before asking it to perform
+    the move.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This closure is moving local variables into its own scope because we used the
+    `move` keyword when we defined it, and it's moving the `local_counter` variable
+    specifically simply because we referred to it within the closure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Within each thread's closure, we ask it to wait for a random duration less than
+    8 seconds, and then add 1 to the counter. In order to add 1 to the counter, we
+    first have to lock the `Mutex`, so that we can be sure no other thread has access.
+    We do that by calling the `Mutex`'s `lock()` function via the `Arc` (because an
+    `Arc` can pretend to be a normal borrow of the thing inside it). The value that
+    the `lock` function returns both provides us with access to the contained data
+    when we dereference it, and keeps track of how long the `Mutex` should remain
+    locked. When the lifetime of that returned value ends, the `Mutex` is unlocked
+    so that other threads can access the contained data value. If another thread tries
+    to lock the value while it's still locked, `Mutex` makes that other thread wait
+    until it's unlocked before continuing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `lock` function actually returns a `Result`, but we're just unwrapping that
+    here. If the call to `lock` fails, it's because one of the other threads had a
+    bad error while it had the `Mutex` locked, and ending the program is probably
+    the smart thing to do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we can just do a `*shared +=1` to actually add `1` to the shared counter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After that, we have a loop, which locks the `Mutex`, then prints out the current
+    value of the counter, and ends the loop (using the `break` keyword) if it is greater
+    than or equal to 10\. If the loop hasn't ended, it then waits one second and does
+    it again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Notice that within that loop, we have another block expression, and that the
+    `thread::sleep` call is outside of it. That''s because of the way `Mutex` works:
+    as long as the returned value''s lifetime hasn''t ended, the `Mutex` remains locked.
+    We don''t want the `Mutex` to be locked while this code is sleeping, so we put
+    the return value into a shorter scope, so that its lifetime would end before we
+    called `thread::sleep`, and the `Mutex` would be unlocked.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An `RwLock` is similar to a `Mutex`, but it has different rules about how access
+    to the contained data value is managed. Instead of a single lock function, `RwLock`
+    has two: `read` and `write`. Any number of threads can call `read` to access the
+    contained information at the same time, but only one thread can use `write` to
+    access it at any given moment, and while a thread has write access, no other threads
+    are allowed to read it. If a thread tries to read or write at a time when it''s
+    not allowed, `RwLock` makes the thread wait until what it wants to do is allowed
+    again.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We don't need to use `read` and `write` together to have both kinds of access.
+    Using `write` implies that we have read access as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we''ve learned about the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The differences between heap and stack memory
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to use `Box` to simply store something on the heap, when we wish to do so
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to use `Rc` to manage the lifetime of a data value that is needed in many
+    scopes with varying lifetimes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to use `Cell` and `RefCell` to allow write access to data stored in an `Rc`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to use `Arc`, `Mutex`, and `RwLock` to manage sharing information between
+    threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the next chapter, we're going to be looking at generic types, and how to
+    use generic type parameters for our own data types.
+  prefs: []
+  type: TYPE_NORMAL

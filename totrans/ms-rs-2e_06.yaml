@@ -1,0 +1,971 @@
+- en: Error Handling
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we'll take a look at how fallible and unexpected situations
+    are handled in Rust, gain an understanding of the error handling with errors as
+    types, and look at how to design interfaces that compose well with error types.
+    We aim to cover the first two error scenarios as they are under our control and
+    languages generally provide mechanisms for handling these errors. If fatal errors
+    occur, our program gets aborted by the operating system kernel and so we don't
+    have much control over them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Error handling prelude
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Recovering from errors using the `Option` and `Result` types
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Combinator methods for `Option` and `Result`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Propagating errors
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Non-recoverable errors
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Custom errors and the `Error` trait
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Error handling prelude
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '"From then on, when anything went wrong with a computer, we said it had bugs
+    in it."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '- *Grace Hopper*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Writing programs that behave well under expected conditions is a good start.
+    It''s when a program encounters unexpected situations where it gets really challenging.
+    Proper error handling is an important but often overlooked practice in software
+    development. Most error handling, in general, falls into three categories:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Recoverable errors that are expected to happen due to the user and the environment
+    interacting with the program, for example, a file not found error or a number
+    parse error.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Non-recoverable errors that violate the contracts or invariants of the program,
+    for example, index out of bounds or divide by zero.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Fatal errors that abort the program immediately. Such situations include running
+    out of memory, and stack overflow.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Programming in the real world often entails dealing with errors. Examples include
+    malicious input to a web application, connection failures in network clients,
+    filesystem corruption, and integer overflow errors in numerical applications.
+    In the event of there being no error handling, the program just crashes or is
+    aborted by the OS when it hits an unexpected situation. Most of the time, this
+    is not the behavior we want our programs to exhibit in unexpected situation. Consider,
+    for example, a real-time stream processing service that fails to receive messages
+    from clients at some point in time due to a failure in parsing messages from a
+    client who is sending malformed messages. If we have no way to handle this, our
+    service will abort every time we have parsing errors. This is not good from a
+    usability perspective and is definitely not a characteristic of network applications.
+    The ideal way for the service to handle this situation is to catch the error,
+    act upon it, pass the error log to a log-aggregation service for later analysis
+    and continue receiving messages from other clients. That's when a recoverable
+    way of handling errors comes into the picture, and is often the practical way
+    to model error handling. In this case, the language's error handling constructs
+    enable programmers to intercept errors and take action against them, which saves
+    the program from being aborted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Two paradigms that are quite popular when approaching error handling are return
+    codes and exceptions. The C language embraces the return code model. This is a
+    very trivial form of error handling, where functions use integers as return values
+    to signify whether an operation succeeded or failed. A lot of C functions return
+    a `-1` or `NULL` in the event of an error. For errors when invoking system calls,
+    C sets the global `errno` variable upon failure. But, being a global variable,
+    nothing stops you from modifying the `errno` variable from anywhere in the program.
+    It's then for the programmer to check for this error value and handle it. Often,
+    this gets really cryptic, error-prone, and is not a very flexible solution. The
+    compiler does not warn us if we forget to check the return value either, unless
+    you use a static analysis tool.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another approach to handling errors is via exceptions. Higher-level programming
+    languages such as Java and C# use this form of error handling. In this paradigm,
+    code that might fail should be wrapped in a `try {}` block and any failure within
+    the `try{}` block must be caught in a `catch {}` block (ideally, with the `catch`
+    block immediately after the `try` block). But, exceptions also have their downsides.
+    Throwing an exception is expensive, as the program has to unwind the stack, find
+    the appropriate exception handler, and run the associated code. To avoid this
+    overhead, programmers often adopt the defensive code style of checking for exception-throwing
+    code and then proceeding forward. Also, the implementation of exceptions is flawed
+    in many languages, because it allows ignorant programmers to swallow exceptions
+    with a catch all block with a base exception class such as a throwable in Java,
+    thereby resulting in a possibly inconsistent state in the program if they just
+    log and ignore the exception. Also, in these languages, there is no way for a
+    programmer to know by looking at the code whether a method could throw an exception,
+    unless they are using methods with checked exceptions. This makes it hard for
+    programmers to write safe code. Due to this, programmers often need to rely on
+    the documentation (if it exists at all) of methods to figure out whether they
+    could throw an exception.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust, on the other hand, embraces type-based error handling, which is seen in
+    functional languages such as OCaml and Haskell, and at the same time also appears
+    similar to C's returning error code model. But in RUST, the return values are
+    proper error types and can be user-defined, The language's type system mandates
+    handling error states at compile time. If you know Haskell, it is quite similar
+    to its `Maybe` and `Either` types; Rust just has different names for them, that
+    is, `Option` and `Result` for recoverable errors. For non-recoverable errors,
+    there's a mechanism called **panic**, which is a fail-hard error handling strategy
+    and it is advisable to use it as a last resort when there is a bug or violation
+    of an invariant in the program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why did Rust choose this form of error handling? Well, as we have already said,
+    exceptions and their associated stack unwinding have an overhead. This goes against
+    Rust's central philosophy of zero runtime costs. Secondly, exception-style error
+    handling, as it is typically implemented, allows ignoring these errors via catch-all
+    exception handlers. This creates the potential for program state inconsistency,
+    which goes against Rust's safety tenet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the prelude aside, let's dig into some recoverable error handling strategies!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Recoverable errors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we have already said, the majority of error handling in Rust is done via
+    two generic types, `Option` and `Result`. They act as wrapper types in the sense
+    that it is recommended that APIs that can fail return the actual values by putting
+    them inside these types. These types are built with a combination of enums and
+    generics. As an enum, they get the ability to store a success state and an error
+    state, while generics allow them to specialize at compile time so that they store
+    any value in either state. These types also come with a lot of convenient methods
+    (commonly known as **combinators***)* implemented on them, allowing you to consume,
+    compose, or transform the inner values easily. One thing to note about the `Option`
+    and `Result` types is that they are ordinary types from the standard library in
+    the sense that they aren't compiler built-ins that are treated differently by
+    the compiler. Anyone can create a similar error abstraction using the power of
+    enums and generics. Let's start exploring them by first looking at the simplest
+    one, that is, `Option`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Option
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In languages that have the notion of nullable values, there is a defensive
+    code style that programmers adopt to perform operations on any value that can
+    possibly be null. Taking an example from Kotlin/Java, it appears something like
+    this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we check that `container` is not `null` and then call `process_item`
+    on it. If we forget the null safety check, we'll get the infamous `NullPointerException`
+    when we try to invoke `container.process_item()` – you only get to know this at
+    runtime when it throws the exception. Another downside is the fact that we can't
+    deduce right away whether `container` is `null` just by looking at the code. To
+    save against that, the code base needs to be sprinkled with these null checks,
+    which hinder its readability to a great extent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust does not have the notion of null values, which is infamously quoted as
+    being the billion-dollar mistake by *Tony Hoare*, who introduced `null` references
+    in the ALGOL W language back in 1965\. In Rust, APIs that might fail and want
+    to indicate a missing value are meant to return `Option`. This error type is suitable
+    when any of our APIs, along with a succeeding value, want to signify the absence
+    of a value. To put it simply, it's quite analogous to nullable values, but here,
+    the `null` check is explicit and is enforced by the type system at compile time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Option` has the following type signature:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It''s an enum with two variants and is generic over `T`. We create an `Option`
+    value by using either `let wrapped_i32 = Some(2);` or `let empty: Option<i32>
+    = None;`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Operations that succeed can use the `Some(T)` variable to store any value, `T`,
+    or use the `None` variable to signify that the value is `null` in the case of
+    a failed state. Though we are less likely to create `None` values explicitly,
+    when we need to create a `None` value, we need to specify the type on the left,
+    as Rust is unable to infer the type from the right-hand side. We could have also
+    initialized it on the right, as `None::<i32>;` using the `turbofish` operator,
+    but specifying the type on the left is identified as idiomatic Rust code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you may have noticed, we didn't create the `Option` values through the full
+    syntax, that is, `Option::Some(2)`, but directly as `Some(2)`. This is because
+    both of its variants are automatically re-exported from the `std` crate (Rust's
+    standard library crate) as part of the prelude module ([https://doc.rust-lang.org/std/prelude/](https://doc.rust-lang.org/std/prelude/)).
+    The prelude module contains re-exports of most commonly used types, functions,
+    and any modules from the standard library. These re-exports are just a convenience
+    that's provided by the `std` crate. Without them, we would have to write the full
+    syntax every time we needed to use these frequently used types. As a result, this
+    allows us to instantiate `Option` values directly through the variants. This is
+    also the case with the `Result` type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, creating them is easy, but what does it look like when you are interacting
+    with an `Option` value? From the standard library, we have the `get` method on
+    the `HashMap` type, which returns an `Option`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we create a new `HashMap` `map` of `&str` as the key and `i32` as the
+    value, and later, we retrieve the value for the `"one"` key and assign it to the `value` .
+    After compiling, we get the following error message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/c2e0f097-9a67-4fa3-8ce1-b971da33f80c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Why can't we add `1` to our `value`? As someone familiar with imperative languages,
+    we expect `map.get()` to return an `i32` value if the key exists or a null otherwise.
+    But here, `value` is an `Option<&i32>`. The `get()` method returns an `Option<&T>`,
+    and not the inner value (a `&i32`) because there is also the possibility that
+    we might not have the key we are looking for and so `get` can return `None` in
+    that case. It gives a misleading error message, though, because Rust doesn't know
+    how to add an `i32` to a `Option<&i32>`, as no such implementation of the `Add`
+    trait exists for these two types. However, it indeed exists for two i32's or two
+    &i32's.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, to add `1` to our `value`, we need to extract `i32` from `Option`. Here,
+    we can see Rust's explicit error handling behavior spring into action. We can
+    only interact with the inner `i32` value after we check whether `map.get()` is
+    a `Some` variant or a `None` variant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To check for the variants, we have two approaches; one of which is pattern
+    matching or `if let`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With this approach, we match against the return value of `map.get()` and take
+    actions based on the variant. In the case of `None`, we simply assign `0` to `incremented_value`.
+    Another way we could have done this is by using `if let`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is recommended for cases where we are only interested in one variant of
+    our value and want to do a common operation for other variants. In those cases,
+    `if let` is much cleaner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Unwrapping:** The other, less safe, approach is to use unwrapping methods
+    on `Option`, that is, the `unwrap()` and the `expect()` methods. Calling these
+    methods will extract the inner value if it''s a `Some`, but will panic if it''s
+    a `None`. These methods are recommended only when we are really sure that the
+    `Option` value is indeed a `Some` value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Running the preceding code panics, showing the following message because we
+    unwrapped a `None` value as we don''t have any value for the `three` key:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Between the two, `expect()` is preferred because it allows you to pass a string
+    as a message to be printed upon panic, and shows the exact line number in your
+    source file where the panic happened, whereas `unwrap()` does not allow you to
+    pass debug messages as arguments and shows a line number in the standard library
+    source file where the `unwrap()` method of `Option` is defined, which is not very
+    helpful. These methods are also present on the `Result` type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's look at the `Result` type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Result
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Result` is similar to `Option`, but with the added advantage of storing arbitrary
+    error values with more context on the error, instead of just `None`. This type
+    is suitable when we want the user to know why an operation failed. Here''s the
+    type signature of `Result`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It has two variants, both of which are generic. `Ok(T)` is the variant we use
+    for the success state putting in any value, `T`, while `Err(E)` is what we use
+    in the error state putting in any error value, `E`. We can create them like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'However, this does not compile, and we receive the following error message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/09947ae7-e662-4651-9d33-96684ecc8016.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'As `Result` has two generic variants and we gave the concrete type for only
+    the `Ok` variant for `my_result`; it doesn''t know the concrete type of `E`. This
+    is similar for the `my_err` value. We need to specify concrete types for both,
+    like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the first case of creating values of the rgw `Ok` variant, we used `()` to
+    specify the type, `E`, of the `Err` variant. In the second part of the snippet,
+    we created values of the `Err` variant in a similar way, this time specifying
+    a concrete type for the `Ok` variant. We can use underscores to ask Rust to infer
+    types for us in obvious cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we''ll see how we can interact with `Result` values. Many file manipulation
+    APIs in the standard library return a `Result` type, because there can be different
+    reasons for failure such as file not found, directory does not exists, and permission
+    errors. These can be put into the `Err` variant to let the user know of the exact
+    cause. For the demo, we''ll try to open a file, read its contents into a `String`,
+    and print the contents, as shown in the following snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is how the compiler responds:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/cd85fcd2-2e08-4cb5-a062-cb40bb2c7943.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We created a new file by calling `open` from `File`, providing our path to
+    `data.txt`, which doesn''t exist. When we call `read_to_string` on `file`, and
+    try to read it into `s`, we get the preceding error. Examining the error message,
+    it appears that `file` has a type of `Result<File, Error>`. From its documentation,
+    the `open` method is defined like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To astute observers, there may be a source of confusion, as it looks like `Result`
+    is missing the generic `E` type for the error variant, but it''s simply hidden
+    away by a type alias. If we look at the `type` alias definition in the `std::io`
+    module, it is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'So, it is type aliased with a common error type of `std::io::Error.` This is
+    because a lot of APIs in the standard library use this as an error type. This
+    is another benefit of type aliases, where we can extract common parts from our
+    type signature. Putting that tip aside, to be able to call the `read_to_string`
+    method on our `file`, we need to extract the inner `File` instance, that is, perform
+    pattern matching on variants. By doing this, the preceding code changes, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we made two changes. First, we made the `file` variable mutable. Why?
+    Because the function signature of `read_to_string` is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first parameter being `&mut self` means that the instance we are calling
+    this method on needs to be mutable because reading the file changes, internal
+    pointers of the file handle. Secondly, we handled both the variants, where, in
+    the `Ok` case, we return the actual `File` object if everything was good, but
+    crash when we get an `Err` value and display an error message.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With this change, let''s compile and run this program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/862acb83-a83c-4579-929a-5e0a3d752c2e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This panics because we don't have a file named `data.txt` in our directory.
+    Try creating a file with the same name with any arbitrary text in it and run this
+    program again to see it succeed. First, though, let's do something about that
+    warning. Warnings are always a sign of poor code quality, and we ideally want
+    to have none of them. The warning is there because `File::read_to_string` (a method
+    from the `Read` trait) returns a value of type `Result<usize>`. Rust warns you
+    whenever a return value from a function call is ignored. Here, the `usize` value
+    in `Result<usize>` tells us how many bytes were read into the string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have two ways of handling this warning:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handle both the `Ok` and `Err` cases as before for the `Result` value returned
+    by the `read_to_string` method
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Assign the return value to a special variable `_` (**underscore**), which lets
+    the compiler know that we want to ignore the value
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For cases where we don''t care about the value, we can use the second approach
+    and so the `read_to_string` line changes as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: With that change, the code compiles without warnings. However, you should handle
+    the return value and try not to use the catch all underscore variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Combinators on Option/Result
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As `Option` and `Result` are wrapper types, the only way to safely interact
+    with their inner values is either through pattern matching or `if let`. This paradigm
+    of using matching and then acting on the inner values is a very common operation
+    and, as such, it becomes very tedious having to write them every time. Fortunately,
+    these wrapper types come with lots of helper methods, also known as combinators,
+    implemented on them that allow you to manipulate the inner values easily.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These are generic methods and there are many kinds depending on the use case.
+    Some methods act on success values, such as `Ok(T)`/`Some(T)`, while some of them
+    act on failed values, such as `Err(E)`/`None`. Some methods unwrap and extract
+    the inner value, while some preserve the structure of the wrapper type modifying
+    just the inner values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Note**: In this section, when we talk about success values, we are commonly
+    referring to `Ok(T)`/`Some(T)` variants and when we talk about failed values,
+    we are referring to `Err(T)`/`None` variants.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Common combinators
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s look at some of the useful combinators that are available for both the `Option`
+    and `Result` types:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`map`: This method allows you to transform the success value, `T`, to another
+    value, `U`. The following is the type signature of `map` for the `Option` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following is the signature for the `Result` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: This method's type signature can be read as follows: `map` is a generic method
+    over `U` and `F`, and takes `self` by value. It then takes a parameter, `f`, of
+    type `F` and returns an `Option<U>`, where `F` is constrained by the `FnOnce`
+    trait, which has an input parameter, `T`, and a return type of `U`. Phew! That
+    was quite a mouthful.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's make this simpler to understand. There are two parts to understand about
+    the `map` method. First, it takes a parameter as `self`, which means the value
+    on which this method is called is consumed after the call. Second, it takes in
+    a parameter, `f`, of type `F`. This is a closure that's provided to `map`, which
+    tells it how to do the conversion from `T` to `U`. The closure is generically
+    represented as `F` and the `where` clause says that `F` is `FnOnce(T) -> U`. This
+    is a special type of trait that is only applicable to closures and hence has a
+    function like the signature of `(T) -> U` . The `FnOnce` prefix just means that
+    this closure takes ownership of the input parameter, `T`, signifying that we can
+    only call this closure once with `T` as `T` will be consumed upon invocation.
+    We'll look into closures in more depth in [Chapter 7](63263043-9b5e-4711-b2e2-e44240a0e843.xhtml),
+    *Advanced Concepts.* The `map` method does nothing if the value is a failed value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using combinators
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Using the `map` method is simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding code, we have a method called `get_nth` that gives us the
+    `nth` element from `Vec<usize>` and returns `None` if it couldn''t find one. We
+    then have a use case where we want to double the value. We can use the `map` method
+    on the return value of `get_nth`, passing in the `double` function we defined
+    previously. Alternatively, we could have provided a closure written inline, like
+    the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is quite a concise way to chain operations! This is less verbose than using
+    `match` or `if let`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The preceding explanation of the `map` method is very much applicable to the
+    next set of methods that we''ll look at, so we''ll skip explaining their type
+    signature as it would be too noisy for us to go through every one of them. Instead,
+    we''ll just explain briefly the functionality that''s provided by these methods.
+    You are encouraged to read and become familiar with their type signature by referring
+    to their documentation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`map_err`: This method acts only on `Result` types and allows transforming
+    the failed value from `E` to some other type, `H`, but only if the value is an
+    `Err` value. `map_err` is not defined for `Option` types, as doing anything with
+    `None` would be pointless.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`and_then`: In the case of a failed value, this returns the value as is, but
+    in the case of a successful value, this takes in a closure as the second argument,
+    which acts on the wrapped value and returns the wrapped type. This is useful when
+    you need to perform transformations on the inner values, one after another.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`unwrap_or`: This method extracts the inner success value, or returns a default
+    one if it''s a failed value. You provide the default value to it as a second argument.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`unwrap_or_else`: This method acts the same as the preceding method but computes
+    a different value when it is a failed value by taking a closure as the second
+    argument.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`as_ref`: This method converts the inner value to a reference and returns the
+    wrapped value, that is, an `Option<&T>` or a `Result<&T, &E>`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`or/ or_else`: These methods return the value as is if it''s a success value,
+    or returns an alternative `Ok`/`Some` value, which is provided as the second argument.
+    `or_else` accepts a closure within which you need to return a success value.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`as_mut`: This method converts the inner value into a mutable reference and
+    returns the wrapped value, that is, an `Option<&mut T>` or a `Result<&mut T, &mut
+    E>`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There are many more that are unique to the `Option` and `Result` types.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Converting between Option and Result
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We also have methods where one wrapper type can be converted into another,
+    depending on how you want to compose those values with your APIs. They become
+    really handy in situations where we are interacting with third-party crates, where
+    we have a value as an `Option`, but the crate''s method we are using accepts a
+    `Result` as a type, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`ok_or`: This method converts an `Option` value to a `Result` value, by taking
+    in an error value as a second parameter. A similar variant to this is the `ok_or_else`
+    method, which should be preferred over this, as it computes the value lazily by
+    taking in a closure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`ok`: This method converts a `Result` into an `Option` consuming `self`, and
+    discards the `Err` value.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Early returns and the ? operator
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This is another pattern that is quite common when we interact with `Result`
+    types. The pattern goes as follows: when we have a success value, we immediately
+    want to extract it, but when we have an error value, we want to make an early
+    return and propagate the error to the caller. To illustrate this pattern, we will
+    use the following snippet, which uses the usual match expression to act on the
+    `Result` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `?` operator abstracts this pattern, making it possible to write the `bytes_to_str`
+    method in a more concise way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This operator becomes even nicer if you have a sequence of `Result`/`Option`
+    returning method calls, where a failure in each operator should mean a failure
+    of the whole. For instance, we could write the whole operation of creating a file
+    and writing to it as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: It works pretty much as a replacement for the `try!` macro, which does the same
+    thing as before `?` was implemented in the compiler. Now, `?` is a replacement
+    for that, but there are some plans to make it more generic and usable for other
+    cases, too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Bonus tip**: The `main` function also allows you to return `Result` types.
+    Specifically, it allows you to return types that implement the `Termination` trait.
+    This means that we can also write `main` as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, let's move on to dealing with non-recoverable errors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Non-recoverable errors
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When code that's in the execution phase encounters a bug, or one of its variants
+    is violated, it has the potential to corrupt the program state in unexpected ways
+    if it's ignored. These situations are deemed non-recoverable because of their
+    inconsistent program state, which may lead to faulty outputs or unexpected behavior
+    later. This means that a fail-stop approach is the best way to recover from them
+    so as to not harm other parts or systems indirectly. For these kinds of cases,
+    Rust provides us with a mechanism called **panic**, which aborts the thread on
+    which it is invoked and does not affect any other threads. If the main thread
+    is the one facing the panic, then the program aborts with a non-zero exit code
+    of `101`. If it's a child thread, the panic does not propagate to the parent thread
+    and halts at the thread boundary. A panic in one thread does not affect the other
+    threads and is isolated, except in cases where they corrupt a mutex lock on some
+    shared data; it is implemented as a macro by the same `panic!` mechanism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When `panic!` is called, the panicking thread starts unwinding the function
+    call stack, starting from the place at which it was invoked, all the way until
+    the entry point in the thread. It also generates a stack trace or a backtrace
+    for all functions that are invoked in this process, just like exceptions. But
+    in this case, it does not have to look for any exception handlers, as they don't
+    exist in Rust. Unwinding is the process of moving up the function call chain while
+    cleaning up or freeing resource, from each function call stack. These resources
+    can be stack allocated or heap allocated. Stack allocated resources automatically
+    get released once the function ends. For variables pointing to heap allocated
+    resources, Rust calls the `drop` method on them, which frees up the memory used
+    by the resource. This cleanup is necessary to avoid memory leaks. Apart from code
+    calling `panic` explicitly, `Result`/`Option` error types also call `panic` if
+    any code does unwrap on failed values, that is, `Err`/`None`. `panic` is also
+    the choice that's used for failing assertions in unit tests, and it's encouraged
+    to fail tests with panics by using the `#[should_panic]` attribute.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the case of single-threaded code having panics on the main thread, unwinding
+    doesn't provide much of a benefit, as the operating system reclaims all the memory
+    after the process aborts. Fortunately, there are options to turn off unwinding
+    in `panic`, which may be required on platforms such as embedded systems, where
+    we have a single main thread doing all the work and where unwinding is an expensive
+    operation that isn't of much use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To figure out the sequence of calls that led to the panic, we can view the
+    backtrace from the thread by running any panicking program and setting the `RUST_BACKTRACE=1`
+    environment variable from our command-line shell. Here''s an example where we
+    have two threads, where both of them panic:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`alice` spawns a new thread using `thread::spawn` and calls `bob` within the
+    closure. `bob` calls `malice`, which in turn panics. `main` also calls `bob`,
+    which panics.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s the output of running this program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/a5de47cc-5038-42f9-be7a-3893269e6dbb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We join the thread by calling `join()` and expect everything to go fine in our
+    child thread, which is definitely not the case. We get two backtraces, one for
+    the panic that happened in the child thread and the other from calling `bob` in
+    the main thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you need more control over how unwinding in panics is handled in a thread,
+    you can use the `std::panic::catch_unwind` function. Even though it's recommended
+    to handle errors via the `Option`/`Result` mechanism, you can use this method
+    to handle fatal errors in worker threads; you can do this by restoring any violated
+    invariants, letting the workers die, and restarting them. However, `catch_unwind`
+    doesn't prevent the panic – it only allows you to customize the unwind behavior
+    associated with panic. `panic` with `catch_unwind` is not recommended as a general
+    error handling method for Rust programs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `catch_unwind` function takes a closure and handles any panics that happen
+    inside it. Here''s its type signature:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the return value of `catch_unwind` has an additional constraint,
+    `UnwindSafe`. This means that the variables in the closure must be exception-safe,
+    which most types are, but notable exceptions are mutable references (`&mut T`).
+    A value is exception safe if exception-throwing code cannot lead to the value
+    being left in an inconsistent state. This means that the code inside the closure
+    must not `panic!()` itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s a simple example that uses `catch_unwind`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s the output after running the preceding program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0479182e-a4a9-4297-b1d2-18df52426b4a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see, `catch_unwind` does not prevent the panic from happening; it
+    just stops the unwinding associated with the panicking thread. Note again that
+    `catch_unwind` is not the recommended method for error management in Rust. It
+    is not guaranteed to catch all panics, such as panics that abort the program.
+    Catching panic unwinding is necessary in situations where Rust code is communicating
+    with other languages such as C, where unwinding to C code is an undefined behavior.
+    In those cases, the programmer has to handle the unwind and do what C expects
+    by returning an error code. The program can then resume the unwind by using the
+    `resume_unwind` function from the same `panic` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For rare cases where the default unwinding behavior of panic can get too expensive,
+    such as when writing programs for microcontrollers, there''s a compiler flag that
+    can be configured to turn all panics into aborts. To do that, your project''s
+    `Cargo.toml` needs to have the following attribute under the `profile.release` section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: User-friendly panics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As we saw in the preceding code, panic messages and backtraces can be very
+    cryptic, but it does not have to be like that. If you are an author of a command-line
+    tool, `human_panic` is a crate from the community that replaces verbose, cryptic
+    panic messages with human-readable messages. It also writes the backtrace to a
+    file to allow it to be reported to the tool author by users. More information
+    about `human_panic` can be found on the project repository page: [https://github.com/rust-clique/human-panic](https://github.com/rust-clique/human-panic).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Custom errors and the Error trait
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A non-trivial project that has varied functionality is often spread across modules.
+    With an organization, it's more informative to provide module-specific error messages
+    and information for the user. Rust allows us to create custom error types that
+    can help us achieve more granular error reports from our application. Without
+    custom errors that are specific to our project, we might have to use existing
+    error types in the standard library, which may not be relevant to our API's operations
+    and will not give precise information to users if things go wrong with an operation
+    in our module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In languages that have exceptions, such as Java, the way you create custom
+    exceptions is by inheriting from the base `Exception` class and overriding its
+    methods and member variables. While Rust doesn''t have type-level inheritance,
+    it has trait inheritance and provides us with the `Error` trait that any type
+    can implement, making the type a custom error type. This type can now be composed
+    with existing standard library error types when using a trait object such as `Box<dyn
+    Error>` as the return type of functions returning `Result` for the `Err` variant.
+    Here''s the type signature of the `Error` trait:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To create our own error type, the type must implement the `Error` trait. If
+    we look at the trait''s definition, it also requires that we implement the `Debug`
+    and `Display` traits for our type. The `description` method returns a string slice
+    reference, which is a human-readable form describing what the error is about.
+    The `cause` method returns an optional reference to another `Error` trait object,
+    representing a possible lower-level reason for the error. The cause method from
+    custom error types allows you to get information on the chain of errors right
+    from the source, making precise logging of the error possible. For instance, let''s
+    take an HTTP query as an example of a fallible operation. Our hypothetical library
+    has a `get` method that can perform `GET` requests. The query might fail due to
+    a lot of different reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The DNS query might fail because of networking failures or because of an incorrect
+    address
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The actual transfer of packets might fail
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The data might be received correctly, but there could be something wrong with
+    the received HTTP headers, and so on and so forth
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If it were the first case, we might imagine three levels of errors, chained
+    together by the `cause` fields:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The UDP connection failing due to the network being down (`cause = None`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The DNS lookup failing due to a UDP connection failure (`cause = UDPError`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `GET` query failing due to a DNS lookup failure (`cause = DNSError`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `cause` method comes in handy when the developer wants to know the root
+    cause of a failure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, to demonstrate integrating a custom error type in to a project, we have
+    created a crate called `todolist_parser` using cargo, which exposes an API to
+    parse a list of todos from a text file. The parsing of todos can fail in different
+    ways, such as file not found, an empty todo, or because it contains non-text characters.
+    We''ll use a custom error type to model these situations. Under `src/error.rs`,
+    we have defined the following error types:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As of now, we are modelling two errors, which are very basic:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Failing to read the list of todos modeled as `ReadErr`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Failing to parse the todos modeled as `ParseErr`, which has two variants, where
+    it can fail either due to the file being `Empty` or the file containing non-text/binary
+    symbols, which means that it's `Malformed`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Following that, we implement the `Error` trait and the required super traits,
+    `Display` and `Debug`. `lib.rs` contains the required parsing methods, as well
+    as the declaration of the `TodoList` struct, as shown in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have two top-level functions, `read_todos` and `parse_todos`, which are invoked
+    by the `get_todos` method of `TodoList`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have an example usage of `TodoList` under `examples/basics.rs`, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we run our `basics.rs` example via the `cargo run --example basics` command,
+    we get the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/f4067e12-740d-405f-a483-678cf1708524.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: If you look at the error value being printed, it wraps the actual cause of error
+    within the `ReadErr` value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust has decent built-ins for defining custom error types. If you're writing
+    your own crates, you should define your own error types to make debugging easier.
+    However, implementing the `Error` trait for all of your types can often become
+    redundant and time-consuming. Fortunately, we have a crate from the Rust community
+    called **failure** ([https://github.com/rust-lang-nursery/failure](https://github.com/rust-lang-nursery/failure)),
+    which automates the creation of custom error types, along with the necessary implementation
+    of traits that are auto-derived through the use of procedural macros. If you are
+    feeling more ambitious, you are encouraged to refactor this library to use the
+    `failure` crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we have learned that,  error handling in Rust is explicit:
+    operations that can fail have a two-part return value via the `Result` or `Option`
+    generic types. You must handle errors in some way, either by unpacking the `Result`/`Option`
+    values with a `match` statement, or by using combinator methods. Unwrapping should
+    be avoided on error types. Instead, use combinators or match expressions to take
+    appropriate action or propagate the error to the caller by using the `?` operator. It
+    is okay to panic when programming errors are so fatal that recovery would be impossible.
+    Panics are mostly non-recoverable, which means that they crash your thread. Their
+    default behavior is unwinding, which can be expensive and can be turned off if
+    programs don''t want this overhead. It is advised to be as descriptive as possible
+    when communicating errors, and authors are encouraged to use custom error types
+    in their crates.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we'll cover some of the advanced aspects of the language
+    and explore more of the guts of the type system.
+  prefs: []
+  type: TYPE_NORMAL

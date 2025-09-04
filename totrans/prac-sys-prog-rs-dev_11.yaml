@@ -1,0 +1,960 @@
+- en: '*Chapter 9*: Managing Concurrency'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Concurrent systems are all around us. When you download a file, listen to streaming
+    music, initiate a text chat with a friend, and print something in the background
+    on your computer, *all at the same time*, you are experiencing the magic of concurrency
+    in action. The operating system manages all these for you in the background, scheduling
+    tasks across available processors (CPUs).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But do you know how to write a program that can do multiple things at the same
+    time? More importantly, do you know how to do it in a way that is both memory-
+    and thread-safe, while ensuring optimal use of system resources? Concurrent programming
+    is one way to achieve this. But concurrent programming is considered to be a difficult
+    topic in most programming languages due to challenges in *synchronizing tasks*
+    and *sharing data safely across multiple threads of execution*. In this chapter,
+    you''ll learn about the basics of concurrency in Rust and how Rust makes it easier
+    to prevent common pitfalls and enables us to write concurrent programs in a safe
+    manner. This chapter is structured as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reviewing concurrency basics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Spawning and configuring threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Error handling in threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Message passing between threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Achieving concurrency with shared state
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pausing thread execution with timers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you'll have learned how to write concurrent programs
+    in Rust by spawning new threads, handling thread errors, transferring and sharing
+    data safely across threads to synchronize tasks, understanding the basics of thread-safe
+    data types, and pausing the execution of current threads for synchronization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Verify that `rustup`, `rustc`, and `cargo` have been installed correctly with
+    the following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The Git repo for the code in this chapter can be found at: [https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter09](https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter09).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's get started with some basic concepts of concurrency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reviewing concurrency basics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll cover the basics of **multi-threading** and clarify the
+    terminology around **concurrency** and **parallelism**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To appreciate the value of concurrent programming, we have to understand the
+    need of today's programs to make decisions quickly or process a large amount of
+    data in a short period of time. Several use cases become impossible to achieve
+    if we strictly rely on sequential execution. Let's consider a few examples of
+    systems that must perform multiple things simultaneously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An autonomous car needs to perform many tasks at the same time, such as processing
+    inputs from a wide array of sensors (to construct an internal map of its surroundings),
+    plotting the path of the vehicle, and sending instructions to the vehicle's actuators
+    (to control the brakes, acceleration, and steering). It needs to process continually
+    arriving input events, and respond in tenths of a second.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are also other, more mundane examples. A web browser handles user inputs
+    while simultaneously rendering a web page incrementally, as new data is received.
+    A website handles requests from multiple simultaneous users. A web crawler has
+    to access many thousands of sites simultaneously to gather information about the
+    websites and their contents. It is impractical to do all these things sequentially.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've so far seen a few use cases that require multiple tasks to be performed
+    simultaneously. But there is also a technical reason that is driving concurrency
+    in programming, which is that CPU clock speeds on a single core are hitting upper
+    practical limits. So, it is becoming necessary to add more CPU cores, and more
+    processors on a single machine. This is in turn driving the need for software
+    that can efficiently utilize the additional CPU cores. To achieve this, portions
+    of a program should be executable concurrently on different CPU cores, rather
+    than being constrained by the sequential execution of instructions on a single
+    CPU core.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These factors have resulted in the increased use of multi-threading concepts
+    in programming. Here, there are two related terms that need to be understood –
+    *concurrency* and *parallelism*. Let's take a closer look at this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Concurrency versus parallelism
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we'll review the fundamentals of multi-threading and understand
+    the differences between *concurrent* and *parallel* execution models of a program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.1 – Concurrency basics](img/Figure_9.1_B16405.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.1 – Concurrency basics
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Figure 9.1* shows three different computation scenarios within a Unix/Linux
+    process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Sequential execution**: Let''s assume that a process has two tasks **A**
+    and **B**. **Task A** has three subtasks **A1**, **A2**, and **A3**, which are
+    executed sequentially. Likewise, **Task B** has two tasks, **B1** and **B2**,
+    that are executed one after the other. Overall, the process executes all tasks
+    of process *A* before taking on process *B* tasks. There is a challenge in this
+    model. Assume the case where task **A2** involves waiting for an external network
+    or user input, or for a system resource to become available. Here, all tasks lined
+    up after task **A2** will be blocked until **A2** completes. This is not an efficient
+    use of the CPU and causes a delay in the completion of all the scheduled tasks
+    that belong to the process.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Concurrent execution**: Sequential programs are limited as they do not have
+    the ability to deal with multiple simultaneous inputs. This is the reason many
+    modern applications are *concurrent* where there are multiple threads of execution
+    running concurrently.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the concurrent model, the process interleaves the tasks, that is, alternates
+    between the execution of **Task A** and **Task B**, until both of them are complete.
+    Here, even if **A2** is blocked, it allows progress with the other sub-tasks.
+    Each sub-task, **A1**, **A2**, **A3**, **B1**, and **B2**, can be scheduled on
+    separate execution threads. These threads could run either on a single processor
+    or scheduled across multiple processor cores. One thing to bear in mind is that
+    concurrency is about *order-independent* computations as opposed to sequential
+    execution, which relies on steps executed in a specific order to arrive at the
+    correct program outcome. Writing programs to accommodate *order-independent* computations
+    is more challenging than writing sequential programs.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '**Parallel execution**: This is a variant of the *concurrent execution* model.
+    In this model, the process executes **Task A** and **Task B** truly in parallel,
+    on separate CPU processors or cores. This assumes, of course, that the software
+    is written in a way that such parallel execution is possible, and there are no
+    dependencies between **Task A** and **Task B** that could stall the execution
+    or corrupt the data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Parallel computing is a broad term. *Parallelism* can be achieved either within
+    a single machine by having **multi-cores** or **multi-processors** or there can
+    be clusters of different computers that can cooperatively perform a set of tasks.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: When to use concurrent versus parallel execution?
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: A program or a function is *compute-intensive* when it involves a lot of computations
+    such as in graphics, meteorological, or genome processing. Such programs spend
+    the bulk of their time using CPU cycles and will benefit from having better and
+    faster CPUs.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: A program is *I/O-intensive* when a bulk of the processing involves communicating
+    with input/output devices such as network sockets, filesystems, and other devices.
+    Such programs benefit from having faster I/O subsystems, such as for disk or network
+    access.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Broadly, *parallel execution* (true parallelism) is more relevant for increasing
+    the throughput of programs in *compute-intensive* use cases, while *concurrent
+    processing* (or pseudo-parallelism) can be suitable for increasing throughput
+    and reducing latency in *I/O-intensive* use cases.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In this section, we've seen two ways to write concurrent programs – *concurrency*
+    and *parallelism*, and how these differ from sequential models of execution. Both
+    these models use *multi-threading* as the foundational concept. Let's talk more
+    about this in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Concepts of multi-threading
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we'll deep-dive into how multi-threading is implemented in
+    Unix.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unix supports threads as a mechanism for a process to perform multiple tasks
+    concurrently. A Unix process starts up with a single thread, which is the main
+    thread of execution. But additional threads can be spawned, that can *execute
+    concurrently in a single-processor system*, or *execute in parallel in a multi-processor
+    system*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each thread has access to its own *stack* for storing its own *local variables*
+    and *function parameters*. Threads also maintain their own register state including
+    the *stack pointer* and *program counter*. All the threads in a process share
+    the same memory address space, which means that they share access to the *data*
+    segments (*initialized data*, *uninitialized data*, and the *heap*). Threads also
+    share the same *program code* (process instructions).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In a multi-threaded process, multiple threads concurrently execute the same
+    program. They may be executing different parts of a program (such as different
+    functions) or they may be invoking the same function in different threads (working
+    with a different set of data for processing). But note that for a function to
+    be invoked by multiple threads at the same time, it needs to be *thread-safe*.
+    Some ways to make a function thread-safe are to avoid the usage of *global* or
+    *static* variables in the function, using a *mutex* to restrict usage of a function
+    to just one thread at a time, or using *mutex* to synchronize usage of a piece
+    of shared data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But it is a design choice to model a concurrent program either as a group of
+    processes or as a group of threads within the same process. Let's compare the
+    two approaches, for a Unix-like system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is much easier to share data across threads as they are in the same process
+    space. Threads also share common resources of a process such as *file descriptors*
+    and *user/group IDs*. Thread creation is faster than process creation. Context
+    switching between threads is also faster for the CPU due to their sharing the
+    same memory space. But threads bring their own share of complexities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As discussed earlier, shared functions must be thread-safe and access to shared
+    global data should be carefully synchronized. Also, a critical defect in one of
+    the threads can affect other threads or even bring the entire process down. Additionally,
+    there is no guarantee about the order in which different parts of code in different
+    threads will run, which can lead to data races, deadlocks, or hard-to-reproduce
+    bugs. Bugs related to concurrency are difficult to debug since factors such as
+    CPU speed, the number of threads, and the set of running applications at a point
+    in time, can alter the outcome of a concurrent program. In spite of these drawbacks,
+    if one decides to proceed with the thread-based concurrency model, aspects such
+    as code structure, the use of global variables, and thread synchronization should
+    be carefully designed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Figure 9.2* shows the memory layout of threads within a process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.2 – Memory layout of threads in a process](img/Figure_9.2_B16405.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.2 – Memory layout of threads in a process
+  prefs: []
+  type: TYPE_NORMAL
+- en: The figure shows how a set of tasks in process P1 are represented in memory
+    when they are executed in a multi-threaded model. We've seen in detail the memory
+    layout of a process, in [*Chapter 5*](B16405_05_Final_NM_ePUB.xhtml#_idTextAnchor083),
+    *Memory Management in Rust*. *Figure 9.2* extends the process memory layout with
+    details of how memory is allocated for individual threads within a process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As discussed earlier, all threads are allocated memory within the process memory
+    space. By default, the main thread is created with its own stack. Additional threads
+    are also assigned their own stack as and when they are created. The shared model
+    of concurrency, which we discussed earlier in the chapter, is possible because
+    global and static variables of a process are accessible by all threads, and each
+    thread also can pass around pointers to memory created on the heap to other threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The program code, however, is common for the threads. Each thread can execute
+    a different section of the code from the program text segment, and store the local
+    variables and function parameters within their respective thread stack. When it
+    is the turn of a thread to execute, its program counter (containing the address
+    of the instruction to execute) is loaded for the CPU to execute the set of instructions
+    for a given thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the example shown in the diagram, if task *A2* is blocked waiting for I/O,
+    then the CPU will switch execution to another task such as *B1* or *A1*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we conclude the section on concurrency and multi-threading basics.
+    We are now ready to get started with writing concurrent programs using the Rust
+    Standard Library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spawning and configuring threads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous section, we reviewed the fundamentals of multi-threading that
+    apply broadly to all user processes in the Unix environment. There is, however,
+    another aspect of threading that is dependent on the programming language for
+    implementation – this is the *threading model*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust implements a *1:1 model* of threading where each operating system thread
+    maps to one user-level thread created by the Rust Standard Library. The alternative
+    model is *M:N* (also known as **green threads**) where there are *M green threads*
+    (user-level threads managed by a runtime) that map to *N kernel-level threads*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we'll cover the fundamentals of creating *1:1* operating system
+    threads using the Rust Standard Library. The Rust Standard Library module for
+    thread-related functions is `std::thread`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two ways to create a new thread using the Rust Standard Library.
+    The first method uses the `thread::spawn` function, and the second method uses
+    the builder pattern using the `thread::Builder` struct. Let''s look at an example
+    of the `thread::spawn` function first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `std::thread` module is used in this program. `thread::spawn()` is the function
+    used to spawn a new thread. In the program shown, we're spawning four new child
+    threads in the main function (which runs in the main thread in the process). Run
+    this program with `cargo run`. Run it a few more times. What did you expect to
+    see, and what did you actually see?
+  prefs: []
+  type: TYPE_NORMAL
+- en: You would have expected to see four lines printed to the terminal listing the
+    *thread IDs*. But you would have noticed that the results vary each time. Sometimes
+    you see one line printed, sometimes you see more, and sometimes none. Why is this?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason for this inconsistency is that there is no guarantee of the order
+    in which the threads are executed. Further, if the `main()` function completes
+    before the child threads are executed, you won't see the expected output in your
+    terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To fix this, what we need to do is to join the *child threads* that are created
+    to the *main thread*. Then the `main()` thread waits until all the child threads
+    have been executed. To see this in action, let''s alter the program as shown:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The changes from the previous program are highlighted. `thread::spawn()` returns
+    a thread handle that we're storing in a `Vec` collection data type. Before the
+    end of the `main()` function, we join each child thread to the main thread. This
+    ensures that the `main()` function waits until the completion of all the child
+    threads before it exits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's run the program again. You'll notice four lines printed, one for each
+    thread. Run the program a few more times. You'll see four lines printed every
+    time. This is progress. It shows that joining the child threads to the main threads
+    is helping. However, the order of thread execution (as seen by the order of print
+    outputs on the terminal) varies with each run. This is because, when we span multiple
+    child threads, there is no guarantee of the order in which the threads are executed.
+    This is a feature of multi-threading (as discussed earlier), not a bug. But this
+    is also one of the challenges of working with threads, as this brings difficulties
+    in synchronizing activities across threads. We'll learn how to address this a
+    little later in the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've so far seen how to use the `thread::spawn()` function to create a new
+    thread. Let's now see the second way to create a new thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `thread::spawn()` function uses default parameters for thread name and
+    stack size. If you''d like to set them explicitly, you can use `thread:Builder`.
+    This is a *thread factory* that uses the `Builder` pattern to configure the properties
+    of a new thread. The previous example has been rewritten here using the `Builder`
+    pattern:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The changes are highlighted in the code. We are creating a new `builder` object
+    by using the `new()` function, and then configuring the name of the thread using
+    the `name()` method. We're then using the `spawn()` method on an instance of the
+    `Builder` pattern. Note that the `spawn()` method returns a `JoinHandle` type
+    wrapped in `io::Result<JoinHandle<T>>`, so we have to unwrap the return value
+    of the method to retrieve the child process handle.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Run the code and you'll see the four thread names printed to your terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've so far seen how to spawn new threads. Let's now take a look at error handling
+    while working with threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Error handling in threads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The Rust Standard Library contains the `std::thread::Result` type, which is
+    a specialized `Result` type for threads. An example of how to use this is shown
+    in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have a function, `copy_file()`, that copies a source file to a destination
+    file. This function returns a `thread::Result<()>` type, which we are unwrapping
+    using a `match` statement in the `main()` function. If the `copy_file()` function
+    returns a `Result::Err` variant, we handle it by printing an error message.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the program with `cargo run` with an invalid source filename. You will
+    see the error message: `Ok()` branch of the `match` clause, and the success message
+    will be printed.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This example shows us how to handle errors propagated by a thread in the calling
+    function. What if we want a way to recognize that the current thread is panicking,
+    even before it is propagated to the calling function. The Rust Standard Library
+    has a function, `thread::panicking()`, available in the `std::thread` module for
+    this. Let''s learn how to use it by modifying the previous example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We've created a struct, `Filenames`, which contains the source and destination
+    filenames to copy. We're initializing the source filename with an invalid value.
+    We're also implementing the `Drop` trait for the `Filenames` struct, which gets
+    called when an instance of the struct goes out of scope. In this `Drop` trait
+    implementation, we are using the `thread::panicking()` function to check if the
+    current thread is panicking, and are handling it by printing out an error message.
+    The error is then propagated to the main function, which also handles the thread
+    error and prints out another error message.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the program with `cargo run` and an invalid source filename, and you will
+    see the following messages printed to your terminal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Also, note the use of the `move` keyword in the `closure` supplied to the `spawn()`
+    function. This is needed for the thread to transfer ownership of the `file_struct`
+    data structure from the `main` thread to the newly spawned thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've seen how to handle thread panic in the calling function and also how to
+    detect if the current thread is panicking. Handling errors in child threads is
+    very important to ensure that the error is isolated and does not bring the whole
+    process down. Hence special attention is needed to design error handling for multi-threaded
+    programs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we'll move on to the topic of how to synchronize computations across threads,
+    which is an important aspect of writing concurrent programs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Message passing between threads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Concurrency is a powerful feature that enables the writing of new kinds of applications.
+    However, the execution and debugging of concurrent programs are difficult because
+    their execution is non-deterministic. We saw this through examples in the previous
+    section where the order of print statements varied for each run of the program.
+    The order in which the threads will be executed is not known ahead of time. A
+    concurrent program developer must make sure that the program will execute correctly
+    overall, regardless of the order in which the individual threads are executed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One way to ensure program correctness in the face of the unpredictable ordering
+    of thread execution is to introduce mechanisms for synchronizing activities across
+    threads. One such model for concurrent programming is *message-passing concurrency*.
+    It is a way to structure the components of a concurrent program. In our case,
+    concurrent components are *threads* (but they can also be processes). The Rust
+    Standard Library has implemented a *message-passing concurrency* solution called
+    **channels**. *A channel* is basically like a pipe, with two parts – a *producer*
+    and a *consumer*. The *producer* puts a message into a *channel*, and a *consumer*
+    reads from the *channel*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Many programming languages implement the concept of channels for inter-thread
+    communications. But Rust''s implementation of *channels* has a special property
+    – *multiple producer single consumer* (`mpsc`). This means, there can be multiple
+    sending ends but only one consuming end. Translate this to the world of threads:
+    we can have multiple threads that send values into a channel, but there can be
+    only one thread that can receive and consume these values. Let''s see how this
+    works with an example that we''ll build out step by step. The complete code listing
+    is also provided in the Git repo for the chapter under `src/message-passing.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s first declare the module imports – the `mpsc` and `thread` modules from
+    the standard library:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Within the `main()` function, create a new `mpsc` channel:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Clone the channel so we can have two transmitting threads:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note that we now have two transmission handles – `transmitter1` and `transmitter2`,
+    and one receiving handle – `receiver`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Spawn a new thread moving the transmission handle `transmitter1` into the thread
+    closure. Inside this thread, send a bunch of values into the channel using the
+    transmission handle:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Spawn a second thread moving the transmission handle `transmitter2` into the
+    thread closure. Inside this thread, send another bunch of values into the channel
+    using the transmission handle:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'In the main thread of the program, use the receiving handle of the channel
+    to consume the values being written into the channel by the two child threads:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The complete code listing is shown:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Run the program with `cargo run`. (*Note:* If you are running code from the
+    Packt Git repo, use `cargo run --bin message-passing`). You'll see the values
+    printed out in the main program thread, which are sent from the two child threads.
+    Each time you run the program, you may get a different order in which the values
+    are received, as the order of thread execution is *non-deterministic*.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The `mpsc` channel offers a lightweight inter-thread synchronization mechanism
+    that can be used for message-based communications across threads. This type of
+    concurrent programming model is useful when you want to spawn out multiple threads
+    for different types of computations and want to have the main thread aggregate
+    the results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One aspect to note in `mpsc` is that once a value is sent down a channel, the
+    sending thread no longer has ownership of it. If you want to retain ownership
+    or continue to use a value, but still need a way to share the value with other
+    threads, there is another concurrency model that Rust supports called **shared-state
+    concurrency**. We'll look at that next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Achieving concurrency with shared state
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll discuss the second model of concurrent programming supported
+    in the Rust Standard Library – the *shared-state* or *shared-memory* model of
+    concurrency. Recall that all threads in a process share the same process memory
+    space, so why not use that as a way to communicate between threads, rather than
+    message-passing? We'll look at how to achieve this using Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A combination of `Mutex` and `Arc` constitutes the primary way to implement
+    *shared-state concurrency*. `Mutex` (mutual exclusion lock) is a mechanism that
+    allows only one thread to access a piece of data at one time. First, a data value
+    is wrapped in a `Mutex` type, which acts as a lock. You can visualize `Mutex`
+    like a box with an external lock, protecting something valuable inside. To access
+    what's in the box, first of all, we have to ask someone to open the lock and hand
+    over the box. Once we're done, we hand over the box back and someone else asks
+    to take charge of it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Similarly, to access or mutate a value protected by a `Mutex`, we must acquire
+    the lock first. Asking for a lock on a `Mutex` object returns a `MutexGuard` type,
+    which lets us access the inner value. During this time, no other thread can access
+    this value protected by the `MutexGuard`. Once we're done using it, we have to
+    release the `MutexGuard` (which Rust does for us automatically as the `MutexGuard`
+    goes out of scope, without us having to call a separate `unlock()` method).
+  prefs: []
+  type: TYPE_NORMAL
+- en: But there is another issue to resolve. Protecting a value with a lock is just
+    one part of the solution. We also have to give ownership of a value to multiple
+    threads. To support multiple ownership of a value, Rust uses *reference-counted*
+    *smart pointers* – `Rc` and `Arc`. `Rc` allows multiple owners for a value through
+    its `clone()` method. But `Rc` is not safe to use across threads, and `Arc` (which
+    stands for Atomically Reference Counted) is the thread-safe equivalent of `Rc`.
+    So, we need to wrap the `Mutex` with an `Arc` reference-counted smart-pointer,
+    and transfer ownership of the value across threads. Once the ownership of the
+    Arc-protected Mutex is transferred to another thread, the receiving thread can
+    call `lock()` on the Mutex to get exclusive access to the inner value. The Rust
+    ownership model helps in enforcing the rules around this model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The way the `Arc<T>` type works is that it provides the shared ownership of
+    a value of type `T`, allocated in the heap. By calling the associated function
+    `clone()` on an `Arc` instance, a new instance of the `Arc` reference-counted
+    pointer is created, which points to the same allocation on the heap as the source
+    `Arc`, while increasing a reference count. With each `clone()`, the reference
+    count is increased by the `Arc` smart pointer. When each `cloned()` pointer goes
+    out of scope, the reference counter is decremented. When the last of the clones
+    go out of scope, both the `Arc` pointer and the value it points to (in the heap)
+    are destroyed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To summarize, `Mutex` ensures that at most one thread is able to access some
+    data at one time, while `Arc` enables shared ownership of some data and prolongs
+    its lifetime until all the threads have finished using it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see the usage of `Mutex` with `Arc` to demonstrate shared-state concurrency
+    with a step-by-step example. This time, we'll write a more complex example than
+    just incrementing a shared counter value across threads. We'll take the example
+    we wrote in [*Chapter 6*](B16405_06_Final_NM_ePUB.xhtml#_idTextAnchor101), *Working
+    with Files and Directories in Rust*, to compute source file stats for all Rust
+    files in a directory tree, and modify it to make it a concurrent program. We'll
+    define the structure of the program in the next section. The complete code for
+    this section can be found in the Git repo under `src/shared-state.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining the program structure
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: What we'd like to do is to take a list of directories as input to our program,
+    compute source file statistics for each file within each of these directories,
+    and print out a consolidated set of source code stats.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's first create a `dirnames.txt` file in the root folder of the cargo project,
+    containing a list of directories with a full path, one per line. We'll read each
+    entry from this file and spawn a separate thread to compute the source file stats
+    for the Rust files within that directory tree. So, if there are five directory-name
+    entries in the file, there will be five threads created from the main program,
+    each of which will recursively walk through the directory structure of the entry,
+    and compute the consolidated Rust source file stats. Each thread will increment
+    the computed value in a shared data structure. We'll use `Mutex` and `Arc` to
+    protect access and update the shared data safely across threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s start writing the code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll start with the module imports for this program:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Define a struct to store the source file stats:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Within the `main()` function, create a new instance of `SrcStats`, protect
+    it with a `Mutex` lock, and then wrap it inside an `Arc` type:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Read the `dirnames.txt` file, and store the individual entries in a vector:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Iterate through the `dir_lines` vector, and for each entry, spawn a new thread
+    to perform the following two steps:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) Accumulate the list of files from each subdirectory in the tree.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: b) Then open each file and compute the stats. Update the stats in the shared-memory
+    struct protected by `Mutex` and `Arc`.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The overall skeletal structure of the code for this step looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this section, we read the list of directory entries for computing source
+    file statistics from a file. We then iterated through the list to spawn a thread
+    to process each entry. In the next section, we'll define the processing to be
+    done in each thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Aggregating source file statistics in shared state
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this section, we''ll write the code for computing source file statistics
+    in each thread and aggregate the results in shared state. We''ll look at the code
+    in two parts – *sub-steps A* and *B*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In *sub-step A*, let''s read through each subdirectory under the directory
+    entry, and accumulate the consolidated list of all Rust source files in the `file_entries`
+    vector. The code for *sub-step A* is shown. Here, we are first creating two vectors
+    to hold the directory and filenames respectively. Then we are iterating through
+    the directory entries of each item from the `dirnames.txt` file, and accumulating
+    the entry names into the `dir_entries` or `file_entries` vector depending upon
+    whether it is a directory or an individual file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: At the end of *sub-step A*, all individual filenames are stored in the `file_entries`
+    vector, which we will use in *sub-step B* for further processing.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'In *sub-step B*, we''ll read each file from the `file_entries` vector, compute
+    the source stats for each file, and save the values in the shared memory struct.
+    Here is the code snippet for *sub-step B*:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let''s again review the skeletal structure of the program shown next. We''ve
+    so far seen the code to be executed within the thread, which includes processing
+    for steps A and B:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let''s look at the last part of the code now. As discussed earlier, in order
+    to ensure that the main thread does not complete before the child threads are
+    completed, we have to join the child thread handles with the main threads. Also,
+    let''s print out the final value of the thread-safe `stats_counter` struct, which
+    contains aggregated source stats from all the Rust source files under the directory
+    (updated by the individual threads):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The complete code listing can be found in the Git repo for the chapter in `src/shared-state.rs`.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Before running this program, ensure to create a file, `dirnames.txt`, in the
+    root folder of the cargo project, containing a list of directory entries with
+    a full path, each on a separate line.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Run the project with `cargo run`. (*Note*: If you are running code from the
+    Packt Git repo, use `cargo run --bin shared-state`.) You will see the consolidated
+    source stats printed out. Note that we have now implemented a multi-threaded version
+    of the project we wrote in [*Chapter 6*](B16405_06_Final_NM_ePUB.xhtml#_idTextAnchor101),
+    *Working with Files and Directories in Rust*. As an exercise, alter this example
+    to implement the same project with the *message-passing concurrency* model.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In this section, we've seen how multiple threads can safely write to a shared
+    value (wrapped in `Mutex` and `Arc`) that is stored in process heap memory, in
+    a thread-safe manner. In the next section, we will review one more mechanism available
+    to control thread execution, which is to selectively pause the processing of the
+    current thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Send and Sync traits
+  prefs: []
+  type: TYPE_NORMAL
+- en: We saw earlier how a data type can be shared across threads, and how messages
+    can be passed between threads. There is another aspect of concurrency in Rust
+    though. Rust defines data types as thread-safe or not.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From a concurrency perspective, there are two categories of data types in Rust:
+    those that are `Send` (that is, implement the `Send` trait), which means they
+    are safe to be transferred from one thread to another. And the rest are *thread-unsafe*
+    types. A related concept is `Sync`, which is associated with references of types.
+    A type is considered to be `Sync` if its reference can be passed to another thread
+    safely. So, `Send` means it is safe to transfer ownership of a type from one thread
+    to another, while `Sync` means the data type can be shared (using references)
+    safely by multiple threads at the same time. Note though that in `Send`, after
+    a value has been transferred from the sending to the receiving thread, the sending
+    thread can no longer use that value.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Send` and `Sync` are also automatically derived traits. This means that if
+    a type consists of members that implement `Send` or `Sync` types, the type itself
+    automatically becomes `Send` or `Sync`. The Rust primitives (almost all of them)
+    implement `Send` and `Sync`, which means if you create a custom type from Rust
+    primitives, your custom type also becomes `Send` or `Sync`. We''ve seen an example
+    of this in the previous section, where the `SrcStats` (source stats) struct was
+    transferred across the boundaries of threads without us having to explicitly implement
+    `Send` or `Sync` on the struct.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, if there is a need to implement `Send` or `Sync` traits for a data
+    type manually, it would have to be done in unsafe Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To summarize, in Rust, every data type is classified as either *thread-safe*
+    or *thread-unsafe*, and the Rust compiler enforces the safe transfer or sharing
+    of thread-safe types across threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pausing thread execution with timers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Sometimes, during the processing of a thread, there may be a need to pause
+    execution either to wait for another event or to synchronize execution with other
+    threads. Rust provides support for this using the `std::thread::sleep` function.
+    This function takes a time duration of type `time::Duration` and pauses execution
+    of the thread for the specified time. During this time, the processor time can
+    be made available to other threads or applications running on the computer system.
+    Let''s see an example of the usage of `thread::sleep`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using the `sleep()` function is fairly straightforward, but this blocks the
+    current thread and it is important to make judicious use of this in a multi-threaded
+    program. An alternative to using `sleep()` would be to use an async programming
+    model to implement threads with non-blocking I/O.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Async I/O in Rust
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the multi-threaded model, if there is a blocking I/O call in any thread,
+    it blocks the program workflow. The *async* model relies on non-blocking system
+    calls for I/O, for example, to access the filesystem or network. In the example
+    of a web server with multiple simultaneous incoming connections, instead of spawning
+    a separate thread to handle each connection in a blocking manner, *async* I/O
+    relies on a runtime that does not block the current thread but instead schedules
+    other tasks while waiting on I/O.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While Rust has built-in `Async/Await` syntax, which makes it easier to write
+    *async* code, it does not provide any asynchronous system call support. For this,
+    we need to rely on external libraries such as `Tokio`, which provide both the
+    *async runtime* (executor) and the *async* versions of the I/O functions that
+    are present in the Rust Standard Library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, when would one use *async* versus the *multi-threaded* approach to concurrency?
+    The broad thumb-rule is that the *async* model is suited to programs that perform
+    a lot of I/O, whereas, for computation-intensive (CPU-bound) tasks, *multi-threaded
+    concurrency* is a better approach. Keep in mind though that it is not a binary
+    choice, as in practice it is not uncommon to see *async* programs that also utilize
+    *multi-threading* in a hybrid model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For more information on async in Rust, refer to the following link: [https://rust-lang.github.io/async-book/](https://rust-lang.github.io/async-book/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we covered the basics of concurrency and multi-threaded programming
+    in Rust. We started by reviewing the need for concurrent programming models. We
+    understood the differences between the concurrent and parallel execution of programs.
+    We learned how to spawn new threads using two different methods. We handled errors
+    using a special `Result` type in the thread module and also learned how to check
+    whether the current thread is panicking. We looked at how threads are laid out
+    in process memory. We discussed two techniques for synchronizing processing across
+    threads – *message-passing concurrency* and *shared-state concurrency*, with practical
+    examples. As a part of this, we learned about channels, `Mutex` and `Arc` in Rust,
+    and the role they play in writing concurrent programs. We then discussed how Rust
+    classifies data types as *thread-safe* or not, and saw how to pause the execution
+    of the current thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This concludes the chapter on managing concurrency in Rust. This also concludes
+    *Section 2* of this book, which is on managing and controlling system resources
+    in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will now move on to the last part of the book – *Section 3* covering *advanced
+    topics*. In the next chapter, we will cover how to perform *device I/O* in Rust,
+    and internalize learning through an example project.
+  prefs: []
+  type: TYPE_NORMAL

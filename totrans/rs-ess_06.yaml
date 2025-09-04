@@ -1,0 +1,903 @@
+- en: Chapter 6. Pointers and Memory Safety
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This is probably the most important chapter of this book. Here, we describe
+    in detail the unique way in which the Rust borrow-checker mechanism detects problems
+    at compile time to prevent memory safety errors. This is fundamental to everything
+    else in Rust as the language is focused on these concepts of ownership and borrowing.
+    Some of the material has already been discussed earlier, but here, we will strengthen
+    that foundation. We will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pointers and references
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ownership and borrowing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Boxes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reference counting
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Trying out and experimenting with the examples is the key here as there are
+    many concepts that you may not be familiar with yet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pointers and references
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The *The stack and the heap* section of [Chapter 2](part0023.xhtml#aid-LTSU1
+    "Chapter 2. Using Variables and Types"), *Using Variables and Types* gave us the
+    basic information that we needed to understand memory layout of Rust. Let's recap
+    the information and fill in some gaps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The stack and the heap
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When a program starts, by default a 2 MB chunk of memory called the stack is
+    granted to it. The program will use its stack to store all its local variables
+    and function parameters; for example, an `i32` variable takes 4 bytes of the stack.
+    When our program calls a function, a new stack frame is allocated to it. Through
+    this mechanism, the stack knows the order in which the functions are called so
+    that the functions return correctly to the calling code and possibly return values
+    as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Dynamically sized types, such as strings or arrays, can't be stored on the stack.
+    For these values, a program can request memory space on its heap, so this is a
+    potentially much bigger piece of memory than the stack.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: When possible, stack allocation is preferred over heap allocation because accessing
+    the stack is a lot more efficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lifetimes
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'All variables in a Rust code have a lifetime. Suppose we declare an `n` variable
+    with the let `n = 42u32;` binding. Such a value is valid from where it is declared
+    to when it is no longer referenced, which is called the lifetime of the variable.
+    This is illustrated in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The lifetime of `n` ends when `main()` ends; in general, the start and end of
+    a lifetime happen in the same scope. The words lifetime and scope are synonymous,
+    but we generally use the word lifetime to refer to the extent of a reference.
+    As in other languages, local variables or parameters declared in a function do
+    not exist anymore after the function has finished executing; in Rust, we say that
+    their lifetime has ended. This is the case for the `m` and `o` variables in the
+    preceding code snippet, which are only known in the `life` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Likewise, the lifetime of a variable declared in a nested block is restricted
+    to that block, like `phi` in the following example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Trying to use `phi` when its lifetime is over results in an error: `unresolved
+    name ''phi''`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The lifetime of a value can be indicated in the code by an annotation, for example
+    `'a`, which reads as lifetime where `a` is simply an indicator; it could also
+    be written as `'b`, `'n`, or `'life`. It's common to see single letters being
+    used to represent lifetimes. In the preceding example, an explicit lifetime indication
+    was not necessary since there were no references involved. All values tagged with
+    the same lifetime have the same maximum lifetime. We already know this notation
+    from `'static`, which, as we saw in the *Global constants* section of [Chapter
+    2](part0023.xhtml#aid-LTSU1 "Chapter 2. Using Variables and Types"), *Using Variables
+    and Types*, is the lifetime of things that last for the entire length of the program,
+    so only use `'static` when you need the value that long.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the following example, we have a `transform` function that explicitly declares
+    the lifetime of its `s` parameter to be `''a`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note the `<''a>` indication after the name of the function. In nearly all cases,
+    this explicit indication is not needed because the compiler is smart enough to
+    deduce the lifetimes, so we can simply write this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is an example where even when we indicate a lifetime specifier `''a`,
+    the compiler does not allow our code. Let''s suppose that we define a `Magician`
+    struct as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will get an error message if we try to construct the following function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The error message is error: `''mag'' does not live long enough`. Why does this
+    happen? The lifetime of the `mag` value ends when the `return_magician` function
+    ends, but this function nevertheless tries to return a reference to the `Magician`
+    value, which no longer exists. Such an invalid reference is known as a *dangling
+    pointer*. This is a situation that would clearly lead to errors and cannot be
+    allowed.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The lifespan of a pointer must always be shorter than or equal to than that
+    of the value which it points to, thus avoiding dangling (or null) references.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In some situations, the decision to determine whether the lifetime of an object
+    has ended is complicated, but in almost all cases, the borrow checker does this
+    for us automatically by inserting lifetime annotations in the intermediate code;
+    so, we don't have to do it. This is known as *lifetime elision*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, when working with structs, we can safely assume that the struct
+    instance and its fields have the same lifetime. Only when the borrow checker is
+    not completely sure, we need to indicate the lifetime explicitly; however, this
+    happens only on rare occasions, mostly when references are returned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One example is when we have a struct with fields that are references. The following
+    code snippet explains this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This won''t compile and will give us the following error: `missing lifetime
+    specifier [E0106]`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Therefore, we have to change the code as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: This specifies that both the struct and the fields have the lifetime as `'a`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Perform the following exercise:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Explain why the following code won''t compile:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Answer the same question for this code snippet as well:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Copying values and the Copy trait
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In the code that we discussed in earlier section (see `Chapter 6/code/lifetimes.rs`)
+    the value of `n` is copied to a new location each time `n` is assigned via a new
+    `let` binding or passed as a function argument:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At a certain moment in the program''s execution, we would have four memory
+    locations that contain the copied value `42`, which we can visualize as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Copying values and the Copy trait](img/image00180.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Each value disappears (and its memory location is freed) when the lifetime of
+    its corresponding variable ends, which happens at the end of the function or code
+    block in which it is defined. Nothing much can go wrong with this *Copy* behavior,
+    in which the value (its bits) is simply copied to another location on the stack.
+    Many built-in types, such as `u32` and `i64`, work similar to this, and this copy-value
+    behavior is defined in Rust as the `Copy` trait, which `u32` and `i64` implement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can also implement the `Copy` trait for your own type, provided all of
+    its fields or items implement `Copy`. For example, the `MagicNumber` struct, which
+    contains a field of the `u64` type, can have the same behavior. There are two
+    ways to indicate this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One way is to explicitly name the `Copy` implementation as follows:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Otherwise, we can annotate it with a `Copy` attribute:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This now means that we can create two different copies, `mag` and `mag2`, of
+    a `MagicNumber` by assignment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'They are copies because they have different memory addresses (the values shown
+    will differ at each execution):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `(*const` function is a so-called raw pointer; refer to [Chapter 9](part0069.xhtml#aid-21PMQ1
+    "Chapter 9. Programming at the Boundaries"), *Programming at the Boundaries* for
+    more details about it). A type that does not implement the `Copy` trait is called
+    non-copyable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another way to accomplish this is by letting `MagicNumber` implement the `Clone`
+    trait:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we can use `clone() mag` into a different object called `mag3`, effectively
+    making a copy as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`mag3` is a new pointer referencing a new copy of the value of `mag`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pointers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The `n` variable in the `let n = 42i32;` binding is stored on the stack. Values
+    on the stack or the heap can be accessed by pointers. A pointer is a variable
+    that contains the memory address of some value. To access the value it points
+    to, dereference the pointer with `*`. This happens automatically in simple cases
+    such as in `println!` or when a pointer is given as a parameter to a method. For
+    example, in the following code, `m` is a pointer containing the address of `n`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This prints out the following output, which differs for each program run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, why do we need pointers? When we work with dynamically allocated values,
+    such as a `String`, that can change in size, the memory address of that value
+    is not known at compile time. Due to this, the memory address needs to be calculated
+    at runtime. So, to be able to keep track of it, we need a pointer for it whose
+    value will change when the location of `String` in memory changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The compiler automatically takes care of the memory allocation of pointers and
+    the freeing up of memory when their lifetime ends. You don't have to do this yourself
+    like in C/C++, where you could mess up by freeing memory at the wrong moment or
+    at multiple times.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The incorrect use of pointers in languages such as C++ leads to all kinds of
+    problems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, Rust enforces a strong set of rules at compile time called the borrow
+    checker, so we are protected against them. We have already seen them in action,
+    but from here onwards, we'll explain the logic behind their rules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pointers can also be passed as arguments to functions, and they can be returned
+    from functions, but the compiler severely restricts their usage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When passing a pointer value to a function, it is always better to use the
+    reference-dereference `&*` mechanism, as shown in this example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Rust has many kinds of pointers, which we will explore in this chapter. All
+    pointers (except raw pointers, which are discussed in [Chapter 9](part0069.xhtml#aid-21PMQ1
+    "Chapter 9. Programming at the Boundaries"), *Programming at the Boundaries*)
+    are guaranteed to be non-null (that is, they point to a valid location in the
+    memory) and are automatically cleaned up.
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In our previous example, `m`, which had the `&n` value, is the simplest form
+    of pointer, and it is called a reference (or borrowed pointer); `m` is a reference
+    to the stack-allocated `n` variable and has the `&i32` type because it points
+    to a value of the `i32` type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In general, when `n` is a value of the `T` type, then the `&n` reference is
+    of the `&T` type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, `n` is immutable, so `m` is also immutable; for example, if you try to
+    change the value of `n` through `m` with `*m = 7;` you will get a `cannot assign
+    to immutable borrowed content '*m'` error. Contrary to C, Rust does not let you
+    change an immutable variable via its pointer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since there is no danger of changing the value of `n` through a reference,
+    multiple references to an immutable value are allowed; they can only be used to
+    read the value, for example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It prints out as described earlier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We could represent this situation in the memory as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![References](img/image00181.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: It is clear that working with pointers such as this or in much more complex
+    situations necessitates much stricter rules than the `Copy` behavior. For example,
+    the memory can only be freed when there are no variables or pointers associated
+    with it anymore. And when the value is mutable, can it be changed through any
+    of its pointers? These stricter rules, described by the ownership and borrowing
+    system discussed in the next section, are enforced by the compiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mutable references do exist, and they are declared as `let m = &mut n`. However,
+    `n` also has to be a mutable value. When `n` is immutable, the compiler rejects
+    the `m` mutable reference binding with the error, `cannot borrow immutable local
+    variable 'n' as mutable`. This makes sense since immutable variables cannot be
+    changed even when you know their memory location.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To reiterate, in order to change a value through a reference, both the variable
+    and its reference have to be mutable, as shown in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will print: `The value of u is now 3.15`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, the value at the memory location of `u` is changed to `3.15`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, note that we now cannot change (or even print) that value anymore
+    by using the `u: u = u * 2.0;` variable gives us a compiler error: `cannot assign
+    to ''u'' because it is borrowed` (we explain why this is so in the *Ownership
+    and Borrowing* section of this chapter). We say that borrowing a variable (by
+    making a reference to it) freezes that variable; the original `u` variable is
+    frozen (and no longer usable) until the reference goes out of scope.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In addition, we can only have one mutable reference: `let w = &mut u;` which
+    results in the error: `cannot borrow ''u'' as mutable more than once at a time`.
+    The compiler even adds the following note to the previous code line with: `let
+    v = &mut u;` note: ``previous borrow of ''u'' occurs here; the mutable borrow
+    prevents subsequent moves, borrows, or modification of `u` until the borrow ends``.
+    This is logical; the compiler is (rightfully) concerned that a change to the value
+    of `u` through one reference might change its memory location because `u` might
+    change in size, so it will not fit anymore within its previous location and would
+    have to be relocated to another address. This would render all other references
+    to `u` as invalid, and even dangerous, because through them we might inadvertently
+    change another variable that has taken up the previous location of `u`!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A mutable value can also be changed by passing its address as a mutable reference
+    to a function, as shown in this example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With the function `add_three_to_magic` declared as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To summarize, when `n` is a mutable value of the `T` type, then only one mutable
+    reference to it (of the `&mut T` type) can exist at any time. Through this reference,
+    the value can be changed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using ref in a match
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'If you want to get a reference to a matched variable inside a `match` function,
+    use the `ref` keyword, as shown in the following example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Which prints out:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `r` variable inside the `match` has the `&i32` type. In other words, the
+    `ref` keyword creates a reference for use in the pattern. If you need a mutable
+    reference, use `ref mut`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can also use `ref` to get a reference to a field of a struct or tuple in
+    a destructuring via a `let` binding. For example, while reusing the `Magician`
+    struct, we can extract the name of `mag` by using `ref` and then return it from
+    the match:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Which prints: `The magician''s name is Gandalf`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References are the most common pointer type and have the most possibilities;
+    other pointer types should only be applied in very specific use cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ownership and borrowing
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous section, the word *borrowed* was mentioned in most error messages.
+    What's this all about? What is the logic behind this borrow-checker mechanism?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Every program, whatever it does, whether reading data from a database or making
+    a computation, is concerned with handling resources. The most common resource
+    in a program is the memory space allocated to its variables. Other resources could
+    be files, network connections, database connections, and so on. Every resource
+    is given a name when we make a binding to it with `let`; in Rust''s language,
+    we say that the resource gets an owner, for example, in the following code snippet,
+    `klaatu` owns a piece of memory that is taken up by the `Alien` struct instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Only the owner can change the object it points to, and there can only be one
+    owner at a time, because the owner is responsible for freeing the object's resources.
+    When a reference goes out of scope, it will not deallocate the underlying memory,
+    because the reference is not the owner of the value. This makes sense; if an object
+    could have many owners, its resources could be freed more than once, which would
+    lead to problems. When the owner's lifetime has passed, the compiler frees the
+    memory automatically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The owner can move the ownership of the object to another variable as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, the ownership has moved from `klaatu` to `kl2`, but no data is actually
+    copied. The original owner `klaatu` cannot be used anymore:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It gives the compiler error as: `use of moved value ''klaatu.planet''`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the other hand, we can borrow the resource by making a (in this example mutable)
+    reference `kl2` to `klaatu` with `let kl2 = &mut klaatu;`. A borrow is a temporary
+    reference that passes the address of the data structure through `&`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, `kl2` can change the object, for instance, when our alien loses a tentacle
+    in a battle:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This prints out: `Venus – 14`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, we will get an error message if we try to change the alien''s planet
+    through the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: The error message is `error:` ``cannot assign to `klaatu.planet` because it
+    is borrowed;`` it was indeed borrowed by `kl2`. Similar to everyday life, while
+    an object is borrowed, the owner does not have access to it as it is no longer
+    in their possession. In order to change the resource, `klaatu` needs to own it,
+    without the resource being borrowed at the same time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rust even explains this to us with the note that it adds: `borrow of ''klaatu.planet''
+    occurs here ownership.rs:8 let kl2 = &mut klaatu;`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since `kl2` borrows the resource, Rust also even forbids us to access the instance
+    with its former name, `klaatu`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The compiler then throws this error message: `error: cannot borrow ''klaatu.planet''
+    as immutable because ''klaatu'' is also borrowed as mutable`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When a resource is moved or borrowed, the previous owner can no longer use it.
+    This prevents the memory problem that is known as a dangling pointer, which is
+    the use of a pointer that points to an invalid memory location.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But here is a revelation: if we isolate the borrowing by `kl2` in its own block,
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The former problems have disappeared! After the block, we can now do for example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This prints:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: Why does this happen? Because after the closing `}` of the code block in which
+    `kl2` was bound, its lifetime ended. The borrowing was over (a borrow has to end
+    sometime) and `klaatu` reclaimed full ownership, and thus the right to change.
+    When the compiler detects that the lifetime of the original owner, `klaatu` ,
+    has eventually ended, the memory occupied by the struct instance is automatically
+    freed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In fact, this is a general rule in Rust; whenever an object goes out of scope
+    and it doesn't have an owner anymore, its destructor is automatically called and
+    the resources owned by it are freed so that there can never be any memory (or
+    other resource) leaks. In other words, Rust obeys the **Resource Acquisition Is
+    Initialization** (**RAII**) rule. For more information, go to [http://en.wikipedia.org/wiki/Resource_Acquisition_Is_Initialization](http://en.wikipedia.org/wiki/Resource_Acquisition_Is_Initialization).
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we experimented in the *References* section, a resource can be immutably
+    borrowed many times, but while it is immutably borrowed, the original data can't
+    be mutably borrowed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another way to move a resource (and transfer the ownership) is to pass it as
+    an argument to a function; try this out in the following exercise:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Examine the situation (`let kl2 = &klaatu;`) when `kl2` is not a mutable reference.
+    Can you change the instance through `kl2`? Can you change the instance through
+    `klaatu`? Explain the error with what you know about ownership and borrowing (refer
+    to `Chapter 6/exercises/ownership3.rs`).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What will happen in the previous program if we do `let klaatuc = klaatu;` before
+    we define the `let kl2 = &klaatu;` binding?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Examine if you can change the mutability of a resource by moving from an immutable
+    owner to a mutable owner.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For our `Alien` struct, write a `grow_a_tentacle` method that increases the
+    number of tentacles by one (refer to `Chapter 6/exercises/grow_a_tentacle.rs`).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Boxes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Another pointer type in Rust is called the boxed pointer, `Box<T>`, which can
+    be defined for a value of a generic `T` type. A box is a non-copyable value. This
+    pointer type is used to allocate objects on the heap. For example, here we allocate
+    an `Alien` value on the heap by using the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `a1` variable is the only owner of this memory resource that may read from
+    and write to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can make a reference to the value pointed to by the box pointer, and if
+    both the original box and this new reference are mutable, we can change the object
+    through this reference:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After such a borrowing, the usual ownership rules as specified earlier hold,
+    since `a1` no longer has access, not even for reading:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can also use this mechanism to put simple values on the heap as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As always, `n` points by default to an immutable value and any attempt to change
+    this with:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Provokes the error: `cannot assign to immutable ''Box'' content ''*n''`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another reference can also point to the dereferenced `Box` value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the following example, we again see a boxed value pointed to by `n`, but
+    the ownership of the value is now given to a mutable pointer, `m`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'By dereferencing `m` and assigning a new value to `m`, this value is entered
+    into the memory location that was originally pointed to by `n`. Of course, `n`
+    cannot be used anymore; we get the error: `use of moved value: ''n'' message because
+    n is no longer the owner of the value`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is another example where the ownership has clearly has moved from `a1`
+    to `a2`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: No data being copied here, except the address of the struct value. After the
+    move, `a1` can no longer be used to access the data, and `a2` is responsible for
+    freeing the memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If `a2` is given as an argument to a function such as `use_alien` in the following
+    code snippet, `a2` also gives up the ownership, which is then transferred to the
+    function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This prints out: `An alien from planet Mars is freed`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Indeed, when `use_alien()` has finished executing, the memory allocation for
+    that value is freed. However, in general, you must always let your function take
+    a simple reference as a parameter (in a similar way to the `square` function explained
+    earlier), rather than take a parameter of the `Box` type. We could improve our
+    example by calling a `use_alien2` function as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And calling it with: `use_alien2(&*a2);`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Sometimes, your program may need to manipulate a recursive data structure that
+    refers to itself, as shown in the following struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: This represents a list of lists of bytes. The `rec_list` function is either
+    a `Some<Box<Recurs>>` function containing a `Box` pointer to another list or a
+    `None` value, which means that the list of lists ends there. Since the number
+    of items in this list (and thus its size) is only known at runtime such structures
+    must be always constructed as a `Box` type. For other use cases, you must prefer
+    references over Boxes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reference counting
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Sometimes, you need several references to an immutable value at the same time;
+    this is also called shared ownership. `Box<T>` can't help us out here because
+    this type has a single owner by definition. For this, Rust provides the generic
+    reference counted box, `Rc<T>`, where multiple references can share the same resource.
+    The `std::rc` module provides a way to share ownership of the same value between
+    different `Rc` pointers; the value remains alive as long as there is least one
+    pointer referencing it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the following example, we have aliens that have a number of tentacles. Each
+    `Tentacle` has to indicate to which `Alien` it belongs; besides this, it also
+    has other properties (such as a degree of poison), so we define it also as a struct.
+    A first attempt at this could be the following code, which however does not compile
+    (from `Chapter 6/code/refcount_not_good.rs`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The compiler gives the following error for the line in the for loop: `error:
+    use of moved value ''dhark'' - note: ''dhark'' moved here because it has type
+    ''Alien'', which is non-copyable`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When it is defined, each `Alien Tentacle` seemingly tries to make a copy of
+    the `Alien` instance as its owner, which makes no sense and is not allowed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The correct version defines the owner in the `Tentacle` struct to have the
+    `Rc<Alien>` type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This prints the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: We envelop our `Alien` instance in an `Rc<T>` type with `Rc::new(dhark)`. Applying
+    the `clone()` method on this `Rc` object provides each `Tentacle` with its own
+    reference to the `Alien` object. Note that `clone()` here copies the `Rc` pointer,
+    not the `Alien` struct. We also annotate the structs with `#[derive(Debug)]` so
+    that we can print out their instances through a `println!("{:?}", t);`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we want mutability inside our `Rc` type, we have to either use a *Cell* pointer
+    if the value implements the *Copy* trait or a *RefCell* pointer. Both these smart
+    pointers are found in the `std:cell` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, the `Rc` pointer type can only be used inside one thread of execution.
+    If you need shared ownership across multiple threads, you need to use the `Arc<T>`
+    pointer (short for **atomic reference counted box**), which is the thread-safe
+    counterpart of `Rc` (refer to the *Atomic reference counting* section of [Chapter
+    8](part0065.xhtml#aid-1TVKI2 "Chapter 8. Concurrency and Parallelism"), *Concurrency
+    and Parallelism*).
+  prefs: []
+  type: TYPE_NORMAL
+- en: An overview of pointers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the following table, we summarize the different pointers used in Rust. `T`
+    represents a generic type. We haven't yet encountered the `Arc`, `*const`, and
+    `*mut` pointers, but they are included here for completeness.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Pointers | Pointer names | Description |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `&T` | Reference | This allows one or more references to read `T`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `&mut T` | Mutable reference | This allows a single reference to read and
+    write `T`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Box<T>` | Box | This is a heap-allocated `T` with a single owner that may
+    read and write `T`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Rc<T>` | Rc pointer | This is a heap-allocated `T` with many readers. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Arc<T>` | Arc pointer | This is like `Rc<T>`, but enables safe mutable sharing
+    across threads (refer to [Chapter 8](part0065.xhtml#aid-1TVKI2 "Chapter 8. Concurrency
+    and Parallelism"), *Concurrency and Parallelism*). |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `*const T` | Raw pointer | This allows unsafe read access to `T` (refer to
+    [Chapter 9](part0069.xhtml#aid-21PMQ1 "Chapter 9. Programming at the Boundaries"),
+    *Programming at the Boundaries*). |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `*mut T` | Mutable raw pointer | This allows unsafe read and write access
+    to `T` (refer to [Chapter 9](part0069.xhtml#aid-21PMQ1 "Chapter 9. Programming
+    at the Boundaries"), *Programming at the Boundaries*). |'
+  prefs: []
+  type: TYPE_TB
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we learned the intelligence behind the Rust compiler, which
+    is embodied in the principles of ownership, moving values, and borrowing. We saw
+    the different pointers that Rust advocates: references, boxes, and reference counters.
+    Now that we have a grasp on how this all works together, we will understand the
+    errors, warnings, and messages the compiler may throw at us in a much better way.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the following chapter, we will expose the bigger units of code organization
+    in code, such as modules and crates, and how we can write macros to make coding
+    less repetitive.
+  prefs: []
+  type: TYPE_NORMAL

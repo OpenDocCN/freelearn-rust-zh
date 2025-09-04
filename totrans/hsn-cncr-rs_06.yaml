@@ -1,0 +1,1545 @@
+- en: Atomics – the Primitives of Synchronization
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync and Send –
+    the Foundation of Rust Concurrency*, and [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+    *Locks – Mutex, Condvar, Barriers and RWLock*, we discussed the fundamentals of
+    lock-based concurrency in Rust. However, there are some cases where lock-based
+    programming is not suitable, such as when extreme performance is a concern or
+    threads may *never* block. In such domains, the programmer must rely on the atomic
+    synchronization primitives of modern CPUs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we'll be discussing the atomic primitives available to the
+    Rust programmer. Programming with atomics is a complex topic and an area of active
+    research. An entire book could be dedicated to the topic of atomic Rust programming.
+    As such, we'll be shifting our tactics slightly for this chapter, focusing on
+    more of a tutorial style than previous chapters where we've done deep dives on
+    existing software. Everything presented in the prior chapters will come to bear
+    here. By the end of this chapter, you ought to have a working understanding of
+    atomics, being able to digest existing literature with more ease and validate
+    your implementations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By the end of this chapter, we will have:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Discussed the concept of linearizability
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Discussed the various atomic memory orderings, along with their meanings and
+    implications
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Built a mutex from atomic primitives
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Built a queue from atomic primitives
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Built a semaphore
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Made clear the difficulties of memory reclamation in an atomic context
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter requires a working Rust installation. The details of verifying
+    your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust*. No additional
+    software tools are required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can find the source code for this book''s projects on GitHub: [https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust).
+    This chapter has its source code under `Chapter06`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Linearizability
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Up till this point in the book, we've avoided dipping into the formal terms
+    for specifying concurrent systems, because while they are *very* useful for discussing
+    ideas and reasoning, they can be difficult to learn absent some context. Now that
+    we have context, it's time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do we decide whether a concurrent algorithm is correct? How, if we're game
+    for the algorithm, do we analyze an implementation and reason about it's correctness?
+    To this point, we've used techniques to demonstrate fitness-for-purpose of an
+    implementation through randomized and repeat testing as well as simulation, in
+    the case of helgrind. We will continue to do so. In fact, if that's all we did,
+    demonstrating fitness-for-purpose of implementations, then we'd be in pretty good
+    condition. The working programmer will find themselves inventing more often than
+    not, taking an algorithm and adapting it—as was seen in the previous chapter's
+    discussion of hopper—to fit some novel domain. It's easy enough to do this and
+    not notice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What we're searching for, when we sit down to reason about the systems we're
+    constructing, is a unifying concept that'll separate the workable ideas from the
+    goofs. That concept for us, here, in the design and construction of concurrent
+    data structures, is linearizability. What we're looking to build are objects that,
+    paraphrasing Nancy Lynch, make it seem like operations on them occur one at a
+    time, in some sequential order, consistent with the order of operations and responses.
+    Lynch's *Distributed Algorithms* is concerned with the behavior of distributed
+    systems, but I've always thought that her explanation of what she refers to as
+    atomic objects is brilliantly concise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The notion of linearizability was introduced in *Axioms for Concurrent Objects* by
+    Herlihy and Wing in 1986\. Their definition is a bit more involved, done up in
+    terms of histories—*a finite sequence of operation invocation and response events**—*and
+    specifications*,* which are, to be quick about it, a set of axiomatic pre and
+    post conditions that hold on, the object in terms of the operations defined on
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let the result of an operation be called `res(op)` and the application or invocation
+    of an operation be called `inv(op)`, and distinguish operations by some extra
+    identifier. `op_1` is distinct from `op_2` but the identifier has no bearing on
+    their ordering; it''s just a name. A history `H` is a partial order over operations
+    so that `op_0 < op_1` if `res(op_0)` happens before `inv(op_1)` in `H`. Operations
+    that have no ordering according to `<` are concurrent in the history. A history
+    `H` is sequential if all of its operations are ordered with regard to `<`. Now,
+    the history `H` is linearizable if it can be adjusted by adding zero or more operations
+    into the history to make some other history `H''` so that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`H''` is composed only of invocations and responses and are equivalent to some
+    legal, sequential history `S`'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The ordering operation of `H'` is an inclusive subset of the ordering of `S`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Phew! An object is linearizable if you can record the order of the operations
+    done to it, fiddle with them some, and find an equivalent sequential application
+    of operations on the same object. We''ve actually done linearizabilty analysis
+    in previous chapters, I just didn''t call it out as such. Let''s keep on with
+    Herlihy and Wing and take a look at their examples of linearizable vs. unlinearizable
+    histories. Here''s a history on a familiar queue:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have two threads, `A` and `B`, performing the operations `enq(val: T) ->
+    Result((), Error)` and `deq() -> Result(T, Error)`, in pseudo-Rust types. This
+    history is in fact linearizable and is equivalent to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice that the last operation does not exist in the original history. It''s
+    possible for a history to be linearizable, as Herlihy and Wing note it, even if
+    an operation *takes effect* before its response. For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is equivalent to the sequential history:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This history is not linearizable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The culprit in this case is the violation of the queue's ordering. In sequential
+    history, the dequeue would receive *x* and not *y*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's it. When we talk about a structure being *linearizable,* what we're really
+    asking is, can any list of valid operations against the structure be shuffled
+    around or added to in such a way that the list is indistinguishable from a sequential
+    history? Each of the synchronization tools we looked at in the last chapter were
+    used to force linearizability by carefully sequencing the ordering of operations
+    across threads. At a different level, these tools also manipulated the ordering
+    of memory loads and stores. Controlling this ordering directly, while also controlling
+    the order of operations on structures, will consume the remainder of this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Memory ordering – happens-before and synchronizes-with
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Each CPU architecture treats memory ordering—the dependency relationships between
+    loads and stores—differently. We discussed this in detail in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust*. Suffice
+    it to say here in summary, x86 is a *strongly-ordered* architecture; stores by
+    some thread will be seen by all other threads in the order they were performed.
+    ARM, meanwhile, is a weakly-ordered architecture with data-dependency; loads and
+    stores may be re-ordered in any fashion excepting those that would violate the
+    behavior of a single, isolated thread, and*,* if a load depends on the results
+    of a previous load, you are guaranteed that the previous load will occur rather
+    than be cached. Rust exposes its own model of memory ordering to the programmer,
+    abstracting away these details. Our programs must, then, be correct according
+    to Rust's model*,* and we must trust `rustc` to interpret this correctly for our
+    target CPU. If we mess up in Rust's model, we might see `rustc` come and re-order
+    instructions to break linearizability, even if the guarantees of our target CPU
+    would otherwise have helped us skate by.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We discussed Rust's memory model in detail in [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml),
+    *The Rust Memory Model – Ownership, References and Manipulation*, noting that
+    its low-level details are inherited near whole-cloth from LLVM (and thus C/C++).
+    We did, however, defer a discussion of dependency relationships in the model until
+    this chapter. The topic is tricky enough in its own right, as you'll see directly.
+    We will not go into the full details here, owing to the major difficulty in doing
+    so; see LLVM's *Memory Model for Concurrent Operations* ([http://llvm.org/docs/LangRef.html#memory-model-for-concurrent-operations](http://llvm.org/docs/LangRef.html#memory-model-for-concurrent-operations))
+    and its link tree for the full, challenging read. We will instead note that, outside
+    of writing optimizers or especially challenging low-level code for which you do
+    need to study up on the LLVM memory model reference, it's sufficient to understand
+    that when we talk about ordering in Rust we're talking about a particular kind
+    of causality—*happens-before*/*synchronizes-with*. So long as we structure our
+    operations according to this causality and can demonstrate linearizability, we'll
+    be in good shape.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What is the happens-before/synchronizes-with causality? Each of these refers
+    to a particular kind of ordering relationship. Say we have three operations `A`,
+    `B`, and `C`. We say that `A` *happens-before* `B` if:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`A` and `B` are performed on the same thread and `A` is executed and then `B`
+    is executed according to program order'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`A` happens-before `C` and `C` happens-before `B`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`A` *synchronizes-with* `B`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Note that the first point refers to single-thread program order. Rust makes
+    no guarantees about multi-threaded program order but does assert that single-threaded
+    code will run in its apparent textual order, even if, in actuality, both the optimized
+    Rust is re-ordered and the underlying hardware is re-ordering as well. We can
+    say that `A` *synchronizes-with* `B` if all of the following are true:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`B` is a load from some atomic variable `var` with `Acquire` or `SeqCst` ordering'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`A` is a store to the same atomic variable `var` with `Release` or `SeqCst`
+    ordering'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`B` reads the value from `var`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The last point exists to ensure that compilers or hardware won't optimize away
+    the load in the first point. But, did some additional information get stuck in
+    there? Yep! More on that in a minute.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does linearizability link up to the causal ordering we've just described?
+    It's important to understand this. A structure in Rust can obey the causal ordering
+    but still not linearize under examination. Take, for instance, the discussion
+    of Ring in previous chapters, where, even though the causal ordering was protected
+    by a mutex, writes were stomped due to an offset bug. That implementation was
+    not linearizable but it was causally ordered. In that sense, then, getting the
+    causality of your program is a necessary but not sufficient condition for writing
+    a fit-for-purpose concurrent data structure. Linearizability is an analysis done
+    in terms of the operations on a structure, while happens-before/synchronizes-with
+    is an ordering that happens inside of and between operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we mentioned `Acquire`, `SeqCst`, and `Release`; what were they? Rust's
+    memory ordering model allows for different atomic orderings to be applied to loads
+    and stores. These orderings control the underlying CPU and the `rustc` optimizer's
+    take on which instructions to shuffle around and when to stall pipelines waiting
+    for results from a load. The orderings are defined in an enumeration called `std::sync::atomic::Ordering`.
+    We'll go through them one by one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ordering::Relaxed
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This ordering didn't show up in the definition of happens-before/synchronizes-with.
+    There's a very good reason for that. `Relaxed` ordering implies no guarantees.
+    Loads and stores are free to be re-ordered around a load or store with relaxed
+    ordering. That is, loads and stores can migrate *up* or *down* in program order
+    from the point of view of a `Relaxed` operation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The compiler and the hardware are free to do whatever they please in the presence
+    of `Relaxed` ordering. There's quite a lot of utility in this, as we'll see in
+    the upcoming detailed examples. For now, consider counters in a concurrent program
+    used for self-telemetry, or data structures that have been designed to be eventually
+    consistent. No need for strict ordering there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we move on, it''s worth being very clear about what we mean by the ordering
+    of loads and stores. Loads and stores on *what*? Well, atomics. In Rust, these
+    are exposed in `std::sync::atomic` and there are, as of writing this book, four
+    stable atomic types available:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`AtomicUsize`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`AtomicIsize`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`AtomicPtr`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`AtomicBool`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There's an ongoing discussion centered around using Rust issue `#32976` to support
+    smaller atomic types—you'll note, of the stable four, three are machine word sized
+    and `AtomicBool` is currently also one of them—but progress there looks to have
+    stalled out, for want of a champion. So, for now, these are the types. Of course,
+    there's more loads and stores than just atomics—manipulation of raw pointers,
+    to name a familiar example. These are data accesses and have no ordering guarantees
+    beyond those that are built into Rust to begin with. Two threads may load and
+    store to the same raw pointer at the exact same moment and there's nothing that
+    can be done about it without prior coordination.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ordering::Acquire
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`Acquire` is an ordering that deals with loads. Recall that we previously said
+    that if a thread, `B`, loads var with `Acquire` ordering and thread `A` then stores
+    with `Release` ordering, then `A` synchronizes-with `B`, which means that `A`
+    happens-before `B`. Recall that back in the previous chapter we ran into `Acquire`
+    in the context of hopper:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The size seen there is an `AtomicUsize`, which the current thread is using
+    to determine if there''s space left for it to emplace a new element. Later, once
+    the element has been emplaced, the thread increases the size with `Release` ordering.
+    That… seems preposterous. It''s clearly counter-intuitive to program order for
+    the increase of size to happen-before the capacity check. And, that''s true. It''s
+    worth keeping in mind that there''s another thread in the game:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Consider what would happen if there were only two threads, `A` and `B`, and
+    `A` only performed `push_back` and `B` only performed `pop_front`. The `mutexes`
+    function to provide isolation for threads of the same kind—those that push or
+    pop—and so are meaningless in this hypothesis and can be ignored. All that matters
+    are the atomics. If the size is zero and `B` is scheduled first, it will empty
+    the condvar loop on an Acquire-load of size. When `A` is scheduled and finds that
+    there is spare capacity for its element, the element will be enqueued and, once
+    done, the size will be `Release`-stored, meaning that some lucky loop of `B` will
+    happen-after a successful push-back from `A`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Rust documentation for `Acquire` says:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"When coupled with a load, all subsequent loads will see data written before
+    a store with Release ordering on the same value in other threads."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The LLVM documentation says:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"Acquire provides a barrier of the sort necessary to acquire a lock to access
+    other memory with normal loads and stores."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: How should we take this? An `Acquire` load keeps loads and stores those that
+    come after it from migrating up, with regard to program order. Loads and stores
+    prior to the `Acquire` might migrate down, with regard to program order, though.
+    Think of an `Acquire` as akin to the starting line of a lock, but one that is
+    porous on the top side.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ordering::Release
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'If `Acquire` is the starting line of a lock, then `Release` is the finish line.
+    In fact, the LLVM documentation says:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"Release is similar to Acquire, but with a barrier of the sort necessary to
+    release a lock."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It''s may be a little more subtle than `lock` might suggest, though. Here''s
+    what the Rust documentation has to say:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"When coupled with a store, all previous writes become visible to the other
+    threads that perform a load with Acquire ordering on the same value."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where `Acquire` stopped loads and stores after itself from migrating upward,
+    `Release` stops loads and stores prior to itself from migrating downward, with
+    regard to program order. Like `Acquire`, `Release` does not stop loads and stores
+    prior to itself from migrating up. A `Release` store is akin to the finish line
+    of a lock, but one that is porous on the bottom side.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Incidentally, there''s an interesting complication here that lock intuition
+    is not helpful with. Question: can two `Acquire` loads or two `Release` stores
+    happen simultaneously? The answer is, well, it depends on quite a lot, but it
+    is possible. In the preceding hopper example, the spinning `pop_front` thread
+    does not block the `push_back` thread from performing its check of size, either
+    by permanently holding the size until a `Release` came along to free the `pop_front`
+    thread, even temporarily, until the while loop can be checked. Remember, the causality
+    model of the language says nothing about the ordering of two `Acquire` loads or
+    `Release` stores. It''s undefined what happens and is probably going to strongly
+    depend on your hardware. All we do know is that the `pop_front` thread will not
+    partially see the stores done to memory by `push_back`; it''ll be all-or-none.
+    All of the loads and stores after an `Acquire` and before a `Release` come as
+    a unit.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ordering::AcqRel
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This variant is a combination of `Acquire` and `Release.` When a load is performed
+    with `AcqRel`, then `Acquire` is used, and stored to `Release`. `AcqRel` is not
+    just a convenience in that it combines the ordering behaviors of both `Acquire`
+    and `Release`—the ordering is porous on neither side. That is, loads and stores
+    after an `AcqRel` cannot move up, as with `Acquire`, and loads and stores prior
+    to an `AcqRel` cannot move down, as with `Release`. Nifty trick.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before moving on to the next ordering variation, it''s worth pointing out that
+    so far we''ve only seen examples of a thread performing an `Acquire`/`Release`
+    in a pair, in cooperation with another thread. It doesn''t have to be this way.
+    One thread can always perform `Acquire` and another can always perform `Release`.
+    The causality definition is specifically in terms of threads that perform one
+    but not both, except in cases when `A` is equal to `B`, of course. Let''s break
+    down an example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we have three threads, `A`, `B`, and `C`, performing a mix of plain loads
+    and stores with atomic loads and stores. `store[Release]` is an atomic store where
+    store is not. As in the section on linearizability, we''ve numbered each one of
+    the operations, but be aware that this does not represent a timeline so much as
+    the numbers are convenient names. What can we say of the causality of this example?
+    We know:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`1 happens-before 2`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`2 synchronizes-with 3`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`3 happens-before 4`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`3 happens-before 5`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`5 synchronizes-with 6`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`6 happens-before 7`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We'll see more analysis of this sort later in the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ordering::SeqCst
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Finally, and on the opposite side of the spectrum from `Relaxed`, there is
+    `SeqCst`, which stands for SEQuentially ConsiSTent. `SeqCst` is like `AcqRel`
+    but with the added bonus that there''s a total order across all threads between
+    sequentially consistent operations, hence the name. `SeqCst` is a pretty serious
+    synchronization primitive and one that you should use only at great need, as forcing
+    a total order between all threads is not cheap; every atomic operation is going
+    to require a synchronization cycle, for whatever that means for your CPU. A mutex,
+    for instance, is an acquire-release structure—more on that shortly—but there are
+    legitimate cases for a super-mutex like `SeqCst`. For one, implementing older
+    papers. In the early days of atomic programming, the exact consequence of more
+    relaxed—but not `Relaxed`—memory orders were not fully understood. You''ll see
+    literature that''ll make use of sequentially consistent memory and think nothing
+    of it. At the very least, follow along and then relax as needed. This happens
+    more than you might think, at least to your author. Your mileage may vary. There
+    are cases where it seems like we''re stuck on `SeqCst`. Consider a multiple-producer,
+    multiple-consumer setup like this one that has been adapted from CppReference (see
+    the *Further reading* section shown in the final section):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Say we weren't enforcing `SeqCst` between the threads in our example. What then?
+    The thread `c` loops until the thread `a` flips Boolean `X`, loads `Y` and, if
+    true, increments `Z`. Likewise for thread `d`, except `b` flips the Boolean `Y`
+    and the increment is guarded on `X`. For this program to not crash after its threads
+    have hung up, the threads have to see the flips of `X` and `Y` happen in the same
+    order. Note that the order itself does not matter, only so much as it is the same
+    as seen from every thread. Otherwise it's possible that the stores and loads will
+    interleave in such a way as to avoid the increments. The reader is warmly encouraged
+    to fiddle with the ordering on their own.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building synchronization
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we have a good grounding on the atomic primitives available to us in
+    the Rust standard library, and have, moreover, a solid theoretical background,
+    it's time for us to build on these foundations. In the past few chapters, we've
+    been teasing our intention to build up mutexes and semaphores from primitives
+    and, well, now the time has come.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mutexes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Now that we understand linearizability and memory orderings, let''s ask ourselves
+    a question. What *exactly* is a mutex? We know its properties as an atomic object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mutex supports two operations, *lock* and *unlock*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A mutex is either *locked* or *unlocked*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The operation *lock* will move a mutex into a *locked* state if and only if
+    the mutex is *unlocked*. The thread that completes *lock* is said to hold the
+    lock.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The operation *unlock* will move a mutex into *unlocked* state if an only if
+    the mutex is previously *locked* and the caller of *unlock* is the holder of the
+    lock.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All loads and stores which occur after and before a *lock* in program order
+    must not be moved prior to or after the *lock* operation.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All loads and stores that occur before an *unlock* in program order must not
+    be moved to after the *unlock*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The second to last point is subtle. Consider a soft-mutex whose lock only keeps
+    loads and stores after migrating up. This means that load/stores could migrate
+    into the soft-mutex, which is all well and good unless your migration is the lock
+    of another soft-mutex. Consider the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This could be re-arranged to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, the `unlock(m0)` has migrated down in program order into the mutual exclusion
+    zone of `m1`, deadlocking the program. That is a problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You might not be surprised to learn that there''s decades of research, at this
+    point, into the question of mutual exclusion. How should a mutex be made? How
+    does fairness factor into the implementation? The latter is a significantly broad
+    topic, avoiding thread *starvation*, and is one we''ll more or less dodge here.
+    Much of the historical research is written with regard to machines that have no
+    concept of concurrency control. Lamport''s Bakery algorithm—see the *Further reading* section–
+    provides mutual exclusion that''s absent in any hardware support but assumes reads
+    and writes are sequentially consistent, an assumption that does not hold on modern
+    memory hierarchies. In no small sense do we live in a very happy time for concurrent
+    programming: our machines expose synchronization primitives directly, greatly
+    simplifying the production of fast and correct synchronization mechanisms.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Compare and set mutex
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'First, let''s look at a very simple mutex implementation, an atomic swap mutex
+    that spins around in a loop until the correct conditions arrive. That is, let''s
+    build a *spin-lock*. This mutex is so named because every thread that blocks on
+    `lock` is burning up CPU, spinning on the condition that holds it from acquiring
+    the lock. Anyhow, you''ll see. We''ll lay down our `Cargo.toml` first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we need `src/lib.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There''s a fair bit here we''re not going to use straight away, but we''ll
+    come to it shortly. Now, let''s dive into `src/swap_mutex.rs`. First, our preamble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Very little surprise here by this point. We see the usual imports, plus a few
+    new ones—`AtomicBool` and `Ordering`, as discussed previously. We implement `Send`
+    and `Sync` ourselves—discussed in the previous chapter—because while *we* can
+    prove that our `SwapMutex<T>` is `threadsafe`, Rust cannot. The `SwapMutex<T>`
+    is small:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The field `locked` is an `AtomicBool`, which we''ll be using to provide isolation
+    between threads. The idea is simple enough—if a thread shows up and finds that
+    `locked` is false then the thread may acquire the lock, else it has to spin. It''s
+    also worth noting that our implementation lives a little on the wild side by keeping
+    a raw pointer to `T`. The Rust standard library `std::sync::Mutex` keeps its interior
+    data, as of writing this book, in an `UnsafeCell`, which we don''t have access
+    to in stable. In this implementation we''re just going to be storing the pointer
+    and not doing any manipulation through it. Still, we''ve got to be careful about
+    dropping the `SwapMutex`. Creating a `SwapMutex` happens like you might expect:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `T` is moved into `SwapMutex` and we box it to then get its raw pointer.
+    That''s necessary to avoid a stack value being pushed into `SwapMutex` and promptly
+    disappearing when the stack frame changes, all of which was discussed in great
+    detail in [Chapter 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml), *Sequential
+    Rust Performance and Testing*. A mutex always starts unlocked, else there''d be
+    no way to ever acquire it. Now, let''s look at locking the mutex:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The API is a little different compared to the standard library `Mutex`. For
+    one, `SwapMutex` does not track poisoning, and, as a result, if lock is invoked
+    it''s guaranteed to return with a guard, called `SwapMutexGuard`. `SwapMutex`
+    *is* scope-based, however; just like standard library `MutexGuard` there''s no
+    need—nor ability—to ever call an explicit unlock. There is an unlock though, used
+    by the drop of `SwapMutexGuard`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this simple mutex, all that needs to be done to unlock is set the `locked`
+    field to false, but not before confirming that, in fact, the calling thread has
+    a right to unlock the mutex.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, can we convince ourselves that this mutex is correct? Let''s go through
+    our criteria:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"Mutex supports two operations, *lock* and *unlock*."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check. Next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"A mutex is either *locked* or *unlocked."*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check, by reason that this is flagged by a Boolean. Finally:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"The operation *lock* will move a mutex into a *locked* state if and only if
+    the mutex is *unlocked*. The thread that completes the *lock* is said to hold
+    the *lock*."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s talk through what `AtomicBool::swap` does. The full type is `swap(&self,
+    val: bool, order: Ordering) -> bool` and the function does what you might expect
+    by the name; it atomically swaps the bool at self with the bool `val` atomically,
+    according to the passed ordering, and returns the previous value. Here, then,
+    each thread is competing to write true into the locked flag and only one thread
+    at a time will see false returned as the previous value, owing to the atomicity
+    of swapping. The thread that has written false is now the holder of the lock,
+    returning `SwapMutexGuard`. Locking a `SwapMutex` can only be done to an unlocked
+    `SwapMutex` and it is done exclusive of other threads.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"The operation unlock will move a mutex into an unlocked state if and only
+    if the mutex is previously locked and the caller of unlock is the holder of the
+    lock."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s consider unlock. Recall first that it''s only possible to call from
+    `SwapMutexGuard`, so the assertion that the caller has the right to unlock the
+    `SwapMutex` is a check against a malfunctioning lock: only one thread at a time
+    can hold `SwapMutex`, and as a result there will only ever be one `SwapMutexGuard`
+    in memory. Because of the nature of `Release` ordering, we''re guaranteed that
+    the `Relaxed` load of `locked` will occur before the store, so it''s guaranteed
+    that when the store does happen the value of `locked` will be true. Only the holder
+    of the lock can unlock it, and this property is satisfied as well.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"All loads and stores that occur after and before a lock in program order must
+    not be moved prior to or after the lock."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This follows directly from the behavior of `AcqRel` ordering.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"All loads and stores that occur before an unlock in program order must not
+    be moved to after the unlock."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This follows from the behavior of `Release` ordering.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Bang, we have ourselves a mutex. It''s not an especially power-friendly mutex,
+    but it does have the essential properties. Here''s the rest of the thing, for
+    completeness''s sake:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, let''s build something with `SwapMutex`. In `src/bin/swap_mutex.rs`, we''ll
+    replicate the bridge problem from the last chapter, but on top of `SwapMutex`,
+    plus some fancy add-ons now that we know some clever things to do with atomics.
+    Here''s the preamble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Familiar enough. We pull in our `SwapMutex`, and define `Bridge`. Fairly unsurprising
+    material. To continue:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is new, though. Statics in Rust are compile-time globals. We''ve seen
+    their lifetime static floating around from time to time but have never remarked
+    on it. A static will be part of the binary itself and any initialization code
+    needed for the static will have to be evaluated at compile-time as well as being
+    threadsafe. We''re creating two static `AtomicUsizes` here at the top of our program.
+    Why? One of the major issues with the previous rope bridge implementation was
+    its silence. You could watch it in a debugger, sure, but that''s slow and won''t
+    impress your friends. Now that we have atomics at hand, what we''re going to do
+    is get each side of the bridge to tally up how many baboons cross. `LHS_TRANSFERS`
+    are the number of baboons that go from right to left, `RHS_TRANSFERS` is the other
+    direction. Our left and right sides of the bridge are broken out into functions
+    this time around, too:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This ought to be familiar enough from the previous chapter, but do note that
+    the transfer counters are now being updated. We''ve used `Relaxed` ordering—the
+    increments are guaranteed to land but it''s not especially necessary for them
+    to occur strictly before or after the modification to the guard. Finally, the
+    `main` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see here that the mutex is set up, the threads have been spawned, and
+    that the main thread spends its time in an infinite loop printing out information
+    on transfer rates. This is done by sleeping the thread in one-second intervals,
+    swapping the transfer counters with zero and printing the previous value. The
+    output looks something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: The exact numbers will vary depending on your system. Also note that the numbers
+    are not very close in some instances, either. The `SwapMutex` is not *fair*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An incorrect atomic queue
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we build anything else, we're going to need a key data structure—a unbounded
+    queue. In [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml), *Locks – Mutex,
+    Condvar, Barriers, and RWLock*, we discussed a bounded deque protected at either
+    end by mutexes. We're in the business, now, of building synchronization and can't
+    make use of the mutex approach. Our ambition is going to be to produce an unbounded
+    first-in-first-out data structure that has no locks, never leaves an enqueuer
+    or dequeuer deadlocked, and is linearizable to a sequential queue. It turns out
+    there's a pretty straightforward data structure that achieves this aim; the Michael
+    and Scott Queue, introduced in their 1995 paper *Simple, Fast, and Practical Non-Blocking
+    and Blocking Concurrent Queue Algorithms*. The reader is encouraged to breeze
+    through that paper before continuing on with our discussion here, but it's not
+    strictly necessary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A word of warning. Our implementation will be *wrong*. The careful reader will
+    note that we're following the paper closely. There are two, and maybe more, issues
+    with the implementation we'll present, one major and unresolvable and the other
+    addressable with some care. Both are fairly subtle. Let's dig in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Queue is defined in `src/queue.rs`, the preamble of which is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: Right off you can see from `null_mut` that we're going to be dealing with raw
+    pointers. The `AtomicPtr` is new, though we did mention it in passing earlier
+    in the chapter. An atomic pointer adapts a raw pointer—`*mut T`—to be suitable
+    for atomic operations. There's no runtime overhead associated with AtomicPtr;
+    the Rust documentation notes that the type has the same in-memory representation
+    as a `*mut T`. Modern machines expose instructions, giving the programmer the
+    ability to fiddle with memory atomically. Capabilities vary by processor, as you'd
+    expect. LLVM and therefore Rust expose these atomic memory fiddling capabilities
+    through `AtomicPtr`, allowing the range of pointer fiddling in the sequential
+    language but atomically. What this means, in practice, is that we can start setting
+    up happens-before/synchronizes-with causality relationships for pointer manipulation,
+    which is essential for building data structures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s the next part:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The interior of deque from the previous chapter was a single, contiguous block.
+    That''s not the approach we''re taking here. Instead, every element inserted into
+    the queue will get a `Node` and that `Node` will point to the next `Node`, which
+    may or may not exist yet. It''s a linked list. The contiguous block approach is
+    a bit harder to pull off in an atomic context—though it is entirely possible and
+    there are discussions in the *Further reading* section papers—and would come down
+    to a linked list of contiguous blocks. It''s more trouble than it''s worth for
+    our purposes here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'One key thing to note is that `Node` holds a pointer to a heap allocated `T`,
+    not the `T` directly. In the preceding code, we have the `InnerQueue<T>` of `Queue<T>`,
+    pulling the usual inner/outer structure detailed elsewhere in this book and in
+    `rustc`. Why is it important to note that `Node` doesn''t hold its `T` directly?
+    The value inside of the head of the `Queue<T>` is never inspected. The head of
+    the `Queue` is a sentinel. When the `InnerQueue` is created, we''ll see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Both the `head` and `tail` of the `InnerQueue` point to the same nonsense-valued
+    `Node`, as expected. The value at the outset is, in fact, null. Atomic data structures
+    have issues with memory reclamation in that coordinating drops is problematic
+    and must be done only once. It''s possible to alleviate this issue somewhat by
+    relying on Rust''s type system, but it''s still a non-trivial project and is an
+    active area of research, generally. Here, we note that we''re careful to hand
+    out the ownership of the element only once. Being a raw pointer, it can be given
+    away more than once at a time, but that path leads to double-frees. `InnerQueue`
+    converts `*const T` into `T`—an unsafe operation—and just never dereferences the
+    `*const T` again, allowing the caller to do the drop in its own sweet time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is the `enq` operation, marked unsafe because of the raw pointer manipulation
+    going on. That''s an important point to consider—`AtomicPtr` is necessarily going
+    to be done with raw pointers. There''s a lot going on here, so let''s break it
+    up into smaller chunks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we''re constructing the `Node` for `val`. Notice we''re using the same
+    boxing, the `into_raw` approach used so often in previous chapters. This node
+    doesn''t have a place in the queue yet and the calling thread does not hold an
+    exclusive lock over the queue. Insertion will have to take place in the midst
+    of other insertions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: With that in mind, it's entirely possible that an insertion attempt can fail.
+    The enqueing of an element in a queue takes place at the `tail`, the pointer to
+    which we load up and call last. The next node after `tail` is called `next`. In
+    a sequential queue, we'd be guaranteed that the next of `tail` is null, but that's
+    not so here. Consider that between the load of the `tail` pointer and the load
+    of the `next` pointer an `enq` run by another thread may have already completed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Enqueing is, then, an operation that might take several attempts before we
+    hit just the right conditions for it to succeed. Those conditions are last still
+    being the `tail` of the structure and next being `null`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that the first load of `tail` is `Acquire` and each of the possible stores
+    of it, in either branch, are `Release`. This satisfies our `Acquire`/`Release`
+    needs, with regard to locking primitives. All other stores and loads here are
+    conspicuously `Relaxed`. How can we be sure we''re not accidentally stomping writes
+    or, since this is a linked list, cutting them loose in memory? That''s where the
+    `AtomicPtr` comes in:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It *is* entirely possible that by the time we''ve detected the proper conditions
+    for enqueing another thread will have been scheduled in, have detected the proper
+    conditions for enqueing, and have been enqueued. We attempt to slot our new node
+    in with `(*last).next.compare_and_swap(next, node, Ordering::Relaxed)`, that is,
+    we compare the current next of last and if and only if that succeeds—that''s the
+    `== next` bit—do we attempt to set `tail` to the node pointer, again with a compare
+    and swap. If both of those succeed then the new element has been fully enqueued.
+    It''s possible that the swap of `tail` will fail, however, in which case the linked
+    list is correctly set up but the `tail` pointer is off. Both the `enq` and `deq`
+    operations must be aware they could stumble into a situation where the `tail`
+    pointer needs to be adjusted. That is in fact how the `enq` function finishes
+    off:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'On an x86, all of these `Relaxed` operations are more strict but on ARMv8 there
+    will be all sorts of reordering. It''s very important, and difficult, to establish
+    a causal relationship between all modifications. If, for example, we swapped the
+    `tail` pointer and then the `next` of the `tail` pointer, we''d open ourselves
+    up to breaking the linked list, or making whole isolated chains depending on the
+    threads'' view of memory. The `deq` operation is similar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: The function is a loop, like `enq`, in which we search for the correct conditions
+    and circumstance to dequeue an element. The first outer if clause checks that
+    head hasn't shifted on us, while the inner first branch is to do with a queue
+    that has no elements, where first and last are pointers to the same storage. Note
+    here that if next is not null we try and patch up a partially completed linked
+    list of nodes before looping back around again for another pass at dequeing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is because, as discussed previously, `enq` may not fully succeed. The second
+    inner loop is hit when `head` and `tail` are not equal, meaning there's an element
+    to be pulled. As the inline comment explains, we give out the ownership of the
+    element `T` when the first hasn't shifted on us but are careful not to dereference
+    the pointer until we can be sure we're the only thread that will ever manage that.
+    We can be on account of only one thread that will ever manage to swap the particular
+    first and next pair the calling thread currently holds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After all of that, the actual outer `Queue<T>` is a touch anti-climactic:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ve already reasoned our way through the implementation and, hopefully,
+    you, dear reader, are convinced that the idea should function. Where the rubber
+    meets the road is in testing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is the usual `test` preamble that we''ve seen elsewhere in the book. We
+    define an `Op` enumeration to drive an interpreter style `quickcheck test`, which
+    we call here `sequential`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have a `VecDeque` as the model; we know it''s a proper queue. Then, without
+    dipping into any kind of real concurrency, we confirm that `Queue` behaves similarly
+    to a `VecDeque`. At least in a sequential setting, `Queue` will work. Now, for
+    a parallel `test`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We set up two groups of threads, one responsible for enqueing and the other
+    for dequeing. The enqueuing threads push a `total` number of items through the
+    `Queue` and the dequeuers pull until a counter—shared between each of the dequeuers—hits
+    bingo. Finally, back in the main `test` thread, we confirm that the total number
+    of retrieved items is the same as the expected number of items. It''s possible
+    that our dequeing threads will read *past the end* of the queue because of a race
+    between the check on the while loop and the call of `q.deq`, which works in our
+    favor because confirming the queue allows the deque of no more elements than were
+    enqueued. That, and there are no double-free crashes when the `test` is run. This
+    inner `test` function is used twice, once in repeated runs and then again in a
+    `quickcheck` setup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: What's wrong here? If you run the `test` suite, you may or may not hit one of
+    the issues. They are fairly improbable, though we'll shortly see a way to reliably
+    trigger the worst. The first issue our implementation runs into is the ABA problem.
+    In a compare-and-swap operation, pointer `A` is to be swapped by some thread with
+    `B`. Before the check can be completed in the first thread, another thread swaps
+    `A` with `C` and then `C` back again to `A`. The first thread is then rescheduled
+    and performs its compare-and-swap of `A` to `B`, none the wiser that `A` is not
+    really the `A` it had at the start of the swap. This will cause chunks of the
+    queue's linked list to point incorrectly, possibly into the memory that the queue
+    does not rightly own. That's bad enough. What could be worse?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s cause a use-after-free violation with this structure. Our demonstration
+    program is short and lives at `src/bin/queue_spin.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The program creates four threads, each of which enqueue and dequeue in sequence
+    as rapidly as possible with no coordination between them. It''s important to have
+    at least two threads, else the queue is used sequentially and the issue does not
+    exist:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Ouch. That took no time at all. Let''s have a look at the program in a debugger.
+    We''ll use `lldb`, but if you''re using `gdb`, the results will be the same:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Well look at that! And, just to confirm:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Can we turn up another? Yes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the first example, the head is pointing to null, which will happen when
+    the queue is empty, but this particular branch is only hit when the queue is not
+    empty. What''s going on here? It turns out there''s a nasty race and its down
+    to deallocation. Let''s look at `deq` again, this time with line numbers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: Say we have four threads, `A` through `D`. Thread `A` gets to line 78 and is
+    stopped. Thread `A` is now in possession of a `head`, a `tail`, and a `next`,
+    which point to a sensible linked-list in memory. Now, threads `B`, `C`, and `D`
+    each perform multiple `enq` and `deq` operations such that when `A` wakes up the
+    linked list pointed to by the head of `A` is long gone. In fact, head itself is
+    actually deallocated, but `A` gets lucky and the OS hasn't overwritten its memory
+    yet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Thread `A` wakes up and performs line 78 but next now points off to nonsense
+    and the whole thing crashes. Alternatively, say we have two threads, `A` and `B`.
+    Thread `A` wakes up and advances through to line 70 and is stopped. Thread `B`
+    wakes up and is very fortunate and advances all the way through to line 88, deallocating
+    head. The OS is feeling its oats and overwrites the memory that `A` is pointing
+    at. Thread `A` then wakes up, fires `(*head).next.load(Ordering::Relaxed)`, and
+    subsequently crashes. There are many alternatives here. What''s common between
+    them all is deallocation happening while there''s still outstanding references
+    to one or more nodes. In fact, Michael and Scott''s paper does mention this as
+    a problem, but briefly in a way that''s easy to overlook:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"To obtain consistent values of various pointers we rely on sequences of reads
+    that re-check earlier values to be sure they haven''t changed. These sequences
+    of reads are similar to, but simpler than, the snapshots of Prakash et al. (we
+    need to check only one shared variable rather than two). A similar technique can
+    be used to prevent the race condition in Stone''s blocking algorithm. We use Treiber''s
+    simple and efficient non-blocking stack algorithm to implement a non-blocking
+    free list."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The key ideas here are *sequences of reads that re-check earlier values* and
+    *free list*. What we've seen by inspection is that it's entirely possible to compare-and-swap
+    a value that has changed—the ABA problem—which leaves our implementation pointing
+    off into space. Also, immediately deallocating nodes will leave us open to crashes
+    even absent a compare-and-swap. What Michael and Scott have done is create a minimal
+    kind of memory management; rather than delete nodes, they move them into a *free
+    list* to be reused or deleted at a later time. Free lists can be thread-local,
+    in which case you avoid expensive synchronization, but it's still kind of tricky
+    to be sure your thread-local free list doesn't have the same pointer as another
+    thread.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Options to correct the incorrect queue
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'What should we do? Well, it turns out there''s lots of options in the literature.
+    Hart, McKenney, Brown and Walpole''s 2007 *Performance of Memory Reclamation for
+    Lockless Synchronization* discusses four, along with references to their originating
+    papers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Quiescent-state-based reclamation** (**QSRB**): The application''s signal
+    quiescent''periods in which reclamation is allowed'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Epoch-based reclamation** (**EBR**): The applications make use of structures
+    that determine when reclamation is allowed by moving memory through epochs'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Hazard-pointer-based reclamation** (**HPBR**): Threads cooperate and signal
+    pointers as being hazardous for reclamation'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Lock-free reference counting (LFRC**): Pointers carry an atomic counter of
+    uses alongside them, which threads use to determine safe reclamation periods'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Quiescent state reclamation works by having threads that operate on a shared
+    concurrent structure signal that have entered a *quiescent state* for a period
+    of time, meaning that for the signaled state the thread does not claim any stake
+    over a reference from inside the shared structure. A separate reclamation actor,
+    which may be the structure itself or a thread in a quiescent state, searched for
+    *grace periods* in which it's safe to reclaim storage, either because all threads
+    have gone quiescent or because some relevant subsets have. It's quite tricky and
+    involves peppering your code with notifications of entering and exiting quiescent
+    states. Hart et al note that this reclamation method was commonly used in the
+    Linux kernel at the time of writing, which remains true at the time of *this*
+    writing. Interested readers are referred to the available literature on the Linux
+    kernel's read-copy update mechanism. The key difficulty of QSRB as a technique
+    is that it's not always clear in user-space when a natural quiescent period exists;
+    if you signal one incorrectly you're going to get data-races. Context switches
+    in an operating system are a natural quiescent period—the relevant contexts won't
+    be manipulating anything until they get called back in—but it's less clear to
+    me in our queue where such a period would comfortably exist. The benefit of QSRB
+    is that it's a very *fast* technique, requiring less thread synchronization than
+    any of the other methods below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Epoch-based reclamation is similar to QSRB, except that it's application independent.
+    That is, the application interacts with storage through an intermediary layer
+    and this layer stores enough information to decide when a grace period has come.
+    In particular, every thread ticks a flag, indicating that it means to interact
+    with shared data, interacts, and then ticks the flag the other direction on its
+    way out. The number of flag cycles is referred to as an 'epoch'. Once shared data
+    has gone through enough epochs, the thread will attempt to reclaim the storage.
+    This method has the benefit of being more automatic than QSRB—the application
+    developer uses specially designed intermediary types—but has the downside of requiring
+    some synchronization on either side of the data access—those flag ticks. (The
+    paper actually introduces a fifth, new epoch-based reclamation, which improves
+    on epoch-based replication but does require hints from the application developer.
+    In some sense, it is an EBR/QSRB hybrid approach.)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The hazard pointer reclamation scheme is entirely data structure dependent.
+    The idea is that every involved thread will keep a collection of hazard pointers,
+    one for each lockless operation it intended to perform. This thread-local collection
+    of hazard pointers is mirrored into some reclamation system—perhaps a special-purpose
+    garbage collector or plug-in allocator—and this system is able to check the status
+    of the hazard pointers. When a thread is intended to perform a lockless operation
+    on some shared data, it signals the hazard pointer as protected, disallowing its
+    reclamation. When the thread is done, it signals that the shared data is no longer
+    protected. Depending on context, the shared data may now be free for reclamation
+    or may be subject to later reclamation. Like EBR, HPBR requires access to shared
+    data through special structures and has overheads in terms of synchronization.
+    Also, there maybe be a higher burden of implementation compared to EBR, but less
+    than QSRB. Harder yet, if your data structure passes references to its internal
+    storage, that also requires a hazard pointer. The more threads, the more hazard
+    pointer lists you require. Memory overheads can get non-trivial real quick. Compared
+    to grace period approaches, hazard pointers can be much faster at reclaiming memory,
+    due to there being no need to search for a time when a reference is not hazardous.
+    It is or it isn't. HPBR has higher overheads per operation and higher memory requirements
+    overall, but is potentially better at reclamation. That's a non-trivial detail.
+    If QSBR or EBR are run on systems where allocation blocks the CPU, it's possible
+    for these methods to *never* find a grace period, eventually exhausting system
+    memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last of the bunch is atomic reference counting, akin to standard library's
+    `Arc` but for atomics. This method is not especially fast, incurring a cost per
+    access to the reference counter as well as the branch on that counter, but it
+    is simple and reclamation occurs promptly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Aside from reference counting, each of these methods are tricky to implement.
+    But we''re in luck; the crate ecosystem has an implementation of epoch-based reclamation
+    *and* hazard pointer reclamation. The relevant libraries are crossbeam ([https://crates.io/crates/crossbeam](https://crates.io/crates/crossbeam))
+    and conc ([https://crates.io/crates/conc](https://crates.io/crates/conc)). We''ll
+    discuss them in great detail in the next chapter. Crossbeam aims to be the `libcds`
+    ([https://github.com/khizmax/libcds](https://github.com/khizmax/libcds)) of Rust
+    and has a Michael and Scott queue already implemented for us. Let''s give it a
+    spin. The relevant file is `src/bin/crossbeam_queue_spin.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is fairly similar to `queue_spin`, save that `enq` is now push and `deq`
+    is `pop`. It's worth noting as well that `MsQueue::pop` is blocking. The mechanism
+    for that is very neat; we'll discuss that in the next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Semaphore
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We discussed semaphores in passing in [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+     *Locks – Mutex, Condvar, Barriers, and RWLock*, especially with regard to the
+    concurrency puzzles from *The Little Semaphore*. It''s now, as promised, time
+    to implement a semaphore. What *exactly* is a semaphore? Similar to our analysis
+    of mutex as an *atomic object*, let''s consider it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Semaphore supports two operations, `wait` and `signal`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A semaphore has an isize `value` that is used to track the available resource
+    capacity of the semaphore. This value is only manipulable by `wait` and `signal`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The operation `wait` decrements `value`. If the value is less than zero, 'wait'
+    blocks the calling thread until such time as a value becomes available. If the
+    value is not less than zero, the thread does not block.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The operation `signal` increments `value`. After increment, if the value is
+    less than or equal to zero then there are one or more waiting threads. One of
+    these threads is woken up. If the value is greater than zero after increment,
+    there are no waiting threads.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All loads and stores that occur after and before a wait in program order must
+    not be moved prior to or after the wait.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All loads and stores that occur before an signal in program order must not be
+    moved to after the signal.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If this seems familiar, there's a good reason for that. Viewed a certain way,
+    a mutex is a semaphore with only one resource available; a locking mutex maps
+    to wait and signaling maps to unwait. We have specified the behaviour of loads
+    and stores around the waiting and signaling of the semaphore to avoid the same
+    deadlock behaviour identified previously in the mutex analysis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are some subtleties not captured in the preceding breakdown that don't
+    affect the analysis of the semaphore but do affect the programming model. We'll
+    be building a semaphore with fixed resources. That is, when the semaphore is created,
+    the programmer is responsible for setting the maximum total resources available
+    in the semaphore *and* ensuring that the semaphore starts with these resources
+    available. Some semaphore implementations allow for the resource capacity to shift
+    over time. These are commonly called *counting semaphores*. Our variant is called
+    a *bounded semaphore;* the subvariant of this sort with only a single resource
+    is called a *binary semaphore*. Behavior around the signaling of waiting threads
+    may vary. We will signal our threads on a first-come, first-serve basis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s dig in. Our semaphore implementation is in `src/semaphore.rs` and it''s
+    very short:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Well! Crossbeam''s `MsQueue` has the correct ordering semantics when `MsQueue::push`
+    and then `MsQueue::pop` are done in that sequence by the same thread, where pop
+    has the added bonus of blocking until such a time where the queue is empty. So,
+    our semaphore is an `MsQueue` filled with the capacity total `()`. The operation
+    `wait` decreases the `value`—the total number of `()` in the queue—and does so
+    with `Acquire`/`Release` ordering. The operation signal increases the *value* of
+    the semaphore by pushing an additional `()` onto the queue with `Release` semantics.
+    It is possible for a programming error to result in `wait`/`signal` invocations
+    that are not one-to-one, and we can resolve this with the same `Guard` approach
+    taken by Mutex and `SwapMutex`. The underlying queue linearizes `Guard`—see the
+    next chapter for that discussion—and so our semaphore does so also. Let''s try
+    this thing out. We''ve got a program in-project to demonstrate the use of `Semaphore`,
+    `src/bin/status_demo.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We make `THRS` total worker threads, whose responsibilities are to wait on
+    the semaphore, flip their `STATUS` to true, add one to their `COUNT`, and flip
+    their `STATUS` to false before signaling the semaphore. Mutable static arrays
+    is kind of a goofy setup for any program, but it''s a neat trick and causes no
+    harm here, except for interacting oddly with the optimizer. If you compile this
+    program under release mode, you may find that the optimizer determines worker
+    to be a no-op. The `main` function creates a semaphore with a capacity of two,
+    carefully offsets the workers, and then spins, forever printing out the contents
+    of `STATUS` and `COUNT`. A run on my x86 test article looks like the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And from my ARMv7 machine:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: Binary semaphore, or, a less wasteful mutex
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'How does our semaphore stack up against standard library''s Mutex? How about
+    our spinlock `Mutex`? Apply this `diff` to `status_demo`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You''ll create a mutex variant of the semaphore status demo. The numbers for
+    that on my x86 test article look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The numbers at capacity two were 170,000 per second, so there''s quite a dip.
+    Let''s compare that against standard library mutex first. The adaptation is in
+    `src/bin/mutex_status_demo.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Straightforward, yeah? The numbers from that on the same x86 test article are
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s be a little generous and say that the standard library mutex is clocking
+    in at 2,000,000 per second, while our binary semaphore is getting 170,000 per
+    second. How about the spinlock? At this point, I will avoid the source listing.
+    Just be sure to import `SwapMutex` and adjust it from the standard library `Mutex`
+    accordingly. The numbers for that are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Which, you know what, makes sense. The spinlock is doing the least amount of
+    work and every thread is burning up CPU time to be right there when it''s time
+    to enter their critical section. Here is a summary of our results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Spinlock mutex: 11,000,000/sec'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Standard library mutex: 2,000,000/sec'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Binary semaphore: 170,000/sec'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The reader is warmly encouraged to investigate each of these implementations
+    in Linux perf. The key thing to understand, from these results, is not that any
+    of these implementations is better or worse than the other. Rather, that they
+    are suitable for different purposes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We could, for instance, use techniques from the next chapter to reduce the CPU
+    consumption of the spinlock mutex. This would slow it down some, likely bringing
+    it within the range of standard library Mutex. In this case, use the standard
+    library Mutex.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Atomics programming is not a thing to take lightly. It's difficult to get right,
+    and an implementation that may *seem* right might well not obey the causal properties
+    of the memory model. Furthermore, just because a thing is lock-free does not mean
+    that it is *faster* to execute.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing software is about recognizing and adapting to trade-offs. Atomics demonstrates
+    that in abundance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we discussed the atomic primitives available on modern CPU
+    architectures and their reflection in Rust. We built higher-level synchronization
+    primitives of the sort discussed in [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml),
+    *Sync and Send – the Foundation of Rust Concurrency*, and [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+    *Locks – Mutex, Condvar, Barriers, and RWLock*, as well as our own semaphore,
+    which does not exist in Rust. The semaphore implementation could be improved,
+    depending on your needs, and I warmly encourage the readers to give that a shot.
+    We also ran into a common problem of atomic programming, memory reclamation, which
+    we discussed in terms of a Michael Scott queue. We'll discuss approaches to this
+    problem in-depth in the next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '*Axioms for Concurrent Objects*, Maurice Herlihy and Jeannette Wing. This paper
+    by Herlihy and Wing introduced the formal definition of linearizability and the
+    formal analysis framework. Subsequent work has expanded or simplified on this
+    paper, but the reader is warmly encouraged to digest the first half of the paper,
+    at least.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Distributed Algorithms*, Nancy Lynch. To my knowledge, Lynch''s work was the
+    first general overview of distributed algorithms in textbook form. It is incredibly
+    accessible and Chapter 13 of Lynch''s book is especially relevant to this discussion.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*In C++, are acquire-release memory order semantics transitive?*, available
+    at [https://softwareengineering.stackexchange.com/questions/253537/in-c-are-acquire-release-memory-order-semantics-transitive](https://softwareengineering.stackexchange.com/questions/253537/in-c-are-acquire-release-memory-order-semantics-transitive). The
+    consequences of memory orderings are not always clear. This question on `StackExchange`,
+    which influenced the writing of this chapter, is about the consequence of splitting `Acquire`
+    and `Release `across threads. The reader is encouraged to ponder the question
+    before reading the answer.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*std::memory_order, CppReference*, available at [http://en.cppreference.com/w/cpp/atomic/memory_order](http://en.cppreference.com/w/cpp/atomic/memory_order).
+    Rust''s memory model is LLVM''s, which is, in turn, influenced by the C++ memory
+    model. This discussion of memory ordering is particularly excellent, as it has
+    example code and a less language-lawyer approach to explaining orders.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Peterson''s lock with C++0x atomics*, available at [https://www.justsoftwaresolutions.co.uk/threading/petersons_lock_with_C++0x_atomics.html](https://www.justsoftwaresolutions.co.uk/threading/petersons_lock_with_C++0x_atomics.html). This
+    post discusses Bartosz Milewski''s implementation of Peterson''s algorithm for
+    Mutex, demonstrates how and why it is incorrect, and describes a functional alternative.
+    Milewski is a well-known C++ expert. It just goes to show, atomic programming
+    is difficult and easy to get subtly wrong.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Algorithms for Mutual Exclusion*, Michael Raynal. This book by Raynal was
+    written in 1986, well before the x86_64 architecture we''ve discussed was introduced
+    and a mere year after ARMv1 was introduced. Raynal''s book remains useful, both
+    as a historical overview of mutual exclusion algorithms and for environments where
+    synchronization primitives are not available, such as on file systems.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Review of many Mutex implementations*, available at [http://cbloomrants.blogspot.com/2011/07/07-15-11-review-of-many-mutex.html](http://cbloomrants.blogspot.com/2011/07/07-15-11-review-of-many-mutex.html).
+    As it says on the tin, this post is a review of many mutex implementations that
+    are given a more modern context than Raynal''s book. Some explanations rely on
+    Microsoft Windows features, which may be welcome to the reader as this book is
+    heavily invested in a Unix-like environment.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Encheapening Cernan Metrics*, available at [http://blog.troutwine.us/2017/08/31/encheapening-cernan-internal-metrics/](http://blog.troutwine.us/2017/08/31/encheapening-cernan-internal-metrics/).
+    In this chapter we have discussed atomics largely in terms of synchronization.
+    There are many other use cases. This post discusses the application of atomics
+    to providing cheap self-telemetry to a complicated software project.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Roll Your Own Lightweight Mutex*, available at [http://preshing.com/20120226/roll-your-own-lightweight-mutex/](http://preshing.com/20120226/roll-your-own-lightweight-mutex/).
+    Preshing On Programming has a run of excellent atomics material, focused on C++
+    and Microsoft environments. This particular post is to do with implementing mutexes—a
+    topic dear to this chapter—and has an excellent follow-up conversation in the
+    comments. The post discusses a variant of semaphores called benaphores.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Simple, Fast, and Practical Non-Blocking and Blocking Concurrent Queue Algorithms*,
+    Maged Michael and Michael Scott. This paper introduces the Michael and Scott Queue,
+    discussed in this chapter, and that''s what it''s best known for. You may also
+    recognize their queue with two locks from the previous chapter, adapted through
+    the Erlang VM, of course.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Lock-Free Data Structures. The Evolution of a Stack*, available at [https://kukuruku.co/post/lock-free-data-structures-the-evolution-of-a-stack/](https://kukuruku.co/post/lock-free-data-structures-the-evolution-of-a-stack/).
+    This post discusses the `libcds` implementation of Trieber stacks, as well as
+    making reference to other areas of the literature. Readers will note that previous
+    *Further reading* have introduced some of the same literature; it''s always good
+    to seek alternate takes. Readers are especially encouraged to investigate the
+    Hendler, Shavit, and Yerushalmi paper referenced in the post.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

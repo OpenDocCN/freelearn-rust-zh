@@ -1,0 +1,820 @@
+- en: Optimization of Microservices
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Optimization is an important part of the microservice development process. With
+    optimization, you can increase the performance of a microservice and reduce costs
+    for infrastructure and hardware. In this chapter, we will shed light on benchmarking,
+    along with some optimization techniques, such as caching, reusing shared data
+    with structs without taking ownership, and how you can use a compiler's options
+    to optimize a microservice. This chapter will help you to improve the performance
+    of your microservices using optimization techniques.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Performance-measuring tools
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Techniques of optimizations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To run the examples in this chapter, you need a Rust compiler (version 1.31
+    and above) to build the examples for testing and to build the tools you need to
+    measure performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are sources of the examples of this chapter on GitHub: [https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter14](https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter14).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Performance-measuring tools
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before you decide to optimize something in a microservice, you have to measure
+    its performance. You shouldn't write optimal and fast microservices from the start,
+    because not every microservice needs good performance, and if your microservice
+    has bottlenecks inside, it will stumble on heavy loads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's explore a pair of benchmarking tools. We will explore tools that are written
+    in Rust, because they can be simply used to construct your own measuring tool
+    if you need to test a special case with extremely high load.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Welle
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Welle is an alternative to the popular **Apache Benchmarking tool** (**ab**)
+    that is used to benchmark HTTP servers. It can produce a batch of requests to
+    a specified URL and measure the time to response for every request. At the end,
+    it collects statistics about the average response time and quantity of failed
+    requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To install this tool, use the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Using this tool is simple: set a URL to test with a number of requests you
+    want to send to a server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: By default, the tool uses a single thread to send a request and wait for the
+    response to send the next request. But you can split requests across more threads
+    by setting a `--concurrent-requests` command-line parameter with the number of
+    necessary threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When a measurement is finished, it will print a report similar to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you want to use a HTTP method other than `GET`, you can set it using the `--method`
+    command-line parameter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Drill
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Drill is more complex and lets you perform load tests on microservices. It not
+    only sends batches of requests, it also uses a testing script to produce a sequence
+    of activities. It helps you to perform a load test that you can use to measure
+    performance of the entire application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To install `drill`, use the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After it''s installed, you have to configure the load testing you will perform.
+    Create a `benchmark.yml` file and add the following load test script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To start testing using this script, run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It will perform a load test of your microservice by sending HTTP request constructed
+    with rules from the script and print a report like the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Both tools are suitable for testing the performance of your microservices. Welle
+    is good for measuring the performance of a single request type if you want to
+    optimize the specified handler. Drill is good to produce a complex load to measure
+    how much users can be served by an application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's look at an example in which we add some optimizations and test the difference
+    using Welle.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Measuring and optimizing performance
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this section, we will measure the performance of an example microservice
+    compiled with two options: without optimizations, and with optimizations made
+    by a compiler. The microservice will send rendered index page to clients. And
+    we will use the Welle tool to measure the performance of this microservice to
+    see if we can improve it.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basic example
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's create a microservice in a new crate based on the `actix-web` crate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add the following dependencies to `Cargo.toml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will construct a tiny server that will render an index page asynchronously
+    with the current time, with one-minute precision. As a matter of fact, there is
+    a shortcut function that does this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We use the `askama` crate to render the template of the index page and insert
+    the current time taken from a shared state it it. For the time value, we use a
+    `String` instead of types directly from the `chrono` crate, in order to get a
+    value that uses a memory heap:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For a shared state, we will use a struct with a `last_minute` value, represented
+    as a `String` wrapped with a `Mutex`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you may remember, `Mutex` provides concurrent access to any type for multiple
+    threads. It's locked for both reading and writing the value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For the index page, we will use the following handler:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: The handler shown in the preceding code block locks the `last_minute` field
+    of a `State` instance available in `HttpRequest`. Then we use this value to fill
+    the `IndexTemplate` struct and call the `render` method to render the template
+    and use the generated value as a body for a new `HttpResponse`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We start the application with the `main` function that prepares the `Server`
+    instance and spawns a separate thread that updates a shared `State`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: We used the Actix Web framework for this example. You can read more about this
+    framework in [Chapter 11](5b7dd2c1-d623-4422-83a7-e05681230ee9.xhtml), *Involving
+    Concurrency with Actors and the Actix Crate*. This simple example is ready to
+    compile and start. We will also check the performance of this code using the Welle
+    tool.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Performance
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'First, we will build and run the code using a standard command without any
+    flags:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We build a binary with a lot of debugging information, which can be used with
+    LLDB as we did in [Chapter 13](1d24de7f-9990-4afe-bd1c-9bf664f1eda3.xhtml), *Testing
+    and Debugging Rust Microservices*. A debugging symbol reduces performance, but
+    we will check it to compare it with a version without these symbols later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s load the running server with `100000` requests from `10` concurrent
+    activities. Since our server was bound to port `8080` of `localhost`, we can use
+    the `welle` command with the following arguments to measure the performance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It takes about 30 seconds (depending on your system) and the tool will print
+    the report:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the report, you can see that there is an average response time of 300 milliseconds.
+    It was a service that was burdened with debugging. Let''s recompile this example
+    with optimizations. Set the `--release` flag on the `cargo run` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: This command passed the `-C opt-level=3` optimization flag to the `rustc` compiler.
+    If you use `cargo` without a `--release` flag, it sets `opt-level` to `2`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After the server has recompiled and started, we use the Welle tool again with
+    the same parameters. It reports the other values:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we can see, the average time taken for a request has been reduced to more
+    than 70%. The result is already pretty good. But could we reduce it a little more?
+    Let's try to do it with some optimizations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Optimizations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We will try to apply three optimizations to the code we created in the previous
+    section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will try to reduce the blocking of a shared state.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will reuse a value in a state by reference.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will add caching of responses.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: After we implement them, we will check the performance after the first two improvements,
+    and later check it again with caching.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the code of this section, we will implement all optimizations gradually,
+    step by step, but if you downloaded the example from the GitHub repository of
+    this book, you will find the following features in the `Cargo.toml` file of the
+    project of this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The code here uses features to provide you a capability to activate or deactivate
+    any optimization separately. We see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`cache`: activates the caching of requests'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`rwlock`: uses `RwLock` instead of `Mutex` for `State`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`borrow`: reuses a value by reference'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's implement all of these optimizations and apply all of them to measure
+    differences in the performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: State sharing without blocking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the first optimization, we will replace `Mutex` with `RwLock`, because `Mutex` is
+    locked for both reading and writing, but `RwLock` allows us to have a single writer
+    or multiple readers. It allows you to avoid blocking for reading the value if
+    no one updates the value. This applies to our example, as we rarely update a shared
+    value, but have to read it from multiple instances of handlers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`RwLock` is an alternative to `Mutex` that separates readers and writers, but
+    the usage of `RwLock` is as simple as `Mutex`. Replace `Mutex` to `RwLock` in
+    the `State` struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Also, we have to replace a creation of the `last_minute` reference counter
+    to the corresponding type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the code of the worker, we will use the `write` method of `RwLock` to lock
+    the value for writing to set a new time value. Its exclusive lock will block all
+    potential readers and writers with a single writer that can change the value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since the worker will take an exclusive lock once per three seconds, it's a
+    small price to pay to increase the amount of simultaneous readers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the handler, we will use the `read` method to lock `RwLock` for reading:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code won't be blocked by other handlers, excluding the case when a worker
+    updates a value. It allows all handlers to work simultaneously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we can implement the second improvement—avoid cloning of values and using
+    them by references.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reusing values by references
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To render a template of an index page, we use a struct with a `String` field
+    and we have to fill the `IndexTemplate` struct to call the `render` method on
+    it. But the template needs an ownership for the value and we have to clone it.
+    Cloning in turn takes time. To avoid this CPU cost, we can use a reference to
+    a value, because if we clone a value that uses a memory heap, we have to allocate
+    a new memory space and copy bytes of the value to a new place.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is how we can add a reference to a value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have added the `'a` lifetime to a struct, because we use a reference inside
+    and the struct that can't live longer than the string value we referred to.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using references is not always possible for combinations of `Future` instances,
+    because we have to construct a `Future` that generates an `HttpResponse`, but
+    lives longer than calling a handler. In this case, you can reuse a value if you
+    take ownership of it and use methods such as fold to pass the value through all
+    the steps of the combinator's chain. It is valuable for large values, which can
+    consume a lot of CPU time, to be cloned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we can use a reference to the borrowed `last_minute` value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `to_owned` method, which we used before, cloned the value that we put to
+    `IndexTemplate`, but we can now use a reference and avoid cloning at all.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All we need to do now is implement caching, which can help to avoid template
+    rendering.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Caching
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We will use a cache to store rendered template and returns it as a response
+    for future requests. Ideally, the cache should have a lifetime, because if the
+    cache is not updated, then clients won''t see any updates on the page. But for
+    our demo application, we won''t reset the cache to make sure it works, because
+    our small microservice renders a time and we can see if it''s frozen. Now we will
+    add a new field to the `State` struct to keep a rendered template for future responses:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: We will use `RwLock` because we have to update this value at least once, but
+    for values that won't be updated and can be initialized, we can use the `String`
+    type without any wrapper for protection from concurrent access, such as `RwLock`
+    or `Mutex`. In other words, you can use the `String` type directly if you only
+    read it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also have to initialize the value with `None`, because we need to render
+    a template once to get the value for caching.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add an empty value to a `State` instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now we can use a `cached` value to construct a fast response to the user''s
+    request. But you have to take into account that not all the information can be
+    shown to every user. The cache can separate values by some information about users,
+    for example, it can use location information to get the same cached value for
+    users from the same country. The following code improves the `index` handler and
+    takes a `cached` value, and if the cached value exists, it is used to produce
+    a new `HttpResponse`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We immediately return a `cached` value because there is a rendered template
+    stored and we don''t have to spend time on rendering. But if no value exists,
+    we can produce it with the following code and set the `cached` value at the same
+    time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: After this, we keep the original code that returns `HttpResponse` to a client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we have implemented and compiled the code with all the optimizations and
+    can measure performance of the new version with optimizations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Compilation with optimizations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The code included three optimizations. We can use some of them to check the
+    difference in performance. First, we will compile the code with `RwLock` and borrow
+    the state''s value features. If you use the code from the book''s GitHub repository,
+    you can run the necessary optimizations using the `--features` argument with the corresponding
+    feature names:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once the server is ready, we can start running the same test we used to measure
+    performance of this microservice before, with Welle, to measure how many incoming
+    requests the optimized version of the server can handle.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After testing, the tool will print a report like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the application is faster—it takes `79.434` microseconds instead
+    of `80.10`. The difference is less than 1%, but it's good for a handler that already
+    worked faster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s try to activate all the optimizations we implemented, including caching.
+    To do this with examples from GitHub, use the following arguments:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s start testing again once the server is ready. With the same testing
+    parameters, we get a better report:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: It takes `78.206` microseconds to get a response for a request from the server.
+    It's more than 2% faster than the original version without optimization, which
+    takes 80.10 microseconds per request on average.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You may think the difference is not very big, but in reality, it is. This is
+    a tiny example, but try to imagine the difference of optimizing a handler that
+    makes three requests to databases, and renders a 200 KB template with arrays of
+    values to insert. For heavy handlers, you can improve performance by 20%, or even
+    more. But remember, you should remember the over-optimization is an extreme measure,
+    because it makes code harder to develop and add more features without affecting
+    achieved performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's better not to consider any optimization as a daily task, because you may
+    spend a lot of time on optimization of short pieces of code to get a 2% performance
+    for features your customers don't need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Optimization techniques
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous section, we optimized the source code, but there are also alternative
+    techniques of optimization by using special compilation flags and third-party
+    tools. In this section, we will cover some of these optimization techniques. We
+    will talk a little about reducing sizes, benchmarks, and profiling Rust code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Optimization is a creative topic. There is no special recipe for optimization,
+    but in this section, we will create a small microservice that generates an index
+    page with the current time, and then we will try to optimize it. With this example,
+    I hope to show you some optimization ideas for your projects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Link-time optimizations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The compiler does a lot of optimizations automatically during the compilation
+    process, but we can also activate some optimizations after the sources compiled.
+    This technique called **Link Time Optimizations** (**LTO**) and applied after
+    code linked and the whole program available. You can activate this optimization
+    for Rust program by adding an extra section to the `Cargo.toml` file in your project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you have already compiled the project with this optimization, force a complete
+    rebuild of your project. But this option also takes much more time for compilation.
+    This optimization does not necessarily improve the performance, but can help to
+    reduce the size of a binary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you activate all optimization options, it doesn't mean you have made the
+    fastest version of an application. Too many optimizations can reduce the performance
+    of a program and you should compare the results with an original version. Most
+    often, just using the standard `--release` helps the compiler to produces a binary
+    with an optimal balance of compilation speed and performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Normal Rust programs use panic macros for unhandled errors and print backtraces.
+    For optimization, you can consider turning this off. Let's look at this technique
+    in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Abort instead of panicking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Error-handling code also requires space and can affect performance. If you try
+    to write microservices that won't panic, and will try to solve problems, and fail
+    only when there's an unsolvable problem, you can consider using aborts (immediate
+    termination of the program without unwinding the stack), instead of Rust's `panic`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To activate it, add the following to your  `Cargo.toml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, if your program fails, it won't make a `panic` and will be stopped immediately
+    without printing backtraces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Aborting is dangerous. If your program will be aborted, it has less chance to
+    write logs corectly or deliver spans to distributed tracing. For microservices,
+    you can create a separate thread for tracing, and even if the main thread failed, wait
+    till all available tracing records will be stored.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sometimes, you not only need to improve the performance, but also have to reduce
+    the size of the binary. Let's see how to do it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reducing the size of binaries
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You may want to reduce the size of binaries. Often it''s not necessary, but
+    it may be useful if you have a distributed application that uses some hardware
+    with limited space that requires tiny binaries. To reduce the size of your compiled
+    application, you can use the `strip` command, which is part of the **binutils**
+    package:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: For example, I tried to strip a compiled binary of the microservice we created
+    in the *Basic example* section of this chapter. The binary with debugging symbols
+    compiled with the `cargo build` command reduced from 79 MB to 12 MB. The version
+    compiled with the `--release` flag reduced from 8.5 MB to 4.7 MB.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But remember that you can't debug a stripped binary, because the tool will remove
+    all necessary information for debugging.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sometimes, you may want to compare some ideas of optimizations and want to measure
+    which one is better. You can use benchmarks for that. Let's look at the benchmark
+    feature supplied with `cargo`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Isolated benchmarks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rust supports benchmark testing out of the box. You can use it to compare the
+    performance of different solutions of the same problem or to get to know the time
+    of execution of some parts of your application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To use benchmarks, you have to add a function with the `#[bench]` attribute.
+    The function expects a mutable reference to the `Bencher` instance. For example,
+    let''s compare cloning a `String` with taking a reference to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: To benchmark, you have to provide a closure with a code you want to measure
+    to the `iter` method of the `Bencher` instance. You also need to add a `test`
+    feature with `#![feature(test)]` to testing module and use `extern crate test`
+    to import `test` crate to import the `Bencher` type from this module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `bench_clone` function has a `String` value and clones it on every measurement
+    by `Bencher`. In `bench_ref`, we take a reference to a `String` value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now you can start a benchmark test with `cargo`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It compiles the code for testing (the code items with the `#[cfg(test)]`  attribute
+    will be activated) and then runs the benchmarks. For our examples, we have the
+    following results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we expected, taking the reference to a `String` takes no time, but the cloning
+    of a `String` takes `32` nanoseconds per call of the `clone` method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember, you can do good benchmark testing for CPU-bound tasks, but not I/O-bound
+    tasks, because I/O tasks are more dependent on the quality of hardware and operating
+    system performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to benchmark the operation of some functions in the running application,
+    then you have to use a profiler. Let's try to analyze some code with a profiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Profiling
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Benchmark tests are useful for checking a portion of code, but they are not
+    suitable for checking the performance of a working application. If you need to
+    explore the performance of some of the functions of the code, you have to use
+    a profiler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Profilers dump information about code and function executions and record the time
+    spans during which the code works. There is a profiler in the Rust ecosystem called
+    **flame**. Let's explore how to use it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Profiling takes time and you should use it as a feature to avoid affecting
+    performance in production installations. Add the `flame` crate to your project
+    and use it as an optional. Add a feature (such as the official examples from the `flamer`
+    crate repository; I named the feature `flame_it`) and add the flame dependency
+    to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, if you want to activate profiling, you have to compile the project with
+    the `flame_it` feature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using the `flame` crate is pretty simple and includes three scenarios:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use the `start` and `end` methods directly.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use the `start_guard` method, which creates a `Span` that is used to measure
+    execution time. A `Span` instance ends measurement automatically when it's dropped.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use `span_of` to measure code isolated in a closure.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We will use spans like we did in the `OpenTracing` example in [Chapter 13](1d24de7f-9990-4afe-bd1c-9bf664f1eda3.xhtml), *Testing
+    and Debugging Rust Microservices*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: You don't need to collect spans or send them to `Receiver`, as we did for Jaeger,
+    but profiling with `flame` looks like tracing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the end of the execution, you have to dump a report in the appropriate format,
+    such as  HTML or JSON, print it to a console, or write it to a `Writer` instance.
+    We used the first three of them. We have implemented the main function and used
+    the `start_quard` method to create `Span` instances to measure the execution time
+    of some pieces of the code. After this, we will write reports.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Compile and run this example with the activated profiling feature:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding command compiles and prints the report to the console:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, we have created three spans. You can also find two reports
+    in files, `out.json` and `out.html`. If you open the HTML report in a browser,
+    it renders like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/1ec7f264-3641-4908-80e4-9f0bc1cf6c18.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In the preceding screenshot, you can see the relative duration of execution
+    of every activity of our program. A longer colored block means longer execution
+    time. As you can see, profiling is useful for finding a slow section of code that
+    you can optimize with other techniques.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we discussed optimizations. First, we explored tools for measuring
+    performance—Welle, which is an alternative to the classic **Apache Benchmarking
+    tool**, and Drill, which uses scripts to perform load tests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then we created a tiny microservice and measured its performance. Focusing on
+    results, we applied some optimizations to that microservice—we avoided blocking
+    a shared state for reading, we reused a value by a reference instead of cloning
+    it, and we added the caching of rendered templates. Then we measured the performance
+    of the optimized microservice and compared it with the original version.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the last section of this chapter, we got acquainted with alternative techniques
+    of optimization—using LTO, aborting execution without backtracing instead of panicking,
+    reducing the size of a compiled binary, benchmarking small pieces of code, and
+    using profiling for your projects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will look at creating images with Rust microservices
+    using Docker to run microservices in containers with preconfigured environments
+    to speed up delivery of your product to customers.
+  prefs: []
+  type: TYPE_NORMAL

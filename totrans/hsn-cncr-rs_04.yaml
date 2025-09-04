@@ -1,0 +1,871 @@
+- en: Sync and Send – the Foundation of Rust Concurrency
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rust aims to be a programming language in which fearless concurrency is possible.
+    What does this mean? How does it work? In [Chapter 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml),
+    *Sequential Rust Performance Testing*, we discussed the performance of sequential
+    Rust programs, intentionally setting aside discussion of concurrent programs.
+    In [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml), *The Rust Memory Model
+    – Ownership, References and Manipulation*, we saw an overview of the way Rust
+    handles memory, especially with regard to composing high-performance structures.
+    In this chapter, we'll expand on what we've learned previously and, at long last,
+    dig in to Rust's concurrency story.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By the end of this chapter, we will have:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Discussed the `Sync` and `Send` traits
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Inspected parallel races in a ring data structure with Helgrind
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Resolved this race with a mutex
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Investigated the use of the standard library MPSC
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Built a non-trivial data multiplexing project
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter requires a working Rust installation. The details of verifying
+    your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust*. The Valgrind
+    suite of tools are used below. Many operating systems bundle valgrind packages
+    but you can find further installation instructions for your system at [valgrind.org](http://valgrind.org/).
+    Linux Perf is used and is bundled by many Linux distributions. Any other software
+    required for this chapter is installed as a part of the text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can find the source code for this book''s projects on GitHub: [https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust/](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust/).
+    This chapter has its source code under `Chapter04`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sync and Send
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'There are two key traits that the parallel Rust programmer must understand—`Send`
+    and `Sync`. The `Send` trait is applied to types that can be transferred across
+    thread boundaries. That is, any type `T: Send` is safe to move from one thread
+    to another. `Rc<T>: !Send` means that it is explicitly marked as being unsafe
+    to move between threads. Why? Consider if it were marked `Send`; what would happen?
+    We know from the previous chapter that `Rc<T>` is a boxed `T` with two counters
+    in place for weak and strong references to `T`. These counters are the trick.
+    Suppose we spread an `Rc<T>` across two threads—call them `A` and `B`—each of
+    which created references, dropped them, and the like. What would happen if both
+    `A` and `B` dropped the last reference to `Rc<T>` at the same time? We have a
+    race between either thread to see which can deallocate `T` first and which will
+    suffer a double-free for its troubles. Worse, suppose the taking of the strong
+    reference counter in `Rc<T>` were spread across three pseudo-instructions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Likewise, suppose the dropping of a strong reference counter were spread across
+    three pseudo-instructions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In a single-threaded context, this works well, but consider this result in
+    a multi-threaded context. Let `counter`  be equal to 10 for all threads at the
+    beginning of the following thought experiment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: By the end, we've lost three references to `Rc<T>`, meaning while `T` is not
+    lost in memory, it is entirely possible that when we drop `T`, references will
+    remain to its no longer valid memory out in the wild, the results of which are
+    undefined but not likely to be great.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Sync` trait is derived from `Send` and has to do with references: `T:
+    Sync` if `&T: Send`. That is, a `T` is `Sync` only if sharing a `&T` which acts
+    as if that `T` were sent into the thread. We know from the previous code that
+    `Rc<T>: !Send` and so we also know that `Rc<T>: !Sync`. Rust types inherit their
+    constituent parts'' `Sync` and `Send` status. By convention, any type which is
+    `Sync` + `Send` is called thread-safe. Any type we implement on top of `Rc<T>`
+    will not be thread-safe. Now, for the most part, `Sync` and `Send` are automatically
+    derived traits. `UnsafeCell` , discussed in [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml),
+    *The Rust Memory Model – Ownership, References and Manipulation*,  is not thread-safe.
+    Neither are raw pointers, to go with their lack of other safety guarantees. As
+    you poke around Rust code bases, you''ll find traits that would otherwise have
+    been derived thread-safe but are marked as not.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Racing threads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You can also mark types as thread-safe, effectively promising the compiler
+    that you''ve arranged all the data races in such a way as to make them safe. This
+    is relatively rare in practice but it''s worth seeing what it takes to make a
+    type thread-safe in Rust before we start building on top of safe primitives. First,
+    let''s take a look at code that''s intentionally sideways:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What we have here is a ring, or a circular buffer, of `u32`. `InnerRing` holds
+    a raw mutable pointer and is not automatically thread-safe as a result. But, we''ve
+    promised to Rust that we know what we''re doing and implement `Send` and `Sync`
+    for `Ring`. Why not on `InnerRing`? When we manipulate an object in memory from
+    multiple threads, the location of that object has to be fixed. `InnerRing`—and
+    the data it contains—have to occupy a stable place in memory. `Ring` can and will
+    be bounced around, at the very least from a creating thread to a worker. Now,
+    what''s that data there in `InnerRing`? It''s a pointer to the 0th offset of a
+    contiguous block of memory that will be the store of our circular buffer. At the
+    time of writing this book, Rust has no stable allocator interface and, so, to
+    get a contiguous allocation we have to do it in a roundabout fashion—strip a `Vec<u32>`
+    down to its pointer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Ring::with_capacity` functions much the same as other types'' `with_capacity`
+    from the Rust ecosystem: sufficient space is allocated to fit capacity items.
+    In our case, we piggyback off `Vec::with_capacity`, being sure to allocate enough
+    room for capacity `Option<u32>` instances, initializing to None along the full
+    length of the memory block. If you''ll recall from [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml),
+    *The Rust Memory Model – Ownership, References and Manipulation*, this is done
+    as `Vec` is lazy about allocating and we require the allocation. `Vec::as_mut_ptr`
+    returns a raw pointer to a slice but does not consume the original object, a problem
+    for `Ring`. When data falls out of scope, the allocated block must survive. The
+    standard library''s `mem::forget` is ideal for this very use case. The allocation
+    now being safe, an `InnerRing` is boxed to store it. The box is then consumed
+    by `Box::into_raw` and passed into a `Ring`. Ta-da!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Interacting with a type that has an inner raw pointer can be verbose, scattering
+    unsafe blocks around to little good effect. To that end, `Ring` gets a `Deref`
+    and `DerefMut` implementation, both of which tidy up the interaction with `Ring`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we have `Ring` defined, we can get into the meat of the program. We''ll
+    define two operations that will run concurrently with one another—writer and reader.
+    The idea here is that writer will race around the ring writing, increasing `u32`
+    values into the ring whenever there''s capacity to do so. (At type boundary the
+    `u32` will wrap.) The reader will race around behind the writer reading the values
+    written, checking that each read value is up one from the previous read, with
+    the caveat of wrapping. Here''s the writer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, to be crystal clear, there''s a *lot* that''s wrong here. The ambition
+    is to only write when the size of the ring buffer has not reached its capacity—meaning
+    there''s free space available. The actual writing is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That is, we dereference the `ring (*ring)` and get the pointer to the `Option<u32>`
+    sized block at `(*ring).data.offset(offset)`, which we then dereference and move
+    `Some(cur)` onto the top of whatever was previously there. It is entirely possible
+    that because of races on the size of the `Ring` that we''ll overwrite an unread
+    `u32.` The remainder of the write block sets up our next `cur` and our next offset,
+    adding one and modulating around if need be:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`thread::yield_now` is new. The writer is a fast spin-loop—it checks a single
+    condition and loops back around again for another try. This is very CPU and power
+    inefficient. `thread::yield_now` hints to the operating system that this thread
+    had no work to do and should be deprioritized in favor of other threads. The effect
+    is OS and running environment-dependent but it''s still a good idea to yield if
+    you have to spin-loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: The reader is similar to the writer, with the major difference being that it's
+    not an infinite loop. Reads are done with `mem::replace`, swapping the block at
+    the reader offset with `None`. When we hit bingo and score a `Some`, the memory
+    of that `u32` is now owned by the reader—a drop will be called when it goes out
+    of scope. This is important. The writer is responsible for losing memory inside
+    of a raw pointer and the reader is responsible for finding it. In this way, we
+    are careful not to leak memory. Or, well, we would if there wasn't a race on the
+    size of the `Ring`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, we have the `main` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: There are two new things going on here. The first is our use of `thread::spawn`
+    to start a `reader` and a `writer`. The `move || {}` construct is called a *move
+    closure*. That is, every variable reference inside the closure from the outer
+    scope is moved into the closure's scope. It's for this reason that we clone ring
+    to `reader_ring`. Otherwise, there'd be no `ring` for the writer to work with.
+    The second new thing is the `JoinHandle` that `thread::spawn` returns. Rust threads
+    are not a drastic departure from the common POSIX or Windows threads. Rust threads
+    receive their own stack and are independently runnable by the operating system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every Rust thread has a return value, though here ours is `()`. We get at that
+    return value by *joining* on the thread's `JoinHandler`, pausing execution of
+    our thread until the thread wraps up successfully or crashes. Our main thread
+    assumes its child threads will return successfully, hence the `join().unwrap()`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What happens when we run our program? Well, failure, which is what we were
+    expecting:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: The flaw of the Ring
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s explore what''s going wrong here. Our ring is laid out in memory as
+    a contiguous block and we have a few control variables hung off the side. Here''s
+    a diagram of the system before any reads or writes happen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s a diagram of the system just after the writer has written its first
+    value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To do this, the writer has performed a load of both size and capacity, performed
+    a comparison between then, written to its offset inside the block, and incremented
+    size. None of these operations are guaranteed to be ordered as they are in the
+    program, either due to speculative execution or compiler reordering. As we''ve
+    seen in the previous run example, the writer has stomped its own writes and raced
+    well ahead. How? Consider what happens when the execution of the reader and writer
+    are interleaved in this setup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The writer thread has looped through the ring twice and is poised at the start
+    of the ring to write `10`. The reader has been through the ring once and is expecting
+    to see `5`. Consider what happens if the reader''s decrement of size makes it
+    into main memory before the `mem::replace` happens. Imagine if, then, the writer
+    is woken up just as its size and capacity is checked. Imagine if, in addition
+    to that, the writer writes its new `cur` to the main memory before the reader
+    wakes back up. You''ll get this situation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That''s what we see in practice. Sometimes. Here''s the trick with concurrent
+    programming at the metal of the machine: you''re dealing with probabilities. It''s
+    entirely possible for our program to run successfully or, worse, run successfully
+    on one CPU architecture and not on another. Randomized testing and introspection
+    of programs like this are *vital*. In fact, back in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust*, we discussed
+    a `valgrind` suite tool called `helgrind`, but didn''t have a real use for it
+    then. We do now. What does `helgrind` have to say about our intentionally racey
+    program?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll run `helgrind` like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will print the full history of the program but place the results in a
+    file on disk for easier inspection. Here''s some of the output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is less clear than it might be, but helgrind is warning us about
+    the data stomping that we're already aware of. The reader is encouraged to run
+    helgrind for themselves and inspect the whole history.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s improve this situation. Clearly, we have a problem with racing reads
+    and writes, but we also have a problem in terms of the behavior of the writer.
+    It stomps its own writes and is entirely unaware of it. With an adjustment to
+    the writer, we can stop absent-mindedly stomping on writes as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Afterwards, we run the program a few times and find the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: That's fun! Both threads have crashed for the same reason. The writer has inappropriately
+    stomped a write and the reader has read it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Getting back to safety
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Like we discussed previously, the preceding examples were intentionally low-level
+    and unsafe. How can we build something similar with the bits and pieces that Rust
+    provides us with? Here''s one approach:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is awfully similar to the previous, racey programs. We have Ring, which
+    holds a size and is a set of operations around a `Vec<Option<u32>>`. This time,
+    the `vec` is not exploded into a raw pointer and the implementation of Ring is
+    fleshed out some more. Actually, it was possible to provide more of an abstract
+    implementation in our previous examples—as we have seen by poking around inside
+    Rust itself—but indirection and unsafety make for a rough combination. It''s sometimes
+    the case that indirect, unsafe code is harder to recognize as flawed than direct,
+    unsafe code. Anyhow, you''ll note that `Ring: !Send` in this implementation. Instead,
+    the writer and reader threads operate on `Arc<Mutex<Ring>>`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Safety by exclusion
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's talk about `Mutex.` Mutexes provide MUTual EXclusion among threads. Rust's
+    `Mutex` works just as you'd expect coming from other programming languages. Any
+    thread that calls a lock on a `Mutex` will acquire the lock or block until such
+    a time as the thread that holds the mutex unlocks it. The type for lock is `lock(&self)
+    -> LockResult<MutexGuard<T>>`. There's a neat trick happening here. `LockResult<Guard>`
+    is `Result<Guard>`, `PoisonError<Guard>>`. That is, the thread that acquires a
+    mutex lock actually gets a result, which containers the `MutexGuard<T>` on success
+    or a *poisoned* notification. Rust poisons its mutexes when the holder of the
+    mutex crashes, a tactic that helps prevent the continued operation of a multi-threaded
+    propagation that has crashed in only one thread. For this very reason, you'll
+    find that many Rust programs do not inspect the return of a lock call and immediately
+    unwrap it. The `MutexGuard<T>`, when dropped, unlocks the mutex. Once the mutex
+    guard is unlocked, it's no longer possible to access the data ensconced inside
+    and, so, there's  no way for one thread to interact poorly with another. A `Mutex`
+    is both `Sync` and `Send`, which makes good sense. Why then do we wrap our `Mutex<Ring>`
+    in an `Arc`? What even is an `Arc<T>`?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Arc<T>` is an atomic reference counting pointer. As discussed previously,
+    `Rc<T>` is not thread-safe because if it were marked as such there'd be a race
+    on the inner strong/weak counters, much like in our intentionally racey programs.
+    `Arc<T>` is built on top of atomic integers, which we'll go into more detail on
+    in the next chapter. Suffice it to say for now, the `Arc<T>` is able to act as
+    a reference counting pointer without introducing data races between threads. `Arc<T>`
+    can be used everywhere `Rc<T>` can, except those atomic integers are not free.
+    If you can use `Rc<T>`, do so. Anyway, more on this next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Why `Arc<Mutex<Ring>>`? Well, `Mutex<Ring>` can be moved but it cannot be cloned.
+    Let''s take a look inside `Mutex`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that `T` may or may not be sized and that `T` is stored in an `UnsafeCell<T>`
+    next to something called `sys::Mutex`. Each platform that Rust runs on will provide
+    its own form of mutex, being that these are often tied into the operating system
+    environment. If you take a look at the rustc code, you''ll find that `sys::Mutex`
+    is a wrapper around system-dependent mutex implementations. The `Unix` implementation
+    is in `src/libstd/sys/unix/mutex.rs` and is an `UnsafeCell` around `pthread_mutex_t`,
+    as you might expect:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: It's not strictly necessary for `Mutex` to be implemented on top of system-dependent
+    foundations, as we'll see in the chapter on atomic primitives when we build our
+    own locks. Generally speaking though, it's a good call to use what's available
+    and well-tested unless there's a good reason not to (like pedagogy).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, what would happen if we were to clone `Mutex<T>`? We would need a new
+    allocation of the system mutex, for one, and possibly a new `UnsafeCell`, if `T`
+    itself were even clonable. The new system mutex is the real problem—threads have
+    to synchronize on the same structure in memory. Tossing `Mutex` inside of an `Arc` solves
+    that problem. Cloning the `Arc`, like cloning an `Rc`, creates new strong references
+    to the `Mutex`. These references are immutable, though. How does that work out?
+    For one, the mutex inside the `Arc` is never changed. In the abstract model that
+    Rust provides, the mutex itself has no internal state and there''s nothing really
+    being mutated by locking threads. Of course, that''s not actually true, by inspection.
+    The Rust `Mutex` only behaves that way because of the interior `UnsafeCell` surrounding
+    system-dependent structures. Rust `Mutex` makes use of the interior mutability
+    that `UnsafeCell` allows. The mutex itself stays immutable while the interior
+    `T` is mutably referenced through the `MutexGuard`. This is safe in Rust''s memory
+    model as there''s only one mutable reference to `T` at any given time on account
+    of mutual exclusion:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: We wrap our `Ring`, which is not thread-safe in the least, in an `Arc`, `Mutex`
+    layer, clone this to the reader, and move it into the writer. Here, this is a
+    matter of style, but it's important to realize that if a main thread creates and
+    clones an `Arc` into child threads then the contents of `Arc` are still alive,
+    at least as long as the main thread is. For instance, if a file handler were held
+    in a main-thread `Arc`, cloned to temporary start-up workers, and then not dropped,
+    the file handler itself would never be closed. This may or may not be what your
+    program intends, of course. The reader and the writer each take a lock on the
+    mutex—`Arc` has convenient `Deref`/`DerefMut` implementations—and then perform
+    their action. Running this new program through `helgrind` gives a clean run. The
+    reader is encouraged to confirm this on their own system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Moreover, the program itself runs to completion successfully after repeated
+    runs. The unfortunate thing is that, theoretically, it''s not especially efficient.
+    Locking a mutex is not free, and while our thread''s operations are short—a handful
+    of arithmetic in addition to one memory swap—while one thread holds the mutex
+    the other waits dumbly. Linux perf proves this somewhat:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: Only 1.3 CPUs are used during the execution. For a program as simple as this,
+    we're likely better off with the simplest approach. Also, because of cache write
+    effects in the presence of a memory barrier—of which a mutex assuredly is one—it
+    *may* be cheaper to prefer mutual exclusion instead of fine-grained locking strategies.
+    Ultimately, it comes down to finding the trade-off in development time, need for
+    machine efficiency, and defining what machine efficiency is for the CPU in use.
+    We'll see some of this in later chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using MPSC
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''ve come at Ring from an odd point of view, looking to build a malfunctioning
+    program from the start only to improve it later. In a real program where purposes
+    and functions gradually drift from their origins, it''s worth occasionally asking
+    what a piece of software actually *does* as an abstract concept. So, what is it
+    that Ring actually *does*? For one, it''s bounded, we know that. It has a fixed
+    capacity and the reader/writer pair are careful to stay within that capacity.
+    Secondly, it''s a structure that''s intended to be operated on by two or more
+    threads with two roles: reading and writing. Ring is a means of passing `u32` between
+    threads, being read in the order that they were written.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Happily, as long as we''re willing to accept only a single reader thread, Rust
+    ships with something in the standard library to cover this common need—`std::sync::mpsc`.
+    The Multi Producer Single Consumer queue is one where the writer end—called `Sender<T>`—may
+    be cloned and moved into multiple threads. The reader thread—called `Receiver<T>`—can
+    only be moved. There are two variants of sender available—`Sender<T>` and `SyncSender<T>`.
+    The first represents an unbounded MPSC, meaning the channel will allocate as much
+    space as needed to hold the `Ts` sent into it. The second represents a bounded
+    MPSC, meaning that the internal storage of the channel has a fixed upper capacity.
+    While the Rust documentation describes `Sender<T>` and `SyncSender<T>` as being
+    asynchronous and synchronous respectively this is not, strictly, true. `SyncSender<T>::send`
+    will block if there is no space available in the channel but there is also a `SyncSender<T>::try_send`
+    which is of type `try_send(&self, t: T) -> Result<()`, `TrySendError<T>>`. It''s
+    possible to use Rust''s MPSC in bounded memory, keeping in mind that the caller
+    will have to have a strategy for what to do with inputs that are rejected for
+    want of space to place them in.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What does our `u32` passing program look like using Rust''s MPSC? Like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is significantly shorter than any of our previous programs as well as
+    being not at all prone to arithmetic bugs. The send type of `SyncSender` is `send(&self,
+    t: T) -> Result<()`, `SendError<T>>`, meaning that `SendError` has to be cared
+    for to avoid a program crash. `SendError` is only returned when the remote side
+    of an MPSC channel is disconnected, as will happen in this program when the reader
+    hits its `read_limit`. The performance characteristics of this odd program are
+    not quite as quick as for the last `Ring` program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'But it''s well within the margin of error, especially considering the ease
+    of programming. One thing worth keeping in mind is that messages in MPSC flow
+    in only one direction: the channel is not bi-directional. In this way, MPSC is
+    not suitable for request/response patterns. It''s not unheard of to layer two
+    or more MPSCs together to achieve this, with the understanding that a single consumer
+    on either side is sometimes not suitable.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A telemetry server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s build a descriptive statistics server. These pop up often in one way
+    or another inside organizations: a thing is needed that consumes events, does
+    some kind of descriptive statistic computation over those things, and then multiplexes
+    the descriptions out to other systems. The very reason my work project, postmates/cernan
+    ([https://crates.io/crates/cernan](https://crates.io/crates/cernan)), exists is
+    to service this need at scale on resource constrained devices without tying operations
+    staff into any kind of pipeline. What we''ll build here now is a kind of mini-cernan,
+    something whose flow is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The idea is to take `telemetry` from a simple UDP protocol, receive it as quickly
+    as possible to avoid the OS dumping packets, pass these points through a high
+    and low filter, and then hand the filtered points off to two different statistical
+    `egress` points. The `egress` associated with the high filter computes a continuous
+    moving average, while the low filter associated `egress` computes a quantile summary
+    using an approximation algorithm from the postmates/quantiles ([https://crates.io/crates/quantiles](https://crates.io/crates/quantiles))
+    library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s dig in. First, let''s look at `Cargo.toml` for the project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Short and to the point. We draw in quantiles, as mentioned previously, as well
+    as seahasher. Seahasher is a particularly fast—but not cryptographically safe—hasher
+    that we''ll substitute into `HashMap`. More on that shortly. Our executable is
+    broken out into `src/bin/telem.rs` since this project is a split library/binary
+    setup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There''s a fair bit going on here. The first eight lines are imports of the
+    library bits and pieces we need. The body of main is dominated by setting up our
+    worker threads and feeding the appropriate channels into them. Note that some
+    threads take multiple sender sides of a channel:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That''s how we do fanout using Rust MPSC. Let''s take a look at `IngestPoint`,
+    in fact. It''s defined in `src/ingest_point.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'An `IngestPoint` is a host—either an IP address or a DNS hostname, per `ToSocketAddrs`—a
+    port and a vector of `mpsc::Sender<event::Event>`. The inner type is something
+    we''ve defined:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`telem` has two kinds of *events* that flow through it—`Telemetry`, which comes
+    from `IngresPoint` and `Flush`, which comes from the main thread. `Flush` acts
+    like a clock-tick for the system, allowing the individual subsystems of the project
+    to keep track of time without making reference to the wall-clock. It''s not uncommon
+    in embedded programs to define time in terms of some well-known pulse and, when
+    possible, I''ve tried to keep to that in parallel programming as well. If nothing
+    else, it helps with testing to have time as an externally pushed attribute of
+    the system. Anyhow, back to `IngestPoint`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The first bit of this, `init`, is just setup. The run function calls `to_socket_addrs`
+    on our host/port pair and retrieves all the associated IP addresses. Each of these
+    addresses get a `UdpSocket` bound to them and an OS thread to listen for datagrams
+    from that socket. This is wasteful in terms of thread overhead and later in this book
+    we''ll discuss evented-IO alternatives. Cernan, discussed previously, being a
+    production system makes use of Mio in its *Sources*. The key function here is
+    `handle_udp`, the function that gets passed to the new listener threads. It is
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The function is a simple infinite loop that pulls datagrams off the socket
+    into a 16 KB buffer—comfortably larger than most datagrams—and then calls `parse_packet`
+    on the result. If the datagram was a valid example of our as yet unspecified protocol,
+    then we call `util::send` to send the `Event::Telemetry` out over the `Sender<event::Event>` in
+    `chans`. `util::send` is little more than a for loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The ingest payload is nothing special: a name of non-whitespace characters
+    followed by one or more whitespace characters followed by a `u32`, all string
+    encoded and utf8 valid:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Popping out to the filters, both `HighFilter` and `LowFilter` are done in terms
+    of a common `Filter` trait, defined in `src/filter/mod.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Any implementing filter is responsible for providing their own process. It's
+    this function that the default run calls when an `Event` is pulled from the `Receiver<Event>`
+    and found to be a `Telemetry`. Though neither high nor low filters make use of
+    it, the process function is able to inject new `Telemetry` into the stream if
+    it's programmed to do so by pushing more onto the passed `telems` vector. That's
+    how cernan's *programmable filter* is able to allow end users to create `telemetry`
+    from Lua scripts. Also, why pass `telems` rather than have the process return
+    a vector of `Telemetry`? It avoids continual small allocations. Depending on the
+    system, allocations will not necessarily be uncoordinated between threads—meaning
+    high-load situations can suffer from mysterious pauses—and so it's good style
+    to avoid them where possible if the code isn't twisted into some weird version
+    of itself by taking such care.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Both low and high filters are basically the same. The low filter passes a point
+    through itself if the point is less than or equal to a pre-defined limit, where
+    the high filter is greater than or equal to it. Here''s `LowFilter`, defined in
+    `src/filter/low_filter.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Egress` of telemetry is defined similarly to the way filter is done, split
+    out into a sub-module and a common trait. The trait is present in `src/egress/mod.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The deliver function is intended to give the `egress` its `Telemetry` for storage.
+    The report is intended to force the implementors of `Egress` to issue their summarized
+    telemetry to the outside world. Both of our `Egress` implementors—`CKMSEgress`
+    and `CMAEgress`—merely print their information but you can well imagine an `Egress`
+    that emits its information out over some network protocol to a remote system.
+    This is, in fact, exactly what cernan''s `Sinks` do, across many protocols and
+    transports. Let''s look at a single egress, as they''re both very similar. `CKMSEgress`
+    is defined in `src/egress/ckms_egress.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that `data: util::HashMap<String, quantiles::ckms::CKMS<u32>>`. This `util::HashMap`
+    is a type alias for `std::collections::HashMap<K, V, hash::BuildHasherDefault<SeaHasher>>`,
+    as mentioned previously. The cryptographic security of hashing here is less important
+    than the speed of hashing, which is why we go with `SeaHasher`. There are a great
+    many alternative hashers available in crates and it''s a fancy trick to be able
+    to swap them out for your use case. `quantiles::ckms::CKMS` is an approximate
+    data structure, defined in *Effective Computation of Biased Quantiles Over Data
+    Streams* by Cormode et al. Many summary systems run in limited space but are willing
+    to tolerate errors. The CKMS data structure allows for point shedding while keeping
+    guaranteed error bounds on the quantile approximations. The discussion of the
+    data structure is outside the domain of this book but the implementation is interesting
+    and the paper is remarkably well-written. Anyhow, that''s what the error setting
+    is all about. If you flip back to the main function, note that we hard-code the
+    error as being 0.01, or, any quantile summary is guaranteed to be off true within
+    0.01.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That, honestly, is pretty much it. We''ve just stepped through the majority
+    of a non-trivial Rust program built around the MPSC abstraction provided in the
+    standard library. Let''s fiddle with it some. In one shell, start `telem`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In another shell, start sending UDP packets. On macOS, you can use `nc` like
+    so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The call is similar on Linux; you just have to be careful not to wait for a
+    response is all. In the original shell, you should see an output like this after
+    a second:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The points, being below the limit, have gone through the low filter and into
+    the CKMS `egress`. Back to our other shell:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the telem shell:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: Bang, just as expected. The points, being above the limit, have gone through
+    the high filter and into the CMA `egress`. So long as no points are coming in,
+    the `telem` should be drawing almost no CPU, waking up each of the threads once
+    every second or so for the Flush pulse. Memory consumption will also be very low,
+    being primarily represented by the large input buffer in `IngestPoint`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are problems with this program. In many places, we explicitly panic or
+    unwrap on potential problem points, rather than deal with the issues. While it's
+    reasonable to unwrap in a production program, you should be *very* sure that the
+    error you're blowing your program up for cannot be otherwise dealt with. Most
+    concerning is that the program has no concept of *back-pressure*. If `IngestPoint`
+    were able to produce points faster than the filters or the `egress`es, they could
+    absorb the channels between threads that would keep allocating space. A slight
+    rewrite of the program to use `mpsc::SyncSender` would be suitable—back-pressure
+    is applied as soon as a channel is filled to capacity—but only if dropping points
+    is acceptable. Given that the ingest protocol is in terms of UDP it almost surely
+    is, but the reader can imagine a scenario where it would not be. Rust's standard
+    library struggles in areas where alternative forms of back-pressure are needed
+    but these are, admittedly, esoteric. If you're interested in reading through a
+    production program that works along the lines of `telem` but has none of the defects
+    identified here, I warmly recommend the cernan codebase.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All in all, Rust's MPSC is a very useful tool when constructing parallel systems.
+    In this chapter, we built our own buffered channel, Ring, but that isn't common
+    at all. You'd need a fairly specialized use case to consider not using the standard
+    library's MPSC for intra-thread channel-based communication. We'll examine one
+    such use case in the next chapter after we cover more of Rust's basic concurrency
+    primitives.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we discussed the foundations of Rust concurrency—`Sync` and
+    `Send`. Furthermore, we started on what makes a primitive thread-safe in Rust
+    and how to build concurrent structures with those primitives. We reasoned through
+    an improperly synchronized program, showing how knowledge of the Rust memory model,
+    augmented by tools such as `helgrind`, allow us to determine what's gone sideways
+    in our programs. This is, perhaps unsurprisingly to the reader, a painstaking
+    process that is, like as not, prone to error. In [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
+    *Locks – Mutex, Condvar, Barriers and RWLock,* we'll discuss the higher-level
+    coarse synchronization primitives that Rust exposes to the programmer. In [Chapter
+    6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml), *Atomics – the Primitives of Synchronization*,
+    we'll discuss the fine synchronization primitives that modern machines expose.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Safe concurrent programming is, unsurprisingly, a very broad topic and the recommendations
+    for further reading here reflect that. The careful reader will note that these
+    references span time and approach, reflecting the broad changes in machines and
+    languages over time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*The Art of Multiprocessor Programming,* Maurice Herlihy and Nir Shavit. This
+    book is an excellent introduction to multiprocessor algorithms. Application to
+    systems languages is made a touch difficult by the fact that the authors assume
+    a Java environment—garbage collection is a huge win for implementing reclamation
+    in that, well, you don''t have to do it.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*C++ Concurrency in Action: Practical Multithreading*, Anthony Williams. This
+    book is an excellent pair to TAoMP, being focused on implementation of similar
+    structures in C++. While there is a translation step needed between C++ and Rust,
+    it''s not so great a jump as from Java to Rust.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*LVars: Lattice-based Data Structures for Deterministic Parallelism*, Lindsey
+    Kuper and Ryan Newton. This book presents a certain kind of parallel construction,
+    one influenced by current machines. It is possible, however, that our current
+    models are overly complicated and will someday be seen as archaic, even without
+    having to sacrifice raw performance as we''ve done in the move to VM-based languages.
+    This paper presents a construction alternative, influenced by the work done on
+    distributed algorithms in recent years. It may or may not be the future but the
+    reader is encouraged to keep a look out.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*ffwd: delegation is (much) faster than you think*, Sepideh Roghanchi, Jakob
+    Eriksson, and Nilanjana Basu. Modern machines are odd beasts. Conceptually, the
+    fastest data structure is one that minimizes the wait time of working threads,
+    speeding through instructions to work completion. This is… not entirely the case,
+    as this paper demonstrates. The authors, by carefully maintaining cache locality,
+    are able to outpace more complicated structures that might, theoretically, be
+    much faster due to more aggressive sharing between threads with fine-grained locks.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Flat Combining and the Synchronization-Parallelism Tradeoff*, Danny Hendler,
+    Itai Incze, and Nir Shavit. Along the same lines as ffwd, the authors present
+    a flat combining approach to constructing concurrent structures, which relies
+    on coarse exclusive locking between threads with a periodic combination of logs
+    of operations. The interaction with cache makes flat combining *faster* than more
+    complicated lock-free/wait-free alternatives, which do not interact with the cache
+    as gracefully.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*New Rustacean, e022: Send and Sync*, available at [http://www.newrustacean.com/show_notes/e022/struct.Script.html](http://www.newrustacean.com/show_notes/e022/struct.Script.html).
+    The New Rustacean is an excellent podcast for Rust developers of all levels. This
+    episode dovetails nicely with the material discussed in the current chapter. Warmly
+    recommended.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Effective Computation of Biased Quantiles Over Data Streams*, Graham Cormode,
+    Flip Korn, S. Muthukrishnan, and Divesh Srivastava. This paper underpins the CKMS
+    structure used in telem. It''s instructive to examine the difference between the
+    implementation outlined in the paper—based on linked-lists—and the implementation
+    found in the library, a variant of a skip-list. This difference is wholly due
+    to cache locality concerns.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*The Cernan Project*, various developers, available at [https://github.com/postmates/cernan](https://github.com/postmates/cernan)
+    under the MIT license. Cernan is an event multiplexing server, the production
+    version of the toy telem discussed in this chapter. As of writing this book, it
+    is 17,000 lines of code contributed by 14 people. Careful attention has been taken
+    to maintain low resource consumption and high levels of performance. I am the
+    primary author of this project and the techniques discussed in this book are applied
+    in cernan.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

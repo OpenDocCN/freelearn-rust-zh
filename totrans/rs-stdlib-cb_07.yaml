@@ -1,0 +1,1108 @@
+- en: Parallelism and Rayon
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following recipes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Parallelizing iterators
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Running two operations together
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sending data across threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sharing resources in multithreaded closures
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Accessing resources in parallel with RwLocks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Atomically accessing primitives
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Putting it all together in a connection handler
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Introduction
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There used to be a time when your code got faster every year automatically,
+    as processors got better and better. But nowadays, as Herb Sutter famously stated,
+    *The Free Lunch Is Over* ([http://www.gotw.ca/publications/concurrency-ddj.htm](http://www.gotw.ca/publications/concurrency-ddj.htm)).
+    The age of not better, but more numerous processor cores arrived a long time ago.
+    Not all programming languages are well suited for this radical change towards
+    omnipresent concurrency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rust was designed with exactly this problem in mind. Its borrow checker makes
+    sure that most concurrent algorithms work fine. It goes even further: your code
+    won''t even compile if it''s not parallelizable, even if you don''t yet use more
+    than one thread. Because of these unique guarantees, one of Rust''s main selling
+    points has been dubbed *fearless concurrency*.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: And we are about to find out why.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Parallelizing iterators
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Wouldn't it be cool to have a magic button that allowed you to just make any
+    algorithm parallel, without you doing anything? Well, as long as your algorithm
+    uses iterators, `rayon` is exactly that!
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to do it...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Create a Rust project to work on during this chapter with `cargo new chapter-seven`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Navigate into the newly-created `chapter-seven` folder. For the rest of this
+    chapter, we will assume that your command line is currently in this directory.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Open the `Cargo.toml` file that has been generated for you.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Under `[dependencies]`, add the following line:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you want, you can go to `rayon`'s crates.io page ([https://crates.io/crates/rayon](https://crates.io/crates/rayon))
+    to check for the newest version and use that one instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inside the `src` folder, create a new folder called `bin`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Delete the generated `lib.rs` file, as we are not creating a library.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the `src/bin` folder, create a file called `par_iter.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following code and run it with `cargo run --bin par_iter`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: How it works...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`rayon` implements the trait `ParallelIterator` for every type that implements
+    its standard library equivalent `Iterator`, which we got to know in [Chapter 2](977b8621-cb73-43de-9a2b-4bc9f5583542.xhtml),
+    *Working with Collections; **Access Collections as iterators*. In fact, you can
+    use all the knowledge from said recipe again here. The methods provided by the
+    `ParallelIterator` trait are nearly the same as the ones provided by `Iterator`,
+    so in virtually all cases where you notice an iterator operation taking too long
+    and bottlenecking you, you can simply replace `.iter()` with `.par_iter()`[10].
+    Similarly, for moving iterators, you can use `.into_par_iter()` instead of `.into_iter()`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`rayon` handles all the tedious work for you, as it automatically distributes
+    the work evenly between all of your available cores. Just keep in mind that despite
+    this magic, you''re still dealing with parallelism here, so you have no guarantees
+    about the order in which the items in your iterator are going to be handled, as
+    evidenced by line [10], which will print in a different order each time you execute
+    the program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: See also
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '*Access collections as iterators* recipe in [Chapter 2](977b8621-cb73-43de-9a2b-4bc9f5583542.xhtml),
+    *Working with Collections*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Running two operations together
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The parallel iterators from the last recipe are internally built upon a more
+    fundamental function, `rayon::join`, which takes two closures and *potentially*
+    runs them in parallel. This way, even the balance of performance gain versus the
+    overhead of spawning a thread has been done for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you have an algorithm that doesn't use iterators but still consists of some
+    clearly separated parts that could benefit from running concurrently, consider
+    using `rayon::join` for that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to do it...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Open the `Cargo.toml` file that was generated earlier for you.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If you didn''t do so in the last recipe, under `[dependencies]`, add the following
+    line:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you want, you can go to `rayon`'s crates.io page ([https://crates.io/crates/rayon](https://crates.io/crates/rayon))
+    to check for the newest version and use that one instead.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the folder `bin`, create a file called `join.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following code and run it with `cargo run --bin join`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: How it works...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`rayon::join` is pretty simple. It takes two closures, potentially runs them
+    in parallel, and returns their returned values in a tuple [25]. Wait a second,
+    did we just say *potentially*? Isn''t it always better to run things in parallel?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Nope, at least not always. Sure, if you really care about things running together
+    at all times without blocking, say a GUI and its underlying I/O where you definitely
+    don't want the mouse cursor to freeze when opening a file, you always need to
+    have all processes running in their own thread. But most applications for concurrency
+    don't have this requirement. A big part of what makes concurrency so important
+    is its ability to run code that would normally run sequentially (that is, one
+    line after another) in parallel if required. Notice the choice of words here—*code
+    that would normally run sequentially*. These kinds of algorithms do not inherently
+    need concurrency, but they might get a boost out of it. Now comes the *potential*
+    part—firing up a thread might not be worth it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To understand why, let''s look at the hardware side of things. We are not going
+    to dive too deep into this territory because:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: a) the fact that you're reading this book makes me think you're more of a software
+    person and b) the exact mechanisms of CPUs tend to change very rapidly nowadays
+    and we don't want the information provided here to be outdated in a year.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your CPU divides its work among its *cores*. A core is the basic computation
+    unit of the CPU. If the device you're reading this on is not made out of paper
+    and younger than two decades, it most probably contains multiple cores. These
+    kinds of cores are called *physical* and can work on different things at the same
+    time. A physical core itself also has ways to perform multiple jobs. Some can
+    divide themselves into multiple *logical* cores, splitting work further. For example,
+    an Intel CPU can use *hyper-threading*, which means that if a program only uses
+    the integer addition unit of a physical core, a virtual core might start working
+    on the floating points addition unit for another program until the first one is
+    done.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you don't care about the available amount of cores and simply start new threads
+    without limit, the operating system will start creating threads that don't actually
+    run concurrently, because it ran out of cores. In this case, it will perform *context
+    switching*, which means that it stores the current state of the thread, pauses
+    it, works on another thread for a split second, and then resumes the thread again.
+    As you can imagine, this costs quite some resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is why if it's not vital to run two things in parallel, you should first
+    check if there are any cores *idle* (that is, available) in the first place. Because
+    `rayon::join` does this check for you; among other things, it will only run the
+    two closures in parallel if it's actually worth it to do so. If you need to do
+    this work yourself, check out the `num_cpus` crate ([https://crates.io/crates/num_cpus](https://crates.io/crates/num_cpus)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By the way, the parallel iterators from the last recipe go even further: If
+    the amount of elements and work in them is so small that it would cost more to
+    initiate a new thread for them than to run it sequentially, they will automatically
+    forego concurrency for you.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There's more...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The underlying mechanism of `rayon` is *work stealing*. This means that when
+    we call the following function, the current thread will immediately start working
+    on `a` and place `b` in a queue:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Meanwhile, whenever a core is idle, `rayon` will let it work on the next task
+    in the queue. The new thread then *steals* the task from the others. In our case,
+    that would be `b`. If `a` happens to finish before `b`, the main thread will look
+    into the queue and try to steal work as well. The queue can contain more than
+    two items if `rayon::join` is called multiple times in a recursive function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The author of `rayon`, Niko Matsakis, wrote down the following pseudo Rust
+    code to illustrate this principle in his introductory blog post at [http://smallcultfollowing.com/babysteps/blog/2015/12/18/rayon-data-parallelism-in-rust/](http://smallcultfollowing.com/babysteps/blog/2015/12/18/rayon-data-parallelism-in-rust/):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: By the way, the recursive Fibonacci implementation provided in this example
+    [34] is easy to look at and illustrates the point of using `rayon::join`, but
+    is also really, really inefficient. To learn why, and how to improve on it, check
+    out the [Chapter 10](f2c7ca21-145e-40af-8502-8b42b37fe290.xhtml), *Using Experimental
+    Nightly Features*; *Benchmarking your code**.*
+  prefs: []
+  type: TYPE_NORMAL
+- en: See also
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '*Benchmarking your code* recipe in [Chapter 10](f2c7ca21-145e-40af-8502-8b42b37fe290.xhtml),
+    *Using Experimental Nightly Features*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sharing resources in multithreaded closures
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It's time to look at parallelism at a lower level, without any crates to help
+    us. We will now check out how to share a resource across threads so that they
+    all can work with the same object. This recipe will also serve as a refresher
+    on manually creating threads, in case it's been a while since you learned about
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to do it...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the folder `bin`, create a file called `sharing_in_closures.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following code and run it with `cargo run --bin sharing_in_closures`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: How it works...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'A fundamental building block of parallelism in Rust is the `Arc`, which stands
+    for **Atomically Reference Counted**. Functionally, it works the same way as an
+    `Rc`, which we have looked at in [Chapter 5](6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml),
+    *Advanced Data Structures*; *Sharing ownership with smart pointers*. The only
+    difference is that the reference counting is done using *atomic primitives*, which
+    are versions of primitive data types like `usize` that have well-defined parallel
+    interactions. This has two consequences:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An `Arc` is slightly slower than an `Rc`, as the reference counting involves
+    a bit more work
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An `Arc` can be used safely across threads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The constructor of `Arc` looks the same as `Rc`[7]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This creates an `Arc` over a `String`. A `String` is a `struct` that is not
+    inherently saved to be manipulated across threads. In Rust terms, we say that
+    `String` is not `Sync` (more about that later in the recipe *Atomically access
+    primitives*).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let's look at how a thread is initialized. `thread::spawn()` takes a closure
+    and executes it in a new thread. Because this is done in parallel, the main thread
+    doesn't wait until the thread is done; it continues working right after its creation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following creates a thread that prints out the content of `some_resource`
+    and gives us a handle to that thread called `thread_a`[10]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Afterward (or at the same time), we do the exact same thing in a second thread
+    called `thread_b`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To understand why we need an `Arc` and can't just pass the resource directly
+    to the closure, let's take a closer look at how closures work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Closures in Rust can only operate on three kinds of variables:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Arguments passed to them
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`static` variables (variables with the `''static` lifetime; see [Chapter 5](6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml),
+    *Advanced Data Structures*; *Creating lazy static objects*)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Variables it owns, either by creating them or by moving them into the closure
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'With this in mind, let''s look at the most simplistic approach an inexperienced
+    Rust programmer might take:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we try to run this, the compiler tells us the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/b102a819-7de0-4337-a3a5-008a19f5c43f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Seems like it doesn''t like our usage of `some_resource`. Look at the rules
+    for variable usage in closures again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`some_resource` has not been passed as an argument'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It is not `static`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It was neither created in the closure nor moved into it
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'But what does *closure may outlive the current function* mean? Well, because
+    closures can be stored in a normal variable, they can be returned from a function.
+    Imagine now if we programmed a function that created a variable called `some_resource`,
+    used it inside a closure, and returned it. Since the function owns `some_resource`,
+    it would be dropped while returning the closure, making any reference to it invalid.
+    We don''t want any invalid variables, so the compiler stops us from potentially
+    enabling them. Instead, it suggests moving the ownership of `some_resource` into
+    the closure by using the `move` keyword. Let''s try that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The compiler responds with this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/adf522f0-4203-4965-bc7c-ca33345a722e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Because we moved `some_resource` into the closure inside of `thread_a`, `thread_b`
+    can no longer use it! The solution is to create a clone of the reference to `some_resource`
+    and only move the clone into the closure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This now runs perfectly fine, but it looks a bit weird, as we are now carrying
+    the mental baggage of the knowledge that the resource we''re dealing with is,
+    in fact, a `clone`. This can be solved in a more elegant way by putting the clone
+    into a new scope, where it can have the same name as the original, leaving us
+    with the final version of our code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Looks way clearer, doesn't it? This way of passing `Rc` and `Arc` variables
+    to a closure is a well-known Rust idiom that we are going to use in all other
+    recipes of the chapter from here on out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last thing we are going to do in this recipe is join the two threads by
+    calling `.join()` on them [26 and 27]. Joining a thread means blocking the current
+    thread until the joined thread is done with its work. It's called like that because
+    we *join the two threads of our program back into a single one*. It helps to visually
+    imagine actual sewing threads when thinking about this concept.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We join them before the end of the program, as otherwise, we would have no guarantee
+    that they would actually run all the way through before our program quits. Generally
+    speaking, you should `join` your threads when you need their results and can't
+    wait for them any longer, or they're about to be dropped otherwise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: See also
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '*Sharing ownership with smart pointers* and *Creating lazy static objects*
+    recipes in [Chapter 5](6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml), *Advanced
+    Data Structures*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sending data across threads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So far, we've looked at threads that work independently. Now, let's take a look
+    at intertwined threads that need to share data. This situation is common when
+    setting up servers, as the thread receiving client messages is usually not the
+    same as the one that actually handles and responds to the client input. Rust gives
+    us the concept of *channels* as a solution. A channel is split into a *sender*
+    and a *receiver* which can share data across threads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to do it...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Open the `Cargo.toml` file that was  generated earlier for you.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Under `[dependencies]`, add the following line:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you want, you can go to rand's crates.io page ([https://crates.io/crates/rand](https://crates.io/crates/rand))
+    to check for the newest version and use that one instead.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the folder `bin`, create a file called `channels.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following code and run it with `cargo run --bin channels`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: How it works...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As explained in the comments of the code, calling `std::sync::mpsc::channel()`
+    generates a tuple consisting of a `Sender` and a `Receiver`, which are conventionally
+    called `tx` for *transmission* and `rx` for *reception* [12].
+  prefs: []
+  type: TYPE_NORMAL
+- en: This naming convention doesn't come from Rust, but has been a standard in the
+    telecommunications industry since at least 1960 when the RS-232 (**Recommended
+    Standard 232**) was introduced, detailing how computers and modems should communicate
+    with each other.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'These two halves of the same channel can communicate with each other independently
+    of the current thread they''re in. The module''s name, `mspc`, tells us that this
+    channel is a `Multi-producer, single-consumer` channel, which means that we can
+    `clone` our sender as many times as we want. We can use this fact to our advantage
+    when dealing with closures [16 to 21]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We do not need to wrap our sender in an `Arc`, because it natively supports
+    arbitrary cloning! Inside of the closure you can see the sender's main functionality.
+    The `send()` method sends data across threads to the receiver. It will return
+    an error if the receiver is not available anymore, as in when it is dropped too
+    early. In this thread here, we will simply send the numbers `0` to `9` concurrently
+    to the receiver. One thing to note is that because a channel's halves are statically
+    typed, they are only going to be able to send one specific data type around. If
+    the first thing you send is an `i32`, your channel will only work with `i32`.
+    If you send a `String`, it will be a `String` channel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On to the receiver we go [23 to 28]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `recv()` method, which stands for *receive*, blocks the current thread until
+    a message has arrived. Similar to its counterpart, it returns an error if the
+    sender is unavailable. Because we know that we only sent 10 messages, we only
+    call it 10 times. There is no need to explicitly `join` the threads we created
+    for the sender, because `recv()` blocked the main thread until no more messages
+    were left, which means that the sender finished sending all they had to send,
+    that is, all the threads already finished their job. This way, we already joined
+    them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But in real life, you do not have a guarantee about the amount of times a client
+    will send information to you. For a more realistic demonstration, we will now
+    create a thread that sends random messages [37] to the receiver until it finally
+    has enough and quits by sending `"Goodbye!"` [48]. Note how we created a new channel
+    pair, as the old one was set to the type `i32 ` because integer literals such
+    as `1` or `2` are treated as `i32` by default.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'While the sending code looks almost identical to the one before, the receiving
+    end looks a bit different [55 to 57]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, a receiver can be iterated over. It behaves like an infinite
+    iterator over all messages that will ever come, blocking when waiting for a new
+    one, similar to calling `recv()` in a loop. The difference is that the iteration
+    will automatically stop when the sender is unavailable. Because we terminate the
+    sending thread when it sends `"Goodbye!"` [48], this iteration over the receiver
+    will also stop when receiving it, as the sender will have been dropped at that
+    point. Because this means that we have a guarantee about the sending thread being
+    finished, we do not need to join it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There's more...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A channel is not `Sync` and, as such, can only be moved across channels but
+    not shared between them. If you need the channel to be `Sync` you can use `std::sync::mpsc::sync_channel`,
+    which blocks when a buffer of unanswered messages is full. An example for when
+    this might be necessary is when a web framework offers to manage your types but
+    only works with `Sync` structs. You can read more on `Sync` in the recipe *Atomically
+    access primitives*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `mpsc` channels, as their name suggests, allow many senders but only one
+    receiver. Most of the time, this will be good enough, but if you find yourself
+    needing the exact opposite, as in one sender and multiple receivers, check out
+    Sean McArthur's `spmc` crate at [https://crates.io/crates/spmc](https://crates.io/crates/spmc),
+    which provides you with `Single-producer, multi-consumer` channels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: See also
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '*Access collections as Iterator* recipe in [Chapter 2](977b8621-cb73-43de-9a2b-4bc9f5583542.xhtml),
+    *Working with Collections*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Accessing resources in parallel with RwLocks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When we shared resources with an `Arc`, we only did so immutably. The moment
+    we want our threads to mutate our resources, we need to use some kind of locking
+    mechanism to secure the golden rule of parallelism: multiple readers or one writer.
+    `RwLock` enforces just that rule across threads and blocks them if they violate
+    the rule.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to do it...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the folder `bin`, create a file called `rw_lock.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following code and run it with `cargo run --bin rwlock`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: How it works...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `RwLock` is the parallel equivalent of the `RefCell` we worked with in [Chapter
+    5](6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml), *Advanced Data Structures**;*
+    *Working with interior mutability*. The big difference is that, while `RefCell`
+    panics on a violation of Rust's ownership concept, `RwLock` simply blocks the
+    current thread until the violation is over.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The analog of the `borrow()` method of `RefCell` is `read()` [17], which locks
+    the resource for immutable access. The analog of `borrow_mut()` is `write()` [51],
+    which locks the resource for mutable access. Makes sense, doesn't it?
+  prefs: []
+  type: TYPE_NORMAL
+- en: These methods return a `Result`, which tells us whether the thread is *poisoned*.
+    The meaning of poisoning is different for every lock. In an `RwLock`, it means
+    that the thread that locked the resource for `write` access panicked. This way,
+    you can react to panics in other threads and treat them in some way. One example
+    where this can be useful is sending some logs to a server before a crash happens
+    in order to diagnose the problem. In most cases, though, it will be okay if you
+    simply `panic` along, as a `panic` usually stands for a critical failure that
+    cannot be mended.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our example, we demonstrate the concept by setting up two threads that request
+    `read` access: `reader_a` [11] and `reader_b` [27]. Because an `RwLock` allows
+    multiple readers, they will concurrently print out the value of our resource [19
+    and 35]. In the meantime, `writer` [45] tries to lock the resource for `write`
+    access. It will have to wait until both `reader_a` and `reader_b` are currently
+    not using the resource. By the same rules, when the `writer` gets their turn and
+    mutates the resource [54], both `reader_a` and `reader_b` have to wait until it''s
+    done.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because all of this happens roughly at the same time, every execution of this
+    example is going to give you slightly different results. I encourage you to run
+    the program multiple times and compare the output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There's more...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Despite its nice usability, `RwLock` is still no silver bullet for all concurrent
+    problems. There is a concept in concurrent programming called *deadlock*. It arises
+    when two processes wait for the unlocking of resources that the other holds. This
+    will lead to them waiting forever, as no one is ready to take the first step.
+    Kind of like teenagers in love. An example of this would be a `writer_a` requesting
+    access to a file that `writer_b` holds. `writer_b`, in the meantime, needs some
+    kind of user information from `writer_a` before he can give up the file lock.
+    The best way to avoid this problem is to keep it in the back of your mind and
+    remember it when you're about to create processes that depend on each other.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another lock that is fairly popular in other languages is the `Mutex`, which
+    Rust also provides under `std::sync::Mutex`. When it locks resources, it treats
+    every process like a writer, so no two threads will *ever* be able to work at
+    the same time with a `Mutex`, even if they don't mutate the data. We are going
+    to create a very simple implementation of it ourselves in the next recipe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: See also
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '*Working with interior mutability* recipe in [Chapter 5](6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml), *Advanced
+    Data Structures*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Atomically accessing primitives
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When reading about all of these parallel structures, you might have wondered
+    how they are implemented. In this recipe, we are going to take a look under the
+    hood and learn about the most basic parallel data types, which are called *atomics*.
+    We are going to do this by implementing our very own `Mutex`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to do it...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the folder `bin`, create a file called `atomic.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following code and run it with `cargo run --bin atomic`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now comes the implementation of our very own homemade mutex:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: How it works...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As of the time of writing, there are four `atomic` types in the standard library
+    under the `std::sync::atomic` module: `AtomicBool`, `AtomicIsize`, `AtomicUsize`,
+    and `AtomicPtr`. Each one of them represents a primitive type, namely `bool`,
+    `isize`, `usize`, and `*mut`. We are not going to look at the last, which, being
+    a pointer, you will probably only have to deal with when interfacing with programs
+    written in other languages anyways.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In case you haven't encountered `isize` and `usize` before, they are representations
+    of the smallest amount of bytes needed to address any part of the memory of your
+    machine. On 32-bit targets this is 4 bytes, while 64-bit systems will need 8 bytes.
+    `isize` uses those bytes to represent a *signed* number, as in an integer that
+    can be negative. `usize` instead represents an *unsigned* number, which can only
+    be positive but has a lot more capacity for huge numbers in that direction. They
+    are usually used when dealing with collections capacities. For example, `Vec`
+    returns a `usize` when calling its `.len()` method. Additionally, on the nightly
+    toolchain, there are atomic variants of all other concrete integer types like
+    `u8` or `i32`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `atomic` versions of our primitives work the same way as their cousins,
+    with one important distinction: they have well-defined behavior when used in parallel
+    environments. All their methods take a parameter of the type `atomic::Ordering`,
+    which stands for which low-level concurrent strategy to use. In this example,
+    we are only going to use `Ordering::SeqCst`, which stands for s*equentially consistent*.
+    This, in turn, means that the behavior is quite intuitive. If some data is stored
+    or modified using this ordering, another thread can see its content after the
+    write as if the two threads ran one after another. Or, in other words, the behavior
+    is *consistent* with that of a *sequential* series of events. This strategy will
+    always work with all parallel algorithms. All other orderings merely relax the
+    constraints on the data involved in order to get some kind of performance benefit.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this knowledge in hand, you should be able to understand most things done
+    in `main` up to the usage of `NaiveMutex`[72]. Note how some of the `atomic` methods
+    are just different ways of doing the same as with our normal primitives, with
+    the added twist of specifying an ordering and most of them returning the old value.
+    For instance, `some_number.fetch_add(12, Ordering::SeqCst)`, apart from returning
+    the old value of `some_number`, is essentially nothing but `some_number += 12`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A real use case for atomics comes up in the second part of the example code,
+    where we implement our very own `Mutex`. A mutex, prominently featured in all
+    modern programming languages, is a kind of lock that does not allow *any* two
+    threads to access a resource at the same time. After reading the last recipe,
+    you know that you can imagine a `Mutex` as a kind of `RwLock` that always locks
+    everything in `write` mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s jump a few lines forward in our code to [102]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, we are going to base our `NaiveMutex` on a simple atomic flag,
+    `locked`, which is going to track whether our mutex is available or not. The other
+    member, `data`, holds the underlying resource we are interested in locking. Its
+    type, `UnsafeCell`, is the underlying type of every struct that implements some
+    kind of interior mutability (see [Chapter 5](6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml), *Advanced
+    Data Structures*; *Working with interior mutability*).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next struct is going to look familiar to you if you''ve read [Chapter 6](d2c7b7cb-3060-40b8-adb4-408eee7940a1.xhtml),
+    *Handling Errors*; *Understanding RAII*, as it''s an RAII guard with a reference
+    to its parent [110]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s take a look at how we lock a thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Looks a bit weird at first glance, doesn''t it? `compare_and_swap` is one of
+    the more complex `atomic` operations. It works as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It compares the value of the atomic with the first parameter
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If they are the same, it stores the second parameter in the atomic
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Lastly, it returns the value of the atomic from before the function call
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Let''s apply that to our call:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`compare_and_swap` checks if `self.locked` contains `false`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If so, it sets `self.locked` to `true`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In any case, it will return the old value
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If the returned value is `true`, it means our mutex is currently locked. What
+    should our thread do then? Absolutely nothing: `{ }`. Because we call this in
+    a `while` loop, we will continue doing nothing (this is called *spinning*) until
+    the situation changes. This algorithm is called **spinlock**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When our mutex is finally available, we set its `locked` flag to `true` and
+    return an RAII guard with a reference to our `NaiveMutex`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is not how the real `std::sync::Mutex` is implemented. Because exclusively
+    locking a resource is a very basic concurrent task, operating systems natively
+    support it. The `Mutex` implemented in the Rust standard library is still built
+    by the RAII pattern as well, but uses the OS's mutex handles instead of our custom
+    logic. Fun fact—the Windows implementation uses SRWLocks ([https://msdn.microsoft.com/en-us/library/windows/desktop/aa904937(v=vs.85).aspx](https://msdn.microsoft.com/en-us/library/windows/desktop/aa904937(v=vs.85).aspx)),
+    which are Windows's native version of `RwLock`, as they proved to be faster than
+    a native `Mutex`. So, on Windows at least, the two types really are very similar.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The implementation of `NaiveMutexGuard` provides the counterpart of `lock`
+    during its dropping [138]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We simply `store` the value `false` in `self.locked` whenever our guard goes
+    out of scope (see [Chapter 6](d2c7b7cb-3060-40b8-adb4-408eee7940a1.xhtml), *Handling
+    Errors*; *Implementing the Drop trait**)*. The next two trait `NaiveMutexGuard`
+    implements are `Deref` and `DerefMut`, which let us call methods of type `T` directly
+    on `NaiveMutexGuard<T>`. They both share nearly the same implementation [146]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: Remember when we said that you'll have to deal with pointers on rare occasions?
+    Well, this is one of those times.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`UnsafeCell` doesn''t guarantee any borrowing safety, hence the name and the
+    `unsafe` block. It relies on you to make sure all calls to it are actually safe.
+    Because of this, it gives you a raw mutable pointer, which you can manipulate
+    in any way you want. What we do here is dereference it with `*`, so `*mut T` becomes
+    only `T`. Then we return a normal reference to that with `&`[146]. The only thing
+    different in the implementation of `deref_mut` is that we instead return a mutable
+    reference with `&mut` [152]. All of our `unsafe` calls are guaranteed to follow
+    Rust''s ownership principles, as we only allow one scope to borrow our resource
+    anyway.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The last thing required for our `Mutex` implementation is the following line,
+    which we skipped before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `Sync` trait has a pretty small implementation, right? That's because it
+    is a *marker*. It belongs to a family of traits that don't actually do anything
+    themselves but only exist to tell the compiler something about the types that
+    implement them. Another trait in the `std::marker` module is `Send`, which we
+    also use here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If a type `T` implements `Send`, it tells the world that it is safe to be moved
+    (*sent*) between threads by passing it around as a value instead of a reference.
+    Nearly all types of Rust implement `Send`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If `T` is `Sync`, it tells the compiler that it is safe to be shared between
+    threads (it behaves in a *synchronized* way) by passing it around per reference,
+    `&T`. This is harder to accomplish than `Send`, but our `NaiveMutex` guarantees
+    that types in it can be shared around, as we only allow one access to its inner
+    type at a time. This is why we implement the `Sync` trait for every `Send` in
+    our mutex. If it's safe to pass it around, it's automatically also safe to share
+    it within `NaiveMutex`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Back in `main` you can now find some usage examples of our `Mutex`[75 and 84],
+    similar to the examples in the previous recipe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There's more...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Because `SeqCst` is good enough for most applications and the complexity involved
+    in all other orderings, we are not going to look at any others. Don''t be disappointed,
+    however—Rust uses nearly the same `atomic` layout and functionality as C++, so
+    there are plenty of sources to tell you how complex the issue really is. Anthony
+    Williams, author of the well-known book *C++: Concurrency In Action* ([http://www.cplusplusconcurrencyinaction.com/](http://www.cplusplusconcurrencyinaction.com/)),
+    uses an entire 45 pages (!) to simply describe all the atomic orderings and how
+    to use them. An additional 44 pages go into showing examples of all of these orderings.
+    Does an average program benefit from this level of dedication? Let''s look at
+    the man''s own words, with the background knowledge that `std::memory_order_seq_cst`
+    is how C++ calls `SeqCst`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The basic premise is: do not use anything other than `std::memory_order_seq_cst`
+    (the default) unless (a) you really **really** know what you are doing, and can
+    **prove** that the relaxed usage is safe in all cases, and (b) your profiler demonstrates
+    that the data structure and operations you are intending to use the relaxed orderings
+    with are a bottleneck.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Source: [https://stackoverflow.com/a/9564877/5903309](https://stackoverflow.com/a/9564877/5903309)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In short, you should wait to learn about the different kinds of orderings until
+    you have a very good reason to use them. This is, by the way, also the approach
+    of Java, which makes all variables marked as `volatile` behave in a sequentially
+    consistent way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: See also
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '*Working with interior mutability* recipe in [Chapter 5](6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml),
+    *Advanced Data Structures*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Implementing the Drop trait* and *Understanding RAII* recipe in [Chapter 6](d2c7b7cb-3060-40b8-adb4-408eee7940a1.xhtml),
+    *Handling Errors*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Putting it all together in a connection handler
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have looked at a lot of different practices in isolation now. The true strength
+    of these building blocks, however, comes from combining them. This recipe is going
+    to show you how to combine some of them into a realistic starting point for the
+    connection handling part of a server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to do it...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the folder `bin`, create a file called `connection_handler.rs`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following code and run it with `cargo run --bin connection_handler`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Using our connection handler by simulating connecting and disconnecting clients:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: How it works...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This recipe doesn't introduce any new modules or concepts. It's here to provide
+    you with a general idea of how to combine all the things you've learned in this
+    recipe in a somewhat realistic context. Specifically, our context consists of
+    code that manages clients that connect with us in some way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Client` [8] holds all information relevant to a connection. As a basic example,
+    it currently contains the client''s IP address. Other possibilities would be the
+    client''s username, location, device, ping, and so on.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `ConnectionHandler` [14] itself holds a list, more specifically a `HashMap`,
+    of the active connections, indexed by a unique ID. Analogous to that, it also
+    stores the ID for the next connection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are using unique IDs instead of a `Vec<Client>` because clients might be
+    able to connect, multiple times, to whatever service we are providing on the same
+    device. The easiest example for this is multiple tabs open in a browser, all accessing
+    the same website. Generally speaking, it is good practice to always hold your
+    data behind unique keys to save yourself from trouble down the road.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The implementations of the structs should be straightforward. Methods that need
+    to modify the `clients` member lock it with `.write()`, all others with `.read()`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The code used to get a new ID at `add_connection` adds one to `next_id` and
+    returns its last value, as usual for an `atomic`[42]:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: After adding the connection to the `clients`, we return the newly-acquired ID
+    to the caller, so that they can store the ID however they want and reuse it when
+    it's time to kick the client with `remove_connection` [50], which in turn returns
+    an `Option` telling the caller if the removed ID was in the client list in the
+    first place. We do not return the removed `Client` directly because that would
+    reveal unnecessary implementation details to the user of `ConnectionHandler`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code in `main` simulates parallel access to the hypothetical service. A
+    bunch of clients connect to our `ConnectionHandler` and some leave again. `thread::sleep`
+    [70, 80 and 90] blocks the current thread for a specified time and is used here
+    to simulate the effect of various events happening at irregular intervals, represented
+    by the different waiting times for each task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As with the `RwLock` example, this program will have very different output every
+    time you run it, so try it out multiple times.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There's more...
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you need to react to the messages from your clients in a different thread,
+    you can use `channel`, which we looked at earlier in the chapter. One use case
+    for this would be programming an online video game. You'll want to aggregate all
+    input from your players, react to it by simulating your world, and then broadcast
+    local changes to the players, with each of these tasks happening concurrently
+    in a single thread.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,402 @@
+- en: '6'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Futures in Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In [*Chapter 5*](B20892_05.xhtml#_idTextAnchor092), we covered one of the most
+    popular ways of modeling concurrency in a programming language: fibers/green threads.
+    Fibers/green threads are an example of stackful coroutines. The other popular
+    way of modeling asynchronous program flow is by using what we call stackless coroutines,
+    and combining Rust’s futures with `async/await` is an example of that. We will
+    cover this in detail in the next chapters.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This first chapter will introduce Rust’s futures to you, and the main goals
+    of this chapter are to do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Give you a high-level introduction to concurrency in Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Explain what Rust provides and not in the language and standard library when
+    working with async code
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Get to know why we need a runtime library in Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understand the difference between a leaf future and a non-leaf future
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Get insight into how to handle CPU-intensive tasks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To accomplish this, we’ll divide this chapter into the following sections:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is a future?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Leaf futures
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Non-leaf futures
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Runtimes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A mental model of an async runtime
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What the Rust language and standard library take care of
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: I/O vs CPU-intensive tasks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Advantages and disadvantages of Rust’s async model
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is a future?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A future is a representation of some operation that will be completed in the
+    future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Async in Rust uses a poll-based approach in which an asynchronous task will
+    have three phases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The poll phase**: A future is polled, which results in the task progressing
+    until a point where it can no longer make progress. We often refer to the part
+    of the runtime that polls a future as an executor.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**The wait phase**: An event source, most often referred to as a reactor, registers
+    that a future is waiting for an event to happen and makes sure that it will wake
+    the future when that event is ready.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**The wake phase**: The event happens and the future is woken up. It’s now
+    up to the executor that polled the future in *step 1* to schedule the future to
+    be polled again and make further progress until it completes or reaches a new
+    point where it can’t make further progress and the cycle repeats.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now, when we talk about futures, I find it useful to make a distinction between
+    **non-leaf** futures and **leaf** futures early on because, in practice, they’re
+    pretty different from one another.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Leaf futures
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Runtimes create leaf futures, which represent a resource such as a socket.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is an example of a leaf future:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Operations on these resources, such as a reading from a socket, will be non-blocking
+    and return a future, which we call a leaf future since it’s the future that we’re
+    actually waiting on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s unlikely that you’ll implement a leaf future yourself unless you’re writing
+    a runtime, but we’ll go through how they’re constructed in this book as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s also unlikely that you’ll pass a leaf future to a runtime and run it to
+    completion alone, as you’ll understand by reading the next paragraph.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Non-leaf futures
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Non-leaf futures are the kind of futures we as users of a runtime write ourselves
+    using the `async` keyword to create a task that can be run on the executor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The bulk of an async program will consist of non-leaf futures, which are a kind
+    of pause-able computation. This is an important distinction since these futures
+    represent a set of operations. Often, such a task will `await` a leaf future as
+    one of many operations to complete the task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is an example of a non-leaf future:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The two highlighted lines indicate points where we pause the execution, yield
+    control to a runtime, and eventually resume. In contrast to leaf futures, these
+    kinds of futures do not themselves represent an I/O resource. When we poll them,
+    they will run until they get to a leaf future that returns `Pending` and then
+    yields control to the scheduler (which is a part of what we call the runtime).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Runtimes
+  prefs: []
+  type: TYPE_NORMAL
+- en: Languages such as C#, JavaScript, Java, Go, and many others come with a runtime
+    for handling concurrency. So, if you’re used to one of those languages, this will
+    seem a bit strange to you. Rust is different from these languages in the sense
+    that Rust doesn’t come with a runtime for handling concurrency, so you need to
+    use a library that provides this for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Quite a bit of complexity attributed to futures is actually complexity rooted
+    in runtimes; creating an efficient runtime is hard.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Learning how to use one correctly requires quite a bit of effort as well, but
+    you’ll see that there are several similarities between this kind of runtime, so
+    learning one makes learning the next much easier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The difference between Rust and other languages is that you have to make an
+    active choice when it comes to picking a runtime. Most often, in other languages,
+    you’ll just use the one provided for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A mental model of an async runtime
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: I find it easier to reason about how futures work by creating a high-level mental
+    model we can use. To do that, I have to introduce the concept of a runtime that
+    will drive our futures to completion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The mental model I create here is not the only way to drive futures to completion,
+    and Rust’s futures do not impose any restrictions on how you actually accomplish
+    this task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A fully working async system in Rust can be divided into three parts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reactor (responsible for notifying about I/O events)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Executor (scheduler)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Future (a task that can stop and resume at specific points)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: So, how do these three parts work together?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s take a look at a diagram that shows a simplified overview of an async
+    runtime:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 6.1 – Reactor, executor, and waker](img/B20892_07_1.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6.1 – Reactor, executor, and waker
+  prefs: []
+  type: TYPE_NORMAL
+- en: In *step 1* of the figure, an executor holds a list of futures. It will try
+    to run the future by polling it (the poll phase), and when it does, it hands it
+    a `Waker`. The future either returns `Poll:Ready` (which means it’s finished)
+    or `Poll::Pending` (which means it’s not done but can’t get further at the moment).
+    When the executor receives one of these results, it knows it can start polling
+    a different future. We call these points where control is shifted back to the
+    executor *yield points*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In *step 2*, the reactor stores a copy of the `Waker` that the executor passed
+    to the future when it polled it. The reactor tracks events on that I/O source,
+    usually through the same type of event queue that we learned about in [*Chapter
+    4*](B20892_04.xhtml#_idTextAnchor081).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In *step 3*, when the reactor gets a notification that an event has happened
+    on one of the tracked sources, it locates the `Waker` associated with that source
+    and calls `Waker::wake` on it. This will in turn inform the executor that the
+    future is ready to make progress so it can poll it once more.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we write a short async program using pseudocode, it will look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The line where we write `await` is the one that will return control back to
+    the scheduler. This is often called a *yield point* since it will return either
+    `Poll::Pending` or `Poll::Ready` (most likely it will return `Poll::Pending` the
+    first time the future is polled).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since the `Waker` is the same across all executors, reactors can, in theory,
+    be completely oblivious to the type of executor, and vice-versa. *Executors and
+    reactors never need to communicate with one* *another directly.*
+  prefs: []
+  type: TYPE_NORMAL
+- en: This design is what gives the futures framework its power and flexibility and
+    allows the Rust standard library to provide an ergonomic, zero-cost abstraction
+    for us to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: I introduced the concept of reactors and executors here like it’s something
+    everyone knows about. I know that’s not the case, and don’t worry, we’ll go through
+    this in detail in the next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What the Rust language and standard library take care of
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Rust only provides what’s necessary to model asynchronous operations in the
+    language. Basically, it provides the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A common interface that represents an operation, which will be completed in
+    the future through the `Future` trait
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An ergonomic way of creating tasks (stackless coroutines to be precise) that
+    can be suspended and resumed through the `async` and `await` keywords
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A defined interface to wake up a suspended task through the `Waker` type
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: That’s really what Rust’s standard library does. As you see there is no definition
+    of non-blocking I/O, how these tasks are created, or how they’re run. There is
+    no non-blocking version of the standard library, so to actually run an asynchronous
+    program, you have to either create or decide on a runtime to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I/O vs CPU-intensive tasks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As you know now, what you normally write are called non-leaf futures. Let’s
+    take a look at this `async` block using pseudo-Rust as an example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: I’ve highlighted the points where we yield control to the runtime executor.
+    It’s important to be aware that the code we write between the yield points runs
+    on the *same thread* as our executor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That means that while our `analyzer` is working on the dataset, the executor
+    is busy doing calculations instead of handling new requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Fortunately, there are a few ways to handle this, and it’s not difficult, but
+    it’s something you must be aware of:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We could create a new leaf future, which sends our task to another thread and
+    resolves when the task is finished. We could `await` this leaf-future like any
+    other future.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The runtime could have some kind of supervisor that monitors how much time different
+    tasks take and moves the executor itself to a different thread so it can continue
+    to run even though our `analyzer` task is blocking the original executor thread.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can create a reactor yourself that is compatible with the runtime, which
+    does the analysis any way you see fit and returns a future that can be awaited.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Now, the first way is the usual way of handling this, but some executors implement
+    the second method as well. The problem with #2 is that if you switch runtime,
+    you need to make sure that it supports this kind of supervision as well or else
+    you will end up blocking the executor.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third method is more of theoretical importance; normally, you’d be happy
+    to send the task to the thread pool that most runtimes provide.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Most executors have a way to accomplish #1 using methods such as `spawn_blocking`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: These methods send the task to a thread pool created by the runtime where you
+    can either perform CPU-intensive tasks or blocking tasks that are not supported
+    by the runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So, in this short chapter, we introduced Rust’s futures to you. You should now
+    have a basic idea of what Rust’s async design looks like, what the language provides
+    for you, and what you need to get elsewhere. You should also have an idea of what
+    a leaf future and a non-leaf future are.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These aspects are important as they’re design decisions built into the language.
+    You know by now that Rust uses stackless coroutines to model asynchronous operations,
+    but since a coroutine doesn’t do anything in and of itself, it’s important to
+    know that the choice of how to schedule and run these coroutines is left up to
+    you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll get a much better understanding as we start to explain how this all works
+    in detail as we move forward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve seen a high-level overview of Rust’s futures, we’ll start explaining
+    how they work from the ground up. The next chapter will cover the concept of futures
+    and how they’re connected with coroutines and the `async/await` keywords in Rust.
+    We’ll see for ourselves how they represent tasks that can pause and resume their
+    execution, which is a prerequisite to having multiple tasks be *in progress* concurrently,
+    and how they differ from the pausable/resumable tasks we implemented as fibers/green
+    threads in [*Chapter 5*](B20892_05.xhtml#_idTextAnchor092).
+  prefs: []
+  type: TYPE_NORMAL

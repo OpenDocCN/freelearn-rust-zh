@@ -1,0 +1,1175 @@
+- en: Sequential Rust Performance and Testing
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '"Make it work, then make it beautiful, then if you really, really have to,
+    make it fast."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '- *Joe Armstrong*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the previous chapter, we discussed the basics of modern computer architectures—the
+    CPU and its function, memory hierarchies, and their interplay. We left off with
+    a brief introduction to debugging and performance analysis of Rust programs. In
+    this chapter, we'll continue that discussion, digging into the performance characteristics
+    of sequential Rust programs, deferring, for now, considerations of concurrent
+    performance. We'll also be discussing testing techniques for demonstrating the
+    fitness for purpose of a Rust program. Why, in a book about parallel programming,
+    would we wish to devote an entire chapter to just sequential programs? The techniques
+    we'll discuss in this sequential setting are applicable and vital to a parallel
+    setting. What we gain here is the meat of the concern—being fast *and* correct—without
+    the complication that parallel programming brings, however, we'll come to that
+    in good time. It is also important to understand that the production of fast parallel
+    code comes part and parcel with the production of fast sequential code. That's
+    on account of there being a cold, hard mathematical reality that we'll deal with
+    throughout the book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By the close of the chapter, we will:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Have learned about Amdahl's and Gustafson's laws
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Have investigated the internals of the Rust standard library `HashMap`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Be able to use QuickCheck to perform randomized validating of an alternative
+    HashMap implementation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Be able to use American Fuzzy Lop to demonstrate the lack of crashes in the
+    same
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Have used Valgrind and Linux Perf to examine the performance of Rust software
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter requires a working Rust installation. The details of verifying
+    your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust*. The Valgrind
+    suite of tools will be used here. Many operating systems bundle valgrind packages
+    but you can find further installation instructions for your system at [valgrind.org](http://valgrind.org/).
+    Linux Perf is used and is bundled by many Linux distributions. Any other software
+    required for this chapter is installed as a part of the text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can find the source code for this book''s projects on GitHub: [https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust).
+    The source code for this chapter is under `Chapter02`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Diminishing returns
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The hard truth is that there''s a diminishing return when applying more and
+    more concurrent computational resources to a problem. Performing parallel computations
+    implies some coordination overhead—spawning new threads, chunking data, and memory
+    bus issues in the presence of barriers or fences, depending on your CPU. Parallel
+    computing is not free. Consider this `Hello, world!` program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Straightforward enough, yeah? Compile and run it 100 times:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, consider basically the same program but involving the overhead of spawning
+    a thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Compile and run it 100 times:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: This implies a thread-spawn time on my test system of 0.24 milliseconds. That
+    is, of course, without any synchronization. The point is, it's not free. It's
+    also not magic. Say you have a program that runs on a single processor in 24 hours
+    and there are parts of the program that will have to be done sequentially and
+    which, added together, consume 1 hour of the total runtime. The remaining 23 hours
+    represent computations that can be run in parallel. If this computation is important
+    and needs to be done in a hurry, the temptation is going to be to chuck in as
+    much hardware as possible. How much of an improvement should you expect?
+  prefs: []
+  type: TYPE_NORMAL
+- en: One well-known answer to this question is Amdahl's law. It states that the speedup
+    of a computation is proportional to the inverse of the percentage of time taken
+    by the sequential bit plus the percentage of the parallel time divided by the
+    total new computation units, *1/(s + p / N)*. As *N* tends toward infinity, *1/s
+    == 1/(1-p),* in our example, *1/(1 - (23/24)) = 24*. That is, the maximum factor
+    speedup you can ever hope to see is 24 times, with infinite additional capacity.
+    Ouch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Amdahl''s law is a touch pessimistic, as noted by John Gustafson in his 1988
+    Reevaluating Amdahl''s Law:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"At Sandia National Laboratories, we are currently engaged in research involving
+    massively-parallel processing. There is considerable skepticism regarding the
+    viability of massive parallelism; the skepticism centers around Amdahl''s law,
+    an argument put forth by Gene Amdahl in 1967 that even when the fraction of serial
+    work in a given problem is small, say s, the maximum speedup obtainable from even
+    an infinite number of parallel processors is only 1/s. We now have timing results
+    for a 1024-processor system that demonstrate that the assumptions underlying Amdahl''s
+    1967 argument are inappropriate for the current approach to massive ensemble parallelism."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Gustafson argues that real workloads will take the time factor of a computation
+    as fixed and vary the input work accordingly. In some hypothetical, very important
+    computations we'd see 24 hours as acceptable and, on increasing the total number
+    of processors available, then rush to figure out how to add in more computation
+    so as to get the time back up to one day. As we increase the total workload, the
+    serial portion of the computation tends towards zero. This is, itself, maybe somewhat
+    optimistic and is certainly not applicable to problems where there's no more datasets
+    available. Communication overhead is not included in either analysis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ultimately, what has to be internalized is this—performing computations in parallel
+    is subject to diminishing returns. Exactly how that take shape depends strongly
+    on your problem, the machine, and so on, but it's there. What the programmer must
+    do to bend that curve is shrink the percentage of time spent in serial computation,
+    either by increasing the relative portion of parallel computation per Gustafson
+    with a larger dataset or by optimizing the serial computation's runtime. The remainder
+    of this chapter will be focused on the latter approach—improving the runtime of
+    serial computations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Performance
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll focus on the serial performance of a common data structure—associative
+    arrays. We'll apply the tools we learned about in the previous chapter to probe
+    different implementations. We'll focus on the associative array because it is
+    fairly well-trod territory, studied in introductory computer science courses,
+    and is available in most higher-level languages by default, Rust being no exception
+    save the higher-level bit. We'll look at Rust's associative array first, which
+    is called `std::collections::HashMap`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Standard library HashMap
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's poke around in `HashMap`'s internals. A good starting place, I find, for
+    inspecting unfamiliar Rust data structures is jumping into the source to the struct
+    definition itself. Especially in the Rust codebase, there will be public `rustdoc`
+    comments and private comments explaining implementation ambitions. The reader
+    is warmly encouraged to inspect the `HashMap` comments for themselves. In this
+    book, we're inspecting Rust at SHA `da569fa9ddf8369a9809184d43c600dc06bd4b4d`.
+    The comments of `src/libstd/collections/hash/map.rs` explain that the `HashMap`
+    is implemented with linear probing Robin Hood bucket stealing. Linear probing
+    implies that we'll find `HashMap` implemented in terms of a cell storage—probably
+    a contiguous memory structure for reasons we'll discuss shortly—and should be
+    able to understand the implementation pretty directly, linear probing being a
+    common method of implementing associative arrays. Robin Hood bucket stealing is
+    maybe less common, but the private comments describe it as *the main performance
+    trick in this hashmap* and then goes on to quote Pedro Celis' 1986 *Robin Hood
+    Hashing:*
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"If an insertion collides with an existing element, and that element''s "probe
+    distance" (how far away the element is from its ideal location) is higher than
+    how far we''ve already probed, swap the elements."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you pull the thesis yourself, you''ll further find:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"(Robin Hood Hashing) leads to a new search algorithm which requires less than
+    2.6 probes on average to perform a successful search even when the table is nearly
+    full. Unsuccessful searches require only O(ln n) probes."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Not bad. Here''s `HashMap`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Okay, so, it interacts with `RawTable<K, V>` and we can jump to that definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'But it''s maybe not the most illuminating struct definition either. Common
+    operations on a collection are often a good place to dig in, so let''s look at
+    `HashMap::insert`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And then on into `HashMap::reserve`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Whether `reserve` expands the underlying storage capacity because we''ve got
+    near the current total capacity of that storage or to reduce probe lengths, `HashMap::resize`
+    is called. That''s:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''re back at `RawTable` and have a lead on a structure called `Bucket`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Okay, we''re going in some circles here. The bucket parameterizes the table
+    on `M` rather than the table holding some collection of buckets. The `RawBucket`
+    is described as an unsafe view of a `RawTable` bucket of which there are two variants—`EmptyBucket`
+    and `FullBucket`. These variants are used to populate a `BucketState` enumeration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we can see it being used back in `HashMap::insert_hashed_ordered`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we explore down into `empty.push(hash, k, v)`, we find ourselves at the
+    following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Tidy. `ptr::write(self.raw.pair(), (key, value))` demonstrates that we''re
+    working with a structure built out of raw memory pointer manipulation, befitting
+    a structure that will see a lot of use in critical `paths`. `self.raw.pair()`,
+    which returns the appropriate offset to move `(key, value)` into, matching the
+    `HashMap::insert` move semantics we''re already familiar with. Take a look at
+    the definition of `RawBucket`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we''ve got two raw pointers:  `hash_start` and `pair_start`. The former
+    is the first location in memory of our stored pairs'' hashes, the latter is the
+    first location in the memory of the pairs. What this ends up being is contiguous
+    storage in memory of two sets of data, which is about what you''d expect. The
+    table module documentation refers to this approach as *unzipped* arrays. `RawTable`
+    holds the capacity and the data, kind of. In reality, the data held by `RawTable`
+    is carefully placed in memory, as we''ve seen, but there''s no *owner* as the
+    Rust type system understands it. That''s where `marker: marker::PhantomData<(K,
+    V)>` comes in. `PhantomData` instructs the compiler to behave as if `RawTable<K,
+    V>` owns pairs of `(K, V)`, even though with all the unsafe pointer manipulation
+    we''re doing that can''t actually be proven by Rust. We human observers can determine
+    by inspection that `RawTable` owns its data via `RawTable::raw_bucket_at` as it
+    computes where in memory the data exists:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Well, by inspection and testing, as you can see at the bottom of the module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Naive HashMap
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: How else could we implement an associative array in Rust and how would it compare
+    to standard library's `HashMap`? The standard library `HashMap` is clever, clearly,
+    storing just enough information to reduce the total probes from ideal offsets
+    by sharing information between modifications to the underlying table. In fact,
+    the comments in the table module assert that the design we've just worked through
+    is *a lot faster* than a table structured as `Vec<Option<(u64, K, V)>>`—where
+    `u64` is the key hash, but presumably still using Robin Hood hashing and linear
+    probing. What if we went even simpler? We'll support only two operations—`insert`
+    and `lookup`—to keep things straightforward for ourselves. We'll also keep more
+    or less the same type constraints as `HashMap` so we compare similar things.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Start a new Rust project called `naive_hashmap`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Edit `naive_hashmap/Cargo.toml` to look like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Don''t worry too much right now about some of the development dependencies,
+    they''ll be explained in due course. Please note that in the following discussion
+    we will run compilation commands against the project before all the code has been
+    discussed. If you are following along with the book''s pre-written source code
+    open already, you should have no issues. If you are writing the source out as
+    the book goes along, you will need to comment targets out. Now, open `naive_hashmap/src/lib.rs`
+    and add the following preamble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Most crate roots begin with a fairly long preamble, and `naive_hashmap` is
+    no exception. Next up, our `HashMap` struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'How does our naive `HashMap` differ from the standard library''s `HashMap`
+    we''ve seen so far? The naive implementation maintains the parameterized hasher
+    and type constraints, plus a constraint on `V` to implement the `Debug` trait
+    for ease of fiddling. The primary difference, in terms of underlying structure,
+    is the use of a `Vec`—as called out in the comments of the standard library `HashMap`—but
+    without an `Option` wrapper. We''re not implementing a delete operation so there''s
+    no reason to have an `Option` but, even if we were, the plan for this implementation
+    would be to rely solely on `Vec::remove`. The fact that it is less than ideal
+    that `Vec::remove` shifts all elements from the right of the removal index to
+    the left should be well understood. Folks, this won''t be a fast implementation.
+    Now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our naive implementation is following along with the standard library here,
+    implementing a `HashMap` that is parameterized on `RandomState`—so users don't
+    have to think about the underlying hasher—and in which the hasher is swappable,
+    via `HashMap::with_hasher`. The Rust team chose to implement `RandomState` in
+    terms of a verified cryptographically secure hash algorithm, befitting a language
+    that is intended for use on the public internet. Some users won't desire this
+    property—opting instead for a much faster, potentially vulnerable hash—and will
+    swap `RandomState` out for something else. Our naive `HashMap` retains this ability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s examine insertion into our naive `HashMap`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our naive implementation maintains the API of the standard library `HashMap`
+    but that''s about it. The key is hashed and then a linear search is done through
+    the entire data store to find an index in that store where one of two conditions
+    hold:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our new hash is greater than some hash in the store, in which case we can insert
+    our key/value pair
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Our new hash is equal to some hash in the store, in which case we can replace
+    the existing value
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Key/value pairs are stored in terms of their ordered hashes. The expense of
+    an insert includes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hashing the key
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Searching for the insert index, a linear operation to the number of stored key/value
+    pairs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Potentially shifting key/value pairs in memory to accommodate a new key to the
+    store
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Lookup follows a similar scheme:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The key is hashed and a linear search is done for that exact hash in storage.
+    Here, we only pay the cost for:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hashing the key
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Searching for the retrieval offset, if one exists
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Let''s take a moment and consider this before asking ourselves if our program
+    is *fast* if it is *correct*. The usual way of demonstrating fitness for purpose
+    of software is through unit testing, a minimal setup for which is built right
+    into the Rust language. Unit testing is two processes wrapped into a single method.
+    When writing unit tests, a programmer will:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Produce *example data* that exercises some code path in the software
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Write further code to demonstrate that when the example data is applied to the
+    system under test, a desirable property/properties holds
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This is a good testing methodology for demonstrating that the happy path of
+    a system under test works as expected. The weak point of unit testing comes in
+    the first process, where the programmer must think very hard and produce an example
+    dataset that exercises the correct code paths, demonstrates the lack of edge cases,
+    and so on. Human beings are poor at this task, owing to it being tedious, biased
+    toward demonstrating the functioning of a thing made by one's own hands, chronic
+    blind spots, or otherwise. What we *are* pretty good at doing is cooking up high-level
+    properties for our systems that must always hold or hold in particular situations.
+    Fortunately for us programmers, *computers* are exceptionally good at doing tedious,
+    repetitive tasks and the generation of example data for tests is such a thing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing with QuickCheck
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'With that in mind, in this book, we''ll make extensive use of *property-based*
+    testing, also called *generative* testing by some literature. Property-based testing
+    has a slightly different, if similar, workflow to unit testing. When writing property
+    tests, the programmer will:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Produce a method for generating valid inputs to a system under test
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Write further code to demonstrate that for all valid inputs that a desirable
+    property or property of the system holds
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Property-based testing is exceptionally good at finding corner cases in software,
+    wacky inputs that the programmer might not have dreamed up, or, as happens from
+    time to time, even understand as potentially problematic. We''ll use Andrew Gallant''s
+    QuickCheck, a tool that is patterned from Haskell QuickCheck, introduced by Koen
+    Claessen and John Hughes in their 2000 *QuickCheck: A Lightweight Tool for Random
+    Testing of Haskell Programs*. First, a little preamble to get us into the testing
+    module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we were to unit test our naive `HashMap`, we''d probably write a test where
+    a particular arbitrary key/value pair would be inserted and then we''d assert
+    the ability to retrieve the same value with that same key. How does this map to
+    property-based testing? The property is that if we perform an insertion on an
+    empty `HashMap` with a key `k` of value `v` and immediately perform a retrieval
+    of `k`, we''ll receive `v` back out. Here it is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The test is named `get_what_you_give` and is annotated `#[test]` as per usual
+    Rust tests. What''s different is this test has a property `inner` function that
+    encodes the property we elaborated on earlier and a call out to QuickCheck for
+    actually running the property test, by default 100 times, with different inputs.
+    Exactly how QuickCheck manages this is pretty swell. Per the Claessen and Hughes
+    paper, QuickCheck implements the `Arbitrary` trait for many of the types available
+    in the standard library. QuickCheck defines `Arbitrary` like so, in `quickcheck/src/arbitrary.rs` :'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Gen` parameter is a wrapper around `rand:Rng` with some extra machinery
+    for controlling distributions. The two functions are `arbitrary` and `shrink`.
+    The purpose of `arbitrary` is easy to explain: it generates new, random instances
+    of a type that is `Arbitrary`. The `shrink` function is a little more complicated
+    to get across. Let''s say we''ve produced a function that takes a vector of `u16` but
+    just so happens to have a bug and will crash if a member of the vector is `0`.
+    A QuickCheck test will likely find this but the first arbitrary vector it generates
+    may have a thousand members and a bunch of `0` entries. This is not a very useful
+    failure case to begin diagnosis with. After a failing case is found by QuickCheck
+    the case is shrunk, per the definition of `Arbitrary::shrink`. Our hypothetical
+    vector will be cut in half and if that new case is also a failure then it''ll
+    be shrunk by half again and so on until it no longer fails, at which point—hopefully—our
+    failing case is a much more viable diagnosis tool.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The implementation of `Arbitrary` for `u16` is a touch complicated due to macro
+    use, but if you squint some, it''ll become clear:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: Arbitrary instances are generated by `unsigned_arbitrary!`, each of which in
+    turn generates a shrinker via `unsigned_shrinker!`. This macro is too long to
+    reprint here but the basic idea is to remove half of the unsigned integer on every
+    shrink again, until zero is hit, at which point give up shrinking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Fifteen years after the original QuickCheck paper, John Hughes summarized his
+    experience in the intervening 15 years with his 2016 *Experiences with QuickCheck:
+    Testing the Hard Stuff and Staying Sane*. Hughes noted that many property-based
+    tests in the wild don''t generate primitive types. The domain of applications
+    in which primitive types are sufficient tends to be those rare, blessed pure functions
+    in a code base. Instead, as many functions in a program are inherently stateful,
+    property-based tests tend to generate arbitrary *actions* against a stateful system,
+    *modeling* the expected behavior and validating that the system under test behaves
+    according to its model.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'How does that apply to our naive `HashMap`? The system under test is the naive
+    HashMap, that''s clear enough. Our actions are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`INSERT` key value'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`LOOKUP` key'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Hopefully, that''s straightforward. What about a model? In this particular
+    instance, we''re in luck. Our model is written for us: the standard library''s
+    `HashMap`. We need only confirm that if the same actions are applied to both our
+    naive `HashMap` and the standard `HashMap` in the same order then we''ll get the
+    same returns from both the model and system under test. How does that look? First,
+    we need actions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our `Action<T>` is parameterized on a `T: Arbitrary` and all values via the
+    Insert are pegged as `u16`s. This is done primarily for convenience''s sake. Both
+    key and value could be arbitrary or concrete types, depending on the preference
+    of the tester. Our `Arbitrary` definition is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Either action is equally likely to happen and any instance of `T` or `u16`
+    is valid for use. The validation of our naive `HashMap` against the standard library''s
+    `HashMap`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Hopefully, this looks familiar to our previous QuickCheck test. Again, we have
+    an inner property function that does the actual work and we request that QuickCheck
+    run this property test over arbitrary vectors of `Action<u8>`. For every action
+    present in the vector we apply them to both the model and the system under test,
+    validating that the results are the same. The `u8` type was intentionally chosen
+    here compared to a large domain type such as `u64.` One of the key challenges
+    of writing QuickCheck tests is probing for extremely unlikely events. QuickCheck
+    is blind in the sense that it's possible for the same path to be chosen through
+    the program for each run if that path is the most likely path to be chosen. While
+    millions of QuickCheck tests can give high confidence in fitness for purpose the
+    blind nature of the runs means that QuickCheck should also be paired with tools
+    known as fuzzers. These do not check the correct function of a program against
+    a model. Instead, their sole purpose is to validate the absence of program crashes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing with American Fuzzy Lop
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this book, we''ll make use of American Fuzzy Lop, a best-of-breed fuzzer
+    commonly used in other systems languages. AFL is an external tool that takes a
+    corpus of inputs, an executable that reads inputs from `STDIN`, and mutates the
+    corpus with a variety of heuristics to find crashing inputs. Our aim is to seek
+    out crash bugs in naive `HashMap`, this implies that we''re going to need some
+    kind of program to run our `HashMap` in. In fact, if you''ll recall back to the
+    project''s `Cargo.toml`, we already had the infrastructure for such in place:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The source for `naive_interpreter` is a little goofy looking but otherwise
+    uneventful:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Lines are read from `stdin`, and these lines are split along spaces and interpreted
+    as commands, either `LOOKUP` or `INSERT` and these are interpreted into actions
+    on the naive `HashMap`. The corpus for an AFL run can live pretty much anywhere.
+    By convention, in this book we''ll store the corpus in-project in a top-level
+    resources/directory. Here''s `resources/in/mixed_gets_puts`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The larger your input corpus, the more material AFL has to mutate and the faster—maybe—you''ll
+    find crashing bugs. Even in a case such as naive `HashMap` where we can be reasonably
+    certain that there will be no crashing bugs—owing to the lack of pointer manipulation
+    and potentially fatal integer operations—it''s worthwhile building up a good corpus
+    to support future efforts. After building a release of the project, getting an
+    AFL run going is a cargo command away:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This says to execute `target/release/naive_interpreter` under AFL with input
+    corpus at `resources/in` and to output any failing cases under `resources/out`.
+    Such crashes often make excellent unit tests. Now, the trick with fuzzing tools
+    in general is they''re not part of any kind of quick-cycle test-driven development
+    loop. These tool runs are long and often get run on dedicated hardware overnight
+    or over many days. Here, for example, is the AFL run I had going while writing
+    this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/8b4a6366-3c4e-4fa5-80fc-182300d5a773.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: There's a fair bit of information here but consider that the AFL runtime indicator
+    is measured in days. One key advantage to the use of AFL compared to other fuzzers
+    is the prominence of AFL in the security community. There are a good many papers
+    describing its implementation and the interpretation of its, uh, *comprehensive*
+    interface. You are warmly encouraged to scan the *Further reading* section of
+    this chapter for more information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Performance testing with Criterion
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We can now be fairly confident that our naive `HashMap` has the same behavior
+    as the standard library for the properties we''ve checked. But how does the runtime
+    performance of naive `HashMap` stack up? To answer this, we''ll write a benchmark,
+    but not a benchmark using the unstable Bencher subsystem that''s available in
+    the nightly channel. Instead, we''ll use Jorge Aparicio''s criterion—inspired
+    by the Haskell tool of the same name by Bryan O''Sullivan—which is available on
+    stable and does statistically valid sampling of runs. All Rust benchmark code
+    lives under the top-level `benches/` directory and criterion benchmarks are no
+    different. Open `benches/naive.rs` and give it this preamble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This benchmark incorporates pseudorandomness to produce an interesting run.
+    Much like unit tests, handcrafted datasets in benchmarks will trend towards some
+    implicit bias of the author, harming the benchmark. Unless, of course, a handcrafted
+    dataset is exactly what''s called for. Benchmarking programs well is a non-trivial
+    amount of labor. The `Rng` we use is `XorShift`, a pseudo-random generator known
+    for its speed and less cryptographic security. That suits our purposes here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The first benchmark, named `insert_and_lookup_native`, performs pseudo-random
+    insertions and lookups against the naive `HashMap.` The careful reader will note
+    that `XorShiftRng` is given the same seed every benchmark. This is important.
+    While we want to avoid handcrafting a benchmark dataset, we do want it to be the
+    same every run, else the benchmark comparisons have no basis. That noted, the
+    rest of the benchmark shouldn''t be much of a surprise. Generate random actions,
+    apply them, and so forth. As we''re interested in the times for standard library
+    `HashMap` we have a benchmark for that, too:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Criterion offers, as of writing this book, a method for comparing two functions
+    *or* comparing a function run over parameterized inputs but not both. That''s
+    an issue for us here, as we''d like to compare two functions over many inputs.
+    To that end, this benchmark relies on a small macro called `insert_lookup!`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The meat here is we create two `Fun` for comparison called `naive` and `standard,`
+    then use `Criterion::bench_functions` to run a comparison between the two. In
+    the invocation of the macro, we evaluate `insert_and_lookup_*` from `1` to `100_000`,
+    with it being the total number of insertions to be performed against the standard
+    and naive `HashMap`s. Finally, we need the criterion group and main function in
+    place:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Running criterion benchmarks is no different to executing Rust built-in benchmarks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: And so forth. Criterion also helpfully produces gnuplot graphs of your runtimes,
+    if gnuplot is installed on your benchmark system. This is highly recommended.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inspecting with the Valgrind Suite
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Your specific benchmarking output will likely vary but it''s pretty clear that
+    the naive implementation is, well, not very fast. What tools do we have available
+    to us to diagnose the issues with our code, guide us toward hot spots for optimization,
+    or help convince us of the need for better algorithms? We''ll now leave the realm
+    of Rust-specific tools and dip into tools familiar to systems programmers at large.
+    If you''re not familiar with them personally that''s a-okay—we''ll describe their
+    use and there are plenty of external materials available for the motivated reader.
+    Okay, first, we''re going to need some programs that exercise our naive `HashMap`
+    and the standard `HashMap`. `naive_interpreter` would work, but it''s doing a
+    lot of extra things that''ll muddy the water some. To that end, for examination
+    purposes, we''ll need two programs, one to establish a baseline and one for our
+    implementation. Our baseline, called `bin/standard.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our test article program is exactly the same, save the preamble is a bit different:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Easy enough and similar in spirit to the benchmark code explored earlier. Now,
+    let''s set our baselines. First up, memory allocations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Seven total allocations, seven total frees, and a grand total of 2,032 bytes
+    allocated. Running memcheck against naive has the same result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The naive run is noticeably slower, so it''s not allocating memory that kills
+    us. As so little memory gets allocated by these programs we''ll skip Valgrind
+    massif—it''s unlikely to turn up anything useful. Valgrind cachegrind should be
+    interesting though. Here''s baseline:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s break this up some:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The first section details our instruction cache behavior. `I refs: 25,733,614`
+    tells us that the standard program executed 25,733,614 instructions in all. This
+    is often a useful comparison between closely related implementations, as we''ll
+    see here in a bit. Recall that cachegrind simulates a machine with two levels
+    of instruction and data caching, the first level of caching being referred to
+    as `I1` or `D1` for instruction or data caches and the last level cache being
+    prefixed with `LL`. Here, we see the first and last level instruction caches each
+    missed around 2,500 times during our 25 million instruction run. That squares
+    with how tiny our program is. The second section is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is the data cache behavior, split into the two cache layers previously
+    discussed and further divided into read and writes. The first line tells us that
+    5,400,581 total reads and writes were made to the caches, 2,774,345 reads and
+    2,626,236 writes. These totals are then further divided by first level and last
+    level caches. Here it turns out that the standard library `HashMap` does real
+    well, a `D1` miss rate of 5.1% and a `LLd` miss rate of 0.7%. That last percentage
+    is key: the higher it is, the more our program is accessing main memory. Doing
+    so, as you''ll recall from [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust*, is painfully
+    slow. The third section is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This focuses on the combined behavior of data and instruction cache accesses
+    to the LL cache. Personally, I don''t often find this section illuminating compared
+    to the previously discussed sections. Your mileage may vary. The final section
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: This details the branch misprediction behavior of our program. We're drowning
+    out the standard library's `HashMap` by branching so extensively in the runner
+    program but it will still serve to establish some kind of baseline. The first
+    line informs us that 3,008,198 total branches were taken during execution. The
+    majority—3,006,105—were conditional branches, branches that jump to a location
+    based on some condition. This squares with the number of conditional statements
+    we have in the runner. The small majority of branches were indirect, meaning they
+    jumped to offsets in memory based on the results of previous instructions. Overall,
+    our branch misprediction rate is 10.5%.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Alright, how does the naive `HashMap` implementation stack up?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Already there are some standouts. Firstly, naive executed 15,385,395,657 instructions
+    compared to the 25,733,614 of baseline. The naive implementation is simply doing
+    much, much more work than that standard library is. At this point, without looking
+    at any further data, it''s reasonable to conclude that the program under inspection
+    is fundamentally flawed: a rethink of the algorithm is in order. No amount of
+    micro-optimization will fix this. But, that was understood; it''s why the program
+    is called *naive* to start with. The second major area of concern is that the
+    `D1` cache miss rate is just shy of 20% higher than baseline, not to ignore that
+    there are simply just more reads and writes to the first level cache than at baseline.
+    Curiously, the naive implementation suffers fewer `LLd` cache misses compared
+    to baseline—10,494 to 34,105\. No hypothesis there. Skipping on ahead to the branch
+    misprediction section, we find that naive stays on-theme and performs drastically
+    more branches than standard but with a lower total number of mispredictions. This
+    squares with an algorithm dominated by linear seek and compares, as naive is.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inspecting with Linux perf
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It's worth keeping in mind that Valgrind's cachegrind is a simulation. If you
+    have access to a Linux system you can make use of the perf tool to get real, honest
+    numbers about your program's cache performance and more. This is highly recommended
+    and something we'll do throughout this book. Like git, perf is many tools arranged
+    under a banner—perf—with its own subcommands that have their own options.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is a tool well worth reading the documentation for. Anyhow, what does the
+    standard look like under perf?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: How does the naive implementation stand up?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This squares pretty well with the Valgrind simulation and leads to the same
+    conclusion: too much work is being done to insert. Too many branches, too many
+    instructions, the well-studied reader will have seen this coming a mile off, it''s
+    just worthwhile to be able to put a thing you know to numbers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A better naive HashMap
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'How can we do better than our naive implementation? Obviously, there''s scope
+    for algorithmic improvement—we could implement any kind of probing—but if we''re
+    trying to compete with standard library''s HashMap it''s likely that we have a
+    specialized reason for doing so. A specialized reason implies we know something
+    unique about our data, or are willing to make a trade-off that a general data
+    structure cannot. Speaking broadly, the main goals one should have when building
+    software at the limit of machine performance are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Improve the underlying algorithm, reducing total work done.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Improve cache locality of data accesses. This may mean:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Keeping your working-set in L1 cache
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Compressing your data to fit better into cache.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Avoid branch mispredictions. This may mean:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Shaving off branches entirely when possible
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Constraining the probability distribution of your branches.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How does that apply here? Well, say we knew that for our application `K == u8`
+    but we still have an unconstrained `V`. `u8` is a key with low cardinality and
+    we ought to be able to trade a little memory to build a faster structure for `u8`
+    keys. Unfortunately, Rust does not yet have type specialization in a stable channel.
+    Type specialization is *very important* for producing high-performance software
+    without breaking abstractions. It allows the programmer to define an abstract
+    interface and implementation for such and then, at a later date, specialize some
+    of the parameterized types into concrete form with a special purpose implementation.
+    Rust RFC 1210 ([https://github.com/rust-lang/rfcs/pull/1210/files#diff-b652f1feca90247198ee29514ac22cf3](https://github.com/rust-lang/rfcs/pull/1210/files#diff-b652f1feca90247198ee29514ac22cf3))
+    details how specialization in Rust will work and Rust PR 31844 ([https://github.com/rust-lang/rust/issues/31844](https://github.com/rust-lang/rust/issues/31844))
+    tracks the ongoing implementation, which is to say, all of this is only exposed
+    in nightly. This chapter sticks to stable and so, unfortunately, we'll need to
+    create a new HashMap rather than specializing. The reader is encouraged to try
+    out specialization for themselves. It's quite nice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll park our `HashMapU8` implementation in `naive_hashmap/src/lib.rs`. The
+    implementation is quite small:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The idea here is simple—`u8` is a type with such cardinality that we can rework
+    every possible key into an array offset. The value for each key is an `Option<V>`,
+    `None` if no value has ever been set for the key, and `Some` otherwise. No hashing
+    needs to be done and, absent specialization, we drop the type requirements for
+    that. Every `HashMapU8` will reserve `256 * ::core::mem::size_of::<Option<V>>()`
+    bytes. Being that there''s unsafe code in this implementation, it''s worthwhile
+    doing an AFL run to search for crashes. The interpreter for the specialized map
+    is similar to the naive interpreter, except that we now take care to parse for
+    `u8` keys:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'I''ll spare you the AFL output but, as a reminder, here''s how you run the
+    specialized interpreter through:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Producing a criterion benchmark will be very similar to the approach taken
+    for the naive implementation, save that we''ll swap out a few names here and there.
+    We''ll skip listing the code with the hopes that you''ll be able to reproduce
+    it as desired. The results, however, are promising:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In a like manner to `naive.rs` and `standard.rs` from previously, we''ve also
+    got a `specialized.rs` runner which, to avoid duplication, we''ll avoid listing
+    here. Let''s run specialized through Valgrind cachegrind:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Compared to the standard `valgrind` run, we''re doing around 1/5 the total
+    number of instructions and with substantially fewer `D1` and `LLd` misses. No
+    surprise here. Our *hash* for `HashMapU8` is an exceedingly cheap pointer offset
+    and the size of the storage is going to fit comfortably into the cache. Linux
+    perf tells a similar story:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Phew! Let''s summarize our efforts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| name | Task Clock (ms) | Instructions | Branches | Branch Misses | Cache
+    References | Cache Misses |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- | --- | --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| specialized | 1.433884 | 6,141,529 | 749,155 | 59,914 | 74,760 | n/a |'
+  prefs: []
+  type: TYPE_TB
+- en: '| standard | 6.923765 | 26,234,708 | 2,802,334 | 290,475 | 635,526 | 67,304
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| naive | 1323.724713 | 15,390,499,356 | 4,428,637,974 | 204,132 | 455,719,875
+    | 21,311 |'
+  prefs: []
+  type: TYPE_TB
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: What should we understand from all of this? To produce software that operates
+    at the edge of the machine's ability, you must understand some important things.
+    Firstly, if you aren't measuring your program, you're only guessing. Measuring
+    runtime, as criterion does, is important but a coarse insight. *Where is my program
+    spending its time?* is a question the Valgrind suite and perf can answer, but
+    you've got to have benchmarks in place to contextualize your questions. Measuring
+    and then validating behavior is also an important chunk of this work, which is
+    why we spent so much time on QuickCheck and AFL. Secondly, have a goal in mind.
+    In this chapter, we've made the speed of standard library `HashMap` our goal but,
+    in an actual code base, there's always going to be places to polish and improve.
+    What matters is knowing what needs to happen to solve the problem at hand, which
+    will tell you where your time needs to be spent. Thirdly, understand your machine.
+    Modern superscalar, parallel machines are odd beasts to program and, without giving
+    a thought to their behaviors, it's going to be tough understanding why your program
+    behaves the way it does. Finally, algorithms matter above all else. Our naive
+    `HashMap` failed to perform well because it was a screwy idea to perform an average
+    O(n/2) operations for every insertion, which we proved out in practice. Standard
+    library's `HashMap` is a good, general-purpose structure based on linear probing
+    and clearly, a lot of thought went into making it function well for a variety
+    of cases. When your program is too slow, rather than micro-optimizing, take a
+    step back and consider the problem space. Are there better algorithms available,
+    is there some insight into the data that can be exploited to shift the algorithm
+    to some other direction entirely?
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's performance work in a nutshell. Pretty satisfying, in my opinion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we covered measuring and improving the performance of a serial
+    Rust program while demonstrating the program's fitness for purpose. This is a
+    huge area of work and there's a deep well of literature to pull from.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Rust''s std::collections is absolutely horrible*, available at [https://www.reddit.com/r/rust/comments/52grcl/rusts_stdcollections_is_absolutely_horrible/](https://www.reddit.com/r/rust/comments/52grcl/rusts_stdcollections_is_absolutely_horrible/). The
+    original poster admitted the title is a bit on the click-baity side but the discussion
+    on Reddit is well worth reading. The original author of standard library''s `HashMap`
+    weighs in on the design decisions in the implementation.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Robin Hood Hashing*, 1985, Pedro Celis. This thesis introduced the Robin Hood
+    hashing strategy for constructing associative arrays and is the foundation for
+    the implementation you''ll find in Rust. The paper also goes into further search
+    strategies that didn''t find their way into Rust''s implementation but should
+    be of interest to readers with ambitions toward building hashing search structures.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Robin Hood hashing*, Emmanuel Goossaert, available at [http://codecapsule.com/2013/11/11/robin-hood-hashing/](http://codecapsule.com/2013/11/11/robin-hood-hashing/).
+    The Rust standard library HashMap makes continued reference to this blog post
+    and its follow-on, linked in the text. The description here is of a higher-level
+    than that of Celis'' thesis and potentially easier to understand as a result.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Denial of Service via Algorithmic Complexity Attacks*, 2003, Scott Crosby
+    and Dan Wallach. This paper outlines a denial of service attack on network services
+    by exploiting algorithmic blow-ups in their implementations. The consequence of
+    this paper influenced Rust''s decision to ship a safe-by-default HashMap.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*QuickCheck: Lightweight Tool for Random Testing of Haskell Programs*, 2000,
+    Koen Claessen and John Hughes. This paper introduces the QuickCheck tool for Haskell
+    and introduces property-based testing to the world. The research here builds on
+    previous work into randomized testing but is novel for realizing that computers
+    had got fast enough to support type-directed generation as well as shipping with
+    the implementation in a single page appendix. Many, many subsequent papers have
+    built on this one to improve the probing ability of property testers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*An Evaluation of Random Testing*, 1984, Joe Duran and Simeon Ntafos. The 1970s
+    and 1980s were an interesting time for software testing. Formal methods were seen
+    as being just around the corner and the preferred testing methods relied on intimate
+    knowledge of the program''s structure. Duran and Ntafos evaluated the ideal techniques
+    of the day against random generation of data and found that randomness compared
+    favorably with significantly less programmer effort. This paper put random testing
+    on the map.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Experiences with QuickCheck: Testing the Hard Stuff and Staying Sane*, 2016,
+    John Hughes. This paper is a follow-on to the original QuickCheck paper by Claessen
+    and Hughes in which Hughes describes his subsequent fifteen years of experience
+    doing property testing. The techniques laid out in this paper are a significant
+    evolution of those presented in the 2000 paper and well-worth studying by anyone
+    doing property tests as a part of their work. That ought to be most people, is
+    my take.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*American Fuzzy Lop website*, available at [http://lcamtuf.coredump.cx/afl](http://lcamtuf.coredump.cx/afl/). AFL
+    is the product of a long tail of research into efficiently mutating inputs for
+    the purpose of triggering bugs. As of writing this book, it is best of breed and
+    has a long trophy list to show for it. The website has links to AFL''s documentation
+    and relevant research to understand its function in deeper detail.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Compact Data Structures: A Practical Approach*, 2016, Gonzalo Navarro. One
+    of the major techniques of exploiting cache locality is to shrink the individual
+    elements of a working set, implying more elements are available in the working
+    set. Compact data structures, those that can be operated on, at, or near their
+    information theory minimal representation, is an ongoing and exciting area. Navarro''s
+    book is excellent and well-worth studying for anyone who is interested in exploring
+    this avenue of optimization.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*vec_map*, various authors. `vec_map` is a Rust crate that exploits the same
+    ideas as this chapter''s `HashMapU8` but in a generic implementation, with full
+    compatibility to the standard library HashMap. The source code is quite interesting
+    and warmly recommended.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Reevaluating Amdahl''s Law*, 1988, John Gustafson. This is an exceptionally
+    short paper and clearly explains Amdahl''s formulation as well as Gustafson''s
+    objection to its underlying assumptions. That the paper is describing an interpretation
+    in which the serial portion is shrunk is clear only after a few readings, or once
+    some kind soul explains this to you.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Tracking issue for specialization (RFC 1210)*, available at [https://github.com/rust-lang/rust/issues/31844](https://github.com/rust-lang/rust/issues/31844).This
+    issue is a pretty good insight into the way the Rust community goes about stabilizing
+    a major feature. The original RFC is from 2016\. Pretty much ever since the point
+    it was accepted that there''s been a feature flag in nightly for experimentation
+    and a debate on the consequences of making the work stable.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

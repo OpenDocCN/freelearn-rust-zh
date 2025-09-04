@@ -1,0 +1,979 @@
+- en: Asynchronous Network Programming Using Tokio
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In a sequential programming model, code is always executed in the order dictated
+    by the semantics of the programming language. Thus, if one operation blocks for
+    some reason (waiting for a resource, and so forth), the whole execution blocks
+    and can only move forward once that operation has completed. This often leads
+    to poor utilization of resources, because the main thread will be busy waiting
+    on one operation. In GUI apps, this also leads to poor user interactivity, because
+    the main thread, which is responsible for managing the GUI, is busy waiting for
+    something else. This is a major problem in our specific case of network programming,
+    as we often need to wait for data to be available on a socket. In the past, we
+    worked around these issues using multiple threads. In that model, we delegated
+    a costly operation to a background thread, making the main thread free for user
+    interaction, or some other task. In contrast, an asynchronous model of programming
+    dictates that no operation should ever block. Instead, there should be a mechanism
+    to check whether they have completed from the main thread. But how do we achieve
+    this? A simple way would be to run each operation in its own thread, and then
+    to join on all of those threads. In practice, this is troublesome owing to the
+    large number of potential threads and coordination between them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rust provides a few crates that support asynchronous programming using a futures-based,
+    event loop-driven model. We will study that in detail in this chapter. Here are
+    the topics we will cover here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Futures abstraction in Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Asynchronous programming using the tokio stack
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Looking into the Future
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The backbone of Rust's asynchronous programming story is the futures crate.
+    This crate provides a construct called a *future*. This is essentially a placeholder
+    for the result of an operation. As you would expect, the result of an operation
+    can be in one of two states—either the operation is still in progress and the
+    result is not available yet, or the operation has finished and the result is available.
+    Note that in the second case, there might have been an error, making the result
+    immaterial.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The library provides a trait called `Future` (among other things),which any
+    type can implement to be able to act like a future. This is how the trait looks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, `Item` refers to the type of the returned result on successful completion
+    of the operation, and `Error` is the type that is returned if the operation fails.
+    An implementation must specify those and also implement the poll method that gets
+    the current state of the computation. If it has already finished, the result will
+    be returned. If not, the future will register that the current task is interested
+    in the outcome of the given operation. This function returns a `Poll`, which looks
+    like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: A `Poll` is typed to a result of another type called `Async` (and the given
+    error type), which is defined next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Async`, in turn, is an enum that can either be in `Ready(T)` or `NotReady`.
+    These last two states correspond to the state of the operation. Thus, the poll
+    function can return three possible states:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Ok(Async::Ready(result))` when the operation has completed successfully and
+    the result is in the inner variable called `result`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Ok(Async::NotReady)` when the operation has not completed yet and a result
+    is not available. Note that this does not indicate an error condition.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Err(e)` when the operation ran into an error. No result is available in this
+    case.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It is easy to note that a `Future` is essentially a `Result` that might still
+    be running something to actually produce that `Result`. If one removes the case
+    that the `Result` might not be ready at any point in time, the only two options
+    we are left with are the `Ok` and the `Err` cases, which exactly correspond to
+    a `Result`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Thus, a `Future` can represent anything that takes a non-trivial amount of
+    time to complete. This can be a networking event, a disk read, and so on. Now,
+    the most common question at this point is: how do we return a future from a given
+    function? There are a few ways of doing that. Let us look at an example here.
+    The project setup is the same as it always is.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will need to add some libraries in our Cargo config, which will look like
+    this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: In our main file, we set up everything as usual. We are interested in finding
+    out whether a given integer is a prime or not, and this will represent the part
+    of our operation that takes some time to complete. We have two functions, doing
+    exactly that. These two use two different styles of returning futures, as we will
+    see later. In practice, the naive way of primality testing did not turn out to
+    be slow enough to be a good example. Thus, we had to sleep for a random time to
+    simulate slowness.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: There are a few major ways of returning futures. The first one is using trait
+    objects, as done in `check_prime_boxed`. Now, `Box` is a pointer type pointing
+    to an object on the heap. It is a managed pointer in the sense that the object
+    will be automatically cleaned up when it goes out of scope. The return type of
+    the function is a trait object, which can represent any future that has its `Item`
+    set to bool and `Error` set to `io:Error`. Thus, this represents dynamic dispatch.
+    The second way of returning a future is using the `impl` trait feature. In the
+    case of `check_prime_impl_trait`, that is what we do. We say that the function
+    returns a type that implements `Future<Item=bool, Error=io::Error>`, and as any
+    type that implements the `Future` trait is a future, our function is returning
+    a future. Note that in this case, we do not need to box before returning the result.
+    Thus, an advantage of this approach is that no allocation is necessary for returning
+    the future. Both of our functions use the `future::ok` function to signal that
+    our computation has finished successfully with the given result. Another option
+    is to not actually return a future and to use the futures-based thread pool crate
+    to do the heavy lifting toward creating a future and managing it. This is the
+    case with `check_prime` that just returns a `bool`. In our main function, we set
+    up a thread pool using the futures-`cpupool` crate, and we run the last function
+    in that pool. We get back a future on which we can call `wait` to get the result.
+    A totally different option for achieving the same goal is to return a custom type
+    that implements the `Future` trait. This one is the least ergonomic, as it involves
+    writing some extra code, but it is the most flexible approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `impl` trait is not a stable feature yet. Thus, `check_prime_impl_trait`
+    will only work on nightly Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Having constructed a future, the next goal is to execute it. There are three
+    ways of doing this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the current thread: This will end up blocking the current thread till the
+    future has finished executing. In our previous example, `res_one` and `res_two`
+    are executed on the main thread, blocking user interaction.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In a thread pool: This is the case with `res_three`, which is executed in a
+    thread pool named `thread_pool`. Thus, in this case, the calling thread is free
+    to move on with its own processing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In an event loop: In some cases, neither of the above is possible. The only
+    option then is to execute futures in an event loop. Conveniently, the tokio-core
+    crate provides futures-friendly APIs to use event loops. We will look deeper into
+    this model in the next section.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In our main function, we call the first two functions in the main thread. Thus,
+    they will block execution of the main thread. The last one, however, is run on
+    a different thread. In that case, the main thread is immediately free to print
+    out that `check_prime` has been called. It blocks again on calling `wait` on the
+    future. Note that the futures are lazily evaluated in all cases. When we run this,
+    we should see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What sets futures apart from regular threads is that they can be chained ergonomically.
+    This is like saying, *download the web page and then parse the html and then extract
+    a given word*. Each of these steps in series is a future, and the next one cannot
+    start unless the first one has finished. The whole operation is a `Future` as
+    well, being made up of a number of constituent futures. When this larger future
+    is being executed, it is called a task. The crate provides a number of APIs for
+    interacting with tasks in the `futures::task` namespace. The library provides
+    a number of functions to work with futures in this manner. When a given type implements
+    the `Future` trait (implements the `poll` method), the compiler can provide implementations
+    for all of these combinators. Let us look at an example of implementing a timeout
+    functionality using chaining. We will use the tokio-timer crate for the timeout
+    future and, in our code, we have two competing functions that sleep for a random
+    amount of time and then return a fixed string to the caller. We will dispatch
+    all these simultaneously and, if we get back the string corresponding to the first
+    function, we declare that it has won. Similarly, this applies for the second one.
+    In case we do not get back either, we know that the timeout future has triggered.
+    Let''s start with the project setup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: We then add our dependencies in our `Cargo.toml`
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Like last time, we use a thread pool to execute our futures using the futures-`cpupool`
+    crate. Lets us look at the code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our two players are very similar; both of them generate a random number between
+    `1` and `5` and sleep for that amount of seconds. After that, they return a fixed
+    string corresponding to their names. We will later use these strings to identify
+    them uniquely. In our main function, we initialize the thread pool and the timer.
+    We use the combinator on the timer to return a future that errors out after `3`
+    seconds. We then spawn the two players in the thread pool and return `Result`s
+    from those as futures. Note that those functions are not really running at this
+    point, because futures are lazily evaluated. We then put those futures in a list
+    and use the `select_ok` combinator to run those in parallel. This function takes
+    in a iterable of futures and selects the first successful future; the only restriction
+    here is that all the futures passed to this function should be of the same type.
+    Thus, we cannot pass the timeout future here. We chain the result of `select_ok`
+    to the timeout future using the `select` combinator that takes two futures and
+    waits for either to finish executing. The resultant future will have the one that
+    has finished and the one that hasn't. We then use the `map` combinator to discard
+    the second part. Finally, we block on our futures and signal the end of the chain
+    using `ok()`. We can then compare the result with the known strings to determine
+    which future has won, and print out messages accordingly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is how a few runs will look. As our timeout is smaller than the maximum
+    sleep period of either of the two functions, we should see a few timeouts. Whenever
+    a function chooses a time less than the timeout, it gets a shot at winning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Working with streams and sinks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The futures crate provides another useful abstraction for a lazily evaluated
+    series of events, called `Stream`. If `Future` corresponds to `Result`, a `Stream`
+    corresponds to `Iterator`. Semantically, they are very similar to futures, and
+    they look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The only difference here is that the return type is wrapped in an `Option`,
+    exactly like the `Iterator` trait. Thus, a `None` here would indicate that the
+    stream has terminated. Also, all streams are futures and can be converted using
+    `into_future`. Let us look at an example of using this construct. We will partially
+    reuse our collatz example from a previous chapter. The first step is to set up
+    the project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With all the dependencies added, our Cargo config looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Having set everything up, our main file will look as follows. In this case,
+    we have a struct called `CollatzStream` that has two fields for the current state
+    and the end state (which should always be `1`). We will implement the `Stream`
+    trait on this to make this behave as a stream:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We simulate a delay in returning the result by sleeping for a random amount
+    of time between `1` and `5` seconds. Our implementation for the poll returns `Ok(Async::Ready(None))`
+    to signal that the stream has finished when it reaches `1`. Otherwise, it returns
+    the current state as `Ok(Async::Ready(Some(self.current)))`. It''s easy to note
+    that, except for the stream semantics, this implementation is the same as that
+    for iterators. In our main function, we initialize the struct and use the `for_each`
+    combinator to print out each item in the stream. This combinator returns a future
+    on which we call `wait` and `ok` to block and get all results. Here is what we
+    see on running the last example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: As it is with the `Future` trait, the `Stream` trait also supports a number
+    of other combinators useful for different purposes. The dual of a `Stream` is
+    a `Sink`, which is a receiver of asynchronous events. This is extremely useful
+    in modeling the sending end of Rust channels, network sockets, file descriptors,
+    and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A common pattern in any asynchronous system is synchronization. This becomes
+    important, as more often than not, components need to communicate with one another
+    to pass data or coordinate tasks. We solved this exact problem in the past using
+    channels. But those constructions are not applicable here, as the channel implementation
+    in the standard library is not asynchronous. Thus, futures has its own channel
+    implementation, which provides all the guarantees you would expect from an asynchronous
+    system. Let us look at an example; our project setup should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Cargo config should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now we have two functions. One waits for a random amount of time and then randomly
+    returns either `"ping"` or `"pong"`. This function will be our sender. Here is
+    what it looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The futures crate provides two types of channel: a *oneshot* channel that can
+    be used only once to send and receive any messages, and a regular *mpsc* channel
+    that can be used multiple times. In our main function, we get hold of both ends
+    of the channel and spawn our sender in another thread as a future. The receiver
+    is spawned in another thread. In both cases, we record the handles to be able
+    to wait for them to finish (using `join`) later. Note that our receiver takes
+    in the receiving end of the channel as parameter. Because `Receiver` implements
+    `Stream`, we can use the `and_then` combinator on it to print out the value. Finally,
+    we call `wait()` and `ok()` on the future before exiting the receiver function.
+    In the main function, we join on the two thread handles to drive them to completion.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running the last example will randomly print either `"ping"` or `"pong"`, depending
+    on what was sent via the channel. Note that the actual printing happens on the
+    receiving end.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The futures crate also provides a locking mechanism in `futures::sync::BiLock`
+    that closely mirrors `std::sync::Mutex`. This is a future-aware mutex that arbitrates
+    sharing a resource between two owners. Note that a `BiLock` is only for two futures,
+    which is an annoying limitation. Here is how it works: we are interested in modifying
+    our last example to show a counter when the sender function is called. Now our
+    counter needs to be thread-safe so that it can be shared across consumers. Set
+    up the project using Cargo:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our `Cargo.toml` file should be exactly the same, and here is how the main
+    file looks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: While this is basically the same as the last example, there are some differences.
+    In our main function, we set the counter to zero. We then create a `BiLock` on
+    the counter. The constructor returns two handles like a channel, which we can
+    then pass around. We then create our channel and spawn the sender. Now, if we
+    look at the sender, it has been modified to take in a reference to a `BiLock`.
+    In the function, we attempt to acquire a lock using `poll_lock`, and, if that
+    works, we increment the counter. Otherwise, we do nothing. We then move on to
+    our usual business of returning `"ping"` or `"pong"`. The receiver has been modified
+    to take a `BiLock` as well. In that, we try to acquire a lock and, if successful,
+    we print out the value of the data being locked. In our main function, we spawn
+    these futures using threads and join on them to wait for those to finish.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is what happens on an unsuccessful run, when both parties fail to acquire
+    the lock. In a real example, we would want to handle the error gracefully and
+    retry. We left out that part for the sake of brevity:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is what a good run looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Heading to tokio
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The tokio ecosystem is an implementation of a network stack in Rust. It has
+    all the major functionality of the standard library, the major difference being
+    that it is non-blocking (most common calls do not block the current thread). This
+    is achieved by using mio to do all the low-level heavy lifting, and using futures
+    to abstract away long-running operations. The ecosystem has two basic crates,
+    everything else being built around those:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`tokio-proto` provides primitives for building asynchronous servers and clients.
+    This depends heavily on mio for low-level networking and on futures for abstraction.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`tokio-core` provides an event loop to run futures in and a number of related
+    APIs. This is useful when an application needs fine-grained control over IO.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'As we mentioned in the last section, one way to run futures is on an event
+    loop. An event loop (called a `reactor` in tokio) is an infinite loop that listens
+    for defined events and takes appropriate action once it receives one. Here is
+    how this works: we will borrow our previous example of a function that determines
+    whether the given input is a prime or not. This returns a future with the result,
+    which we then print out. The project setup is the same as it always is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is what `Cargo.toml` should look like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For this example, we will take input in an infinite loop. For each input, we
+    trim out newlines and spaces and try to parse it as an `u64`. Here is how it looks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In our main function, we create the core and start our infinite loop. We use
+    the `run` method of core to start a task to execute the future asynchronously.
+    The result is collected and printed on the standard output. Here is what a session
+    should look like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `tokio-proto` crate is an asynchronous server (and client) building toolkit.
+    Any server that uses this crate has the following three distinct layers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A codec that dictates how data should be read from and written to the underlying
+    socket forming the transport layer for our protocol. Subsequently, this layer
+    is the bottom-most (closest to the physical medium). In practice, writing a codec
+    amounts to implementing a few given traits from the library that processes a stream
+    of bytes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A protocol sits above a codec and below the actual event loop running the protocol.
+    This acts as a glue to bind those together. tokio supports multiple protocol types,
+    depending on the application: a simple request-response type protocol, a multiplexed
+    protocol, and a streaming protocol. We will delve into each of these shortly.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A service that actually runs all this as a future. As this is just a future,
+    an easy way to think of this is as an asynchronous function that transforms an
+    input to an eventual response (which could be an error). In practice, most of
+    the computation is done in this layer.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Because the layers are swappable, an implementation is perfectly free to swap
+    the protocol type for another, or the service for another one, or the codec. Let
+    us look at an example of a simple service using `tokio-proto`. This one is a traditional
+    request-response service that provides a text-based interface. It takes in a number
+    and returns its collatz sequence as an array. If the input is not a valid integer,
+    it send back a message indicating the same. Our project setup is pretty simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The Cargo config looks like the following sample:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: As described earlier, we will need to implement the different layers. In our
+    current case, each of our layers do not need to hold much state. Thus, they can
+    be represented using unit structs. If that was not the case, we would need to
+    put some data in those.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we saw earlier, the first step is to tell the codec how to read data to and
+    from the socket. This is done by implementing `Encoder` and `Decoder` from `tokio_io::codec`.
+    Note that we don't have to deal with raw sockets here; we get a stream of bytes
+    as input, which we are free to process. According to our protocol defined before,
+    a newline indicates an end of input. So, in our decoder, we read till a newline
+    and return the data after removing the said newline as a UTF-8 encoded string.
+    In case of an error, we return a `None`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Encoder` implementation is exactly the reverse: it transforms a string
+    into a stream of bytes. The next step is the protocol definition, this one is
+    really simple, as it does not do multiplexing or streaming. We implement `bind_transport`
+    to bind the codec to our raw socket, which we will get to later. The only catch
+    here is that the `Request` and `Response` types here should match that of the
+    codec. Having set these up, the next step is to implement the service, by declaring
+    an unit struct and implementing the `Service` trait on it. Our helper function
+    `get_sequence` returns the collatz sequence given a `u64` as input. The `call`
+    method in `Service` implements the logic of computing the response. We parse the
+    input as a `u64` (remember that our codec returns input as a String). If that
+    did not error out, we call our helper function and return the result as a static
+    string, otherwise we return an error. Our main function looks similar to such
+    a function as would use standard networking types, but, we use the `TcpServer`
+    type from tokio, which takes in our socket (to bind it to the codec) and our protocol
+    definition. Finally, we call the `serve` method while passing our service as a
+    closure. This method takes care of managing the event loop and cleaning up things
+    on exit.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us use `telnet` to interact with it. Here is how a session will look:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As always, it would be much more useful to write a client for our server. We
+    will borrow a lot from the example of running a future in an event loop. We start
+    with setting up our project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our Cargo setup will look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is our main file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Of course, this one sends a single integer to the server (110 in decimal),
+    but it is trivial to put this in a loop to read input and send those. We leave
+    that as an exercise for the reader. Here, we create a event loop and get its handle.
+    We then use the asynchronous `TcpStream` implementation to connect to the server
+    on a given address. This returns a future, which we combine with a closure using
+    `and_then` to write to the given socket. The whole construct returns a new future
+    called `request`, which is chained with a reader future. The final future is called
+    `response` and is run on the event loop. Finally, we read the response and print
+    it out. At every step, we have to respect our protocol that a newline denotes
+    end-of-input for both the server and the client. Here is what a session looks
+    like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: Socket multiplexing in tokio
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One model of asynchronous-request processing in a server is through multiplexing
+    incoming connections. In this case, each connection is assigned a unique ID of
+    some kind and replies are issued whenever one is ready, irrespective of the order
+    in which it was received. Thus, this allows a higher throughput, as the shortest
+    job gets the highest priority implicitly. This model also makes the server highly
+    responsive with a larger number of incoming requests of varying complexity. Traditional
+    Unix-like systems support this using the select and poll system calls for socket
+    multiplexing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the tokio ecosystem, this is mirrored by a number of traits that enable
+    implementing multiplexed protocols. The basic anatomy of the server is the same
+    as a simple server: we have the codec, the protocol using the codec, and a service
+    that actually runs the protocol. The only difference here is that we will assign
+    a request ID to each incoming request. This will be used later to disambiguate
+    while sending back responses. We will also need to implement some traits from
+    the `tokio_proto::multiplex` namespace. As an example, we will modify our collatz
+    server and add multiplexing to it. Our project setup is a bit different in this
+    case, as we are planning to run the binaries using Cargo, and our project will
+    be a library. We set it up like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The Cargo config is similar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is what the `lib.rs` file looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: Tokio provides a built-in type called `RequestId` to represent unique IDs for
+    incoming requests, all states associated with it being managed internally by tokio.
+    We define a custom data type called `CollatzFrame` for our frame; this has the
+    `RequestId` and a `String` for our data. We move on to implementing `Decoder`
+    and `Encoder` for `CollatzCodec` like last time. But, in both of these cases,
+    we have to take into account the request ID in the header and the trailing newline.
+    Because the `RequestId` type is a `u64` under the hood, it will always be four
+    bytes and one extra byte for a newline. Thus, if we have received fewer than 5
+    bytes, we know that the whole frame has not been received yet. Note that this
+    is not an error case, the frame is still being transmitted, so we return an `Ok(None)`.
+    We then check whether the buffer has a newline (in compliance with our protocol).
+    If everything looks good, we parse the request ID from the first 4 bytes (note
+    that this will be in network-byte order). We then construct an instance of `CollatzFrame`
+    and return it. The encoder implementation is the inverse; we just need to put
+    the request ID back in, then the actual data, and end with a newline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next steps are to implement `ServerProto` and `ClientProto` for `CollatzProto`;
+    both of these are boilerplates that bind the codec with the transport. Like last
+    time, the last step is to implement the service. This step does not change at
+    all. Note that we do not need to care about dealing with the request ID after
+    implementing the codec because later stages do not see it at all. The codec deals
+    with and manages it while passing on the actual data to later layers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is what our frame looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00016.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Our request frame with the RequestId as header and a trailing newline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This time, our client will be based on tokio too. Our `Client` struct wraps
+    an instance of `ClientService`, which takes in the underlying TCP stream and the
+    protocol implementation to use. We have a convenience function called `connect`
+    for the `Client` type, which connects to a given server and returns a future.
+    Lastly, we implement `Service` for `Client` in which the `call` method returns
+    a future. We run the server and client as examples by putting them in a directory
+    called `examples`. This way, cargo knows that those should be run as associated
+    examples with this crate. The server looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is pretty much the same as last time, just in a different file. We have
+    to declare our parent crate as an external dependency so that Cargo can link everything
+    properly. This is how the client looks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: We run our client in an event loop, using tokio-core. We use the connect method
+    defined on the client to get a future wrapping the connection. We use the `and_then`
+    combinator and use the call method to send a string to the server. As this method
+    returns a future as well, we can use the `and_then` combinator on the inner future
+    to extract the response and then resolve it by returning an `Ok(())`. This also
+    resolves the outer future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, if we open two terminals and run the server in one and the client in another,
+    here is what we should see in the client. Note that as we do not have sophisticated
+    retries and error handling, the server should be run before the client:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: And, as expected, this output matches what we got before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing streaming protocols
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In a number of cases, a protocol has a data unit with a header attached to
+    it. The server typically reads the header first and, based on that, decides how
+    to process the data. In some cases, the server may be able to do some processing
+    based on the header. One such example is IP, which has a header that has the destination
+    address. A server may start running a longest prefix match based on that information,
+    before reading the body. In this section, we will look into using tokio to write
+    such servers. We will expand our toy collatz protocol to include a header and
+    some data body, and work from there. Let us start with an example, and our project
+    setup will be exactly the same, setting it up using Cargo:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Cargo config does not change much:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As this example is large, we have broken this down into constituent pieces,
+    as follows. The first part shows setting up the client:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As always, the first step is to set up extern crates and include everything
+    required. We define a few types that we will use. A `CollatzMessage` is a message
+    that our protocol receives; it has a header and a body both of type `String`.
+    A `CollatzInput` is an input stream for the protocol, which is an enum with two
+    variants: `Once` represents the case where we have received data in a non-streaming
+    way, and `Stream` is for the second case. The protocol implementation is a unit
+    struct called `CollatzProto`. We then define a struct for the client, which has
+    an inner instance of `ClientProxy`, the actual client implementation. This takes
+    in three types, the first two being request and response for the whole server,
+    and the last one being for errors. We then implement a connect method for the
+    `Client` struct that connects using `CollatzProto`, and this returns a future
+    with the connection. The last step is to implement `Service` for `Client`, and
+    both the input and output for this is of type `CollatzInput`, thus we have to
+    transform the output to that type using map on the future. Let us move on to the
+    server; it looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: As expected, a `CollatzStream` has a body that is either a string or has resulted
+    in an error. Now, for a streaming protocol, we need to provide an implementation
+    of a function that returns the sender half of the stream; we do this in the `pair`
+    function for `CollatzStream`. Next, we implement the `Stream` trait for our custom
+    stream; the `poll` method in this case simply polls the inner `Body` for more
+    data. Having set up the stream, we can implement the codec. In here, we will need
+    to maintain a way to know what part of the frame we are processing at this moment.
+    This is done using a boolean called `decoding_head` that we flip as we need. We
+    need to implement `Decoder` for our codec, and this is pretty much the same as
+    the last few times; just note that we need to keep track of the streaming and
+    non-streaming cases and the boolean defined previously. The `Encoder` implementation
+    is the reverse. We also need to bind the protocol implementation to the codec;
+    this is done by implementing `ClientProto` and `ServerProto` for `CollatzProto`.
+    In both cases, we set the boolean to true, as the first thing to be read after
+    receiving the message is the header.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The last step in the stack is to implement the services by implementing the
+    `Service` trait for `CollatzService`. In that, we read the header and try to parse
+    it as a `u64`. If that works fine, we move on to calculating the collatz sequence
+    of that `u64` and return the result as a `CollatzInput::Once` in a leaf future.
+    In the other case, we iterate over the body and print it on the console. Finally,
+    we return a fixed string to the client. Here is what this looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have also written two conversion helpers from `CollatzMessage` to `CollatzInput`,
+    and vice versa, by implementing the `From` trait accordingly. Like everything
+    else, we will have to deal with the two cases: when the message has a body and
+    when it does not (in other words, the header has arrived but not the rest of the
+    message). Here are those:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Having set up the server and the client, we will implement our tests as examples,
+    like last time. Here is what they look like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is what the client looks like. There is a bit to digest here, compared
+    to the server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: We use the `connect` method defined earlier to set up connection to the server
+    on a known address and port. We use the `and_then` combinator to send a fixed
+    string to the server, and we print the response. At this point, we have transmitted
+    our header and we move on to transmitting the body. This is done by splitting
+    the stream in two halves and using the sender to send a number of strings. A final
+    combinator prints the response and resolves the future. Everything previously
+    is run in an event loop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is what a session looks like for the server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And this is how it looks like for the client:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: As expected, the server processed the header before it got the actual body of
+    the request (we know that because we sent the body after sending the header).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Other than what we discussed here, tokio supports a bunch of other features
+    as well. For instance, you can implement a protocol handshake by changing the
+    `ServerProto` and `ClientProto` implementations to exchange setup messages before
+    constructing the `BindTransport` future. This is extremely important, as a lot
+    of network protocols need some form of handshaking to set up a shared state to
+    work with. Note that it is perfectly possible for a protocol be streaming and
+    pipelined, or streaming and multiplexed. For these, an implementation needs to
+    substitute traits from the `streaming::pipeline` or `streaming::multiplex` namespace
+    respectively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The larger tokio ecosystem
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let us take a look at the current state of the tokio ecosystem. Here are the
+    commonly useful crates in the `tokio-rs` GitHub organization, at the time of writing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Crate** | **Function** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-minihttp` | Simple HTTP server implementation in tokio; should not
+    be used in production. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-core` | Future-aware networking implementations; the core event loop.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-io` | IO primitives for tokio. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-curl` | A `libcurl`-based HTTP client implementation using tokio.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-uds` | Non-blocking unix domain sockets using tokio. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-tls` | TLS and SSL implementation based on tokio. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-service` | Provides the `Service` trait that we have used extensively.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-proto` | Provides a framework for building network protocols using
+    tokio; we have used this one extensively. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-socks5` | A SOCKS5 server using tokio, not production-ready. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-middleware` | Collection of middlewares for tokio services; lacks
+    essential services at the moment. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-times` | Timer-related functionality based on tokio. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-line` | Sample-line protocol for demonstrating tokio. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `tokio-redis` | Proof-of-concept redis client based on tokio; should not
+    be used in production. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `service-fn` | Provides a function that implements the Service trait for
+    a given closure. |'
+  prefs: []
+  type: TYPE_TB
+- en: Note that a number of these are either not updated in a long time or proof-of-concept
+    implementations that should not be used in anything useful. But that is not a
+    problem. A large number of independent utilities have adopted tokio since it was
+    launched, resulting in a vibrant ecosystem. And, in our opinion, that is the true
+    sign of success of any open source project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us look at some commonly used libraries in the preceding list , starting
+    with `tokio-curl`. For our example, we will simply download a single file from
+    a known location, write it to local disk, and print out the headers we got back
+    from the server. Because this is a binary, we will set the project up like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is what the Cargo setup looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As the `tokio-curl` library is a wrapper around the Rust `curl` library, we
+    will need to include that as well. Here is the main file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: We will use the `Easy` API from `curl` crate. We start with creating our event
+    loop and HTTP session. We then create a handle that `libcurl` will use to process
+    our request. We call the `get` method with a bool to indicate that we are interested
+    in doing an HTTP GET. We then pass the URL to the handle. Next, we set two callbacks
+    passed as closures. The first one is called the `header_function`; this one shows
+    each of the client-side headers. The second one is called the `write_function`,
+    which writes the data we got to our file. Finally, we create a request by calling
+    the `perform` function for our session. Lastly, we run the request in our event
+    loop and print out the status code we got back.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Running this does the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will also produce a file called `foo.zip` in the current directory. You
+    can use a regular file to download the file and compare the SHA sums of both files,
+    to verify that they are indeed the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter was an introduction to one of the most exciting components of the
+    larger Rust ecosystem. Futures and the Tokio ecosystem provide powerful primitives
+    that can be widely used in applications, including networking software. In itself,
+    Futures can be used to model any computation that is otherwise slow and/or depends
+    on an external resource. Coupled with tokio, it can be used to model complex protocol
+    behaviors that are pipelined, or multiplexed, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some major drawbacks of using these center around lack of proper documentation
+    and examples. Also, error messages from these applications are often heavily templated
+    and, hence, verbose. Because the Rust compiler itself does not know of the abstractions
+    as such, it often complains about type mismatches, and it is up to the user to
+    reason through deeply nested types. Somewhere down the line, it may make sense
+    to implement a compiler plugin for futures that can translate these errors in
+    more intuitive forms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the following chapter, we will look at implementing common security-related
+    primitives in Rust.
+  prefs: []
+  type: TYPE_NORMAL

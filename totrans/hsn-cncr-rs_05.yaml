@@ -1,0 +1,1321 @@
+- en: Locks – Mutex, Condvar, Barriers and RWLock
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we're going to do a deep-dive on hopper, the grown-up version
+    of Ring from [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync and
+    Send – the Foundation of Rust Concurren**cy*. Hopper's approach to back-pressure—the
+    weakness we identified in telem*—*is to block when filled to capacity, as `SyncSender`
+    does. Hopper's special trick is that it pages out to disk. The hopper user defines
+    how many bytes of in-memory space hopper is allowed to consume, like `SyncSender`,
+    except in terms of bytes rather than total elements of `T`. Furthermore, the user
+    is able to configure the number of on-disk bytes that are consumed when hopper's
+    in-memory capacity is filled and it has to page out to disk. The other properties
+    of MSPC are held, in-order delivery, retention of data once stored, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we can dig through hopper, however, we need to introduce more of Rust's
+    concurrency primitives. We'll work on some puzzles from *The Little Book of Semaphores*
+    to explain them, which will get a touch hairy in some places on account of how
+    Rust does not have a semaphore available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By the close of this chapter, we will have:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Discussed the purpose and use of Mutex, Condvar, Barriers, and RWLock
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Investigated a disk-backed specialization of the standard library's MPSC called
+    hopper
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Seen how to apply QuickCheck, AFL, and comprehensive benchmarks in a production
+    setting
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter requires a working Rust installation. The details of verifying
+    your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
+    *Preliminaries – Machine Architecture and Getting Started with Rust*. No additional
+    software tools are required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can find the source code for this book''s projects on GitHub at: [https://github.com/PacktPublishing/Rust-Concurrency/](https://github.com/PacktPublishing/Rust-Concurrency/).
+    This chapter has its source code under `Chapter05`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Read many, write exclusive locks – RwLock
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Consider a situation where you have a resource that must be manipulated only
+    a single thread at a time, but is safe to be queried by many—that is, you have
+    many readers and only one writer. While we could protect this resource with a
+    `Mutex`, the trouble is that the mutex makes no distinction between its lockers;
+    every thread will be forced to wait, no matter what their intentions. `RwLock<T>`
+    is an alternative to the mutex concept, allowing for two kinds of locks—read and
+    write. Analogously to Rust''s references, there can only be one write lock taken
+    at a time but multiple reader locks, exclusive of a write lock. Let''s look at
+    an example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The idea here is that we''ll have one writer thread spinning and incrementing,
+    in a wrapping fashion, a shared resource—a `u16.` Once the `u16` has been wrapped
+    100 times, the writer thread will exit. Meanwhile, a `total_readers` number of
+    read threads will attempt to take a read lock on the shared resource—a `u16—until`
+    it hits zero `100` times. We''re gambling here, essentially, on thread ordering.
+    Quite often, the program will exit with this result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This means that each reader thread never failed to get its read lock—there
+    were no write locks present. That is, the reader threads were scheduled before
+    the writer. Our main function only joins on reader handlers and so the writer
+    is left writing as we exit. Sometimes, we''ll hit just the right scheduling order,
+    and get the following result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this particular instance, the second and final reader threads were scheduled
+    just after the writer and managed to catch a time when the guard was not zero.
+    Recall that the first element of the pair is the total number of times the reader
+    thread was not able to get a read lock and was forced to retry. The second is
+    the number of times that the lock was acquired. In total, the writer thread did
+    `(2^18 * 100) ~= 2^24` writes, whereas the second reader thread did `log_2 2630308
+    ~= 2^21` reads. That's a lot of lost writes, which, maybe, is okay. Of more concern,
+    that's a lot of useless loops, approximately `2^26`. Ocean levels are rising and
+    we're here burning up electricity like nobody had to die for it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'How do we avoid all this wasted effort? Well, like most things, it depends
+    on what we''re trying to do. If we need every reader to get every write, then
+    an MPSC is a reasonable choice. It would look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It will run—for a while—and print out the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: But what if every reader does not need to see every write, meaning that it's
+    acceptable for a reader to miss writes so long as it does not miss all of the
+    writes? We have options. Let's look at one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Blocking until conditions change – condvar
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One option is a condvar, or CONDition VARiable. Condvars are a nifty way to
+    block a thread, pending a change in some Boolean condition. One difficulty is
+    that condvars are associated exclusively with mutexes, but in this example, we
+    don't mind all that much.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The way a condvar works is that, after taking a lock on a mutex, you pass the
+    `MutexGuard` into `Condvar::wait`, which blocks the thread. Other threads may
+    go through this same process, blocking on the same condition. Some other thread
+    will take the same exclusive lock and eventually call either `notify_one` or `notify_all`
+    on the condvar. The first wakes up a single thread, the second wakes up *all*
+    threads. Condvars are subject to spurious wakeup, meaning the thread may leave
+    its block without a notification being sent to it. For this reason condvars check
+    their conditions in a loop. But, once the condvar wakes, you *are* guaranteed
+    to hold the mutex, which prevents deadlocks on spurious wakeup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s adapt our example to use a condvar. There''s actually a fair bit going
+    on in this example, so we''ll break it down into pieces:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our preamble is similar to the previous examples, but the setup is already
+    quite strange. We''re synchronizing threads on `mutcond`, which is an `Arc<(Mutex<(bool,
+    u16)>, Condvar)>`. Rust''s condvar is a touch awkward. It''s undefined behavior
+    to associate a condvar with more than one mutex, but there''s really nothing in
+    the type of `Condvar` that makes that an invariant. We just have to remember to
+    keep them associated. To that end, it''s not uncommon to see a `Mutex` and `Condvar`
+    paired up in a tuple, as here. Now, why `Mutex<(bool, u16)>`? The second element
+    of the tuple is our *resource*, which is common to other examples. The first element
+    is a Boolean flag, which we use as a signal to mean that there are writes available.
+    Here are our reader threads:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Until `total_zeros` hits 100, the reader thread locks the mutex, checks the
+    guard inside the mutex for write availability, and, if there are no writes, does
+    a wait on the condvar, which gives up the lock. The reader thread is then blocked
+    until a `notify_all` is called—as we''ll see shortly. Every reader thread then
+    races to be the first to reacquire the lock. The lucky winner notes that there
+    are no more writes to be read and then does the normal flow we''ve seen in previous
+    examples. It bears repeating that every thread that wakes up from a condition
+    wait is racing to be the first to reacquire the mutex. Our reader is uncooperative
+    in that it immediately prevents the chance of any other reader threads finding
+    a resource available. However, they will still wake up spuriously and be forced
+    to wait again. Maybe. The reader threads are also competing with the writer thread
+    to acquire the lock. Let''s look at the writer thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The writer thread is an infinite loop, which we orphan in an unjoined thread.
+    Now, it''s entirely possible that the writer thread will acquire the lock, bump
+    the resource, notify waiting reader threads, give up the lock, and then immediately
+    re-acquire the lock to begin the while process before any reader threads can get
+    scheduled in. This means it''s entirely possible that the resource being zero
+    will happen several times before a reader thread is lucky enough to notice. Let''s
+    close out this program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Ideally, what we''d like is some manner of bi-directionality—we''d like the
+    writer to signal that there are reads and the reader to signal that there is capacity.
+    This is suspiciously like how Ring in the previous chapter worked through its
+    size variable, when we were careful to not race on that variable, that is. We
+    might, for instance, layer another condition variable into the mix, this one for
+    the writer, but that''s not what we have here and the program suffers for it.
+    Here''s one run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Phew! That's significantly more loops than previous examples. None of this is
+    to say that condition variables are hard to use—they're not—it's just that they
+    need to be used in conjunction with other primitives. We'll see an excellent example
+    of this later in the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Blocking until the gang's all here - barrier
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'A barrier is a synchronization device that blocks threads until such time that
+    a predefined number of threads have waited on the same barrier.  When a barrier''s
+    waiting threads wake up, one is declared leader—discoverable by inspecting the
+    `BarrierWaitResult`—but this confers no scheduling advantage. A barrier becomes
+    useful when you wish to delay threads behind an unsafe initialization of some
+    resource—say a C library''s internals that have no thread-safety at startup, or
+    have a need to force participating threads to start a critical section at roughly
+    the same time. The latter is the broader category, in your author''s experience.
+    When programming with atomic variables, you''ll run into situations where a barrier
+    will be useful. Also, consider for a second writings multi-threaded code for low-power
+    devices. There are two strategies possible these days for power management: scaling
+    the CPU to meet requirements, adjusting the runtime of your program live, or burning
+    through a section of your program as quickly as possible and then shutting down
+    the chip. In the latter approach, a barrier is just the primitive you need.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: More mutexes, condvars, and friends in action
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Admittedly, the examples in the preceding sections got a little convoluted.
+    There's a reason to that madness, I promise, but before we move on I'd like to
+    show you some working examples from the charming *The Little Book of Semaphores*.
+    This book, in case you skipped previous bibliographic notes, is a collection of
+    concurrency puzzles suitable for self-learning, on account of the puzzles being
+    amusing and coming with good hints. As the title implies, the book does make use
+    of the semaphore primitive, which Rust does not have. Though, as mentioned in
+    the previous chapter, we will build a semaphore in the next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rocket preparation problem
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This puzzle does not actually appear in *The Little Book of Semaphores* but
+    it is based on one of the puzzles there - the cigarette smoker's problem from
+    section 4.5\. Personally, I think cigarettes are gross so we're going to reword
+    things a touch. The idea is the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have four threads in total. One thread, the `producer`, randomly publishes
+    one of `fuel`, `oxidizer`, or `astronauts`. The remaining three threads are the
+    consumers, or *rockets*, which must take their resources in the order listed previously.
+    If a rocket doesn't get its resources in that order, it's not safe to prepare
+    the rocket, and if it doesn't have all three, the rocket can't lift-off. Moreover,
+    once all the rockets are prepped, we want to start a 10 second count-down, only
+    after which may the rockets lift-off.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The preamble to our solution is a little longer than usual, in the interest
+    of keeping the solution as a standalone:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We don''t really need excellent randomness for this solution—the OS scheduler
+    injects enough already—but just something small-ish. `XorShift` fits the bill.
+    Now, for our resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The struct is protected by a single `Mutex<(bool, bool, bool)>`, the Boolean
+    being a flag to indicate that there''s a resource available. We hold the first
+    flag to mean `fuel`, the second `oxidizer`, and the third `astronauts`. The remainder
+    of the struct are condvars to match each of these resource concerns. The `producer`
+    is a straightforward infinite loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'On each iteration, the producer chooses a new resource—`rng.next_u32() % 3`—and
+    sets the Boolean flag for that resource before notifying all threads waiting on
+    the `fuel` condvar. Meanwhile, the compiler and CPU are free to re-order instructions
+    and the memory `notify_all` acts like a causality gate; everything before in the
+    code is before in causality, and likewise, afterwards. If the resource bool flip
+    was after the notification, the wake-up would be spurious from the point of view
+    of the waiting threads and lost from the point of view of the producer. The `rocket`
+    is straightforward:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Each thread, regarding the resource requirements, waits on the condvar for
+    the producer to make it available. A race occurs to re-acquire the mutex, as discussed,
+    and only a single thread gets the resource. Finally, once all the resources are
+    acquired, the `all_go` barrier is hit to delay any threads ahead of the count-down.
+    Here we need the `main` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that, roughly, the first half of the function is made up of the barriers
+    and resources or rocket threads. `all_go.wait()` is where it gets interesting.
+    This main thread has spawned all the children and is now blocked on the all-go
+    signal from the rocket threads, meaning they''ve collected their resources and
+    are also blocked on the same barrier. That done, the count-down happens, to add
+    a little panache to the solution; meanwhile, the rocket threads have started to
+    wait on the `lift_off` barrier. It is, incidentally, worth noting that the producer
+    is still producing, drawing CPU and power. Once the count-down is complete, the
+    rocket threads are released, the main thread joins on them to allow them to print
+    their goodbyes, and the program is finished. Outputs will vary, but here''s one
+    representative example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: The rope bridge problem
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This puzzle appears in *The Little Book of Semaphores* as the *Baboon crossing
+    problem*, section 6.3\. Downey notes that it is adapted from Tanenbaum''s *Operating
+    Systems: Design and Implementation*, so you''re getting it third-hand here. The
+    problem description is thus:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"There is a deep canyon somewhere in Kruger National Park, South Africa, and
+    a single rope that spans the canyon. Baboons can cross the canyon by swinging
+    hand-over-hand on the rope, but if two baboons going in opposite directions meet
+    in the middle, they will fight and drop to their deaths. Furthermore, the rope
+    is only strong enough to hold 5 baboons. If there are more baboons on the rope
+    at the same time, it will break.Assuming that we can teach the baboons to use
+    semaphores, we would like to design a synchronization scheme with the following
+    properties:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Once a baboon has begun to cross, it is guaranteed to get to the other side
+    without running into a baboon going the other way.*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*There are never more than 5 baboons on the rope.*"'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Our solution does not use semaphores. Instead, we lean on the type system to
+    provide guarantees, leaning on it to ensure that no left-traveler will ever meet
+    a right-traveler. Let''s dig in:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We see here the usual preamble, and then a type, `Bridge`. `Bridge` is the
+    model of the `rope` bridge of the problem statement and is either empty, has left-traveling
+    baboons on it, or has right-traveling baboons on it; there''s no reason to fiddle
+    with flags and infer state when we can just encode it into a type. In fact, leaning
+    on the type system, our synchronization is very simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Just a single mutex. We represent either side of the bridge as a thread, each
+    side trying to get its own baboons across but co-operatively allowing baboons
+    to reach its side. Here''s the left side of the bridge:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When the left side of the bridge finds the bridge itself empty, one right-traveling
+    baboon is sent on its way. Further, when the left side finds that there are already
+    right-traveling baboons on the bridge and the rope''s capacity of five has not
+    been reached, another baboon is sent on its way. Left-traveling baboons are received
+    from the rope, decrementing the total baboons on the rope. The special case here
+    is the clause for `Bridge::Left(0)`. While there are no baboons on the bridge
+    still, technically, if the right side of the bridge were to be scheduled before
+    the left side, it would send a baboon on its way, as we''ll see shortly. We could
+    make the removal of a baboon more aggressive and set the bridge to `Bridge::Empty`
+    as soon as there are no travelers, of course. Here''s the right side of the bridge,
+    which is similar to the left:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, is this fair? It depends on your system mutex. Some systems provide mutexes
+    that are fair in that, if one thread has acquired the lock repeatedly and starved
+    other threads attempting to lock the same primitive, the greedy thread will be
+    de-prioritized under the others. Such fairness may or may not incur additional
+    overheads when locking, depending on the implementation. Whether you want fairness,
+    in fact, depends strongly on the problem you're trying to solve. If we were only
+    interested in shuffling baboons across the rope bridge as quickly as possible—maximizing
+    throughput—then it doesn't truly matter which direction they're coming from. The
+    original problem statement makes no mention of fairness, which it kind of shuffles
+    around by allowing the stream of baboons to be infinite. Consider what would happen
+    if the baboons were finite on either side of the bridge and we wanted to reduce
+    the time it takes for any individual baboon to cross to the other side, to minimize
+    latency. Our present solution, adapted to cope with finite streams, is pretty
+    poor, then, in that regard. The situation could be improved by occasional yielding,
+    layering in more aggressive rope packing, intentional back off, or a host of other
+    strategies. Some platforms allow you to dynamically shift the priority of threads
+    with regard to locks, but Rust does not offer that in the standard library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Or, you know, we could use two bounded MPSC channels. That's an option. It all
+    depends on what you're trying to get done.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ultimately, the tools in safe Rust are very useful for performing computations
+    on existing data structures without having to dip into any funny business. If
+    that's your game, you're very unlikely to need to head much past `Mutex` and `Condvar`,
+    and possibly into `RwLock` and `Barrier`. But, if you're building structures that
+    are made of pointers, you'll have to dip into some of the funny business we saw
+    in Ring, with all the dangers that brings.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hopper—an MPSC specialization
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As mentioned at the tail end of the last chapter, you'd need a fairly specialized
+    use-case to consider not using stdlib's MPSC. In the rest of this chapter, we'll
+    discuss such a use-case and the implementation of a library meant to fill it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Recall back to the last chapter, where the role-threads in telem communicated
+    with one another over MPSC channels. Recall also that telem was a quick version
+    of the cernan ([https://crates.io/crates/cernan](https://crates.io/crates/cernan))
+    project, which fulfills basically the same role but over many more ingress protocols,
+    egress protocols, and with the sharp edges worn down. One of the key design goals
+    of cernan is that if it receives your data, it will deliver it downstream at least
+    once. This implies that, for supporting ingress protocols, cernan must know, along
+    the full length of the configured routing topology, that there is sufficient space
+    to accept a new event, whether it's a piece of telemetry, a raw byte buffer, or
+    a log line. Now, that's possible by using `SyncSender`, as we've seen. The trick
+    comes in combination with a second design goal of cernan—very low, configurable
+    resource consumption. Your author has seen cernan deployed to high-availability
+    clusters with a single machine dedicated to running a cernan, as well as cernan
+    running shotgun with an application server or as a part of a daemonset in a k8s
+    cluster. In the first case, cernan can be configured to consume all of the machine's
+    resources. In the later two, some thought has to be taken to giving cernan just
+    enough resources to do its duties, relative to the expected input of the telemetered
+    systems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On modern systems, there's often an abundance of disk space and limited—relatively
+    speaking—RAM. The use of `SyncSender` would require either a relatively low number
+    of ingestible events or a high possible consumption of memory by cernan. These
+    cases usually hit when an egress protocol is failing, possibly because the far-system
+    is down. If cernan were to exacerbate a partial system failure by crowding out
+    an application server because of a fault in a loosely-coupled system, well, that'd
+    be pretty crummy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For many users, it's also not acceptable to go totally blind during such a partial
+    outage. Tricky constraints for `SyncSender`. Tricky enough, in fact, that we decided
+    to write our own MPSC, called hopper ([https://crates.io/crates/hopper](https://crates.io/crates/hopper)).
+    Hopper allows endusers to configure the total in-memory consumption of the queue,
+    in bytes. That's not far off `SyncSender`, with a bit of calculation. What's special
+    about hopper is that it can page to disk.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hopper shines where memory constraints are very tight but you do not want to
+    shed events. Or, you want to push shedding events off as far as possible. Similarly
+    to the in-memory queue, hopper allows endusers to configure the maximum number
+    of bytes to be consumed ondisk. A single hopper queue will hold `in_memory_bytes
+    + on_disk_bytes` maximally before it's forced to shed events; we'll see the exact
+    mechanism here directly. All of this is programmed with an eye toward maximal
+    throughput and blocking threads that have no work, to save CPU time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hopper in use
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before we dig into the implementation of hopper, it''ll be instructive to see
+    it in practice. Let''s adapt the last iteration of our ring program series. For
+    reference, here''s what that looked like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The hopper version is a touch different. This is the preamble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'No surprise there. The function that will serve as the `writer` thread is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Other than the switch from `mpsc::SyncSender<u32>` to `hopper::Sender<u32>`—all
+    hopper senders are impliclty bounded—the only other difference is that `chan`
+    must be mutable. Now, for the `reader` thread:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here there''s a little more to do. In hopper, the receiver is intended to be
+    used as an iterator, which *is* a little awkward here as we want to limit the
+    total number of received values. The iterator will block on calls to `next`, never
+    returning a `None`. However, the `send` of the sender in  hopper is very different
+    to that of MPSC''s—`hopper::Sender<T>::send(&mut self, event: T) -> Result<(),
+    (T, Error)>`. Ignore `Error` for a second; why return a tuple in the error condition
+    that contains a `T`? To be clear, it''s the same `T` that is passed in. When the
+    caller sends a `T` into hopper, its ownership is passed into hopper as well, which
+    is a problem in the case of an error. The caller might well want that `T` back
+    to avoid its loss. Hopper wants to avoid doing a clone of every `T` that comes
+    through and, so, hopper smuggles the ownership of the `T` back to the caller.
+    What of `Error`? It''s a simple enumeration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The important one is `Error::Full`. This is the condition that occurs when
+    both the in-memory and disk-backed buffers are full at the time of sending. This
+    error is recoverable, but in a way that only the caller can determine. Now, finally,
+    the `main` function of our hopper example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `read_limit` is in place as before, but the big difference is the creation
+    of the channel. First, hopper has to have some place to put its disk storage.
+    Here we're deferring to some temporary directory—`let dir = tempdir::TempDir::new("queue_root").unwrap();`—to
+    avoid cleaning up after running the example. In real use, the disk location is
+    chosen carefully. `hopper::channel_with_explicit_capacity` creates the same sender
+    as `hopper::channel` except that all the configuration knobs are open to the caller.
+    The first argument is the *name* of the channel. This value is important as it
+    will be used to create a directory under `dir` for disk storage. It is important
+    for the channel name to be unique. `in_memory_capacity` is in bytes, as well as
+    `on_disk_capacity`, which is why we have the use of our old friend `mem::size_of`.
+    Now, what's that last configuration option there, set to `1`? That's the maximum
+    number of *queue files*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hopper's disk storage is broken into multiple *queue files*, each of `on_disk_capacity`
+    size. Senders carefully coordinate their writes to avoid over-filling the queue
+    files, and the receiver is responsible for destroying them once it's sure there
+    are no more writes coming—we'll talk about the signalling mechanism later in this
+    chapter. The use of queue files allows hopper to potentially reclaim disk space
+    that it may not otherwise have been able to, were one large file to be used in
+    a circular fashion. This does incur some complexity in the sender and receiver
+    code, as we'll see, but is worth it to provide a less resource-intensive library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A conceptual view of hopper
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before we dig into the implementation, let''s walk through how the previous
+    example works at a conceptual level. We have enough in-memory space for 10 u32s.
+    If the writer thread is much faster than the reader thread—or gets more scheduled
+    time—we could end up with a situation like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'That is, a write of `99` is entering the system when the in-memory buffer is
+    totally full and there are three queued writes in the diskbuffer. While it is
+    possible for the state of the world to shift between the time a write enters the
+    system for queuing and between the time it is queued, let''s assume that no receivers
+    pull items between queuing. The result will then be a system that looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The receivers, together, must read only three elements from the diskbuffer,
+    then all the in-memory elements, and then a single element from the diskbuffer,
+    to maintain the queue's ordering. This is further complicated considering that
+    a write may be split by one or more reads from the receivers. We saw something
+    analogous in the previous chapter with regard to guarding writes by doing loads
+    and checks - the conditions that satisfy a check may change between the load,
+    check, and operation. There's a further complication as well; the unified disk
+    buffer displayed previously does not actually exist. Instead, there are potentially
+    many individual queue files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s say that hopper has been configured to allow for 10 `u32` in-memory,
+    as mentioned, and 10 on-disk but split across five possible queue files. Our revised
+    after-write system is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: The senders are responsible for creating queue files and filling them to their
+    max. The `Receiver` is responsible for reading from the queue file and deleting
+    the said file when it's exhausted. The mechanism for determining that a queue
+    file is exhausted is simple; when the `Sender` exits a queue file, it moves on
+    to create a new queue file, and marks the old path as read-only in the filesystem.
+    When the `Receiver` attempts to read bytes from disk and finds there are none,
+    it checks the write status of the file. If the file is still read-write, more
+    bytes will come eventually. If the file is read-only, the file is exhausted. There's
+    a little trick to it yet, and further unexplained cooperation between `Sender`
+    and `Receiver`, but that should be enough abstract detail to let us dig in effectively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The deque
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Roughly speaking, hopper is a concurrent deque with two cooperating finite state
+    machines layered on top. We'll start in with the deque, defined in `src/deque.rs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The discussion of hopper that follows lists almost all of its source code. We'll
+    call out the few instances where the reader will need to refer to the listing
+    in the book's source repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To be totally clear, a deque is a data structure that allows for queuing and
+    dequeuing at either end of the queue. Rust''s `stdlib` has `VecDeque<T>`, which
+    is very useful. Hopper is unable to use it, however, as one of its design goals
+    is to allow for parallel sending and receiving against the hopper queue and `VecDeque`
+    is not thread-safe. Also, while there are concurrent deque implementations in
+    the crate ecosystem, the hopper deque is closely tied to the finite state machines
+    it supports and to hopper''s internal ownership model. That is, you probably can''t
+    use hopper''s deque in your own project without some changes. Anyhow, here''s
+    the preamble:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The only unfamiliar piece here are the things imported from `std::sync::atomic`.
+    We''ll be covering atomics in more detail in the next chapter, but we''re going
+    to breeze over them at a high-level as needed in the explanation to follow. Note
+    as well the unsafe declarations of `send` and `sync` for some as yet unknown type
+    `Queue<T, S>`. We''re about to go off-road:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `Queue<T, S>` definition is similar to what we saw in previous chapters:
+    a simple structure wrapping an inner structure, here called `InnerQueue<T, S>`.
+    The `InnerQueue` is wrapped in an `Arc,` meaning there''s only one allocated `InnerQueue`
+    on the heap. As you might expect, the clone of `Queue` is a copy of the `Arc`
+    into a new struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It''s important that every thread that interacts with `Queue` sees the same
+    `InnerQueue`. Otherwise, the threads are dealing with distinct areas of memory
+    and have no relationship with one another. Let''s look at `InnerQueue`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: Okay, this is much more akin to the internals we saw in Rust itself, and there's
+    a lot going on. The field `capacity` is the maximum number of elements that the
+    `InnerQueue` will hold in data. Like the first `Ring` in the previous chapter,
+    `InnerQueue` uses a contiguous block of memory to store its `T` elements, exploding
+    a `Vec` to get that contiguous block. Also, like the first `Ring`, we store `Option<T>`
+    elements in the contiguous block of memory. Technically, we could deal with a
+    contiguous block of raw pointers or copy memory blocks in and out. But the use
+    of `Option<T>` simplifies the code, both for insertion and removal, at the cost
+    of a single byte of memory per element. The added complication just isn't worth
+    it for the performance goals hopper is trying to hit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `size` field is an atomic `usize.` Atomics will be covered in more detail
+    in the next chapter, but the behavior of `size` is going to be important. For
+    now, think of it as a very small piece of synchronization between threads; a little
+    hook that will allow us to order memory accesses that happens also to act like
+    a `usize.` The condvar `not_empty` is used to signal to any potential readers
+    waiting for new elements to pop that there are, in fact, elements to pop. The
+    use of condvar greatly reduces the CPU load of hopper without sacrificing latency
+    to busy loops with sleeps. Now, `back_lock` and `front_lock`. What''s going on
+    here? Either side of the deque is protected by a mutex, meaning there can be only
+    one enqueuer and one dequeuer at a time, but these can be running in parallel
+    to each other. Here are the definitions of the two inner values of the mutexes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`FrontGuardInner`   is the easier to explain of the two. The only field is
+    `offset`, which defines the offset from the first pointer of `InnerGuard`''s data
+    of the thread manipulating the front of the queue. This contiguous store is also
+    used in a ring buffer fashion. In `BackGuardInner`, we see the same offset, but
+    an additional `inner`, `S`. What is this? As we''ll see, the threads manipulating
+    the back of the buffer need extra coordination between them. Exactly what that
+    is, the queue does not care. Therefore, we make it a type parameter and allow
+    the caller to sort everything out, being careful to pass the data around as needed.
+    In this fashion, the queue smuggles state through itself but does not have to
+    inspect it.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s start on the implementation of `InnerQueue`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: The type lacks a `new() -> InnerQueue`, as there was no call for it to be made.
+    Instead, there's only `with_capacity` and that's quite similar to what we saw
+    of `Ring`'s `with_capacity`—a vector is allocated, and exploded into a raw pointer,
+    and the original reference is forgotten before the pointer is loaded into a newly
+    minted struct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The type `S` has to implement a default for initialization that is sufficient,
+    as the caller''s smuggled state will always be the same value, which is more than
+    adequately definable as a default. If this deque were intended for general use,
+    we''d probably need to offer a `with_capacity` that also took an `S` directly.
+    Now, a few further functions in the implementation that we''ll just breeze right
+    past:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next function, `push_back`, is very important and subtle:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`InnerQueue::push_back` is responsible for placing a `T` onto the current back of
+    the ring buffer, or failing capacity to signal that the buffer is full. When we
+    discussed Ring, we noted that the `size == capacity` check was a race. Not so
+    in `InnerQueue`, thanks to the atomic nature of the size. `self.size.load(Ordering::Acquire)`
+    performs a memory load of the `self.size` but does so with certainty that it''s
+    the only thread with `self.size` as a manipulable value. Subsequent memory operations
+    in the thread will be ordered after `Acquire`, at least until a store of `Ordering::Release`
+    happens. A store of that nature does happen just a handful of lines down—`self.size.fetch_add(1,
+    Ordering::Release)`. Between these two points, we see the element `T` loaded into
+    the buffer—with a prior check to ensure that we''re not stomping a `Some` value—and
+    a wrapping bump of the `BackGuardInner`''s offset. Just like in the last chapter.
+    Where this implementation differs is the return of `Ok(must_wake_dequeuers)`.
+    Because the inner `S` is being guarded, it''s not possible for the queue to know
+    if there will be any further work that needs to be done before the mutex can be
+    given up. As a result, the queue cannot itself signal that there''s a value to
+    read, even though it''s already been written to memory by the time the function
+    returns. The caller has to run the notification. That''s a sharp edge. If the
+    caller forgets to notify a thread blocked on the condvar, the blocked thread will
+    stay that way forever.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `InnerQueue::push_front` is a little simpler and not a radical departure
+    from `push_back`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: The thread popping front, because it does not have to coordinate, is able to
+    take the front lock itself, as there's no state that needs to be threaded through.
+    After receiving the lock, the thread then enters a condition check loop to guard
+    against spurious wake-ups on `not_empty`, replacing the item at offset with `None`
+    when the thread is able to wake up. The usual offset maintenance occurs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The implementation of `Queue<T, S>` is pretty minimal in comparison to the
+    inner structure. Here''s `push_back`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The only function that''s substantially new to `Queue` is `notify_not_empty(&self,
+    _guard: &MutexGuard<FrontGuardInner>) -> ()`. The caller is responsible for calling
+    this whenever `push_back` signals that the dequeuer must be notified and, while
+    the guard is not used, one rough edge of the library is smoothed down by requiring
+    that it be passed in, proving that it''s held.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's the deque at the core of hopper. This structure was very difficult to
+    get right. Any slight re-ordering of the load and store on the atomic size with
+    respect to other memory operations will introduce bugs, such as parallel access
+    to the same memory of a region without coordination. These bugs are *very* subtle
+    and don't manifest immediately. Liberal use of helgrind plus quickcheck testing
+    across x86 and ARM processors—more on that later—will help drive up confidence
+    in the implementation. Test runs of hours were not uncommon to find bugs that
+    were not deterministic but could be reasoned about, given enough time and repeat
+    examples. Building concurrent data structures out of very primitive pieces is
+    *hard*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Receiver
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Now that we''ve covered the deque, let''s jump on to the `Receiver`, defined
+    in `src/receiver.rs`. As mentioned previously, the receiver is responsible for
+    either pulling a value out of memory or from disk in the style of an iterator.
+    The `Receiver` declares the usual machinery for transforming itself into an iterator,
+    and we won''t cover that in this book, mostly just because it''s a touch on the
+    tedious side. That said, there are two important functions to cover in the `Receiver`,
+    and neither of them are in the public interface. The first is `Receiver::next_value`,
+    called by the iterator version of the receiver. This function is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A hopper defined to move `T` values does not define a deque—as discussed in
+    the previous section—over `T`s. Instead, the deque actually holds `Placement<T>`.
+    Placement, defined in `src/private.rs`, is a small enumeration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is the trick that makes hopper work. The primary challenge with a concurrent
+    data structure is providing sufficient synchronization between threads that your
+    results can remain coherent despite the chaotic nature of scheduling, but not
+    require so much synchronization that you're underwater compared to a sequential
+    solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That does happen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, recall that maintaining order is a key design need for any channel-style
+    queue. The Rust standard library MPSC achieves this with atomic flags, aided by
+    the fact that, ultimately, there's only one place for inserted elements to be
+    stored and one place for them to be removed from. Not so in hopper. But, that
+    one-stop-shop is a very useful, low synchronization approach. That's where `Placement`
+    comes in. When the `Memory` variant is hit, the `T` is present already and the
+    receiver simply returns it. When `Disk(usize)` is returned, that sends a signal
+    to the receiver to flip itself into *disk mode*. In disk mode, when `self.disk_writes_to_read`
+    is not zero, the receiver preferentially reads a value from disk. Only when there
+    are no more disk values to be read does the receiver attempt to read from memory
+    again. This mode-flipping approach maintains ordering but also has the added benefit
+    of requiring no synchronization when in disk mode, saving critical time when reading
+    from a slow disk.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The second important function to examine is `read_disk_value`, referenced in
+    `next_value`. It''s long and mostly book-keeping, but I did want to call out the
+    first part of that function here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This small chunk of code uses two very useful libraries. Hopper stores its
+    disk-slop elements to disk in bincode format. Bincode ([https://crates.io/crates/bincode](https://crates.io/crates/bincode))
+    was invented for the servo project and is a serialization library intended for
+    IPC - more or less the exact use hopper has for it. The advantage of bincode is
+    that it''s fast to serialize and deserialize but with the disadvantage of not
+    being a standard and not having a guaranteed binary format from version to version.
+    The second library to be called out is almost invisible in this example; byteorder.
+    You can see it here: `self.fp.read_u32::<BigEndian>`. Byteorder extends `std::io::Read`
+    to allow for the deserialization of primitive types from byte-buffers. It is possible
+    to do this yourself by hand but it''s error-prone and tedious to repeat. Use byteorder.
+    So, what we''re seeing here is hopper reading a 32-bit length big-ending length
+    prefix from `self.fp`—a `std::io::BufReader` pointed to the current on-disk queue
+    file—and using the said prefix to read exactly that many bytes from disk, before
+    passing those on into the deserializer. That''s it. All hopper on-disk slop elements
+    are a 32 bit length prefix chased by that many bytes.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Sender
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Now that we''ve covered the `Receiver`, all that remains is the `Sender.` It''s
+    defined in `src/sender.rs`. The most important function in the `Sender` is `send.`
+    The `Sender` follows the same disk/memory mode idea that `Receiver` uses but is
+    more complicated in its operation. Let''s dig in:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Recall that the deque allows the holder of the back guard to smuggle state
+    for coordination through it. We''re seeing that pay off here. The `Sender`''s
+    internal state is called `SenderSync` and is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Every sender thread has to be able to write to the current disk queue file,
+    which `sender_fp` points to. Likewise, `bytes_written` tracks how many bytes have
+    been, well, written to disk. The `Sender` must keep track of this value in order
+    to correctly roll queue files over when they grow too large. `sender_seq_num`
+    defines the name of the current writable queue file, being as they are named sequentially
+    from zero on up. The key field for us is `total_disk_writes`. Notice that a memory
+    write—`self.mem_buffer.push_back(placed_event, &mut back_guard)`—might fail with
+    a `Full` error. In that case, `self.write_to_disk` is called to write the `T`
+    to disk, increasing the total number of disk writes. This write mode was prefixed
+    with a check into the cross-thread `SenderSync` to determine if there were outstanding
+    disk writes. Remember, at this point, the `Receiver` has no way to determine that
+    there has been an additional write go to disk; the sole communication channel
+    with the `Receiver` is through the in-memory deque. To that end, the next `Sender`
+    thread will flip into a different write mode:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once there's a single write to disk, the `Sender` flips into disk preferential
+    write mode. At the start of this branch the `T` goes to disk, is flushed. Then,
+    the `Sender` attempts to push a `Placement::Disk` onto the in-memory deque, which
+    may fail if the `Receiver` is slow or unlucky in its scheduling assignment. Should
+    it succeed, however, the `total_disk_writes` is set to zero—there are no longer
+    any outstanding disk writes—and the `Receiver` is woken if need be to read its
+    new events. The next time a `Sender` thread rolls through it may or may not have
+    space in the in-memory deque to perform a memory placement but that's the next
+    thread's concern.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's the heart of `Sender`. While there is another large function in-module,
+    `write_to_disk`, we won't list it here. The implementation is primarily book-keeping
+    inside a mutex, a topic that has been covered in detail in this and the previous
+    chapter, plus filesystem manipulation. That said, the curious reader is warmly
+    encouraged to read through the code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing concurrent data structures
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Hopper is a subtle beast and proves to be quite tricky to get correct, owing
+    to the difficulty of manipulating the same memory across multiple threads. Slight
+    synchronization bugs were common in the writing of the implementation, bugs that
+    highlighted fundamental mistakes but were rare to trigger and even harder to reproduce.
+    Traditional unit testing is not sufficient here. There are no clean units to be
+    found, being that the computer's non-deterministic behavior is fundamental to
+    the end result of the program's run. With that in mind, there are three key testing
+    strategies used on hopper: randomized testing over random inputs searching for
+    logic bugs (QuickCheck), randomized testing over random inputs searching for crashes
+    (fuzz testing), and multiple-million runs of the same program searching for consistency
+    failures. In the rest of the chapter, we'll discuss each of these in turn.
+  prefs: []
+  type: TYPE_NORMAL
+- en: QuickCheck and loops
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Previous chapters discussed QuickCheck at length and we''ll not duplicate that
+    here. Instead, let''s dig into a test from `hopper`, defined in `src/lib.rs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: This test sets up a multiple sender, single receiver round trip environment,
+    being careful to reject inputs that allow less space in the in-memory buffer than
+    64 bits, no senders, or the like. It defers to another function, `multi_thread_concurrent_snd_and_rcv_round_trip_exp`,
+    to actually run the test.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This setup is awkward, admittedly, but has the benefit of allowing `multi_thread_concurrent_snd_and_rcv_round_trip_exp`
+    to be run over explicit inputs. That is, when a bug is found you can easily re-play
+    that test by creating a manual—or *explicit*, in `hopper` testing terms—test.
+    The inner test function is complicated and we''ll consider it in parts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: Much like our example usage of hopper at the start of this section, the inner
+    test function uses tempdir ([https://crates.io/crates/tempdir](https://crates.io/crates/tempdir)) to
+    create a temporary path for passing into `channel_with_explicit_capacity`. Except,
+    we're careful not to unwrap here. Because hopper makes use of the filesystem and
+    because Rust QuickCheck is aggressively multi-threaded, it's possible that any
+    individual test run will hit a temporary case of file-handler exhaustion. This
+    throws QuickCheck off, with the test failure being totally unrelated to the inputs
+    of this particular execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next piece is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here we have the creation of the sender threads, each of which grabs an equal
+    sized chunk of `vals`. Now, because of indeterminacy in thread scheduling, it''s
+    not possible for us to model the order in which elements of `vals` will be pushed
+    into hopper. All we can do is confirm that there are no lost elements after transmission
+    through hopper. They may, in fact, be garbled in terms of order:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Another test with a single sender, `single_sender_single_rcv_round_trip`, is
+    able to check for correct ordering as well as no data loss:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Like it''s multi-cousin, this QuickCheck test uses an inner function to perform
+    the actual test:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: This, too, should appear familiar, except that the Receiver thread is now able
+    to check order. Where previously a `Vec<u64>` was fed into the function, we now
+    stream `0, 1, 2, .. total_vals` through the hopper queue, asserting that order
+    and there are no gaps on the other side. Single runs on a single input will fail
+    to trigger low-probability race issues reliably, but that's not the goal. We're
+    searching for logic goofs. For instance, an earlier version of this library would
+    happily allow an in-memory maximum amount of bytes less than the total bytes of
+    an element `T`. Another could fit multiple instances of `T` into the buffer but
+    if the `total_vals` were odd *and* the in-memory size were small enough to require
+    disk-paging then the last element of the stream would never be kicked out. In
+    fact, that's still an issue. It's a consequence of the lazy flip to disk mode
+    in the sender; without another element to potentially trigger a disk placement
+    to the in-memory buffer, the write will be flushed to disk but the receiver will
+    never be aware of it. To that end, the sender does expose a `flush` function,
+    which you see in use in the tests. In practice, in cernan, flushing is unnecessary.
+    But, it's a corner of the design that the authors did not expect and may well
+    have had a hard time noticing had this gone out into the wild.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The inner test of our single-sender variant is also used for the repeat-loop
+    variant of hopper testing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that here the inner loop is only for 2,500 iterations. This is done in
+    deference to the needs of the CI servers which, don't care to run high CPU load
+    code for hours at a time. In development, that 2,500 will be adjusted up. But
+    the core idea is apparent; check that a stream of ordered inputs returns through
+    the hopper queue in order and intact over and over and over again. QuickCheck
+    searches the dark corners of the state space and more traditional manual testing
+    hammers the same spot to dig in to computer indeterminism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Searching for crashes with AFL
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The repeat-loop variant of testing in the previous section is an interesting
+    one. It's not, like QuickCheck, a test wholly focused on finding logic bugs. We
+    know that the test will work for most iterations. What's being sought out there
+    is a failure to properly control the indeterminism of the underlying machine.
+    In some sense that variant of test is using a logical check to search for crashes.
+    It is a kind of fuzz test.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hopper interacts with the filesystem, spawns threads, and manipulates bytes
+    up from files. Each of these activities is subject to failure for want of resources,
+    offsetting errors, or fundamental misunderstandings of the medium. An early version
+    of hopper, for instance, assumed that small atomic writes to the disk would not
+    interleave, which is true for XFS but not true for most other filesystems. Or,
+    another version of hopper always created threads in-test by use of the more familiar
+    `thread::spawn`. It turns out, however, that this function will panic if no thread
+    can be created, which is why the tests use the `thread::Builder` pattern instead,
+    allowing for recovery.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Crashes are important to figure out in their own right. To this end, hopper
+    has a fuzzing setup, based on AFL. To avoid producing an unnecessary binary on
+    users'' systems, the hopper project does not host its own fuzzing code as of this
+    writing. Instead, it lives in `blt/hopper-fuzz` ([https://github.com/blt/hopper-fuzz](https://github.com/blt/hopper-fuzz)).
+    This is, admittedly, awkward, but fuzz testing, being uncommon, often is. Fuzz
+    rounds easily run for multiples of days and do not fit well into modern CI systems.
+    AFL itself is not a tool that admits easy automation, either, compounding the
+    problem. Fuzz runs tend to be done in small batches on users'' private machines,
+    at least for open-source projects with small communities. Inside hopper-fuzz,
+    there''s a single program for fuzzing, the preamble of which is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The fairly straightforward, based on what we''ve seen so far. Getting input
+    into a fuzz program is sometimes non-trivial, especially when the input is not
+    much more than a set of inputs rather than, say in the case of a parser, an actual
+    unit of work for the program. Your author''s approach is to rely on serde to deserialize
+    the byte buffer that AFL will fling into the program, being aware that most payloads
+    will fail to decode but not minding all that much. To that end, the top of your
+    author''s fuzz programs usually have an input struct filled with control data,
+    and this program is no different:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: The seeds are for `XorShiftRng`, whereas `max_in_memory_bytes` and `max_disk_bytes`
+    are for hopper. A careful tally of the bytesize of input is made to avoid fuzz
+    testing the bincode deserializer's ability to reject abnormally large inputs.
+    While AFL is not blind—it has instrumented the branches of the program, after
+    all—it is also not very smart. It's entirely possible that what you, the programmer,
+    intends to fuzz is not what gets fuzzed to start. It's not unheard of to shake
+    out bugs in any additional libraries brought into the fuzz project. It's to keep
+    the libraries drawn in to a minimum and their use minimal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `main` function of the fuzz program starts off with a setup similar to
+    other hopper tests:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The only oddity is the production of prefix. The entropy in the `tempdir` name
+    is relatively low, compared to the many, many millions of tests that AFL will
+    run. We want to be especially sure that no two hopper runs are given the same
+    data directory, as that is undefined behavior:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The meat of the AFL test is surprising:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This program pulled in a random number generator to switch off between performing
+    a read and performing a write into the hopper channel. Why no threads? Well, it
+    turns out, AFL struggles to accommodate threading in its model. AFL has a stability
+    notion, which is its ability to re-run a program and achieve the same results
+    in terms of instruction execution and the like. This is not going to fly with
+    a multi-threaded use of hopper. Still, despite missing out on probing the potential
+    races between sender and receiver threads, this fuzz test found:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: File-descriptor exhaustion crashes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Incorrect offset computations in deque
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Incorrect offset computations at the Sender/Receiver level
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deserialization of elements into a non-cleared buffer, resulting in phantom
+    elements
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Arithmetic overflow/underflow crashes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A failure to allocate enough space for serialization.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Issues with the interior deque that happen only in a multi-threaded context
+    will be missed, of course, but the preceding list is nothing to sneeze at.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Benchmarking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Okay, by now we can be reasonably certain that hopper is fit for purpose, at
+    least in terms of not crashing and producing the correct results. But, it also
+    needs to be *fast*. To that end, hopper ships with the criterion ([https://crates.io/crates/criterion](https://crates.io/crates/criterion))
+    benchmarks. As the time of writing, criterion is a rapidly evolving library that
+    performs statistical analysis on bench run results that Rust's built-in, nightly-only benchmarking
+    library does not. Also, criterion is available for use on the stable channel.
+    The target to match is standard library's MPSC, and that sets the baseline for
+    hopper. To that end, the benchmark suite performs a comparison, living in `benches/stdlib_comparison.rs`
+    in the hopper repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The preamble is typical:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that we''ve pulled in both MPSC and hopper. The function for MPSC that
+    we''ll be benching is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Some sender threads get made, and a receiver exists and pulls the values from
+    MPSC as rapidly as possible. This is not a logic check in any sense and the collected
+    materials are immediately discarded. Like with the fuzz testing, the input to
+    the function is structured data. `MpscInput` is defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The hopper version of this function is a little longer, as there are more error
+    states to cope with, but it''s nothing we haven''t seen before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The same is true of `HopperInput`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Criterion has many options for running benchmarks, but we''ve chosen here to
+    run over inputs. Here''s the setup for MPSC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To explain, we''ve got a function, `mpsc_benchmark`, that takes the mutable
+    criterion structure, which is opaque to use but in which criterion will store
+    run data. This structure exposes `bench_function_over_inputs`, which consumes
+    a closure that we can thread our `mpsc_test` through. The sole input is listed
+    in a vector. The following is a setup that does the same thing, but for hopper:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice now that we have two inputs, one guaranteed to be all in-memory and
+    the other guaranteed to require disk paging. The disk paging input is sized appropriately
+    to match the MSPC run. There''d be no harm in doing an in-memory comparison for
+    both hopper and MPSC, but your author has a preference for pessimistic benchmarks,
+    being an optimistic sort. The final bits needed by criterion are more or less
+    stable across all the benchmarks we''ll see in the rest of this book:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: I encourage you to run the benchmarks yourself. We see times for hopper that
+    are approximately three times faster for the systems we intended hopper for. That's
+    more than fast enough.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we covered the remainder of the essential non-atomic Rust synchronization
+    primitives, doing a deep-dive on the postmates/hopper libraries to explore their
+    use in a production code base. After having digested [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml),
+    *Sync and Send – the Foundation of Rust Concurrency*, and this chapter, the reader
+    should be in a fine position to build lock-based, concurrent data structures in
+    Rust. For readers that need even more performance, we'll explore the topic of
+    atomic programming in [Chapter 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml),
+    *Atomics – the Primitives of Synchronization*, and in [Chapter 7](2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml),
+    *Atomics – Safely Reclaiming Memory*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you thought lock-based concurrency was hard, wait  until you see atomics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Building concurrent data structure is a broad field of wide concern. These notes
+    cover much the same space as the notes from [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync
+    and Send – the Foundation of Rust Concurrency*. Please do refer back to those
+    notes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*The Little Book of Semaphores*, Allen Downey, available at [http://greenteapress.com/wp/semaphores/](http://greenteapress.com/wp/semaphores/).This
+    is a charming book of concurrency puzzles, suitable for undergraduates but challenging
+    enough in Rust for the absence of semaphores. We''ll revisit this book in the
+    next chapter when we build concurrency primitives out of atomics.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*The Computability of Relaxed Data Structures: Queues and Stacks as Examples*,
+    Nir Shavit and Gadi Taubenfeld. This chapter discussed the implementation of a
+    concurrent queue based on the presentation of *The Art of Multiprocessor Programming*
+    and the author''s knowledge of Erlang''s process queue. Queues are a common concurrent
+    data structure and there are a great many possible approaches. This paper discusses
+    an interesting notion. Namely, if we relax the ordering constraint of the queue,
+    can we squeeze out more performance from a modern machine?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Is Parallel Programming Hard, and, If So, What Can You Do About It?*, Paul
+    McKenney. This book covers roughly the same material as [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync
+    and Send – the Foundation of Rust Concurrency,* and [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml), *Locks
+    – Mutex, Condvar, Barriers, and RWLock*, but in significantly more detail. I highly
+    encourage readers to look into getting a copy and reading it, especially the eleventh
+    chapter on validating implementations.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

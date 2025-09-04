@@ -1,0 +1,670 @@
+- en: '17'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Implementing Actors and Async with the Hyper Framework
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The actor model has shown us that we can build async code that is safe and easy
+    to maintain. In this chapter, we take the actor model a little further by building
+    a caching mechanism with a background task that keeps running while we accept
+    incoming HTTP requests using the **Hyper** framework. It must be noted that a
+    Hyper framework is a low-level approach to processing HTTP requests. This enables
+    us to build web applications where we have fine grain control over how the HTTP
+    server handles HTTP requests. For instance, if we do not code how to handle **Universal
+    Resource Identifiers** (**URIs**) and methods, the HTTP server built in Hyper
+    will handle all requests, in the same way, no matter the method or URI passed
+    in. Hyper is useful for building custom network applications such as caching mechanisms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Breaking down the actor async project and requirements
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Defining channel messages
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building a runner actor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building a state actor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Handling HTTP requests using Hyper
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building an HTTP server using Hyper
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Running our Hyper HTTP server
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will be able to build a low-level HTTP server
+    that runs clean-up processes in the background while accepting HTTP requests.
+    However, it must be noted that in previous chapters, we have built fully functioning
+    applications using frameworks such as Rocket and Actix. It took multiple chapters
+    to build a fully functioning application in Actix. It would not be possible to
+    cover everything needed to build a fully functioning web application in a lower-level
+    framework such as Hyper in one chapter. We are merely using Hyper to set up and
+    receive HTTP requests. However, with what we cover in this chapter, you should
+    be able to build out a fully functioning web application with examples from online
+    Hyper docs as we cover the core concepts of what gets a Hyper HTTP server running.
+    It is advised that if you require a fully functioning web application that supports
+    loads of views and authentication, then it makes sense to go for a higher-level
+    framework such as Actix or Rocket.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we will be purely focusing on how to build a server using the
+    Hyper framework. Therefore, we will not be relying on any previous code as we
+    are building our own new server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code for this chapter can be found at [https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter17](https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter17).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Breaking down our project
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We are building a simulation platform where users can log in and interact with
+    fake simulated people via chatbots to see what they say to the fake people. We
+    want to see what the users say to the fake people at the end of the simulation
+    session. The problem is that there are a lot of messages being sent to a fake
+    person in a short amount of time. If we hit the database every time a message
+    is sent, then we will put our database under a lot of strain. Let us say that
+    a user asks a question every 20 seconds; this means we will be hitting the database
+    6 times per minute as there is a question and an answer per interaction. If we
+    have 800 users running a session at the same time, then we can have up to 4,800
+    hits a minute. This can put a strain on the database. To reduce the strain on
+    the database, we can build a server in Hyper that caches the chats and periodically
+    sends multiple questions and answers to the database. Before moving forward, this
+    is a chance for you to think back at all the chapters that we have covered and
+    think of a high-level solution to building this caching mechanism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are multiple approaches to building the caching server, but to improve
+    our understanding of async programming, we will solve our problem with the actor
+    model. Our approach will have an actor that accepts a chat log and caches it under
+    an ID. We then have another actor that periodically gets message data from the
+    cache actor and sends it to another server. The data flow of our server takes
+    the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 17.1 – Layers in our app](img/Figure_17.1_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 17.1 – Layers in our app
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With this approach, we will need the following file layout for our server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will define our actors in the individual files in the `actors` directory.
+    All our code that handles HTTP requests will be defined in the `main.rs` file.
+    We now have all the files that we need. When it comes to our dependencies, we
+    know that we are accepting HTTP requests, sending HTTP requests, serializing data,
+    and running our program in an async manner. With what we are doing in our application,
+    it should not be a surprise that we have the following dependencies in the `Cargo.toml`
+    file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The dependencies should not be a surprise at this stage, apart from the `reqwest`
+    dependency, which we use to send HTTP requests. Now that we have defined the outline
+    of our project, we can move on to building the first part of our system, which
+    is defining the messages for our system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining channel messages
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Our runner actor needs to periodically send messages to our state actor and
+    then send a batch of chats to a server. Considering the functionality of our runner
+    actor, we can see that it does not need a state but does need to send messages.
+    Before building our runner actor, we must build the messages that will be sent
+    to actors and servers. In the `src/actors/messages.rs` file, we start by importing
+    what we need with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will be using the `Serialize` trait to enable us to process the body data
+    from HTTP requests. Now that we have imported what we need, we can define the
+    type of messages that are being sent to actors. If we think about what we need,
+    we will be sending messages to the state actor to either get cached data or insert
+    data. The state actor can return data and return empty data if there are no chats
+    cached. Considering that we have three different types of messages, we have the
+    following enum to define the type of message being sent with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We then have the struct for our messages that will be sent to and from actors,
+    which takes the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that we must define what type of message is being sent. Everything
+    else is optional. For instance, if the state actor finds that there are no cached
+    chats, then the state actor cannot populate any other fields apart from the message
+    type saying that the message is empty.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Remember that we must send blocks of cached chat messages to a server. We can
+    implement the functionality of sending the data to the server for the `StateActorMessage`
+    struct with the following code. We must note that we have not made the `PostBody`
+    struct yet, but we will do this straight afterward:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that we merely get the server URL from the environment, create one
+    large string with `$` as a delimiter separating the pairs of questions and answers,
+    and then send it to another server. We could make an actor handling the message
+    send data to the server. However, coupling the sending of data to the server with
+    the message struct gives more flexibility as any actor that handles the message
+    can send the data in the message to the server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When it comes to the `PostBody` struct, it should be no surprise that it takes
+    the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our messages for our entire application are now defined. We can now move on
+    to building our runner actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building our runner actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Our runner actor consistently loops, sending messages to the state actor, asking
+    for batched data, and sending the batched data to the server if the batched data
+    is present. This means that our actor will be sending and receiving messages throughout
+    the lifetime of the program. With the behavior of the runner actor in mind, it
+    should not be a shock that we need the following imports in the `src/actors/runner.rs`
+    file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have imported the messages and the modules required to sleep for a period
+    of seconds. We have also used type aliases to define the type of channels our
+    runner actor will be supporting. We can now define the runner actor with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, we are merely defining the number of seconds our actor will wait before
+    making another request for data. We then have a sender and receiver to send and
+    receive messages. With the fields defined, we then need to move on to defining
+    the constructor and run function for our `RunnerActor` struct with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that our constructor function (`new`) is not really needed. In our
+    `new` function, we are merely passing arguments directly into the fields of the
+    `RunnerActor` struct. However, for the effort exerted, it is nice to have. For
+    instance, if we need to add some checks later or send a message to the state actor
+    saying that the `RunnerActor` struct has been constructed, all we need to do is
+    change the behavior in the `new` function, and this behavior will propagate throughout
+    the program where the `new` function is used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For our `run` function, we run an infinite loop. Inside this loop, we send
+    a message to the state actor. Each iteration of the loop is broken with a sleep
+    function with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once we have sent the message, we must wait for a response and send the batched
+    data to a server if the response is not empty, which can be done with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we can see that, by now, the logic is not too confusing. With that, we
+    will be able to speed through our state actor and then finally get to creating
+    an HTTP server in Hyper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building our state actor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When it comes to our state actor, we must send and receive messages. Our state
+    actor will also have a state where the actor will store the chat logs to be referenced.
+    With the state actor mechanisms in mind, it will not be surprising that we have
+    the following imports in the `src/actors/state.rs` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only difference in the imports is the `mem` module. The `mem` module will
+    enable us to allocate memory. We will cover how we use the `mem` module when we
+    get the message from the state of the actor. We can also see that we have imported
+    `HashMap` and `VecDeque` to handle the state of the actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have imported what we need, we can define our actor struct with
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `chat_queue` is where we perform a first-in-first-out queue using the `VecDeque`
+    struct implementation from the standard collections library. We are assuming that
+    the oldest chat logs will generally have more chats than later chat logs, and
+    therefore, we should cache the older chats. The reason we are not merely using
+    a vector as opposed to a queue is that popping off the first element of a queue
+    does not require reallocating all the other elements. If we were to remove the
+    first element of a vector, we would have to reallocate all the other elements
+    in the vector. When it comes to storing the chat logs, we have the chat ID as
+    the key and the question and answers under the chat ID.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have defined our state actor, we can define the functions needed
+    for our actor with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, we can see that we have a constructor, an extraction of chat data, an
+    insertion of a chat log, the handling of a message based on the type of message
+    being received, and a `run` function to wait for incoming messages sent to the
+    state actor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are now ready to shoot through the logic implemented by the functions for
+    the `StateActor` struct. At this stage of the book, you should be able to implement
+    these functions by yourself, which will be good practice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For our constructor function, we have the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The constructor is merely creating an empty queue and HashMap and accepts the
+    channels that send and receive messages. For our `get_message` function, we have
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that we get the chat data based on the chat ID from the chat logs.
+    We then transfer ownership from the HashMap chat logs to the `reference` variable,
+    delete the chat ID key, and then return the data. This enables us to remove and
+    return message data from our state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For our `insert_message` function, we utilize the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here we can see that we merely insert the new message data into the vector associated
+    with the chat ID. If the chat ID is not present, we attach the chat ID to the
+    queue and create a new vector under the chat ID.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now move on to our function that handles the message with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, if the message is input, we merely insert the message into our state.
+    If the message is empty, we panic the thread as there should not be any empty
+    messages being sent to the state actor. If we have an output message, this means
+    that we must get the oldest chats located down the bottom of the queue, which
+    takes the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here we can see that if there is nothing in the queue, then we have no chats;
+    thus we return an empty message. If there is a chat ID in the queue, we get the
+    message data and send that data via a message to the runner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, the `run` function takes the following form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: This `run` function merely waits for incoming messages and processes those incoming
+    messages. We have now defined all our actors and can now move on to building our
+    HTTP server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handling HTTP requests using Hyper
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When it comes to building our HTTP server, we will implement all the server
+    logic in the `src/main.rs` file. First, we import what we need with the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: At this stage in the book, these imports should not be confusing to you. Even
+    though we have imported from the `hyper` module, the imports are self-explanatory.
+    We will extract data from a request, create a service to process our request,
+    and create an HTTP server to listen to incoming requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will also need to utilize the actors that we have created. Our actors can
+    be imported using the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With all these actors imported, we can work towards accepting requests. Incoming
+    HTTP requests insert new chat logs into our state actor. To achieve inserting
+    the chat log, we will require a chat ID, inputs (a question), and an output (an
+    answer). It would also be good to have a timestamp but to simplify the example,
+    we will use a turn number to denote the time when the chat log was created. To
+    extract all the data that we have just listed from the request, we will need the
+    following struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: The approach we have taken in processing the body of an incoming request is
+    the same as when we built servers with Rocket and Actix. This is because we are
+    relying on `serde`. The fact that the implementation of processing a body of an
+    incoming request is the same is a testament to the flexibility of implementing
+    traits in Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Seeing as we are accepting incoming requests, we must handle them. We can define
+    the logic of how to handle a request in a function with the following outline:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this `handle` function, we are accepting a request with a body and a channel
+    where we can send our messages to our actors. If we were not applying the actor
+    model approach, we could get away with merely accepting requests. We must remember
+    that we handle our requests through a function, and therefore nothing stops us
+    from passing in a database connection or anything else for that matter. Our `handle`
+    function is essentially acting as middleware.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For this example, we are just supporting one view. However, to get a feel for
+    what we can do with Hyper, we might as well print out some basic information about
+    the incoming request with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we were to support multiple views, we could implement a `match` statement
+    on the URI of the incoming request, passing the request into another function
+    that housed multiple views for a particular theme, such as authentication or chat
+    logging. Another `match` statement could then pass the request into the correct
+    view function, which processes the request and returns an HTTP response, which
+    the `handle` function would return.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Again, because we are merely supporting one view, we will process the request
+    directly in the `handle` function. We do this by extracting the body data from
+    the request with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We now have all the data that we need to send a chat log to our state actor
+    and return an HTTP response that everything is OK with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: With this our `handle` function is complete. Considering what we have done in
+    this section, we can appreciate how low level Hyper is in terms of implementing
+    HTTP. While we have printed out the URI and method, we have not done anything
+    with it. It doesn’t matter what method or URI is passed into our server; if the
+    body has the correct data, our server will work. So, let us get our server working
+    in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building an HTTP server using Hyper
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When it comes to running an HTTP server with Hyper, we will be using Tokio.
+    We have two actors running and two channels to facilitate the communication between
+    actors and requests. First, in the `main` function, we define the address of the
+    server with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After the address is defined, we define the two channels for messages with
+    the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We clone the sender for the state actor because we will pass the sender through
+    the `handle` function with the incoming request. Now that we have our channels,
+    we can spin off two threads to run our actors with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here we must be careful to pass the sender of the other actor into the actor
+    we are creating as the actors send messages to each other; they are not sending
+    messages to themselves.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Everything for our caching mechanism is now running. All we need now is to
+    accept incoming HTTP requests, which we can achieve with the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: It must be noted that we are returning a future with an async syntax, which
+    is required for the `service_fn` function. Here we can see that we bind our address
+    to the server and then call the `serve` function. Inside this `serve` function,
+    we pass in the `make_service_fn` function, which wraps whatever executable we
+    pass into the `make_service_fn` function in a `MakeServiceFn` struct. The executable
+    we pass into the `make_service_fn` function is a closure that passes in `_conn`,
+    which is an `AddrStream` struct. With the `AddrStream` struct, we can get the
+    address of the peer making the connection to the server. We can also consume the
+    `AddrStream` struct and extract the underlying TCP stream using the `into_inner`
+    method of the `AddrStream` struct. We are not going to play with the `AddrStream`
+    struct in this chapter, as we are keeping it simple by just processing standard
+    HTTP requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inside the closure, we clone the sender again. We need to do this here because
+    we need to clone the channel for every request coming in, as every request will
+    need to send a message to the state actor. We then create a future with the `async`
+    block returning an `Ok` enum, which wraps around the `service_fn` function, where
+    we insert another closure that processes the incoming request. This is where we
+    clone the channel again and return a future of our `handle` function that accepts
+    the incoming request and channel to be processed and an HTTP response to be returned.
+    We can see that it takes more steps to get an HTTP server running compared to
+    other frameworks such as Rocket. However, we also get a lot of fine-grain control.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that our server block is complete, we can implement a last piece of logic
+    in the `main` function, which prints out the error if there is a problem with
+    the server by implementing the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: With this, our simple HTTP server should work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running our Hyper HTTP server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When we run our server, we first need to export the URL that we are going to
+    send batched chat logs to with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This means that we just need to send our HTTP requests to an HTTPBin and get
+    a standard response back. We can then run our server with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our server is now running with the following printouts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our intervals are every 30 seconds for the runner actor to send a message to
+    the state actor. If we just leave our server running, we will get the following
+    printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here we can see that the chat state and queue are empty and that both of our
+    actors are running in their threads! We can then get our Postman application and
+    send the following HTTP request:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 17.2 – HTTP request for our server](img/Figure_17.2_B18722.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 17.2 – HTTP request for our server
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Sending the previous request will give the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here we can see that the state and queue have been populated. If we press the
+    **Send** button in Postman another 2 times before the initial 30 seconds is up,
+    we get the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that the queue is not increasing as we are sending the same chat
+    ID. We then increase the ID of the chat log and send another request resulting
+    in the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that the new ID has been inserted into the queue and state. We have
+    managed to make all these requests before the 30 seconds is up, then we can simply
+    wait until we get the following printout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: What has happened here is that the runner has sent a message to the state getting
+    the oldest chat ID and then sent it to the server we defined in our environment
+    variables. We can see that the state has been updated, and the response is OK.
+    Some of the HTTP response has been omitted to avoid printout bloat on the page.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can conclude that our caching system built with actors on Hyper HTTP is working
+    as we expected! With this, we have come to the end of this chapter, exploring
+    enough about Hyper to get a server up and running with async actors and channels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we built a network application that cached chat logs. Our network
+    application also has a background task continuously running to periodically clean
+    up the cache by sending the cached data to a server. We broke down and created
+    our background task runner into an actor system with a queue and then implemented
+    it. This gives you a whole new toolset to solve problems with. Background running
+    actors are not just for running on a server for caching. You can run background
+    runner actors for normal programs too if you build your program on a Tokio runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will use Redis persistent storage to manage multiple
+    workers and network applications to transfer messages across multiple network
+    applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Hyper documentation: [https://hyper.rs/guides](https://hyper.rs/guides)'
+  prefs: []
+  type: TYPE_NORMAL

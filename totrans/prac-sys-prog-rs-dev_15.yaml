@@ -1,0 +1,775 @@
+- en: '*Chapter 12*: Writing Unsafe Rust and FFI'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we learned about the network primitives built into
+    the Rust Standard Library and saw how to write programs that communicate over
+    TCP and UDP. In this chapter, we will conclude the book by covering a few advanced
+    topics related to **unsafe Rust** and **foreign function interfaces** (**FFIs**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have seen how the Rust compiler enforces rules of ownership for memory and
+    thread safety. While this is a blessing most of the time, there may be situations
+    when you want to implement a new low-level data structure or call out to external
+    programs written in other languages. Or, you may want to perform other operations
+    prohibited by the Rust compiler, such as dereferencing raw pointers, mutating
+    static variables, or dealing with uninitialized memory. Have you wondered how
+    the Rust Standard Library itself makes system calls to manage resources, when
+    system calls involve dealing with raw pointers? The answer lies in understanding
+    unsafe Rust and FFIs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we'll first look at why and how Rust code bases use unsafe
+    Rust code. Then, we'll cover the basics of FFIs and talk about special considerations
+    while working with them. We'll also write Rust code that calls a C function, and
+    a C program that calls a Rust function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover these topics in the following order:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing unsafe Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Introducing FFIs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reviewing guidelines for safe FFIs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Calling Rust from C (project)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understanding the ABI
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will have learned when and how to use unsafe
+    Rust. You will learn how to interface Rust to other programming languages, through
+    FFIs, and learn how to work with them. You'll also get an overview of a few advanced
+    topics, such as **application binary interfaces** (**ABIs**), conditional compilation,
+    data layout conventions, and providing instructions to the linker. Understanding
+    these will be helpful when building Rust binaries for different target platforms,
+    and for linking Rust code with code written in other programming languages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Verify that `rustup`, `rustc`, and `cargo` have been installed correctly with
+    the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Since this chapter involves compiling C code and generating a binary, you will
+    need to set up the C development environment on your development machine. After
+    setup, run the following command to verify that the installation is successful:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: If this command does not execute successfully, please revisit your installation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is recommended that those developing on a Windows platform use a Linux virtual
+    machine to try out the code in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code in this section has been tested on Ubuntu 20.04 (LTS) x64 and should
+    work on any other Linux variant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Git repo for the code in this chapter can be found at [https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter12](https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter12).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing unsafe Rust
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So far in this book, we've seen and used Rust language that enforces memory
+    and type safety at compilation time and prevents various kinds of undefined behavior,
+    such as memory overflows, null or invalid pointer constructions, and data races.
+    This is *safe* Rust. In fact, the Rust Standard Library gives us good tools and
+    utilities to write safe, idiomatic Rust, and helps to keep the program safe (and
+    you sane!).
+  prefs: []
+  type: TYPE_NORMAL
+- en: But in some situations, the compiler can *get in the way*. The Rust compiler
+    performs static analysis of code that is conservative (meaning the Rust compiler
+    does not mind generating a few false positives and rejecting valid code, as long
+    as it does not let bad code get through). You, as a programmer, know that a piece
+    of code is safe, but the compiler thinks it is risky, so it rejects this code.
+    This includes operations such as system calls, type coercions, and direct manipulations
+    of memory pointers, which are used in the development of several categories of
+    system software.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another example is in embedded systems where registers are accessed through
+    a fixed memory address and require the dereferencing of pointers. So, to enable
+    such actions, the Rust language provides the `unsafe` keyword. For Rust as a system
+    programming language, it is essential to enable the programmer to have the means
+    to write low-level code to interface directly with the operating system, bypassing
+    the Rust Standard Library if needed. *This is unsafe Rust*. This is the part of
+    the Rust language that does not adhere to the rules of the borrow checker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unsafe Rust can be thought of as a superset of safe Rust. It is a superset because
+    it allows you to do all the things you can do in standard Rust, but you can do
+    more things that are otherwise prohibited by the Rust compiler. In fact, Rust's
+    own compiler, and the standard library, include unsafe Rust code that is carefully
+    written.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do you distinguish between safe and unsafe Rust code?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Rust provides a convenient and intuitive mechanism where a block of code can
+    be enclosed within an unsafe block using the `unsafe` keyword. Try the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Compile this code with `cargo check` (or run it from Rust playground IDE).
+    You''ll see the following error message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s now modify the code by enclosing the dereferencing of the raw pointer
+    within an `unsafe` block:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will see that the compilation is successful now, even though this code can
+    potentially cause undefined behavior. This is because, once you enclose some code
+    within an unsafe block, the compiler expects the programmer to ensure the safety
+    of unsafe code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's now look at the kind of operations unsafe Rust enables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Operations in unsafe Rust
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: There are really only five key operations in the *unsafe* category – dereferencing
+    a raw pointer, working with mutable static variables, implementing unsafe traits,
+    calling an external function through an FFI interface, and sharing union structs
+    across FFI boundaries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll look at the first three in this section and the last two in the next
+    section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`*const T` is a pointer type that corresponds to `&T` (immutable reference
+    type) in safe Rust, and `*mut T` is a pointer type that corresponds to `&mut T`
+    (mutable reference type in safe Rust). Unlike Rust reference types, these raw
+    pointers can have both immutable and mutable pointers to a value at the same time
+    or have multiple pointers simultaneously to the same value in memory. There is
+    no automatic cleanup of memory when these pointers go out of scope, and these
+    pointers can be null or refer to invalid memory locations too. The guarantees
+    provided by Rust for memory safety do not apply to these pointer types. Examples
+    of how to define and access pointers in an unsafe block are shown next:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You'll note from this code that we've simultaneously created both an immutable
+    reference and a mutable reference to the same value, by casting from the corresponding
+    immutable and mutable reference types. Note that to create the raw pointers, we
+    do not need an `unsafe` block, but only for dereferencing them. This is because
+    dereferencing a raw pointer may result in unpredictable behavior as the borrow
+    checker does not take responsibility for verifying its validity or lifetime.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '`unsafe` block. In the example shown next, we are declaring a mutable static
+    variable that is initialized with a default value for the number of threads to
+    be spawned. Then, in the `main()` function, we are checking for an environment
+    variable, which if specified will override the default. This override of the value
+    in the static variable must be enclosed in an *unsafe* block:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This code snippet shows the declaration of a mutable static variable, `THREAD_COUNT`,
+    initialized to `4`. When the `main()` function executes, it looks for an environmental
+    variable with the name `THREAD_COUNT`. If the `env` variable is found, it calls
+    the `change_thread_count()` function, which mutates the value of the static variable
+    in an `unsafe` block. The `main()` function then prints out the value in an `unsafe`
+    block.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '`Send` or `Sync` traits. To implement these two traits for the raw pointer,
+    we have to use unsafe Rust, as shown:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The reason for the `unsafe` keyword is because raw pointers have untracked ownership,
+    which then becomes the responsibility of the programmer to track and manage.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: There are two more features of unsafe Rust that are related to interfacing with
+    other programming languages, which we will discuss in the next section on FFIs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing FFIs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll understand what FFI is, and then see the two unsafe Rust
+    features related to FFI.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To understand FFI, let''s look at the following two examples:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is a blazing-fast machine learning algorithm written in Rust for linear
+    regression. A Java or Python developer wants to use this Rust library. How can
+    this be done?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You want to make Linux **syscalls** without using the Rust Standard Library
+    (which essentially means you want to either implement a feature that's not available
+    in the standard library or want to improve an existing feature). How would you
+    do it?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While there may be other ways to solve this problem, one popular method is to
+    use FFI.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the first example, you can wrap the Rust library with an FFI defined in
+    Java or Python. In the second example, Rust has a keyword, `extern`, with which
+    an FFI to a C function can be set up and called. Let''s see an example of the
+    second case next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, in the `main()` function, we are invoking the `getenv()` external C function
+    (instead of directly using the Rust Standard Library) to retrieve the value of
+    the `MY_VAR` environment variable. The `getenv()` function accepts a `*const c_char`
+    type parameter as input. To create this type, we are first instantiating the `CString`
+    type, passing in the name of the environment variable, and then converting it
+    into the required function input parameter type using the `as_ptr()` method. The
+    `getenv()` function returns a `*mut c_char` type. To convert this into a Rust-compatible
+    type, we are using the `Cstr::from_ptr()` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note the two main considerations here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are specifying the call to the C function within an `extern "C"` block. This
+    block contains the signature of the function that we want to call. Note that the
+    data types in the function are not Rust data types, but those that belong to C.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We are importing a couple of modules – `std::ffi` and `std::os::raw` – from
+    the Rust Standard Library. The `ffi` module provides utility functions and data
+    structures related to FFI bindings, which makes it easier to do data mapping across
+    non-Rust interfaces. We are using the `CString` and `CStr` types from the `ffi`
+    module, to transfer UTF-8 strings to and from C. The `os::raw` module contains
+    platform-specific types that map to the C data types so that the Rust code that
+    interacts with C will refer to the correct types.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Now, let''s run the program using the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll see the value of `MY_VAR` printed out to the console. With this, we have
+    successfully retrieved the value of an environment variable using a call to an
+    external C function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Recall that we learned how to get and set environment variables in previous
+    chapters using the Rust Standard Library. Now we have done something similar,
+    but this time using the Rust FFI interface to invoke a C library function. Note
+    that the call to the C function is enclosed in an `unsafe` block.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, we've seen how to invoke a C function from Rust. Later, in the *Calling
+    Rust from C (project)* section, we'll see how to do it the other way around, that
+    is, invoke a Rust function from C.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's now take a look at another feature of unsafe Rust, which is to define
+    and access fields of a union struct, for communicating with a C function across
+    an FFI interface.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Unions are data structures used in C, and are not memory-safe. This is because
+    in a union type, you can set the instance of a `union` to one of the invariants
+    and access it as another invariant. Rust does not directly provide `union` as
+    a type in safe Rust. Rust, however, has a type of union called a `enum` data type
+    in safe Rust. Let''s see an example of `union`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the code shown, we are first using a `repr(C)` annotation, which tells the
+    compiler that the order, size, and alignment of fields in the `MyUnion` union
+    is what you would expect in the C language (we''ll discuss more about `repr(C)`
+    in the *Understanding the ABI* section). We''re then defining two invariants of
+    the union: one is an integer of type `u32` and the other is a float of type `f32`.
+    For any given instance of this union, only one of these invariants is valid. In
+    the code, we''re creating an instance of this union, initializing it with a `float`
+    invariant, and then accessing its value from the `unsafe` block.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the program with the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You''ll see the value `f is 2.000` printed to your terminal. So far, it looks
+    right. Now, let''s try to access the union as an integer, instead of a float type.
+    To do this, just alter one line of code. Locate the following line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Change it to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Run the program again. This time, you won''t get an error but you''ll see an
+    invalid value printed like this. The reason is that the value in the memory location
+    pointed to is now being interpreted as an integer even though we had stored a
+    float value:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using unions in C is dangerous unless it is done with the utmost care, and Rust
+    provides the ability to work with unions as part of unsafe Rust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, you've seen what unsafe Rust and FFI are. You've also seen examples
+    of calling unsafe and external functions. In the next section, we'll discuss guidelines
+    for creating safe FFI interfaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reviewing guidelines for safe FFIs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this section, we''ll look at a few guidelines to keep in mind while interfacing
+    with other languages using FFI in Rust:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`extern` keyword in Rust is inherently unsafe, and such calls must be done
+    from an `unsafe` block.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`#repr(C)` annotation) is important to maintain memory safety. We''ve seen
+    an example earlier of how to use this. Another thing to note is that only C-compatible
+    types should be used as parameters or return values for external functions. Examples
+    of C-compatible types in Rust include integers, floats, `repr(C)`-annotated structs,
+    and pointers. Examples of Rust types incompatible with C include trait objects,
+    dynamically sized types, and enums with fields. There are tools available such
+    as `rust-bindgen` and `cbindgen` that can help in generating types that are compatible
+    between Rust and C (with some caveats).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`int` and `long`, which means the exact length of these types vary based on
+    the platform architecture. When interacting with C functions that use these types,
+    the Rust Standard Library `std::raw` module can be used, which offers type aliases
+    that are portable across platforms. `c_char` and `c_uint` are two examples of
+    raw types we used in an example earlier. In addition to the standard library,
+    the `libc` crate also provides such portable type aliases for these data types.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**References and pointers**: Due to differences between C''s pointer types
+    and Rust''s reference types, Rust code should not use reference types but rather
+    pointer types while working across FFI boundaries. Any Rust code that dereferences
+    a pointer type must make null checks before use.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Drop` trait for any type that is transmitted directly to foreign code. It
+    is even safer to use only `Copy` types for use across FFI boundaries.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`std::panic::catch_unwind` or `#[panic_handler]` (which we saw in [*Chapter
+    9*](B16405_09_Final_NM_ePUB.xhtml#_idTextAnchor150), *Managing* *Concurrency*).
+    This will ensure that the Rust code will not abort or return in an unstable state.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Exposing a Rust library to a foreign language**: Exposing a Rust library
+    and its functions to a foreign language (such as Java, Python, or Ruby) should
+    only be done through a C-compatible API.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This concludes the section on writing safe FFI interfaces. In the next section,
+    we'll see an example of using a Rust library from C code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Calling Rust from C (project)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we will demonstrate the setup needed to build a Rust shared
+    library (with a `.so` extension on Linux) incorporating an FFI interface and invoke
+    it from a C program. The C program would be a simple program that just prints
+    out a greeting message. The example is deliberately kept simple to enable you
+    (as you're not expected to be familiar with complex C syntax) to focus on the
+    steps involved, and for easy verification of this first FFI program in a variety
+    of operating system environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here are the steps that we will go through to develop and test a working example
+    of a C program that calls a function from a Rust library using the FFI interface:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a new Cargo lib project.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Modify `Cargo.toml` to specify that we want a shared library to be built.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Write an FFI in Rust (in the form of a C-compatible API).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Build the Rust shared library.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Verify whether the Rust shared library has been built correctly.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create a C program that invokes a function from the Rust shared library.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Build the C program specifying the path of the Rust shared library.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Set `LD_LIBRARY_PATH`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Run the C program.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Let''s get going and execute the aforementioned steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a new cargo project:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Add the following to `Cargo.toml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Write an FFI in Rust in `src/lib.rs`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The `#[no_mangle]` annotation tells the Rust compiler that the `see_ffi_in_action()`
+    function should be accessible to external programs with the same name. Otherwise,
+    by default, the Rust compiler alters it.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The function uses the `extern "C"` keyword. As discussed earlier, the Rust compiler
+    makes any functions marked with `extern` compatible with C code. The `"C"` keyword
+    in `extern "C"` indicates the standard C calling convention on the target platform.
+    In this function, we are simply printing out a greeting.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Build the Rust shared library from the `ffi` folder with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Verify whether the shared library has been built correctly:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: .dylib extension on the Mac platform.)
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let''s create a C program that invokes the function from the Rust shared library
+    that we have built. Create a `rustffi.c` file in the root of the `ffi` project
+    folder and add the following code:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This is a simple C program that includes a header file and has a `main()` function
+    that in turn invokes a `see_ffi_in_action()` function. At this point, the C program
+    does not know where this function is located. We''ll provide this information
+    to the C compiler when we build the binary. Let''s now write the header file that''s
+    referred to in this program. Create a `rustffi.h` file in the same folder as the
+    C source file, and include the following:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This header file declares the function signature, which denotes that this function
+    does not return any value or take any input parameter.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Build the C binary with the following command, from the root folder of the
+    project:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Set the `LD_LIBRARY_PATH` environment variable, which in Linux specifies the
+    paths in which the libraries will be searched:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Run the executable with the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You should see the following message displayed on your terminal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you have reached this far, congratulations!
+  prefs: []
+  type: TYPE_NORMAL
+- en: You have written a shared library in Rust that contains a function with a C-compatible
+    API. You have then invoked this Rust library from a C program. This is FFI in
+    action.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the ABI
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This section provides a brief introduction to the ABI and a few related (advanced)
+    features of Rust that deal with conditional compilation options, data layout conventions,
+    and link options.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **ABI** is a set of conventions and standards that compilers and linkers
+    adhere to, for function-calling conventions, and for specifying data layouts (type,
+    alignment, offset).
+  prefs: []
+  type: TYPE_NORMAL
+- en: To understand the significance of the ABI, let's draw an analogy with APIs,
+    which are a well-known concept in application programming. When a program wants
+    to access an external component or library at the source-code level, it looks
+    for the definition of the API exposed by that external component. The external
+    component can be a library or an external service accessible over the network.
+    The API specifies the name of the functions that can be called, the parameters
+    (along with their names and data types) that need to be passed to invoke the function,
+    and the type of value returned from the function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An ABI can be seen as the equivalent of an API but at the binary level. The
+    compiler and linker need a way to specify how a calling program can locate the
+    called function within a binary object file, and how to deal with the arguments
+    and return values (types and order of arguments and return type). But unlike source
+    code, in the case of the binaries produced, details such as the length of integers,
+    padding rules, and whether the function parameters are stored on the stack or
+    registers vary by platform architecture (for example, x86, x64, AArch32) and operating
+    system (for example, Linux and Windows). A 64-bit operating system can have different
+    ABIs for executing 32-bit and 64-bit binaries. A Windows-based program will not
+    know how to access a library built on Linux, as they use different ABIs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'While the study of ABIs is a specialized topic in itself, it is sufficient
+    to understand the significance of ABIs and see what features Rust provides to
+    specify ABI-related parameters while writing code. We''ll cover the following
+    – *conditional compilation options*, *data layout conventions*, and *link options*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`cfg` macro. The following are examples of `cfg` options:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'These annotations are attached to a function declaration as shown in this example:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: More details about the various conditional compilation options can be found
+    at [https://doc.rust-lang.org/reference/conditional-compilation.html](https://doc.rust-lang.org/reference/conditional-compilation.html).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '`#[repr(Rust)]`. But if there is data that needs to pass through an FFI boundary,
+    the accepted standard is to use the data layout of C (annotated as `#[repr(C)]`
+    ). In this layout, the order, size, and alignment of fields are as it is done
+    in C programs. This is important to ensure the compatibility of data across the
+    FFI boundary.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rust guarantees that if the `#[repr(C)]` attribute is applied to a struct, the
+    layout of the struct will be compatible with the platform's representation in
+    C. There are automated tools, such as `cbindgen`, that can help generate the C
+    data layout from Rust programs.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '`link` annotation. Take the following example:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The `#[link(...)]` attribute is used to instruct the linker to link against
+    `my_library` in order to resolve the symbols. It instructs the Rust compiler how
+    to link to native libraries. This annotation can also be used to specify the kind
+    of library to link to (*static* or *dynamic*). The following annotation tells
+    `rustc` to link to a *static* library with the name `my_other_library`:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In this section, we've seen what an ABI is and its significance. We've also
+    looked at how to specify instructions to the compiler and linker through various
+    annotations in code, for aspects such as the target platform, operating system,
+    data layout, and link instructions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This concludes this section. The intent of this section was only to introduce
+    a few advanced topics related to the ABI, FFI, and associated instructions to
+    the compiler and linker. For more details, refer to the following link: [https://doc.rust-lang.org/nomicon/](https://doc.rust-lang.org/nomicon/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we reviewed the basics of unsafe Rust and understood the key
+    differences between safe and unsafe Rust. We saw how unsafe Rust enables us to
+    perform operations that would not be allowed in safe Rust, such as dereferencing
+    raw pointers, accessing or mutating static variables, working with unions, implementing
+    unsafe traits, and calling external functions. We also looked at what a foreign
+    function interface is, and how to write one in Rust. We wrote an example of invoking
+    a C function from Rust. Also, in the example project, we wrote a Rust shared library
+    and invoked it from a C program. We saw guidelines for how to write safe FFIs
+    in Rust. We took a look at the ABI and annotations that can be used to specify
+    conditional compilation, data layout, and link options.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we conclude this chapter, and also this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I thank you for joining me on this journey into the world of system programming
+    with Rust, and wish you the very best with exploring the topic further.
+  prefs: []
+  type: TYPE_NORMAL
