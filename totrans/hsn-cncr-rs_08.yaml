@@ -1,7 +1,9 @@
 - en: High-Level Parallelism – Threadpools, Parallel Iterators and Processes
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 高级并行性 – 线程池、并行迭代器和进程
 - en: In previous chapters, we introduced the basic mechanisms of concurrency in the
     Rust—programming language. In [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml),
     *Sync and Send – the Foundation of Rust Concurrency*, we discussed the interplay
@@ -17,65 +19,99 @@
     libraries or data structures, we have yet to see the *consequences* of all of
     these tools on the structure of programs, or how you might choose to split up
     your workloads across CPUs depending on need.
+  id: totrans-1
   prefs: []
   type: TYPE_NORMAL
+  zh: 在前面的章节中，我们介绍了 Rust 编程语言中并发的基本机制。在[第4章](5a332d94-37e4-4748-8920-1679b07e2880.xhtml)，*Sync
+    和 Send – Rust 并发的基石*中，我们讨论了 Rust 类型系统与并发程序之间的相互作用，以及 Rust 如何确保在这种最困难的情形下内存安全。在[第5章](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml)，*锁
+    – Mutex、Condvar、屏障和 RWLock*中，我们讨论了更高层次、所谓的粗粒度同步机制，这在许多语言中都很常见。在[第6章](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml)，*原子操作
+    – 同步的原始操作*和[第7章](2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml)，*原子操作 – 安全地回收内存*中，我们讨论了现代机器上可用的更精细的同步原语，这些原语通过
+    Rust 的并发内存模型暴露出来。这一切都很好，尽管我们已经深入研究了某些库或数据结构，但我们还没有看到所有这些工具对程序结构的*影响*，或者根据需要如何在
+    CPU 之间分配工作负载。
 - en: In this chapter, we will explore higher-level techniques for exploiting concurrent
     machines without dipping into manual locking or atomic synchronization. We'll
     examine thread pooling, a technique common in other programming languages, data
     parallelism with the rayon library, and demonstrate multiprocessing in the context
     of a genetic programming project that will carry us into the next chapter, as
     well.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将探讨不涉及手动锁定或原子同步的高级技术，以利用并发机器。我们将检查线程池，这是一种在其他编程语言中常见的技巧，使用 rayon 库进行数据并行性，并在遗传编程项目的上下文中演示多进程，这将带我们进入下一章。
 - en: 'By the end of this chapter, we will have:'
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 到本章结束时，我们将：
 - en: Explored the implementation of thread pool
+  id: totrans-4
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 探索了线程池的实现
 - en: Understood how thread pooling relates to the operation of rayon
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 理解了线程池如何与 rayon 的操作相关
 - en: Explored rayon's internal mechanism in-depth
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 深入探索了 rayon 的内部机制
 - en: Demonstrated the use of rayon in a non-trivial exercise
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在一个非平凡练习中演示了 rayon 的使用
 - en: Technical requirements
+  id: totrans-8
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: This chapter requires a working Rust installation. The details of verifying
     your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
     *Preliminaries – Machine Architecture and Getting Started with Rust. *A pMARS
     executable is required and must be on your PATH. Please follow the instructions
     in the pMARS ([http://www.koth.org/pmars/](http://www.koth.org/pmars/)) source
     tree for building instructions.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章需要安装一个有效的 Rust 环境。验证安装的细节在[第1章](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml)，*预备知识
+    – 计算机架构和 Rust 入门*中有介绍。需要一个 pMARS 可执行文件，并且必须位于您的 PATH 中。请遵循 pMARS ([http://www.koth.org/pmars/](http://www.koth.org/pmars/))
+    源树中的说明来构建。
 - en: 'You can find the source code for this book''s projects on GitHub: [https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust).
     The source code for this chapter is under `Chapter08`.'
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 您可以在 GitHub 上找到本书项目的源代码：[https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust)。本章的源代码位于
+    `Chapter08`。
 - en: Thread pooling
+  id: totrans-11
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 线程池
 - en: To this point in the book, whenever we have needed a thread, we've simply called
     `thread::spawn`. This is not necessarily a safe thing to do. Let's inspect two
     projects that suffer from a common defect—potential over-consumption of OS threads.
     The first will be obviously deficient, the second less so.
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 到目前为止，在这本书中，每当我们需要一个线程时，我们只是简单地调用了 `thread::spawn`。这并不一定是一件安全的事情。让我们检查两个存在共同缺陷的项目——潜在的操作系统线程过度消耗。第一个将明显有缺陷，第二个则不那么明显。
 - en: Slowloris – attacking thread-per-connection servers
+  id: totrans-13
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Slowloris攻击——攻击每个连接一个线程的服务器
 - en: The thread-per-connection architecture is a networking architecture that allocates
     one OS thread per inbound connection. This works well for servers that will receive
     a total number of connections relatively similar to the number of CPUs available
@@ -91,19 +127,27 @@
     spends very little resources to carry out their attack. Meanwhile, for every new
     connection into the system, the server is forced to allocate a full stack frame
     and forced to cram another thread into the OS scheduler. That's not cheap.
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 每个连接一个线程的架构是一种网络架构，它为每个入站连接分配一个操作系统线程。这对于服务器来说效果很好，因为服务器将接收的连接总数与服务器可用的CPU数量相对相似。根据操作系统不同，这种架构通常会减少网络事务的响应时间延迟，这是一个很好的额外优势。线程-连接系统的主要缺陷与slowloris攻击有关。在这种攻击方式中，恶意用户向服务器打开一个连接——这是一个相对便宜的操作，只需要一个文件处理器，并且简单地保持连接。线程-连接系统可以通过积极超时空闲连接来减轻slowloris攻击，攻击者可以通过以非常慢的速度通过连接发送数据来减轻攻击，例如每100毫秒发送一个字节。攻击者，如果只是在受信任的网络内部部署，所花费的资源非常少来执行他们的攻击。同时，对于系统中的每个新连接，服务器被迫分配一个完整的堆栈帧，并被迫将另一个线程塞入操作系统调度器。这并不便宜。
 - en: The server
+  id: totrans-15
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 服务器
 - en: 'Let''s put together a vulnerable server, then blow it up. Lay out your `Cargo.toml`
     like so:'
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们构建一个易受攻击的服务器，然后将其摧毁。按照以下方式布局你的`Cargo.toml`：
 - en: '[PRE0]'
+  id: totrans-17
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'The library slog ([https://crates.io/crates/slog](https://crates.io/crates/slog))
     is a structured logging library that I highly recommend in production systems.
     Slog itself is very flexible, being more of a framework for composing a logging
@@ -117,14 +161,21 @@
     systems. Note, finally, that we produce two binaries in this project, called `server`
     and `client`. Let''s dig into `server` first. As usual, our projects start with
     a preamble:'
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 库slog ([https://crates.io/crates/slog](https://crates.io/crates/slog)) 是一个结构化日志库，我在生产系统中强烈推荐使用。Slog本身非常灵活，更像是构建日志系统的框架，而不是一个固定的东西。在这里，我们将向终端进行日志记录，这正是slog-term的作用所在。`slog-async`依赖关系将实际的写入操作推迟到终端，在我们的例子中，推迟到一个专用线程。当slog通过网络而不是快速向终端发送日志时，这种专用性更为重要。我们不会深入探讨本书中的slog，但文档非常全面，我想如果你还没有使用slog，你也会欣赏它的。库clap
+    ([https://crates.io/crates/clap](https://crates.io/crates/clap)) 是一个命令行解析库，我也强烈推荐在生产系统中使用。最后要注意的是，在这个项目中，我们生成了两个二进制文件，分别称为`server`和`client`。让我们首先深入研究`server`。像往常一样，我们的项目从前言开始：
 - en: '[PRE1]'
+  id: totrans-19
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: '[PRE2]'
+  id: totrans-20
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'By this point in the book, there''s nothing surprising here. We import the
     external libraries we''ve just discussed as well as a host of standard library
     material. The networking-related imports are unfamiliar, with regard to the previous
@@ -132,36 +183,52 @@
     a static `TOTAL_STREAMS` at the top of the program that the `server` will use
     to track the total number of TCP streams it has connected. The `main` function
     starts off setting up slog:'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 到这本书的这一部分，这里没有什么令人惊讶的。我们导入我们刚刚讨论的外部库以及大量标准库材料。与本书前面的内容相比，与网络相关的导入是不熟悉的，但我们会简要介绍这一点。最后，我们在程序顶部创建了一个静态的`TOTAL_STREAMS`，服务器将使用它来跟踪它已连接的总TCP流数。`main`函数开始设置slog：
 - en: '[PRE3]'
+  id: totrans-22
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'The exact details here are left to the reader to discover in slog''s documentation.
     Next, we set up the clap and `parse` program arguments:'
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 具体的细节留给了读者在slog的文档中去发现。接下来，我们设置clap和`parse`程序参数：
 - en: '[PRE4]'
+  id: totrans-24
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: 'The details here are also left to the reader to discover in clap''s documentation,
     but hopefully the intent is clear enough. We''re setting up two arguments, `host`
     and `port`, which the server will listen for connections on. Speaking of:'
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里细节也留给了读者在clap的文档中去发现，但希望意图已经足够清晰。我们设置了两个参数，`host`和`port`，服务器将监听这些参数上的连接。说到：
 - en: '[PRE5]'
+  id: totrans-26
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'Note that we''re unwrapping if it''s not possible for the server to establish
     a connection. This is user-hostile and in a production-worthy application you
     should match on the error and print out a nice, helpful message to explain the
     error. Now that the server is listening for new connections, we make a server-specific
     logger and start handling incoming connections:'
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，如果服务器无法建立连接，我们将取消包装。这是对用户不友好的，在一个值得生产的应用程序中，你应该匹配错误并打印出一个友好、有帮助的消息来解释错误。现在服务器正在监听新的连接，我们创建一个特定于服务器的记录器并开始处理传入的连接：
 - en: '[PRE6]'
+  id: totrans-28
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: 'The key thing here is `handle_client(log, reader, writer)`. This function accepts
     the newly created `stream :: TcpStream`– in its buffered reader and writer guise—and
     returns `std::io::Result<JoinHandler<()>`. We''ll see the implementation of this
@@ -184,11 +251,15 @@
     going to be program-specific but, at least here, it''ll be sufficient to ignore
     the handles and force mid-transaction exits on worker threads. Why? Because the
     server is only echoing:'
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: '这里关键的是`handle_client(log, reader, writer)`这个函数。这个函数接受新创建的`stream :: TcpStream`——以它的缓冲读取器和写入器形式——并返回`std::io::Result<JoinHandler<()>>`。我们将直接看到这个函数的实现。在此之前，顺便提一下，记住给你的IO添加缓冲非常重要。如果我们没有在这里放置`BufWriter`和`BufReader`，那么在大多数系统中，对`TcpStream`的每次读取和写入都会导致系统调用，在网络中进行逐字节传输。对于所有相关人员来说，以批量的方式读取和写入要**显著**高效得多，这正是`BufReader`和`BufWriter`实现所负责的。我已经数不清有多少程序因为明智地应用了缓冲IO而变得更快。不幸的是，我们不会深入探讨`BufReader`和`BufWriter`的实现，因为它们超出了本书的范围。如果你已经读到这儿，并且我做得不错地解释了，那么你已经学到了理解实现所需的一切，鼓励你在方便的时候深入研究。注意，这里我们还在为`handle_client`返回的`JoinHandler<()>`分配一个向量。这并不一定是理想的。考虑如果第一个连接是长期存在的，而后续的连接都是短暂的。尽管这些处理器已经完成，但它们不会被清除，程序将逐渐增加内存消耗。解决这个问题的方式将取决于程序本身，但至少在这里，忽略这些处理器并在工作线程中强制进行事务退出将足够。为什么？因为服务器只是在回声：'
 - en: '[PRE7]'
+  id: totrans-30
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: A network protocol must, anyway, be resilient to hangups on either end, owing
     to the unreliable nature of networks. In fact, the reader who has enjoyed this
     book and especially [Chapter 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml), *Atomics – the
@@ -199,96 +270,145 @@
     using the `thread::Builder` API to construct threads, which we discussed in [Chapter
     5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml), *Locks – Mutex, Condvar, Barriers
     and RWLock*. Otherwise, it's a fairly standard TCP echo.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 无论如何，网络协议必须能够应对任一端挂起的情况，这是由于网络的不可靠性。事实上，那些喜欢这本书，特别是[第6章](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml)“原子——同步的原始”和[第7章](2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml)“原子——安全地回收内存”的读者，将会很高兴地了解到分布式系统面临着许多相同的困难，而且还增加了不可靠传输的额外好处。无论如何，请注意`handle_client`并没有做太多，只是使用`thread::Builder`
+    API构建线程，我们在[第5章](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml)“锁——Mutex、Condvar、Barriers和RWLock”中讨论过。否则，它是一个相当标准的TCP回显。
 - en: 'Let''s see the server in operation. In the top of the project, run `cargo run
     --release --bin server` and you should be rewarded with something much like:'
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们看看服务器的工作情况。在项目的顶部运行`cargo run --release --bin server`，你应该会得到类似以下的结果：
 - en: '[PRE8]'
+  id: totrans-33
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'So far so good. This server is listening on localhost, port 1987\. In some
     other terminal, you can run a telnet to the server:'
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 到目前为止一切顺利。这个服务器正在监听本地的1987端口。在另一个终端，你可以运行telnet到服务器：
 - en: '[PRE9]'
+  id: totrans-35
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: I've sent `hello server` to my running instance and have yet to receive a response
     because of the behavior of the write buffer. An explicit flush would correct this,
     at the expense of worse performance. Whether a flush should or should not be placed
     will depend entirely on setting. Here? Meh.
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 我已经向我的运行实例发送了`hello server`，但由于写入缓冲区的行为，我还没有收到响应。显式刷新可以纠正这个问题，但会以性能下降为代价。是否放置刷新完全取决于设置。这里？嗯。
 - en: 'The server dutifully logs the interaction:'
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 服务器尽职尽责地记录了交互：
 - en: '[PRE10]'
+  id: totrans-38
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: The client
+  id: totrans-39
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 客户端
 - en: 'The real challenge for our server comes with a specially constructed client.
     Let''s go through it before we see the client in action. The preamble is typical:'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们服务器的真正挑战来自于一个特别构造的客户端。在我们看到客户端的实际运行情况之前，让我们先看看它。前置代码是典型的：
 - en: '[PRE11]'
+  id: totrans-41
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: 'In fact, this client preamble hews fairly close to that of the server. So,
     too, the `main` function, as we''ll see shortly. As with many other programs in
     this book, we dedicate a thread to reporting on the behavior of the program. In
     this client, this thread runs the long-lived `report`:'
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 事实上，这个客户端的前置代码与服务器非常接近。同样，`main`函数也是如此，我们很快就会看到。正如这本书中的许多其他程序一样，我们为报告程序的行为分配了一个线程。在这个客户端中，这个线程运行了长生的`report`：
 - en: '[PRE12]'
+  id: totrans-43
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: 'Every second `report` swaps `TOTAL_STREAMS`, maintaining its own `total_streams`,
     and uses the reset value as a per-second gauge. Nothing we haven''t seen before
     in this book. Now, in the `main` function, we set up the logger and parse the
     same command options as in the server:'
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 每秒`report`交换`TOTAL_STREAMS`，保持自己的`total_streams`，并使用重置值作为每秒的量度。这在我们这本书中之前没有见过。现在，在`main`函数中，我们设置了记录器并解析与服务器相同的命令选项：
 - en: '[PRE13]'
+  id: totrans-45
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: 'In `main,` we start the reporter thread and ignore its handle:'
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 在`main`中，我们启动了报告线程并忽略了它的句柄：
 - en: '[PRE14]'
+  id: totrans-47
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: 'That leaves only committing the slowloris attack, which is disappointingly
     easy for the client to do:'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就只剩下提交slowloris攻击了，这对客户端来说令人失望地简单：
 - en: '[PRE15]'
+  id: totrans-49
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: Yep, that's it, one simple loop connecting as quickly as possible. A more sophisticated
     setup would send a trickle of data through the socket to defeat aggressive timeouts
     or limit the total number of connections made to avoid suspicion, coordinating
     with other machines to do the same.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 嗯，就是这样，一个简单的循环尽可能快地连接。一个更复杂的设置会通过套接字发送涓流数据来击败积极的超时或限制连接的总数以避免怀疑，并与其他机器协调一致。
 - en: Mischief on networks is an arms race that nobody really wins, is the moral.
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 网络上的恶作剧是一场没有人真正赢的军备竞赛，这是道德。
 - en: 'Anyway, let''s see this client in action. If you run `cargo run --release --bin
     client`, you should be rewarded with:'
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 不管怎样，让我们看看这个客户端的实际运行情况。如果你运行`cargo run --release --bin client`，你应该会得到以下结果：
 - en: '[PRE16]'
+  id: totrans-53
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: You'll find a spew of errors in the server log as well as high-CPU load due
     to the OS scheduler thrash. It's not a good time.
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 你会在服务器日志中找到一堆错误，以及由于操作系统调度器抖动导致的高CPU负载。这不是一个好时机。
 - en: The ultimate problem here is that we've allowed an external party, the client,
     to decide the allocation patterns of our program. Fixed sizes make for safer software.
     In this case, we'll need to fix the total number of threads at startup, thereby
@@ -299,23 +419,33 @@
     operating systems. These polling syscalls are the basis of Mio and thereby Tokio,
     though the discussion of either is well outside the scope of this book. Look them
     up. It's the future of Rust networking.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里最终的问题是，我们允许外部方，即客户，决定我们程序的分配模式。固定大小可以制作出更安全的软件。在这种情况下，我们将在启动时固定线程总数，从而将服务器能够维持的连接数限制在一个相对较低的数量。尽管如此，这将是一个安全的低数量。请注意，将整个操作系统线程分配给单个网络连接的不足之处正是激发了20世纪90年代末的C10K问题，导致了现代操作系统更高效的轮询能力。这些轮询系统调用是Mio和Tokio的基础，尽管对它们的讨论远远超出了本书的范围。查阅它们。这是Rust网络技术的未来。
 - en: What this program needs is a way of fixing the number of threads available for
     connections. That's exactly what a thread pool is.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个程序需要一种方法来固定可用于连接的线程数量。这正是线程池的作用。
 - en: A thread-pooling server
+  id: totrans-57
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 线程池服务器
 - en: 'Let''s adapt our overwhelmed TCP server to use a fixed number of threads. We''ll
     start a new project whose `Cargo.toml` looks like:'
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们将过载的TCP服务器调整为使用固定数量的线程。我们将启动一个新的项目，其`Cargo.toml`看起来如下：
 - en: '[PRE17]'
+  id: totrans-59
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: This is almost exactly the same as the unbounded thread project, save that the
     name has been changed from `overwhelmed_tpc_server` to `fixed_threads_tcp_server`
     and we've added a new dependency–threadpool. There are a few different, stable
@@ -325,98 +455,143 @@
     up so in/out communication with the worker thread is enforced at the type-level,
     where threadpool requires the user to establish this themselves if they want.
     In this project, we don't have a need to communicate with the worker thread.
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 这几乎与无界线程项目完全相同，只是名称已从`overwhelmed_tpc_server`更改为`fixed_threads_tcp_server`，并且我们添加了一个新的依赖项–threadpool。在crates中可以找到几个不同的、稳定的线程池库，每个库都有略微不同的功能集或焦点。例如，workerpool项目([https://crates.io/crates/workerpool](https://crates.io/crates/workerpool))几乎具有与threadpool相同的API，但它在类型级别强制执行与工作线程的输入/输出通信，而threadpool要求用户自己建立这种通信。在这个项目中，我们没有与工作线程通信的需求。
 - en: 'The server preamble is only slightly altered from the previous project:'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 服务器的前置代码仅略有改变：
 - en: '[PRE18]'
+  id: totrans-62
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: 'The only changes here are the introduction of the thread-pooling library and
     the removal of some unused imports. Our `handle_client` implementation is also
     basically the same, but is notably not spawning a thread:'
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的唯一变化是引入了线程池库和删除了一些未使用的导入。我们的`handle_client`实现基本上也是相同的，但值得注意的是没有启动线程：
 - en: '[PRE19]'
+  id: totrans-64
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: 'Our main function, likewise, is very similar. We set up the logger and parse
     application options, adding in a new `max_connections` option:'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的主函数，同样，也非常相似。我们设置日志记录器并解析应用程序选项，添加一个新的`max_connections`选项：
 - en: '[PRE20]'
+  id: totrans-66
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: 'Note that `max_connections` is `u16`. This is arbitrary and will under-consume
     some of the larger machines available in special circumstances. But this is a
     reasonable range for most hardware today. Just the same as before, we adapt the
     logger to include the host and port information:'
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，`max_connections`是`u16`。这是任意的，并且在某些特殊情况下可能会低估一些较大的机器。但这对今天的大多数硬件来说是一个合理的范围。就像之前一样，我们将日志记录器调整为包括主机和端口信息：
 - en: '[PRE21]'
+  id: totrans-68
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: 'So far, so good. Before the server can start accepting incoming connections,
     it needs a thread pool. Like so:'
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 到目前为止，一切顺利。在服务器开始接受传入连接之前，它需要一个线程池。如下所示：
 - en: '[PRE22]'
+  id: totrans-70
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: 'Exactly what `threadpool::Builder` does and how it works we defer to the next
     section, relying only on documentation to guide us. As such, we now have `ThreadPool`
     with `max_connection` possible active threads. This pool implementation does not
     bound the total number of jobs that can be run against the pool, collecting them
     in a queue, instead. This is not ideal for our purposes, where we aim to reject
     connections that can''t be serviced. This is something we can address:'
+  id: totrans-71
   prefs: []
   type: TYPE_NORMAL
+  zh: 关于`threadpool::Builder`的确切作用和工作方式，我们将在下一节中详细说明，目前我们只依靠文档来指导。因此，我们现在有了具有`max_connection`可能活跃线程的`ThreadPool`。这个池实现不会限制可以运行在池中的总作业数量，而是将它们收集在队列中。这并不适合我们的目的，我们的目标是拒绝无法服务的连接。这是我们可以解决的问题：
 - en: '[PRE23]'
+  id: totrans-72
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: 'The accept loop is more or less the same as in the previous server, except
     at the top of the loop we check `pool.active_count()` against the configured `max_connections`,
     reject the connection if the number of running workers is at capacity; otherwise
     we accept the connection and execute it against the pool. Finally, much as before,
     the server drains connections when the incoming socket is closed:'
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 接受循环与上一个服务器大致相同，只是在循环的顶部，我们会检查`pool.active_count()`与配置的`max_connections`，如果运行中的工作者线程数量达到容量，则拒绝连接；否则，我们接受连接并在池中执行它。最后，就像之前一样，当传入的套接字关闭时，服务器会排空连接：
 - en: '[PRE24]'
+  id: totrans-74
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: The client presented in the previous section can be applied to this server without
     any changes. If the reader inspects the book's source repository, they will find
     that the clients are identical between projects.
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 上一节中展示的客户端可以不加修改地应用于这个服务器。如果读者检查书籍的源代码仓库，他们将发现项目之间的客户端是相同的。
 - en: This server implementation does not suffer from an ever-growing `JoinHandle`
     vector, as the last server did. The pool takes care to remove panicked threads
     from its internal buffers and we take care to never allow more workers than there
     are threads available to work them. Let's find out how that works!
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 与上一个服务器不同，这个服务器实现不会受到不断增长的`JoinHandle`向量的困扰。池会注意从其内部缓冲区中移除恐慌的线程，而我们也会注意不要允许更多的工作者线程数量超过可用的线程数量。让我们来看看这是如何工作的！
 - en: Looking into thread pool
+  id: totrans-77
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 深入了解线程池
 - en: Let's look into threadpool and understand its implementation. Hopefully by this
     point in the book, you have a sense of how you'd go about building your own thread-pooling
     library. Consider that for a moment, before we continue, and see how well your
     idea stacks up against this particular approach. We'll inspect the library ([https://crates.io/crates/threadpool](https://crates.io/crates/threadpool))
     at SHA `a982e060ea2e3e85113982656014b212c5b88ba2`.
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们深入研究线程池，了解其实现方式。希望到这本书的这一部分，您已经对如何构建自己的线程池库有了大致的了解。在继续之前，考虑一下您的想法与这种特定方法相比如何，我们将检查这个库（[https://crates.io/crates/threadpool](https://crates.io/crates/threadpool)）的SHA
+    `a982e060ea2e3e85113982656014b212c5b88ba2`。
 - en: The thread pool crate is not listed in its entirety. You can find the full listing
     in the book's source repository.
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: 线程池crate并未完整列出。您可以在书籍的源代码仓库中找到完整的列表。
 - en: 'Let''s look first at the project''s `Cargo.toml`:'
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们先看看项目的`Cargo.toml`文件：
 - en: '[PRE25]'
+  id: totrans-81
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: Fairly minimal. The only dependency is `num_cpus`, a little library to determine
     the number of logical and physical cores available on the machine. On linux, this
     reads `/proc/cpuinfo`. On other operating systems, such as the BSDs or Windows,
@@ -426,15 +601,21 @@
     entirely built from the tools available in the standard library. In fact, there's
     only a single implementation file in the library, `src/lib.rs`. All the code we'll
     discuss from this point can be found in that file.
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 相对简单。唯一的依赖项是`num_cpus`，这是一个用于确定机器上逻辑和物理核心数量的小型库。在Linux上，它读取`/proc/cpuinfo`。在其他操作系统上，如BSD或Windows，该库会进行系统调用。这是一个巧妙的小型库，如果您需要学习如何在不同的操作系统上针对不同的函数实现，那么阅读它是非常有价值的。从线程池的`Cargo.toml`中我们可以得出的关键信息是，它几乎完全由标准库中的工具构建而成。实际上，库中只有一个实现文件，即`src/lib.rs`。从现在开始，我们将讨论的所有代码都可以在该文件中找到。
 - en: 'Now, let''s understand the builder pattern we saw in the previous section.
     The `Builder` type is defined like so:'
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们理解之前章节中看到的构建器模式。`Builder`类型定义如下：
 - en: '[PRE26]'
+  id: totrans-84
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: We only populated `num_threads` in the previous section. `thread_stack_size`
     is used to control the stack size of pool threads. As of writing, thread stack
     sizes are by default two megabytes. Standard library's `std::thread::Builder::stack_size`
@@ -446,104 +627,155 @@
     allows the user to set the thread name for all threads in the pool, a name they
     will all share. In my experience, naming threads is a relatively rare thing to
     do, especially in a pool, but it can sometimes be useful for logging purposes.
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 在前面的部分中，我们只填充了`num_threads`。`thread_stack_size`用于控制池线程的堆栈大小。截至写作时，线程堆栈大小默认为两兆字节。标准库的`std::thread::Builder::stack_size`允许我们手动设置此值。例如，在我们的线程-连接示例中，我们可以将堆栈大小设置得显著更低，从而在相同的硬件上获得更多的线程。毕竟，每个线程分配的存储非常少，尤其是如果我们已经采取了只读取固定缓冲区的步骤。`thread_name`字段，就像堆栈大小一样，是`std::thread::Builder::name`的开关。也就是说，它允许用户为池中的所有线程设置线程名称，它们将共享这个名称。根据我的经验，命名线程是相对罕见的事情，尤其是在池中，但有时它对日志记录很有用。
 - en: 'The pool builder works mostly as you''d expect, with the public functions setting
     the fields in the `Builder` struct. Where the implementation gets interesting
     is `Builder::build`:'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 池构建器主要按你预期的那样工作，公共函数设置`Builder`结构体中的字段。实现变得有趣的地方是`Builder::build`：
 - en: '[PRE27]'
+  id: totrans-87
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: 'There''s a lot going on here. Let''s take it a bit at a time. First, that channel
     is the `std::sync::mpsc::channel` we discussed at length in [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml),
     *Sync and Send – the Foundation of Rust Concurrency*. What is unfamiliar there
     is `Thunk`. Turns out, it''s a type synonym:'
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里有很多内容。让我们一步一步来。首先，那个通道是我们在[第4章](5a332d94-37e4-4748-8920-1679b07e2880.xhtml)中详细讨论的`std::sync::mpsc::channel`，*同步与发送
+    - Rust 并发的基础*。那里不熟悉的是`Thunk`。结果证明，它是一个类型别名：
 - en: '[PRE28]'
+  id: totrans-89
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: 'Now, what is `FnBox`? It''s a small trait:'
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，什么是`FnBox`？它是一个小的特质：
 - en: '[PRE29]'
+  id: totrans-91
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: 'It is the `FnOnce` trait we encountered in [Chapter 3](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml),
     *The Rust Memory Model – Ownership, References and Manipulation*, so if you read
     that chapter, you know that `F` will only be called once. The boxing of the function
     closure means its captured variables are available on the heap and don''t get
     deallocated when the pool caller moves the closure out of scope. Great. Now, let''s
     jump back to build and look at `shared_data`:'
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
+  zh: 它是我们在[第3章](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml)中遇到的`FnOnce`特质，*Rust 内存模型
+    - 所有权、引用和操作*，所以如果你读过那一章，你就知道`F`只会被调用一次。函数闭包的装箱意味着其捕获的变量可以在堆上使用，并且当池调用者将闭包移出作用域时不会进行清理。太好了。现在，让我们回到构建并查看`shared_data`：
 - en: '[PRE30]'
+  id: totrans-93
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: 'Alright, several atomic usizes, a condvar, a mutex to protect the receiver
     side of the thunk channel, and a mutex that''ll be paired with the condvar. There''s
     a fair bit you can tell from reading the population of a struct, with a little
     bit of background information. The implementation of `ThreadPoolSharedData` is
     brief:'
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 好吧，几个原子`usize`，一个条件变量，一个互斥锁来保护thunk通道的接收端，以及一个将与条件变量配对的互斥锁。通过阅读结构体的成员变量，你可以了解到很多信息，只要有一点背景知识。`ThreadPoolSharedData`的实现是简短的：
 - en: '[PRE31]'
+  id: totrans-95
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: 'The `has_work` function does a sequentially consistent read of the two indicators
     of work, an operation that is not exactly cheap considering the two sequentially
     consistent reads, but implies a need for accuracy in the response. The `no_work_notify_all` function
     is more complicated and mysterious. Happily, the function is used in the implementation
     of the next chunk of `Build::build` and will help clear up that mystery. The next
     chunk of `build` is:'
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: '`has_work`函数对工作的两个指示器进行了顺序一致性的读取，考虑到两个顺序一致性的读取，这个操作并不便宜，但暗示了对响应准确性的需求。`no_work_notify_all`函数更复杂、更神秘。幸运的是，该函数在`Build::build`的下一部分实现中使用了，这将有助于解开这个谜团。`build`的下一部分是：'
 - en: '[PRE32]'
+  id: totrans-97
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: 'For each of the `num_threads`, the `spawn_in_pool` function is called over
     a clone of the `Arc`ed `ThreadPoolSharedData`. Let''s inspect `spawn_in_pool`:'
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于每个`num_threads`，`spawn_in_pool`函数在`Arc`ed `ThreadPoolSharedData`的克隆上被调用。让我们检查`spawn_in_pool`：
 - en: '[PRE33]'
+  id: totrans-99
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: 'As you might have expected, the function creates `std::thread::Builder` and
     pulls references to the name and stack size embedded in the `ThreadPoolSharedData`
     shared data. With these variables handy, the `builder.spawn` is called, passing
     in a closure in the usual fashion:'
+  id: totrans-100
   prefs: []
   type: TYPE_NORMAL
+  zh: 如你所预期的那样，该函数创建 `std::thread::Builder` 并从 `ThreadPoolSharedData` 的共享数据中提取名称和堆栈大小的引用。有了这些变量，就调用
+    `builder.spawn`，以通常的方式传递一个闭包：
 - en: '[PRE34]'
+  id: totrans-101
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: Well, let's take a look at `Sentinel:`
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
+  zh: 好吧，让我们来看看 `Sentinel`：
 - en: '[PRE35]'
+  id: totrans-103
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: 'It holds a reference to `Arc<ThreadPoolSharedData>`—avoiding increasing the
     reference counter—and an `active` boolean. The implementation is likewise brief:'
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: 它持有一个对 `Arc<ThreadPoolSharedData>` 的引用——避免增加引用计数——以及一个 `active` 布尔值。实现同样简洁：
 - en: '[PRE36]'
+  id: totrans-105
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: 'The real key here is the `Drop` implementation:'
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的真正关键是 `Drop` 的实现：
 - en: '[PRE37]'
+  id: totrans-107
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: Recall how in the previous section, our join vector grew without bound, even
     though threads in that vector had panicked and were no longer working. There is
     an interface available to determine whether the current thread is in a panicked
     state, `std::thread::panicking()`, in use here.
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
+  zh: 回想一下在上一节中，我们的连接向量无限制地增长，尽管那个向量中的线程已经恐慌并且不再工作。有一个接口可以确定当前线程是否处于恐慌状态，`std::thread::panicking()`，在这里被使用。
 - en: 'When a thread panics, it drops its storage, which, in this pool, includes the
     allocated `Sentinel`.  `drop` then checks the `active` flag on the `Sentinel,`
     decrements the `active_count` of the `ThreadPoolSharedData,` increases its `panic_count,`
@@ -551,14 +783,21 @@
     to the pool. In this way, the pool maintains its appropriate size and there is
     no need for any additional monitoring of threads to determine when they need to
     be recycled: the type system does all the work.'
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: 当一个线程发生恐慌时，它会丢弃其存储，在这个池中，这包括分配的 `Sentinel`。然后 `drop` 会检查 `Sentinel` 上的 `active`
+    标志，递减 `ThreadPoolSharedData` 的 `active_count`，增加其 `panic_count`，调用尚未神秘的 `no_work_notify_all`，然后向池中添加一个额外的线程。这样，池保持适当的大小，无需额外监控线程以确定何时需要回收：类型系统完成所有工作。
 - en: Let's hop back into `spawn_in_pool:`
+  id: totrans-110
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们回到 `spawn_in_pool`：
 - en: '[PRE38]'
+  id: totrans-111
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE38]'
 - en: 'Here, we see the start of the infinite loop of the `builder.spawn` function,
     plus a check to shut down threads if the pool size has decreased since the last
     iteration of the loop. `ThreadPool` exposes the `set_num_threads` function to
@@ -570,46 +809,73 @@
     to be done intentionally and `FnBox` is effectively a trap for such behavior anyway,
     owing to the fact that the closure will have no pointers to the pool''s private
     memory. The loop exists to pull `Thunks` from the receiver channel side in `ThreadPoolSharedData`:'
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们可以看到 `builder.spawn` 函数无限循环的开始，以及一个检查，如果自上次循环迭代以来池的大小已减少，则关闭线程。`ThreadPool`
+    通过 `set_num_threads` 函数公开，允许在运行时更改池的大小。现在，为什么是无限循环呢？在某些系统上，创建新线程并不是一个完全快速的操作，而且，它不是免费的。如果你可以避免这种成本，你最好这样做。其他语言的某些池实现对于每个进入的工作都会创建一个新线程，担心内存污染。在
+    Rust 中，这个问题较小，因为不安全的内存访问必须有意为之，而 `FnBox` 由于闭包将没有对池的私有内存的指针，实际上是一个陷阱。循环存在是为了从 `ThreadPoolSharedData`
+    的接收器通道一侧拉取 `Thunks`：
 - en: '[PRE39]'
+  id: totrans-113
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE39]'
 - en: 'The message may be an error, implying that the `ThreadPool` was dropped, closing
     the sender channel side. But, should the message be `Ok`, we''ll have our `FnBox`
     to call:'
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 消息可能是一个错误，这意味着 `ThreadPool` 被丢弃，关闭了发送器通道一侧。但是，如果消息是 `Ok`，我们将有要调用的 `FnBox`：
 - en: '[PRE40]'
+  id: totrans-115
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE40]'
 - en: 'The final bit of `spawn_in_pool` is uneventful:'
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: '`spawn_in_pool` 的最后一部分并不引人注目：'
 - en: '[PRE41]'
+  id: totrans-117
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE41]'
 - en: The `FnBox` called job is called via `call_box` and if this panics, killing
     the thread, the `Sentinel` cleans up the atomic references as appropriate and
     starts a new thread in the pool. By leaning on Rust's type system and memory model,
     we get a cheap thread-pool implementation that spawns threads only when needed,
     with no fears of accidentally polluting memory between jobs.
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: '`FnBox` 调用的作业是通过 `call_box` 来执行的，如果发生恐慌并杀死线程，`Sentinel` 会根据适当的情况清理原子引用，并在池中启动一个新的线程。通过依赖
+    Rust 的类型系统和内存模型，我们得到了一个廉价的线程池实现，它仅在需要时才创建线程，无需担心作业之间意外污染内存。'
 - en: '`ThreadPool::execute` is a quick boxing of `FnOnce`, pushed into the sender
     side of the `Thunk` channel:'
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: '`ThreadPool::execute` 是对 `FnOnce` 的快速装箱，推送到 `Thunk` 通道的发送器一侧：'
 - en: '[PRE42]'
+  id: totrans-120
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE42]'
 - en: 'The last piece here is `ThreadPool::join`. This is where `ThreadPoolSharedData::no_work_notify_all`
     comes into focus. Let''s look at `join`:'
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里最后一部分是 `ThreadPool::join`。这是 `ThreadPoolSharedData::no_work_notify_all` 开始发挥作用的地方。让我们看看
+    `join`：
 - en: '[PRE43]'
+  id: totrans-122
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE43]'
 - en: The function calls first to `has_work`, bailing out early if there are no active
     or queued threads in the pool. No reason to block the caller there. Then, `generation`
     is set up to act as a condition variable in the loop surrounding `empty_condvar`.
@@ -620,8 +886,13 @@
     of `spawn_in_pool` returns from a job. Any joined thread waking on those two conditions—a
     job being completed or crashing—checks their condition, incrementing the `generation`
     on their the way to becoming unjoined.
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: 函数首先调用 `has_work`，如果没有活跃或排队的线程在池中，就提前退出。在这里阻塞调用者没有理由。然后，`generation` 被设置为在 `empty_condvar`
+    周围的循环中充当条件变量。每个加入池的线程都会检查池的 `generation` 是否没有移动，这意味着其他线程尚未退出，并且还有工作要做。回想一下，是 `no_work_notify_all`
+    在条件变量上调用 `notify_all`，这个函数在 `Sentinel` 下降或 `spawn_in_pool` 的内部循环从任务返回时被调用。任何在这两个条件下醒来的已加入线程——任务完成或崩溃——都会检查它们的状态，在它们成为未加入状态的过程中增加
+    `generation`。
 - en: That's it! That's a thread pool, a thing built out of the pieces we've discussed
     so far in this book. If you wanted to make a thread pool without queuing, you'd
     push an additional check into `execute`. Some of the sequentially consistent atomic
@@ -631,21 +902,30 @@
     we'll discuss a library later in this chapter that ships an alternative thread
     pool implementation for just such a use case, though it is quite a bit more complex
     than the one we've just discussed.
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
+  zh: 就这些！这是一个线程池，它是这本书到目前为止讨论的各个部分构建出来的。如果你想要创建一个没有队列的线程池，你可以在 `execute` 中添加一个额外的检查。一些顺序一致的原子操作可能也可以放宽，以及可能使简单实现更难推理的后果。如果你的执行任务非常简短，性能提升可能是值得的。实际上，我们将在本章后面讨论一个库，它提供了一个针对此类用例的替代线程池实现，尽管它比我们刚才讨论的要复杂得多。
 - en: The Ethernet sniffer
+  id: totrans-125
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 以太网嗅探器
 - en: 'Of equal importance to understanding a technique in-depth is understanding
     when not to apply it. Let''s consider another thread-per-unit-of-work system,
     but this time we''ll be echoing Ethernet packets rather than lines received over
     a TCP socket. Our project''s `Cargo.toml`:'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: 深入理解一项技术同样重要的是理解何时不应用它。让我们考虑另一个按工作单元划分的线程系统，但这次我们将回显以太网数据包，而不是通过 TCP 套接字接收到的行。我们项目的
+    `Cargo.toml`：
 - en: '[PRE44]'
+  id: totrans-127
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE44]'
 - en: Like the TCP example, we'll create two binaries, one that is susceptible to
     thread overload–`poor_threading`–and another–`sniffer`–that is not. The premise
     here is that we want to sniff a network interface for Ethernet packets, reverse
@@ -654,27 +934,38 @@
     of the packets we collect. On a saturated network, our little programs will be
     very busy and there will have to be trade-offs made somewhere in terms of packet
     loss and receipt.
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: 就像 TCP 示例一样，我们将创建两个二进制文件，一个容易受到线程过载的影响——`poor_threading`——另一个——`sniffer`——则不会。这里的假设是我们想要嗅探网络接口的以太网数据包，反转该数据包的源和目标头，并将修改后的数据包发送回原始源。同时，我们将收集我们收集的数据包的摘要统计信息。在一个饱和的网络中，我们的小程序将会非常忙碌，并且必须在数据包丢失和接收方面做出权衡。
 - en: 'The only dependency we''re pulling in here is [pnet](https://github.com/libpnet/libpnet).
     libpnet is a low-level packet manipulation library, useful for building network
     utilities or for prototyping transport protocols. I think it''s pretty fun to
     fuzz-test transport implementations with libpnet on commodity network devices.
     Mostly, though, the reward is a crashed home router, but I find that amusing.
     Anyhow, let''s look into `poor_threading`. It''s preamble is fairly ho-hum:'
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在这里引入的唯一依赖项是 [pnet](https://github.com/libpnet/libpnet)。libpnet 是一个低级数据包操作库，用于构建网络工具或进行传输协议的原型设计。我认为使用
+    libpnet 在通用网络设备上模糊测试传输实现非常有趣。不过，大多数情况下，回报是家庭路由器崩溃，但我觉得这很有趣。无论如何，让我们看看 `poor_threading`。它的前言相当平淡无奇：
 - en: '[PRE45]'
+  id: totrans-130
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE45]'
 - en: 'We pull in a fair bit of pnet''s facilities, which we''ll discuss in due time.
     We don''t pull in clap or similar argument-parsing libraries, instead requiring
     that the user pass in the interface name as the first argument to the program:'
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们引入了相当多的pnet功能，我们将在适当的时候进行讨论。我们不会引入clap或类似的参数解析库，而是要求用户将接口名称作为程序的第一个参数传入：
 - en: '[PRE46]'
+  id: totrans-132
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE46]'
 - en: The user-supplied interface name is checked against the interfaces pnet is able
     to find, via its `datalink::interfaces()` function. We haven't done much yet in
     this book with iterators, though they've been omnipresent and assumed knowledge,
@@ -682,36 +973,53 @@
     here, though, that `filter(interface_names_match)` is applying a boolean function,
     `interface_names_match(&NetworkInterface) -> bool`, to each member of the determined
     interfaces.
+  id: totrans-133
   prefs: []
   type: TYPE_NORMAL
+  zh: 用户提供的接口名称将通过`datalink::interfaces()`函数与pnet能够找到的接口进行比对。尽管迭代器在本书中无处不在，并且被视为基本知识，但我们还没有在本书中深入探讨迭代器。不过，在之后我们将详细讨论Rust中的迭代。请注意，`filter(interface_names_match)`正在应用一个布尔函数`interface_names_match(&NetworkInterface)
+    -> bool`到确定的接口的每个成员上。
 - en: If the function returns true, the member passes through the filter, otherwise
     it doesn't. The call to `next().unwrap()` cranks the filtered iterator forward
     one item, crashing if there are no items in the filtered iterator. This is a somewhat
     user-hostile way to determine whether the passed interface is, in fact, an interface
     that pnet could discover. That's alright here in our demonstration program.
+  id: totrans-134
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果函数返回true，则成员通过过滤器，否则不通过。调用`next().unwrap()`将过滤迭代器向前推进一个项目，如果没有项目在过滤迭代器中，则会崩溃。这是一种对用户不太友好的方式来确定传递的接口实际上是否是pnet能够发现的接口。在我们的演示程序中这没问题。
 - en: 'Next, we establish a communication channel for the concurrent actors of this
     program:'
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们为这个程序中的并发演员建立通信通道：
 - en: '[PRE47]'
+  id: totrans-136
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE47]'
 - en: 'The `timer` function pushes a time pulse through the channel we just established
     at regular intervals, as similarly is done in cernan, discussed previously in
     this book. The function is small:'
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
+  zh: '`timer`函数以固定间隔通过我们刚刚建立的通道推送时间脉冲，这与之前在本书中讨论的cernan所做的方式类似。该函数很小：'
 - en: '[PRE48]'
+  id: totrans-138
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE48]'
 - en: 'The `Payload` type is an enum with only two variants:'
+  id: totrans-139
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Payload`类型是一个只有两个变体的枚举：'
 - en: '[PRE49]'
+  id: totrans-140
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE49]'
 - en: The `Pulse(u64)` variant is the timer pulse, sent periodically by the `timer`
     thread. It's very useful to divorce time in a concurrent system from the actual
     wall-clock, especially with regard to testing individual components of the system.
@@ -722,14 +1030,20 @@
     this gets the type system on your side, confirming that all incoming variants
     are handled in a single match, which likely optimizes better, too. This last benefit
     should be measured.
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Pulse(u64)`变体是定时器脉冲，由`timer`线程定期发送。在并发系统中将时间与实际的实际时钟分离非常有用，特别是在测试系统各个组件时。这对于将不同的消息变体统一到一个联合体中也有帮助。在撰写本文时，Rust的MPSC实现还没有稳定的select功能，因此您必须手动使用`mpsc::Receiver::recv_timeout`和仔细的多路复用来实现它。将其统一到一个联合体类型中会更好。此外，这有助于类型系统站在您的这边，确认所有传入的变体都在单个match中处理，这也可能优化得更好。这种最后的好处应该进行衡量。'
 - en: 'Let''s look at `gather` now:'
+  id: totrans-142
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们看看`gather`：
 - en: '[PRE50]'
+  id: totrans-143
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE50]'
 - en: Straightforward receiver loop, pulling off `Payload` enums. The `Payload::Packet`
     variant is deconstructed and its contents stored into three `HashMap`s, mapping
     MAC addresses to a counter or an EtherType to a counter. MAC addresses are the
@@ -740,14 +1054,20 @@
     well, type. There's a standard list of types, which pnet helpfully encodes for
     us. When `gather` prints the EtherType, there's no special work needed to get
     human-readable output.
+  id: totrans-144
   prefs: []
   type: TYPE_NORMAL
+  zh: 简单的接收器环路，提取`Payload`枚举。`Payload::Packet`变体被解构，其内容存储到三个`HashMap`s中，将MAC地址映射到计数器或EtherType映射到计数器。MAC地址是网络接口的唯一标识符——或者，理想情况下是唯一的，因为已经犯了一些错误——并在OSI模型的链路层中使用。（这不是一本关于网络的书，但我保证，这是一个非常有趣的领域。）EtherType映射到每个以太网数据包开头的两个字节字段，定义了数据包的类型。有一个标准的类型列表，pnet会为我们编码。当`gather`打印EtherType时，不需要做任何特殊的工作来获得可读的输出。
 - en: 'Now that we know how `gather` and `timer` work, we can wrap up the `main` function:'
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们知道了`gather`和`timer`是如何工作的，我们可以结束`main`函数：
 - en: '[PRE51]'
+  id: totrans-146
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE51]'
 - en: The `datalink::channel` function establishes an MPSC-like channel for bi-directional
     packet reading and writing on the given interface. We only care about Ethernet
     packets here and match only on that variant. We spawn a new thread for `watch_interface,`
@@ -756,40 +1076,54 @@
     them into a normalized `Payload::Packet` and pushing them to the `gather` thread.
     Meanwhile, we have another `timer` thread pushing `Payload::Pulse` at regular
     intervals to the `gather` thread to force user reporting.
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
+  zh: '`datalink::channel`函数在给定的接口上建立了一个类似MPSC的通道，用于双向数据包的读取和写入。我们只关心以太网数据包，并且只匹配那个变体。我们为`watch_interface`创建了一个新线程，它接收通道的读写两侧以及为`Payload`创建的MPSC。这样，我们有一个线程从网络读取以太网数据包，将它们剥离成标准化的`Payload::Packet`，并将它们推送到`gather`线程。同时，我们还有一个`timer`线程定期将`Payload::Pulse`推送到`gather`线程，以强制用户报告。'
 - en: The sharp-eyed reader will have noticed that our `Payload` channel is actually
     `sync_channel(10)`, meaning that this program is not meant to store much transient
     information in memory. On a busy Ethernet network, this will mean it's entirely
     possible that `watch_interface` will be unable to push a normalized Ethernet packet
     into the channel. Something will have to be done and it all depends on how willing
     we are to lose information.
+  id: totrans-148
   prefs: []
   type: TYPE_NORMAL
+  zh: 留意细节的读者会注意到我们的`Payload`通道实际上是`sync_channel(10)`，这意味着这个程序并不打算在内存中存储太多短暂的信息。在一个繁忙的以太网网络中，这意味着`watch_interface`可能无法将一个标准化的以太网数据包推送到通道。必须做些事情，而这完全取决于我们愿意失去多少信息。
 - en: 'Let''s look and see how this implementation goes about addressing this problem:'
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们看看这个实现是如何处理这个问题的：
 - en: '[PRE52]'
+  id: totrans-150
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE52]'
 - en: 'So far, so good. We see the sides of `datalink::Channel` that we discussed
     earlier, plus our internal MPSC. The infinite loop reads `&[u8]` off the receive
     side of the channel and our implementation has to convert this into a proper EthernetPacket.
     If we were being very thorough, we''d guard against malformed Ethernet packets
     but, since we aren''t, the creation is unwrapped. Now, how about that normalization
     into `Payload::Packet` and transmission to `gather`:'
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 到目前为止，一切顺利。我们看到的是之前讨论过的`datalink::Channel`的侧面，以及我们的内部MPSC。无限循环从通道的接收端读取`&[u8]`，我们的实现必须将其转换为正确的以太网数据包。如果我们非常彻底，我们会防范不完整的数据包，但由于我们不是，创建过程没有包裹。现在，关于将`Payload::Packet`标准化并传输到`gather`的过程：
 - en: '[PRE53]'
+  id: totrans-152
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE53]'
 - en: Uh oh. The EthernetPacket has normalized into `Payload::Packet` just fine, but
     when we send the packet down the channel to `gather` we do so by spawning a thread.
     The decision being made here is that no incoming packet should be lost—implying
     we have to read them off the network interface as quickly as possible—and if the
     channel blocks, we'll need to store that packet in some pool, somewhere.
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 哎呀。以太网数据包已经顺利地标准化为`Payload::Packet`，但当我们通过通道将数据包发送到`gather`时，我们是通过创建一个线程来做的。这里做出的决定是，不应该丢失任何传入的数据包——这意味着我们必须尽可能快地从网络接口读取它们——如果通道阻塞，我们需要将那个数据包存储在某个池中。
 - en: 'The *pool* is, in fact, a thread stack. Or, a bunch of them. Even if we were
     to drop the thread''s stack size to a sensible low size on a saturated network,
     we''re still going to overwhelm the operating system at some point. If we absolutely
@@ -799,11 +1133,17 @@
     use case. Or, we could defer these sends to threadpool, allow it to queue the
     jobs, and run them on a finite number of threads. Anyway, let''s set this aside
     for just a second and wrap up `watch_interface`:'
+  id: totrans-154
   prefs: []
   type: TYPE_NORMAL
+  zh: 事实上，*池*是一个线程栈。或者，是一堆线程栈。即使我们在饱和网络中将线程的栈大小降低到一个合理的低值，我们最终还是会压倒操作系统。如果我们绝对不能忍受丢失包，我们可以使用例如hopper
+    ([https://github.com/postmates/hopper](https://github.com/postmates/hopper))这样的工具，这在[第五章](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml)中详细讨论了，*锁——Mutex,
+    Condvar, Barriers和RWLock*，它是为这种用例设计的。或者，我们可以将这些发送推迟到线程池，允许它排队作业，并在有限数量的线程上运行。无论如何，让我们暂时放下这个问题，完成`watch_interface`：
 - en: '[PRE54]'
+  id: totrans-155
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE54]'
 - en: The implementation takes the newly created EthernetPacket, swaps the source
     and destination of the original in a new EthernetPacket, and sends it back across
     the network at the original source. Now, let's ask ourselves, is it *really* important
@@ -816,55 +1156,80 @@
     storage requirements. But hopper will require a filesystem and may still not be
     able to accept all incoming packets, only making it less likely that there won't
     be sufficient storage.
+  id: totrans-156
   prefs: []
   type: TYPE_NORMAL
+  zh: 实现过程首先创建一个新的EthernetPacket，然后在新的EthernetPacket中将原始的源地址和目标地址进行交换，并将它发送回原始的源地址。现在，让我们问问自己，我们是否真的需要统计从网络上可以提取的每一个Ethernet包？我们可以在`gather`线程中按照[第二章](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml)中描述的方式，通过插入一个更快的哈希器来加速`HashMap`。或者，我们可以在同步通道满载时在`watch_interface`线程中进行缓冲，除了使用线程池或跳转器。仅仅加速`gather`和使用跳转器并不可能导致无界的存储需求。但是跳转器将需要一个文件系统，并且可能仍然无法接受所有传入的包，这只会使没有足够存储的可能性降低。
 - en: 'It''s a tough problem. Given the nature of the network at layer 2, you might
     as well just shed the packets. The network card itself is going to be shedding
     packets. With that in mind, the implementation of `watch_interface` in the other
     binary in this project—`sniffer`—differs only marginally:'
+  id: totrans-157
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一个难题。考虑到第二层网络的本性，你不妨直接丢弃这些包。网卡本身就会丢弃包。考虑到这一点，本项目其他二进制文件`sniffer`中`watch_interface`的实现只有细微差别：
 - en: '[PRE55]'
+  id: totrans-158
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE55]'
 - en: '`Payload::Packet` is created and rather than calling `snd.send`, this implementation
     calls `snd.try_send`, ticking up a `SKIPPED_PACKETS` static `AtomicUsize` in the
     event a packet has to be shed. The gather implementation is likewise only slightly
     adjusted to report on this new `SKIPPED_PACKETS`:'
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: 创建了`Payload::Packet`，而不是调用`snd.send`，这个实现调用`snd.try_send`，在需要丢弃包的情况下增加一个`SKIPPED_PACKETS`静态`AtomicUsize`。收集实现也相应地进行了轻微调整，以报告这个新的`SKIPPED_PACKETS`：
 - en: '[PRE56]'
+  id: totrans-160
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE56]'
 - en: This program will use a moderate amount of storage for the `Payload` channel,
     no matter how busy the network.
+  id: totrans-161
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个程序将使用适度的存储量用于`Payload`通道，无论网络有多忙。
 - en: In high-traffic domains or long-lived deployments, the `HashMap`s in the `gather`
     thread are going to be a concern, but this is a detail the intrepid reader is
     invited to address.
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
+  zh: 在高流量域或长期部署中，`gather`线程中的`HashMap`将是一个问题，但这是一个勇敢的读者被邀请解决的问题。
 - en: 'When you run `sniffer`, you should be rewarded with output very much like this:'
+  id: totrans-163
   prefs: []
   type: TYPE_NORMAL
+  zh: 当你运行`sniffer`时，你应该得到非常类似于这样的输出：
 - en: '[PRE57]'
+  id: totrans-164
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE57]'
 - en: This report came from the sixth second of my sniffer run and 75 packets were
     dropped for lack of storage. That's better than 75 threads.
+  id: totrans-165
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个报告来自我的`sniffer`运行的第6秒，由于存储不足，丢弃了75个包。这比75个线程要好。
 - en: Iterators
+  id: totrans-166
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 迭代器
 - en: So far, we've assumed that the reader has been at least passingly familiar with
     Rust iterators. It's possible that you've used them extensively but have never
     written your own iterator implementation. That knowledge is important for what
     follows and we'll discuss Rust's iteration facility now.
+  id: totrans-167
   prefs: []
   type: TYPE_NORMAL
+  zh: 到目前为止，我们假设读者至少对 Rust 迭代器有初步的了解。可能你已经广泛地使用了它们，但从未编写过自己的迭代器实现。这些知识对于接下来的内容很重要，现在我们将讨论
+    Rust 的迭代功能。
 - en: 'A Rust iterator is any type that implements `std::iter::Iterator`. The `Iterator`
     trait has an interior `Item` type that allows the familiar iterator functions,
     such as `next(&mut self) -> Option<Self::Item>`, to be defined in terms of that
@@ -876,12 +1241,20 @@
     ([https://crates.io/crates/itertools](https://crates.io/crates/itertools)). Here,
     we''re less concerned with the interface of `Iterator` than how to implement it
     for our own types.'
+  id: totrans-168
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust 迭代器是任何实现了 `std::iter::Iterator` 的类型。`Iterator` 特质有一个内部的 `Item` 类型，这使得熟悉的迭代器函数，如
+    `next(&mut self) -> Option<Self::Item>`，可以基于那个泛型 `Item` 来定义。许多迭代器函数在本质上都是函数式的：`map`、`filter`
+    和 `fold` 都是 `Item` 流上的高阶函数。许多迭代器函数是对那个 `Item` 流的搜索：`max`、`min`、`position` 和 `find`。这是一个多才多艺的特质。如果你觉得它在某些方面有限，社区已经整理了一个具有更多功能的
+    crate：itertools ([https://crates.io/crates/itertools](https://crates.io/crates/itertools))。在这里，我们更关注的是如何为我们自己的类型实现它，而不是
+    `Iterator` 的接口。
 - en: Smallcheck iteration
+  id: totrans-169
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Smallcheck 迭代
 - en: In [Chapters 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml), *Sequential Rust
     Performance and Testing*, [Chapters 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),* Locks – Mutex,
     Condvar, Barriers and RWLock*, and [Chapters 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml),
@@ -897,32 +1270,51 @@
     We won't go into further detail here, but the paper is included in the *Further
     reading* section of this chapter and the reader is encouraged to check out the
     paper.
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 [第 2 章](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml)，*顺序 Rust 性能和测试*，[第 5 章](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml)，*锁
+    – Mutex、Condvar、屏障和 RWLock*，以及 [第 6 章](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml)，*原子操作
+    – 同步的原始操作*，我们讨论了 QuickCheck 测试方法，一种将随机、类型驱动的输入插入函数中以搜索函数属性故障的结构化方法。受 Claessen
+    和 Hughes 在他们的 QuickCheck 论文中所做工作的启发，Runciman、Naylor 和 Lindblad 观察到，根据他们的经验，大多数故障都出现在小输入上，并提出了一个观察：一个从小输出到大输出的测试库可能会比纯随机方法更快地找到故障。他们的假设在某个函数域中大致是正确的，但这种方法存在重复劳动的问题，作者在相同的论文中通过
+    Lazy Smallcheck 部分地解决了这个问题。我们不会在这里进一步详细讨论，但论文包含在本章的 *进一步阅读* 部分，并鼓励读者查阅这篇论文。
 - en: 'Anyway, producing all values of a *small* to *big* type sounds like iteration.
     In fact, it is. Let''s walk through producing iterators for signed and unsigned
     integers. The project''s `Cargo.toml` is minimal:'
+  id: totrans-171
   prefs: []
   type: TYPE_NORMAL
+  zh: 无论如何，生成一个从 *小* 到 *大* 的类型的所有值听起来像是迭代。事实上，它就是。让我们看看如何为有符号和无符号整数生成迭代器。项目的 `Cargo.toml`
+    是最简的：
 - en: '[PRE58]'
+  id: totrans-172
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE58]'
 - en: 'No dependencies, just the default that `cargo new` lays down. The project has
     only one file, `src/lib.rs`. The rest of our discussion will take place in the
     context of this file. First, the preamble:'
+  id: totrans-173
   prefs: []
   type: TYPE_NORMAL
+  zh: 无依赖，仅使用 `cargo new` 默认创建的内容。项目只有一个文件，`src/lib.rs`。接下来的讨论将在这个文件上下文中进行。首先，是前言：
 - en: '[PRE59]'
+  id: totrans-174
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE59]'
 - en: 'We pull in `Iterator`, as you might expect, and then `std::mem`, which we''ve
     seen throughout this book. Nothing unusual here. What is unusual for this book
     is this:'
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们引入了 `Iterator`，正如你所预期的，然后是 `std::mem`，这是我们在这本书中看到过的。这里没有什么不寻常的。对于这本书来说，不寻常的是：
 - en: '[PRE60]'
+  id: totrans-176
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE60]'
 - en: 'A macro! We''ve been using macros throughout the entire book but have not written
     one yet. Macros in Rust are kind of a dark art and a touch on the fidgety side
     to get working. Our ambitions here are simple. The iterators for the Rust integer
@@ -930,107 +1322,164 @@
     type, hence `std::mem`. `($name:ident, $int:ty, and $max:expr)` declares three
     macro variables: `$name`, which is an identifier, `$int`, which is a type, and
     `$max`, which is an expression. Here is how we''ll use the `unsigned_iter!` macro:'
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个宏！我们在整本书中一直在使用宏，但还没有编写过一个。Rust 中的宏有点像一门黑暗的艺术，而且有点让人烦躁，但一旦工作起来就很好。我们的目标很简单。Rust
+    整数类型的迭代器大部分相同，不同之处在于有符号/无符号和类型的总位数，因此使用 `std::mem`。`($name:ident, $int:ty, and
+    $max:expr)` 声明三个宏变量：`$name` 是一个标识符，`$int` 是一个类型，`$max` 是一个表达式。以下是我们将如何使用 `unsigned_iter!`
+    宏：
 - en: '[PRE61]'
+  id: totrans-178
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE61]'
 - en: 'That''s an identifier, followed by a type, followed by an expression. OK, now
     back to the macro definition:'
+  id: totrans-179
   prefs: []
   type: TYPE_NORMAL
+  zh: 那是一个标识符，后面跟着一个类型，然后是一个表达式。好的，现在回到宏定义：
 - en: '[PRE62]'
+  id: totrans-180
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE62]'
 - en: 'The first step in defining a small iterator for integer types is to produce
     some struct to store whatever data the Iterator implementation needs. We require
     two things, the current integer and a boolean flag to tell us when we''re done
     iterating. When the macros expand, there will be structs called `SmallU8`, `SmallU16`,
     and so on in the expanded source code, like this:'
+  id: totrans-181
   prefs: []
   type: TYPE_NORMAL
+  zh: 定义整数类型的小迭代器的第一步是生成一个结构体来存储迭代器实现所需的数据。我们需要两样东西，当前的整数和一个布尔标志来告诉我们何时迭代完成。当宏展开时，展开的源代码中将有名为
+    `SmallU8`、`SmallU16` 等的结构体，如下所示：
 - en: '[PRE63]'
+  id: totrans-182
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE63]'
 - en: 'The `Iterator` implementation for unsigned types is straightforward: keep incrementing
     until you hit the maximum value for the type:'
+  id: totrans-183
   prefs: []
   type: TYPE_NORMAL
+  zh: 无符号类型的 `Iterator` 实现很简单：持续增加直到达到类型的最大值：
 - en: '[PRE64]'
+  id: totrans-184
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE64]'
 - en: 'Technically, `saturating_add` is not needed and could be replaced with `+=`,
     but it''s helpful to have to avoid wrap-around bugs. Finally, we also provide
     an `Iterator::size_hint` implementation:'
+  id: totrans-185
   prefs: []
   type: TYPE_NORMAL
+  zh: 从技术上讲，`saturating_add` 不是必需的，可以用 `+=` 替换，但为了避免环绕错误，这样做是有帮助的。最后，我们还提供了一个 `Iterator::size_hint`
+    实现：
 - en: '[PRE65]'
+  id: totrans-186
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE65]'
 - en: This function is an optional implementation, but it is neighborly to provide
     one. The return tuple estimates how many items remain in the iteration, the first
     element being a lower estimate and the second being an optional upper bound. We
     happen to know exactly how many elements remain to be iterated because our domain
     is finite. Implementing `Iterator::size_hint` will help out code with pre-allocating
     buffers, which includes other functions on `Iterator`.
+  id: totrans-187
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个函数是一个可选实现，但提供一个是友好的。返回的元组估计迭代中剩余的项目数量，第一个元素是下限估计，第二个是可选的上限。我们恰好知道剩余要迭代的元素数量，因为我们的域是有限的。实现
+    `Iterator::size_hint` 将有助于代码预分配缓冲区，这包括 `Iterator` 上的其他函数。
 - en: 'The sized integer types have a similar implementation. Their macro, `sized_iter!`,
     in use:'
+  id: totrans-188
   prefs: []
   type: TYPE_NORMAL
+  zh: 有大小整数类型有类似的实现。它们使用的宏 `sized_iter!` 如下所示：
 - en: '[PRE66]'
+  id: totrans-189
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE66]'
 - en: 'The macro itself starts out in the same way as its unsigned counterpart:'
+  id: totrans-190
   prefs: []
   type: TYPE_NORMAL
+  zh: 宏本身开始的方式与它的无符号对应物相同：
 - en: '[PRE67]'
+  id: totrans-191
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE67]'
 - en: 'Only the inner part of `next` is different:'
+  id: totrans-192
   prefs: []
   type: TYPE_NORMAL
+  zh: 只有 `next` 的内部部分不同：
 - en: '[PRE68]'
+  id: totrans-193
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE68]'
 - en: 'This warrants some explanation. We take inspiration from the SmallCheck paper
     and iterate values out like so: 0, -1, 1, -2, 2, and so on. The implementation
     could follow the same method as the unsigned variant, proceeding up from `min_value()`
     to `max_value()`, but this would not be small to big, at least in terms of byte
     representation. Finally, `size_hint`:'
+  id: totrans-194
   prefs: []
   type: TYPE_NORMAL
+  zh: 这需要一些解释。我们从 SmallCheck 论文中获得灵感，并按如下方式迭代值：0，-1，1，-2，2，依此类推。实现可以遵循与无符号变体相同的方法，从
+    `min_value()` 到 `max_value()` 递增，但这不会是小到大的，至少在字节表示方面。最后，`size_hint`：
 - en: '[PRE69]'
+  id: totrans-195
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE69]'
 - en: 'If these implementations work correctly, the `Iterator::count` for our new
     iterators ought to be equal to the two-power of the bit size of the type, `count`
     being a function that keeps a tally of elements iterated out. The tests also rely
     on macros to cut down on duplication. First, the signed variants:'
+  id: totrans-196
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果这些实现正确无误，我们新迭代器的 `Iterator::count` 应该等于类型位大小的两倍，`count` 是一个记录迭代元素数量的函数。测试还依赖于宏来减少重复。首先，有符号变体：
 - en: '[PRE70]'
+  id: totrans-197
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE70]'
 - en: 'And now the unsigned variants:'
+  id: totrans-198
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在是无符号变体：
 - en: '[PRE71]'
+  id: totrans-199
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE71]'
 - en: If you run the tests, you should find that they pass. It'll take a minute for
     the larger types. But, that's iterators. All they are is some kind of base type—in
     this case, the built-in integers—plus a state-tracking type—our `Small*` structs—and
     an implementation of `Iterator` for that state-tracking type. Remarkably useful,
     and the optimizer is reasonably good at turning iterator chains into loops and
     getting better at it all the time.
+  id: totrans-200
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果您运行测试，应该会发现它们都通过了。对于较大的类型，可能需要一分钟。但，这些都是迭代器。它们只是某种基本类型——在本例中是内置整数——加上一个状态跟踪类型——我们的`Small*`结构体——以及该状态跟踪类型的`Iterator`实现。非常有用，并且优化器相当擅长将迭代器链转换为循环，并且在这方面越来越擅长。
 - en: rayon – parallel iterators
+  id: totrans-201
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: rayon – 并行迭代器
 - en: In the previous section, we built an iterator over Rust integer types. The essential
     computation of each `next` call was small—some branch checks, and possibly a negation
     or an addition. If we were to try to parallelize this, we'd drown out any potential
@@ -1039,11 +1488,15 @@
     But, say we've gone all-in on writing in iteration style and do have computations
     that would benefit from being run in parallel. How do you make `std::iter::Iterator`
     parallel?
+  id: totrans-202
   prefs: []
   type: TYPE_NORMAL
+  zh: 在上一节中，我们构建了一个Rust整数类型的迭代器。每次`next`调用的基本计算很小——一些分支检查，可能还有取反或加法操作。如果我们尝试并行化这个操作，操作系统分配新线程所需的时间将会淹没任何潜在的性能提升。无论这变得多快，它仍然会比加法操作慢。但是，如果我们全力以赴地以迭代风格编写代码，并且确实有一些可以从并行运行中受益的计算，那么我们如何使`std::iter::Iterator`并行化呢？
 - en: You use rayon.
+  id: totrans-203
   prefs: []
   type: TYPE_NORMAL
+  zh: 您使用rayon。
 - en: The rayon crate is a *data-parallelism* library for Rust. That is, it extends
     Rust's basic `Iterator` concept to include a notion of implicit parallelism. Yep,
     implicit. Rust's memory safety means we can pull some pretty fun tricks on modern
@@ -1053,138 +1506,209 @@
     invariant enforced by the type system. Which means, the rayon developers can focus
     on building a data-parallelism library to be as fast as possible while we, the
     end users, can focus on structuring out code in an iterator style.
+  id: totrans-204
   prefs: []
   type: TYPE_NORMAL
+  zh: rayon crate是一个Rust的数据并行库。也就是说，它扩展了Rust的基本`Iterator`概念，包括隐式并行的概念。是的，隐式。Rust的内存安全性意味着我们可以在现代机器上玩一些相当有趣的花招。考虑一下我们在本章之前调查的线程池实现，它对内存污染没有顾虑。好吧，rayon也是同样的情况。迭代器中的每个元素都是相互隔离的，这是类型系统强制执行的不变性质。这意味着，rayon的开发者可以专注于构建尽可能快的并行库，而我们，作为最终用户，可以专注于以迭代器风格结构化我们的代码。
 - en: 'We''ll examine rayon ([https://crates.io/crates/rayon](https://crates.io/crates/rayon))
     at SHA `5f98c019abc4d40697e83271c072cb2b92966f46`. The rayon project is split
     into sub-crates:'
+  id: totrans-205
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将检查SHA `5f98c019abc4d40697e83271c072cb2b92966f46`下的rayon ([https://crates.io/crates/rayon](https://crates.io/crates/rayon))。rayon项目被拆分为子crate：
 - en: rayon-core
+  id: totrans-206
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: rayon-core
 - en: rayon-futures
+  id: totrans-207
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: rayon-futures
 - en: We'll discuss rayon—the top-level crate—and rayon-core in this chapter, touching
     on the fundamental technology behind rayon-futures in [Chapter 10](2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml), *Futurism – Near-Term*
     *Rus**t*. The interested reader can flag rayon-futures on to play with that interface
     but please do refer to the `README` at the top of that sub-crate for details.
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将讨论rayon（顶级crate）和rayon-core，并在第10章[2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml]的“未来主义——近期Rust”中涉及rayon-futures背后的基本技术。感兴趣的读者可以标记rayon-futures来尝试该接口，但请务必参考该子crate顶部的`README`以获取详细信息。
 - en: The rayon crate is not listed in its entirety. You can find the full listing
     in this book's source repository.
+  id: totrans-209
   prefs: []
   type: TYPE_NORMAL
+  zh: rayon crate的完整列表并未列出。您可以在本书的源代码仓库中找到完整的列表。
 - en: 'The dependencies of rayon are minimal, being that rayon-core is the sole dependency
     by default. The rayon-core dependencies are:'
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
+  zh: rayon的依赖项最少，因为rayon-core默认是唯一依赖项。rayon-core的依赖项包括：
 - en: '[PRE72]'
+  id: totrans-211
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE72]'
 - en: 'We''ve seen these dependencies before, except `libc`. This library exposes
     the `libc` platform in a stable interface. From the project''s documentation:'
+  id: totrans-212
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们之前已经见过这些依赖项，除了`libc`。这个库通过稳定的接口暴露了`libc`平台。根据项目的文档：
 - en: '"This crate does not strive to have any form of compatibility across platforms,
     but rather it is simply a straight binding to the system libraries on the platform
     in question."'
+  id: totrans-213
   prefs: []
   type: TYPE_NORMAL
+  zh: '"这个crate并不追求跨平台的任何形式的兼容性，而是简单地直接绑定到特定平台的系统库。"'
 - en: 'It''s quite useful. Now, rayon is a large library and it can be a challenge
     to navigate. That''s okay, though, because it''s simple to use. To give ourselves
     an in, let''s pull the example code from rayon''s `README` and do an exploration
     from that point. The example is:'
+  id: totrans-214
   prefs: []
   type: TYPE_NORMAL
+  zh: 这非常有用。现在，rayon 是一个大型库，导航可能是一个挑战。不过，没关系，因为它使用起来很简单。为了给自己一个切入点，让我们从 rayon 的 `README`
+    中提取示例代码，并从这个点开始探索。示例是：
 - en: '[PRE73]'
+  id: totrans-215
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE73]'
 - en: 'Okay, so what''s going on here? Well, let''s first compare it against the sequential
     version of this example:'
+  id: totrans-216
   prefs: []
   type: TYPE_NORMAL
+  zh: 好的，这里发生了什么？好吧，让我们首先将它与这个示例的顺序版本进行比较：
 - en: '[PRE74]'
+  id: totrans-217
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE74]'
 - en: 'Spot the key difference? The sequential version is `input.iter()`, the parallel
     version is `input.par_iter()`. Okay, first, we have to understand that every slice
     exposes `iter(&self) -> std::slice::Iter`. This `Iter` implements `std::iter::Iterator`,
     which we recently discussed. rayon implements something similar, so that:'
+  id: totrans-218
   prefs: []
   type: TYPE_NORMAL
+  zh: 找到关键的区别了吗？顺序版本是 `input.iter()`，并行版本是 `input.par_iter()`。好吧，首先，我们必须理解每个切片都暴露了
+    `iter(&self) -> std::slice::Iter`。这个 `Iter` 实现了 `std::iter::Iterator`，这是我们最近讨论过的。rayon
+    实现了类似的东西，所以：
 - en: '`input.iter() :: std::slice::Iter<''_, u32>`'
+  id: totrans-219
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`input.iter() :: std::slice::Iter<''_, u32>`'
 - en: '`input.par_iter() :: rayon::slice::Iter<''_, i32>`'
+  id: totrans-220
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`input.par_iter() :: rayon::slice::Iter<''_, i32>`'
 - en: 'Let''s look at `rayon::slice::Iter`, in `src/slice/mod.rs`:'
+  id: totrans-221
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们看看 `rayon::slice::Iter`，在 `src/slice/mod.rs` 中：
 - en: '[PRE75]'
+  id: totrans-222
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE75]'
 - en: 'Okay, nothing we haven''t seen so far. There''s a lifetime data, and every
     `T` has to be part of that lifetime plus `Sync`. Now, what is the type of rayon''s
     `map`? By inspection, we can see it''s `ParallelIterator::map<F, R>(self, map_op:
     F) -> Map<Self, F>` where `F: Fn(Self::Item) -> R + Sync + Send` and `R: Send`.
     Alright, `ParallelIterator`. That is new. There''s an implementation for `Iter`
     just under the struct definition:'
+  id: totrans-223
   prefs: []
   type: TYPE_NORMAL
+  zh: '好的，我们之前都见过。这里有一份终身数据，每个 `T` 都必须是终身数据的一部分加上 `Sync`。现在，射线 `map` 的类型是什么？通过检查，我们可以看到它是
+    `ParallelIterator::map<F, R>(self, map_op: F) -> Map<Self, F>`，其中 `F: Fn(Self::Item)
+    -> R + Sync + Send` 和 `R: Send`。好的，`ParallelIterator`。这是新的。在结构定义下方有一个 `Iter` 的实现：'
 - en: '[PRE76]'
+  id: totrans-224
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE76]'
 - en: 'Clearly, we need to understand `ParallelIterator`. This trait is defined in
     `src/iter/mod.rs` and is declared to be the parallel version of the standard iterator
     trait. Well, good! That gives us a pretty good anchor into its semantics. Now,
     we just have to figure out its implementation. The implementation of `ParallelIterator`
     for `Iter` defined two functions: `drive_unindexed` and `opt_len`. The latter
     function returns the optional length of the underlying structure, much like `Iterator::size_hint`.'
+  id: totrans-225
   prefs: []
   type: TYPE_NORMAL
+  zh: 显然，我们需要理解 `ParallelIterator`。这个特质在 `src/iter/mod.rs` 中定义，并声明为标准迭代特质的一个并行版本。太好了！这给了我们一个很好的语义锚点。现在，我们只需要弄清楚它的实现。`ParallelIterator`
+    对 `Iter` 的实现定义了两个函数：`drive_unindexed` 和 `opt_len`。后者函数返回底层结构的可选长度，就像 `Iterator::size_hint`
+    一样。
 - en: 'The rayon documentation notes that some of their functions can trigger fast-paths
     when `opt_len` returns a value: always a win. `drive_unindexed` is more complicated
     and introduces two unknowns. Let''s figure out what `consumer: UnindexedConsumer`
     is first. The trait definition, in `src/iter/plumbing/mod.rs`, is very brief:'
+  id: totrans-226
   prefs: []
   type: TYPE_NORMAL
+  zh: 'rayon 文档指出，他们的某些函数在 `opt_len` 返回一个值时可以触发快速路径：总是赢。`drive_unindexed` 更复杂，引入了两个未知数。首先，我们来弄清楚
+    `consumer: UnindexedConsumer` 是什么。在 `src/iter/plumbing/mod.rs` 中的特质定义非常简短：'
 - en: '[PRE77]'
+  id: totrans-227
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE77]'
 - en: 'Okay, we''re missing some key pieces of information here. What is `Consumer`?
     This trait is defined in the same file, like so:'
+  id: totrans-228
   prefs: []
   type: TYPE_NORMAL
+  zh: 好的，我们这里缺少一些关键信息。什么是 `Consumer`？这个特质在同一个文件中定义，如下所示：
 - en: '[PRE78]'
+  id: totrans-229
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE78]'
 - en: 'There are some key unknowns here, but the picture is getting a little clearer.
     `Consumer` is able to take in `Item` and subdivide it at an `index`. rayon is
     performing a divide and conquer, taking small chunks of the stream and dividing
     them over *something*. What are `Folder` and `Reducer`? This trait *folds* into
     itself, like the higher-order fold function. The trait definition is:'
+  id: totrans-230
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里有一些关键未知数，但画面变得稍微清晰了一些。`Consumer` 能够接收 `Item` 并在 `index` 处将其细分。rayon 正在进行分而治之，将流的小块划分到
+    *某个东西* 上。`Folder` 和 `Reducer` 是什么？这个特质 *折叠* 到自身，就像高阶折叠函数一样。特质定义如下：
 - en: '[PRE79]'
+  id: totrans-231
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE79]'
 - en: 'The important function here is `consume_iter`. Note that it calls `consume`
     for each element in the `iter` variable, folding the previous `self` into a new
     `self`, only stopping once the implementor of `Folder` signals that it is *full*.
     Note as well that a `Folder`, once complete is called on it, is turned into a  `Result`.
     Recall that `Result` is set in `Consumer`. Now, what is `Reducer`? It is:'
+  id: totrans-232
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里重要的函数是 `consume_iter`。注意它为 `iter` 变量中的每个元素调用 `consume`，将前一个 `self` 折叠成一个新的
+    `self`，直到 `Folder` 的实现者表示它已经 *满了*。同时请注意，一旦 `Folder` 完成，就会对其调用，并将其转换为 `Result`。回想一下，`Result`
+    是在 `Consumer` 中设置的。现在，什么是 `Reducer`？它是：
 - en: '[PRE80]'
+  id: totrans-233
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE80]'
 - en: '`Reducer` combines two `Result`s into one single `Result`. `Consumer` is then
     a type that can take an `Item`, apply `Folder` over chunks of the `Item`, and
     then reduce the many `Result`s down into a single `Result`. If you squint, `Consumer`
@@ -1196,28 +1720,47 @@
     is calling `drive_unindexed` and what is `bridge`? Let''s look into the `bridge`
     function, defined in `src/iter/plumbing/mod.rs`. The header of the function immediately
     presents new information:'
+  id: totrans-234
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Reducer` 将两个 `Result` 合并成一个单一的 `Result`。然后 `Consumer` 是一种可以接受一个 `Item`，对 `Item`
+    的块应用 `Folder`，然后将多个 `Result` 简化成一个单一的 `Result` 的类型。如果你眯起眼睛看，`Consumer` *实际上* 是一个折叠操作。`UnindexedConsumer`
+    是 `Consumer` 的一个特殊化，它在任意点分割，而普通的 `Consumer` 需要一个索引。因此，我们理解到切片迭代器的并行迭代器是由 `drive_unindexed`
+    驱动的。这个函数传递了 *一些* `consumer: C`，其中 `C` 至少是 `UnindexedConsumer`，并且函数完全委托给 `bridge`
+    来完成其工作。有两个问题：*谁* 调用了 `drive_unindexed`，以及 `bridge` 是什么？让我们来看看定义在 `src/iter/plumbing/mod.rs`
+    中的 `bridge` 函数。函数的头部立即提供了新的信息：'
 - en: '[PRE81]'
+  id: totrans-235
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE81]'
 - en: 'What is `IndexedParallelIterator`? I''ll spare you the exploration, but it''s
     a further specialization of `ParallelIterator` that can be *split at arbitrary
     indices*. This specialization has more functions than the `ParallelIterator` trait,
     and `rayon::slice::Iter` implements both. The definition is brief and something
     we''ll need to know to understand bridge:'
+  id: totrans-236
   prefs: []
   type: TYPE_NORMAL
+  zh: 什么是 `IndexedParallelIterator`？我将省略探索过程，但它是 `ParallelIterator` 的进一步特殊化，可以在 *任意索引处*
+    分割。这种特殊化比 `ParallelIterator` 特性有更多函数，`rayon::slice::Iter` 实现了这两个。定义简短，但我们需要了解以理解
+    `bridge`：
 - en: '[PRE82]'
+  id: totrans-237
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE82]'
 - en: 'We see `bridge` backing a function `drive` and a new `with_producer` function
     with an unknown purpose. Back to `bridge`:'
+  id: totrans-238
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们看到 `bridge` 支持一个 `drive` 函数和一个具有未知目的的新 `with_producer` 函数。回到 `bridge`：
 - en: '[PRE83]'
+  id: totrans-239
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE83]'
 - en: 'We see `bridge` calculate the length of the underlying slice and then call
     `with_producer` on some `Callback` struct. We know from the trait implementation
     on `Iter` that `Callback: ProducerCallback`, which is itself an analogue to `FnOnce`,
@@ -1227,61 +1770,98 @@
     Again, we see that rayon is dividing work into sub-pieces and that this method
     of operation extends through multiple types. But what is `Callback`? It turns
     out, this struct is defined inline with the function body of `bridge`:'
+  id: totrans-240
   prefs: []
   type: TYPE_NORMAL
+  zh: '我们看到 `bridge` 计算底层切片的长度，然后在一个 `Callback` 结构体上调用 `with_producer`。我们知道从 `Iter`
+    的特实现中，`Callback: ProducerCallback`，它本身类似于 `FnOnce`，接受一些 `T`，一个 `Producer<T>`，并从
+    `ProducerCallback::callback` 发出一个 `Output`。如果你足够眯起眼睛，那就是一个闭包。`Producer` 大概相当于
+    `std::iter::IntoIterator`，但它可以在索引处分割成两个 `Producer`。再次，我们看到 rayon 正在将工作分割成子任务，并且这种操作方法贯穿多个类型。但
+    `Callback` 是什么呢？实际上，这个结构体是与 `bridge` 函数的函数体一起内联定义的：'
 - en: '[PRE84]'
+  id: totrans-241
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE84]'
 - en: 'I admit, that''s pretty weird! The `producer: P` that is passed in the interior
     callback is an `IterProducer`, a type defined in `src/slice/mod.rs`, which holds
     a reference to the slice. The interesting thing is the implementation of `Producer`
     for `IterProducer`:'
+  id: totrans-242
   prefs: []
   type: TYPE_NORMAL
+  zh: '我承认，这相当奇怪！内部回调中传递的 `producer: P` 是一个 `IterProducer`，这是一个在 `src/slice/mod.rs`
+    中定义的类型，它持有切片的引用。有趣的是 `Producer` 对 `IterProducer` 的实现：'
 - en: '[PRE85]'
+  id: totrans-243
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE85]'
 - en: 'Look at that `split_at`! Whenever rayon needs to split a slice Producer, it
     calls `std::slice::split_at` and makes two new `Producer`s. Alright, so now we
     know *how* rayon is splitting things up but still not *to what*. Let''s look further
     into the implementation of `bridge_producer_consumer`:'
+  id: totrans-244
   prefs: []
   type: TYPE_NORMAL
+  zh: 看那个 `split_at`！每当 rayon 需要分割一个切片生产者时，它会调用 `std::slice::split_at` 并创建两个新的 `Producer`。好吧，现在我们知道了
+    rayon 是如何分割事物的，但仍然不知道 *分割到什么程度*。让我们进一步了解 `bridge_producer_consumer` 的实现：
 - en: '[PRE86]'
+  id: totrans-245
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE86]'
 - en: 'Okay, we are mostly familiar with these types. `LengthSplitter` is new and
     is a type that informs us whether a split of a certain length is valid for some
     minimum size. This is where rayon is able to decide how small to make split work
     and whether or not to split a workload further. The `helper` function rounds things
     out:'
+  id: totrans-246
   prefs: []
   type: TYPE_NORMAL
+  zh: 好吧，我们大多数人对这些类型都很熟悉。`LengthSplitter` 是新的，它是一种类型，告诉我们某个长度的分割对于某些最小大小是否有效。这就是 rayon
+    能够决定分割工作的大小以及是否进一步分割工作负载的地方。`helper` 函数使一切完整：
 - en: '[PRE87]'
+  id: totrans-247
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE87]'
 - en: 'This is dense. Most of this is to do with splitting the current `Producer`
     into appropriately sized chunks, but especially this block of code:'
+  id: totrans-248
   prefs: []
   type: TYPE_NORMAL
+  zh: 这很密集。大部分都是为了将当前的 `Producer` 分割成适当大小的块，但特别是这段代码：
 - en: '[PRE88]'
+  id: totrans-249
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE88]'
 - en: 'Here we see newly split `Producers` that lazily make a recursive call to `helper`
     when executed by `join_context`. This function is defined in `rayon-core/src/join/mod.rs`:'
+  id: totrans-250
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们看到新分割的 `Producers` 在由 `join_context` 执行时会懒加载地递归调用 `helper`。这个函数定义在 `rayon-core/src/join/mod.rs`
+    中：
 - en: '[PRE89]'
+  id: totrans-251
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE89]'
 - en: 'The new type here, `FnContext`, is a `Send + Sync` disabling boolean. The boolean
     interior to `FnContext` is called `migrated`, an interesting clue to the context''s
     purpose. Let''s continue in `join_context`:'
+  id: totrans-252
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的新类型 `FnContext` 是一个 `Send + Sync` 禁用布尔值。`FnContext` 内部的布尔值被称为 `migrated`，这是一个关于上下文目的的有趣线索。让我们继续在
+    `join_context` 中：
 - en: '[PRE90]'
+  id: totrans-253
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE90]'
 - en: 'Well hey, it''s a thread pool! We *know* thread pools! There''s a lot more
     detail to rayon''s thread pool implementation compared to the one we investigated
     earlier in this chapter, but it''s a known concept. Each thread in rayon''s pool
@@ -1293,11 +1873,19 @@
     what we''ve seen so far is that the caller of `join_context` immediately constructs
     `StackJob` out of `oper_b` and calls `worker_thread.push`. This function is defined
     in `rayon-core/src/registry.rs`:'
+  id: totrans-254
   prefs: []
   type: TYPE_NORMAL
+  zh: 嗨，这是一个线程池！我们 *知道* 线程池！与我们在本章早期调查的线程池实现相比，rayon 的线程池实现有更多细节，但它是一个已知的概念。rayon
+    池中的每个线程都维护自己的工作队列。每个线程都会排队两个新的工作——在这种情况下，调用具有特定 `FnContext` 的 helper 函数——这些函数可能执行
+    `Consumer` 和 `Producer` 合并表示的函数，或者将工作分割成小块，推送到线程的队列中。池中的每个线程都能够从其他线程中窃取工作，将负载分散到池中。实际上，我们到目前为止看到的是，`join_context`
+    的调用者立即从 `oper_b` 构造 `StackJob` 并调用 `worker_thread.push`。这个函数定义在 `rayon-core/src/registry.rs`
+    中：
 - en: '[PRE91]'
+  id: totrans-255
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE91]'
 - en: '`sleep.tickle`, in addition to being amusingly named, is meant to notify threads
     waiting on condvar. This condvar is tracking whether or not there''s work available,
     saving power when there''s none, rather than have threads in the pool spin-looping.
@@ -1305,19 +1893,30 @@
     field is of the `crossbeam_deque::Deque<job::JobRef>` type. We discussed crossbeam
     in the previous chapter! Things are starting to come together for us. Let''s look
     at the definition of `WorkerThread`:'
+  id: totrans-256
   prefs: []
   type: TYPE_NORMAL
+  zh: '`sleep.tickle` 除了名字有趣之外，还旨在通知等待在 condvar 上的线程。这个 condvar 跟踪是否有可用的任务，当没有任务时节省电力，而不是让线程在池中空转。当调用
+    `self.worker.push` 时会发生什么？结果是，`WorkerThread::worker` 字段是 `crossbeam_deque::Deque<job::JobRef>`
+    类型。我们在上一章讨论了 crossbeam！事情开始对我们有好处。让我们看看 `WorkerThread` 的定义：'
 - en: '[PRE92]'
+  id: totrans-257
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE92]'
 - en: 'What is `Registry`? What''s creating these `WorkerThread`s? Recall that in
     `join_context`, we''re inside a call to `registry::in_worker`. That function is
     defined in `rayon-core/src/registry.rs` and is:'
+  id: totrans-258
   prefs: []
   type: TYPE_NORMAL
+  zh: 什么是 `Registry`？什么在创建这些 `WorkerThread`s？回想一下，在 `join_context` 中，我们处于 `registry::in_worker`
+    调用内部。这个函数定义在 `rayon-core/src/registry.rs` 中，并且是：
 - en: '[PRE93]'
+  id: totrans-259
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE93]'
 - en: 'The `WorkerThread::current()` call is polling a thread-local static variable
     called `WORKER_THREAD_STATE`, a `Cell<*const WorkerThread>` that may or may not
     be null in the event that no `WorkerThread` has been created inside the current
@@ -1325,31 +1924,50 @@
     does exist as thread-local, the passed `op` function is called, which is what
     we''re investigating inside `join_context`. But, if the thread-local is null,
     `global_registry().in_worker_cold(op)` is called. The `global_registry` is:'
+  id: totrans-260
   prefs: []
   type: TYPE_NORMAL
+  zh: '`WorkerThread::current()` 调用正在轮询一个名为 `WORKER_THREAD_STATE` 的线程局部静态变量，它是一个 `Cell<*const
+    WorkerThread>`，在当前操作系统线程中尚未创建 `WorkerThread` 或由于某些原因已停止存在的情况下，可能为空。如果 `WorkerThread`
+    作为线程局部存在，则调用传递的 `op` 函数，这就是我们在 `join_context` 中调查的内容。但是，如果线程局部为空，则调用 `global_registry().in_worker_cold(op)`。`global_registry`
+    是：'
 - en: '[PRE94]'
+  id: totrans-261
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE94]'
 - en: 'That is, once `global_registry()` is called at least once, we''ve established
     a static `Registry` populated by the return of `init_registry`:'
+  id: totrans-262
   prefs: []
   type: TYPE_NORMAL
+  zh: 即，一旦至少调用一次 `global_registry()`，我们就已经建立了一个由 `init_registry` 返回值填充的静态 `Registry`：
 - en: '[PRE95]'
+  id: totrans-263
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE95]'
 - en: 'That function further defers to `Registry::new` after having populated some
     builders for configuration purposes:'
+  id: totrans-264
   prefs: []
   type: TYPE_NORMAL
+  zh: 该函数在填充了一些用于配置的构建器之后进一步委托给 `Registry::new`：
 - en: '[PRE96]'
+  id: totrans-265
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE96]'
 - en: 'Here, finally, we see threads being built:'
+  id: totrans-266
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里，终于，我们看到线程正在被构建：
 - en: '[PRE97]'
+  id: totrans-267
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE97]'
 - en: 'Woo! Okay, a `Registry` is a static which, once created, spawns a number of
     threads and enters them into `main_loop`. This loop creates `WorkerThread`, notifies
     the `Registry` of `WorkerThread` being started, which marks the thread as alive.
@@ -1359,82 +1977,127 @@
     notice, calls `WorkerThread::wait_until_cold`. That cold condition is the status
     of `WorkerThread` when `take_local_job` or steal fail to return any items. Taking
     a local job looks like so:'
+  id: totrans-268
   prefs: []
   type: TYPE_NORMAL
+  zh: 哇！好吧，一个 `Registry` 是一个静态变量，一旦创建，就会启动多个线程并将它们进入 `main_loop`。这个循环创建 `WorkerThread`，通知
+    `Registry` `WorkerThread` 已启动，这标志着线程处于活动状态。这是 `Registry` 的 `thread_infos`，也是为什么
+    `WorkerThread` 在其自身中携带索引的原因。`main_thread` 调用 `WorkerThread::wait_until`，这是一个用于探测
+    `Registry` 是否有终止通知的函数，如果没有该通知，则调用 `WorkerThread::wait_until_cold`。这种冷状态是 `WorkerThread`
+    在 `take_local_job` 或窃取失败无法返回任何项目时的状态。获取本地工作的样子如下：
 - en: '[PRE98]'
+  id: totrans-269
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE98]'
 - en: The `self.worker` here is the deque from crossbeam and the breadth first option
     simply controls which end of the deque work is retrieved from. Stealing is a little
     more complicated, using the random number generator of `WorkerThread` to choose
     arbitrary threads—indexed through the `Registry`—to steal work from, seeking forward
     through the threads until work can be stolen from another thread's deque or until
     no work is found.
+  id: totrans-270
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的 `self.worker` 是来自 crossbeam 的双端队列，而广度优先选项仅控制从双端队列的哪一端检索工作。窃取要复杂一些，使用 `WorkerThread`
+    的随机数生成器来选择任意线程——通过 `Registry` 索引——从其那里窃取工作，向前遍历线程，直到可以从另一个线程的双端队列中窃取工作或直到找不到任何工作。
 - en: 'No more mysteries! As we descend further into rayon, we understand that it''s
     got quite a bit of machinery for representing split workloads that then gradually
     transition into the execution of those chunks of work on a thread pool. That thread
     pool performs work-stealing to keep the CPUs saturated. This understanding helps
     make the remainder of `join_context` more understandable:'
+  id: totrans-271
   prefs: []
   type: TYPE_NORMAL
+  zh: 没有更多的神秘了！当我们进一步深入 rayon 时，我们了解到它拥有相当多的机制来表示分割的工作负载，然后这些工作负载逐渐过渡到在线程池上执行这些工作块。这个线程池执行工作窃取以保持
+    CPU 满载。这种理解有助于使 `join_context` 的其余部分更容易理解：
 - en: '[PRE99]'
+  id: totrans-272
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE99]'
 - en: 'The caller of `join_context` has packaged `oper_b` up, pushed it to the worker''s
     queue, and executes `oper_a` in the hopes that the other operation will be executed
     as well. The remainder of the function is a loop, either pulling `oper_b` from
     the local deque or stealing from some other thread:'
+  id: totrans-273
   prefs: []
   type: TYPE_NORMAL
+  zh: '`join_context` 的调用者将 `oper_b` 打包，推送到工作队列，并执行 `oper_a`，希望其他操作也能被执行。函数的其余部分是一个循环，要么从本地双端队列中拉取
+    `oper_b`，要么从其他线程中窃取：'
 - en: '[PRE100]'
+  id: totrans-274
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE100]'
 - en: Ordering is maintained through the latch mechanism, defined in `rayon-core/src/latch.rs`.
     You are encouraged to study this mechanism. It's very clever and well within the
     capabilities of the reader who has gotten this far in the book, bless you.
+  id: totrans-275
   prefs: []
   type: TYPE_NORMAL
+  zh: 通过锁机制维护顺序，该机制在 `rayon-core/src/latch.rs` 中定义。鼓励您研究这一机制。它非常巧妙，对于已经阅读到此书的读者来说，完全在理解能力范围内，祝福您。
 - en: 'That is *almost* it. We still have yet to discuss `map(|&i| i * i).sum()`.
     The `map` there is defined on `ParallelIterator`, `IndexedParallelIterator`, and
     is:'
+  id: totrans-276
   prefs: []
   type: TYPE_NORMAL
+  zh: 这几乎就是全部了。我们还没有讨论 `map(|&i| i * i).sum()`。那里的 `map` 定义在 `ParallelIterator`、`IndexedParallelIterator`
+    上，并且是：
 - en: '[PRE101]'
+  id: totrans-277
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE101]'
 - en: '`Map` is, in turn, a `ParallelIterator` that consumes the individual `map_op`
     functions, producing `MapConsumer`s out of them, the details of which we''ll skip
     as we are already familiar enough with rayon''s `Consumer` concept. Finally, sum:'
+  id: totrans-278
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Map` 是一个 `ParallelIterator`，它消费单个 `map_op` 函数，并从中产生 `MapConsumer`，其细节我们在此略过，因为我们已经足够熟悉
+    rayon 的 `Consumer` 概念。最后，求和：'
 - en: '[PRE102]'
+  id: totrans-279
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE102]'
 - en: 'This is, in turn, defined in `src/iter/sum.rs` as:'
+  id: totrans-280
   prefs: []
   type: TYPE_NORMAL
+  zh: 这在 `src/iter/sum.rs` 中定义为：
 - en: '[PRE103]'
+  id: totrans-281
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE103]'
 - en: The producer is driven into a `SumConsumer` that splits the summation work up
     over the thread pool and then eventually folds it into a single value.
+  id: totrans-282
   prefs: []
   type: TYPE_NORMAL
+  zh: 生产者被驱动到 `SumConsumer`，它将求和工作分配到线程池中，然后最终将其折叠成一个单一值。
 - en: And *that* is that. That's rayon. It's a thread pool that can automatically
     split workloads over the threads plus a series of `Iterator` adaptations that
     greatly reduce the effort required to exploit the thread-pooling model.
+  id: totrans-283
   prefs: []
   type: TYPE_NORMAL
+  zh: 就这样 *就是* 了。这就是 rayon。它是一个可以自动在线程之间分配工作负载的线程池，以及一系列 `Iterator` 适配器，这些适配器大大减少了利用线程池模型所需的工作量。
 - en: Now you know! That's not all that rayon can do—it's a *very* useful library—but
     that's the central idea. I warmly encourage you to read through rayon's documentation.
+  id: totrans-284
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在你知道了！这不仅仅是 rayon 能做的——它是一个非常有用的库——但这才是核心思想。我强烈建议你阅读 rayon 的文档。
 - en: Data parallelism and OS processes – evolving corewars players
+  id: totrans-285
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 数据并行和操作系统进程 – Corewars 玩家的演变
 - en: 'In this final section of the chapter, I''d like to introduce a project that
     will carry us over into the next chapter. This project will tie together the concepts
     we''ve introduced so far in this chapter and introduce a new one: processes. Compared
@@ -1447,12 +2110,18 @@
     to spawn new processes, limiting a multi-processesing program''s ability to exploit
     CPUs on a few fronts. All that said, knowing how to spawn and manipulate OS processes
     *is* very useful and we''d be remiss not to cover it in this book.'
+  id: totrans-286
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章的最后一节，我想介绍一个项目，这个项目将带领我们进入下一章。这个项目将把本章中我们介绍的概念串联起来，并引入一个新的概念：进程。与线程相比，进程有很多值得推荐的地方：内存隔离、独立的优先级调度、方便地将现有程序集成到自己的系统中，以及处理它们的长久历史标准
+    syscalls（在 Unix 中）。但是，当你的目标是同时从多个并发操作者中玩弄相同的内存（如在原子编程中）或你不得不设置昂贵的 IPC 通道时，内存隔离就不太理想了。更糟糕的是，一些操作系统在创建新进程方面速度不快，限制了多进程程序在几个方面利用
+    CPU 的能力。尽管如此，了解如何创建和操作操作系统进程 *确实* 非常有用，我们在这本书中不讨论它将是失职的。
 - en: Corewars
+  id: totrans-287
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Corewars
 - en: 'Corewars is a computer programmer game from the 1980s. Introduced in a 1984
     Scientific American article, the game is a competition between two or more programs—or
     warriors—that are written in an obscure assembly language called Redcode. Realistically,
@@ -1469,19 +2138,25 @@
     addressing in the MARS machine: every address is relative in the ring of memory
     to the current instruction. For instance, the following instruction will tell
     MARS to jump backward two spots in memory and continue execution from there:'
+  id: totrans-288
   prefs: []
   type: TYPE_NORMAL
+  zh: Corewars是20世纪80年代的一款计算机程序员游戏。在1984年的《科学美国人》文章中首次介绍，这款游戏是两个或更多程序——或战士——之间的竞争，这些程序是用一种名为Redcode的晦涩汇编语言编写的。实际上，Redcode有两种有效变体，其中一种具有一些很好的特性，如标签或用于变量赋值的伪操作码。这通常被称为Redcode。另一种变体被称为*加载文件Redcode*或简单地称为*加载文件*，它是对操作码的直接读取。Redcode针对的机器是内存数组Redcode模拟器（MARS）。它是……独特的。内存是有限且循环的，在回绕之前的最大地址是`core_size-1`。大多数玩家将`core_size`设置为8000，但任何值都是有效的。每个内存位置都是一个指令。指令缓存和数据存储之间没有区别。实际上，并没有真正的数据存储，尽管你可以在指令的未使用部分存储信息。在MARS机器中不存在绝对内存寻址：每个地址都是相对于内存环中当前指令的相对地址。例如，以下指令将告诉MARS在内存中向后跳两个位置并从那里继续执行：
 - en: '[PRE104]'
+  id: totrans-289
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE104]'
 - en: MARS executes one instruction from each warrior in turn, in the order that the
     MARS loaded the warrior into memory. Warriors start at some offset from one another
     and are guaranteed not to overlap. A warrior may spawn sub-warriors and this sub-warrior
     will get executed like all the others. A single opcode `DAT` will cause a warrior
     to exit. The objective of the game is force opposing warriors to execute `DAT.`
     The last warrior—plus any spawned warriors—under simulation wins the game.
+  id: totrans-290
   prefs: []
   type: TYPE_NORMAL
+  zh: MARS按顺序依次执行每个战士的一条指令，顺序与MARS将战士加载到内存中的顺序相同。战士们从某个偏移量开始，并保证它们之间不会重叠。战士可以产生子战士，这个子战士将像其他所有战士一样被执行。单个操作码`DAT`将导致战士退出。游戏的目标是迫使对方战士执行`DAT`。在模拟中最后存活的战士——以及任何产生的战士——赢得游戏。
 - en: There's quite a bit more detail to Corewars than has been presented here, in
     terms of opcode listing and memory modes and what not, but this is not a Corewars
     tutorial. There are many fine tutorials online and I suggest some in the *Further
@@ -1490,24 +2165,35 @@
     commonly used as the *MARS* is pMARS ([http://www.koth.org/pmars/](http://www.koth.org/pmars/)),
     or Portable MARS. It'll build pretty easily even under a modern GCC, though I
     can't say I've managed to build it under clang.
+  id: totrans-291
   prefs: []
   type: TYPE_NORMAL
+  zh: Corewars的细节远不止这里所展示的，包括操作码列表、内存模式等，但这不是Corewars教程。网上有很多优秀的教程，我在*进一步阅读*部分也推荐了一些。重要的是要理解，Corewars是一种程序员之间的游戏，游戏双方通过编写程序进行竞争。MARS有很多模拟器，但最常用的是*pMARS
+    ([http://www.koth.org/pmars/](http://www.koth.org/pmars/))，或便携式MARS。即使在现代GCC下，它也能很容易地构建，尽管我无法保证在clang下能构建它。
 - en: 'Here''s a pretty fun bomber from pmars 0.9.2''s source distribution, to give
     you a sense of how these programs look:'
+  id: totrans-292
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里是来自pmars 0.9.2源分布的一个相当有趣的轰炸机，让你对这些程序的外观有一个大致的了解：
 - en: '[PRE105]'
+  id: totrans-293
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE105]'
 - en: 'A bomber tosses a bomb at offset intervals into memory. Some toss `DAT`s, which
     force warriors to exit if executed. This one tosses an imp. An imp is a Corewars
     program that creeps forward in memory some number of instructions at a time. The
     Imp, introduced in the 1984 article, is:'
+  id: totrans-294
   prefs: []
   type: TYPE_NORMAL
+  zh: 一枚轰炸机以偏移间隔将炸弹扔入内存。一些扔`DAT`，如果执行，将迫使战士退出。这一枚扔了一个imp。imp是Corewars程序，每次在内存中前进一定数量的指令。在1984年的文章中引入的Imp是：
 - en: '[PRE106]'
+  id: totrans-295
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE106]'
 - en: The opcode here is `MOV` with modifier `I`, source address 0, and destination
     address 1\. `MOV` moves instructions at the source address, also traditionally
     called the *a-field*, to the destination address, also called the *b-field*. The
@@ -1519,32 +2205,45 @@
     that advance at different rates with different offsets. The `<` on the b-field
     is an indirect with predecrement operator on the address but, like I said, this
     is not a Corewars tutorial.
+  id: totrans-296
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的操作码是带有修改符`I`的`MOV`，源地址为0，目标地址为1。`MOV`将源地址（也传统上称为*a字段*）的指令移动到目标地址（也称为*b字段*）。操作码修改符——`.I`——定义了操作码如何解释其命令。在这里，我们指定MOV将整个指令从当前单元格移动到环上的下一个单元格。`MOV.A`只会将当前指令的a字段移动到目标指令的a字段。轰炸机的小精灵`mov.i
+    incr,<count`依赖于先前计算出的值，在内存中放置小精灵，它们以不同的速率和不同的偏移量前进。b字段上的`<`是一个带有预减量操作符的间接地址，但正如我所说的，这不是一个Corewars教程。
 - en: 'The pMARS simulator can read in both load files and Redcode, will drop the
     warriors into the simulator, and report the results. Here we run the bomber against
     the imp for 100 simulated rounds:'
+  id: totrans-297
   prefs: []
   type: TYPE_NORMAL
+  zh: pMARS模拟器可以读取加载文件和Redcode，将战士放入模拟器中，并报告结果。在这里，我们运行了100次模拟回合的轰炸机对抗小精灵：
 - en: '[PRE107]'
+  id: totrans-298
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE107]'
 - en: The imp does not fare too well. It wins 0 times but does manage to tie 537 times.
     An imp is hard to kill.
+  id: totrans-299
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个小精灵的表现并不太好。它赢了0次，但成功打平了537次。小精灵很难被杀死。
 - en: Writing warriors is fun, but teaching a computer to write warriors is even more
     fun and so that's what we're going to set out to do. Specifically, we'll write
     an *evolver,* a program that uses a simulated evolution of a population of warriors
     to produce ever more fit specimens. We'll call out to the pMARS executable to
     evaluate our population and, with enough time, hopefully pop out something pretty
     impressive.
+  id: totrans-300
   prefs: []
   type: TYPE_NORMAL
+  zh: 编写战士很有趣，但教计算机编写战士更有趣，所以这就是我们要着手去做的事情。具体来说，我们将编写一个*进化器*，这是一个使用战士种群的模拟进化来产生越来越适应环境的样本的程序。我们将调用pMARS可执行文件来评估我们的种群，并且，如果有足够的时间，希望出现一些相当令人印象深刻的东西。
 - en: Feruscore – a Corewars evolver
+  id: totrans-301
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Feruscore – 一个Corewars进化器
 - en: I want to make sure we're all on the same page, before we start digging through
     source code. The way simulated evolution works is you make a population—maybe
     totally random, maybe not—and call it generation `0`. You then run some `fitness`
@@ -1553,8 +2252,10 @@
     The fittest members of the population are then taken to form a subset of parents.
     Many algorithms take two members, but the sky's the limit and your species could
     well require six individuals for reproduction. That's what we're after—reproduction.
+  id: totrans-302
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们开始挖掘源代码之前，我想确保我们都在同一页面上。模拟进化的工作方式是，你创建一个种群——可能是完全随机的，也可能不是——并将其称为第0代。然后你对种群成员运行一些`fitness`函数。适应性可以定义为某些已知的绝对值，或者种群成员之间的相对值。种群中最适应的成员随后被选为父母的一个子集。许多算法采用两个成员，但天空才是极限，你的物种可能需要六个个体进行繁殖。这正是我们追求的——繁殖。
 - en: 'The individuals of the population are non-destructively recombined to form
     children. The population is then mutated, changing genes in an individual''s genomes
     with some domain-specific probability. This may be *all* members of the population
@@ -1562,25 +2263,35 @@
     answer here. After mutation, the parents, their children, and any non-reproducing
     members of the population that did not die during fitness evaluation are then
     promoted to generation 2\. The cycle continues:'
+  id: totrans-303
   prefs: []
   type: TYPE_NORMAL
+  zh: 种群中的个体以非破坏性的方式重新组合形成孩子。然后种群发生变异，以某些领域特定的概率改变个体的基因组中的基因。这可能涉及种群中的所有成员，或者只是孩子，或者只是父母，或者你想要的任何组合。这里没有完美的答案。变异后，父母、他们的孩子以及任何在适应性评估期间没有死亡的种群的非繁殖成员将被提升到第2代。这个循环继续进行：
 - en: Fitness evaluation
+  id: totrans-304
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 适应性评估
 - en: Parents reproduce
+  id: totrans-305
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 父母繁殖
 - en: Population is mutated
+  id: totrans-306
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 种群发生变异
 - en: 'Exactly when the cycle stops is up to the programmer: perhaps when a fixed
     number of generations have passed, perhaps when an individual that meets some
     minimum threshold of fitness has evolved.'
+  id: totrans-307
   prefs: []
   type: TYPE_NORMAL
+  zh: 周期何时停止取决于程序员：可能是经过固定数量的代数后，也可能是当某个个体进化出满足某些最小适应性阈值时。
 - en: Simulated evolution is not magic. Much like QuickCheck, which uses randomness
     to probe programs for property violations, this algorithm is probing a problem
     space for the most fit solution. It's an optimization strategy, mimicking the
@@ -1588,12 +2299,16 @@
     there are a lot of knobs and alternatives to the basic approach. We'll be putting
     together a straightforward approach here but the you are warmly encouraged to
     make your own modifications.
+  id: totrans-308
   prefs: []
   type: TYPE_NORMAL
+  zh: 模拟进化不是魔法。就像 QuickCheck，它使用随机性来探测程序的属性违规，这个算法正在探测问题空间中最适合的解决方案。它是一种优化策略，模仿生物过程。正如你可能从刚才给出的描述中推断出的，基本方法有很多可调节的旋钮和替代方案。我们在这里将采用一种简单的方法，但强烈鼓励你根据自己的需要进行修改。
 - en: Representing the domain
+  id: totrans-309
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 表示领域
 - en: Before we can start evolving anything, we have to figure out how to represent
     the individuals; we need to decide how to structure their chromosome. Many genetic
     algorithm implementations represent these as a [u8], serializing and deserializing
@@ -1610,8 +2325,14 @@
     The downside to a `[u8]` representation is creating individuals that don't deserialize
     into something valid, in addition to eating up CPU time moving back and forth
     between `[u8]` and structs.
+  id: totrans-310
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们开始进化任何东西之前，我们必须弄清楚如何表示个体；我们需要决定如何构建他们的染色体。许多遗传算法实现将这些表示为 [u8]，根据需要序列化和反序列化。这种表示有很多优点。首先，现代计算机有专门针对并行操作多个字节的指令——这是一个我们将在第
+    10 章 *未来主义 – 近期 Rust* 中涉及的话题——这对于遗传算法的突变和繁殖阶段特别有帮助。你看，成功模拟进化的关键之一是 *速度*。我们需要一个大型种群和许多许多代来发现适合的个体。`[u8]`
+    是序列化和反序列化的便利表示，特别是当有 serde [(https://crates.io/crates/serde](https://crates.io/crates/serde))
+    和 bincode ([https://crates.io/crates/bincode](https://crates.io/crates/bincode))
+    这样的工具时。`[u8]` 表示的缺点是创建无法反序列化为有效内容的个体，以及在 `[u8]` 和结构体之间移动时消耗 CPU 时间。
 - en: Program optimization comes down to carefully structuring one's computation to
     suit the computer or finding clever ways to avoid computation altogether. In this
     particular project, we do have a trick we can play. A valid individual is a finite
@@ -1620,18 +2341,27 @@
     Not bad! This will save us a significant amount of CPU time, though our mutation
     step will be a tad slower. That's okay, though, as fitness evaluation will be
     the biggest time sink, as we'll see that shortly.
+  id: totrans-311
   prefs: []
   type: TYPE_NORMAL
+  zh: 程序优化归结为精心构建计算结构以适应计算机或找到避免计算的整体巧妙方法。在这个特定项目中，我们确实有一个可以玩的技巧。一个有效的个体是一个有限的指令列表——feruscore
+    目标生成 *加载文件*——然后我们只需要将一个指令表示为一个 Rust 结构体并将其放入一个向量中。不错！这将为我们节省大量的 CPU 时间，尽管我们的突变步骤会稍微慢一些。不过没关系，因为正如我们很快就会看到的那样，适应性评估将是最大的时间消耗。
 - en: Exploring the source
+  id: totrans-312
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 探索源代码
 - en: 'Let''s look at feruscore''s `Cargo.toml` first. It is:'
+  id: totrans-313
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们先看看 feruscore 的 `Cargo.toml`。它是：
 - en: '[PRE108]'
+  id: totrans-314
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE108]'
 - en: We saw the tempdir crate back in [Chapter 5](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml),
     *Locks – Mutex, Condvar, Barriers and RWLock*; its purpose is to create temporary
     directories that get deleted when the directory handler is dropped. We discussed
@@ -1642,40 +2372,59 @@
     The rand crate implements many different pseudo-random algorithms, in addition
     to providing a convenient interface to OS facilities for randomness. We'll be
     putting rand to good use.
+  id: totrans-315
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在[第5章](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml)中看到了tempdir crate，*锁 - Mutex,
+    Condvar, Barriers 和 RWLock*；它的目的是创建在目录处理程序被丢弃时删除的临时目录。我们在本章前面讨论了rayon。rand crate是新的，尽管我们在[第2章](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml)
+    *顺序Rust性能和测试*和[第5章](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml) *锁 - Mutex, Condvar,
+    Barriers 和 RWLock*中提到了它，当时我们产生了自己的XorShift。rand crate实现了许多不同的伪随机算法，同时提供了一个方便的接口来访问OS的随机性设施。我们将充分利用rand。
 - en: 'The project is a standard library/executable bundle. Unlike many other projects
     in this book, we are not creating multiple executables and so there''s only a
     single `src/main.rs`. We''ll talk through that in due course. The library root,
     in `src/lib.rs`:'
+  id: totrans-316
   prefs: []
   type: TYPE_NORMAL
+  zh: 该项目是一个标准库/可执行文件包。与本书中的许多其他项目不同，我们不是创建多个可执行文件，因此只有一个`src/main.rs`。我们将在适当的时候讨论这一点。库根目录在`src/lib.rs`：
 - en: '[PRE109]'
+  id: totrans-317
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE109]'
 - en: Instructions
+  id: totrans-318
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 指令
 - en: 'No surprises here. We import the project dependencies and expose two public
     modules: instruction and individual. The instruction module at `src/instruction.rs`
     is feruscore''s version of `[u8]`, or, rather, the `u8` in the array. Let''s take
     a look. The structure at the root is `Instruction`:'
+  id: totrans-319
   prefs: []
   type: TYPE_NORMAL
+  zh: 没有惊喜。我们导入项目依赖项并公开两个公共模块：instruction和individual。`src/instruction.rs`中的instruction模块是feruscore版本的`[u8]`，或者更确切地说，是数组中的`u8`。让我们看看。根目录的结构是`Instruction`：
 - en: '[PRE110]'
+  id: totrans-320
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE110]'
 - en: 'An instruction in Redcode is an opcode, a modifier for that opcode, an a-offset
     plus modifier and a b-offset plus modifier. (The a-field and b-field are the combination
     of offset and mode.) That''s exactly what we have here. No need to deserialize
     from a byte array; we''ll work on a direct representation. The implementation
     of `Instruction` is small. To start, we need some way of creating random `Instruction`s:'
+  id: totrans-321
   prefs: []
   type: TYPE_NORMAL
+  zh: Redcode中的指令是一个操作码，该操作码的修饰符，一个a偏移量加修饰符和一个b偏移量加修饰符。（a字段和b字段是偏移量和模式的组合。）这正是我们在这里所拥有的。不需要从字节数组反序列化；我们将直接处理表示。`Instruction`的实现很小。首先，我们需要一种创建随机`Instruction`的方法：
 - en: '[PRE111]'
+  id: totrans-322
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE111]'
 - en: This sets up a pattern we'll use through the rest of this module. Every type
     exposes `random() -> Self` or some variant thereof. Note that the offset is restricted
     to 1/32 the passed `core_size`. Why? Well, we're trying to cut down the cardinality
@@ -1684,39 +2433,54 @@
     not including any of the other valid combinations with the other structure fields.
     Based on what I know about high-scoring warriors, the explicit offsets are usually
     small numbers.
+  id: totrans-323
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将设置我们将在整个模块中使用的模式。每个类型都公开了`random() -> Self`或其变体。注意，偏移量限制为传递的`core_size`的1/32。为什么？因为我们正在尝试减少正在探索的域的基数。假设核心大小为8,000。如果在偏移量中尝试了所有可能的核心大小值实例，将会有6400万个可能的`Instruction`，不包括与其他结构体字段的有效组合。根据我对高分战士的了解，显式偏移量通常是较小的数字。
 - en: 'By cutting down the offset domain, we''ve eliminated 62,000,000 potential instructions,
     saving CPU time. This could well be a pessimistic restriction—forcing the population
     right into a bottleneck—but I doubt it. Every struct in this module also has a
     `serialize(&self, w: &mut Write) -> io::Result<usize>` function. Here''s the one
     for `Instruction`:'
+  id: totrans-324
   prefs: []
   type: TYPE_NORMAL
+  zh: '通过减少偏移量域，我们消除了6200万个潜在的指令，节省了CPU时间。这很可能是悲观限制——迫使种群直接进入瓶颈——但我怀疑不是。这个模块中的每个结构体也都有一个`serialize(&self,
+    w: &mut Write) -> io::Result<usize>`函数。以下是`Instruction`的示例：'
 - en: '[PRE112]'
+  id: totrans-325
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE112]'
 - en: We're going to be calling out to the local system's pmars executable when we
     run feruscore and that program needs to find files on-disk. Every `Instruction`
     in every individual will be serialized to disk each time we check fitness. That
     load file will be deserialized by pmars, run in simulation and the results issued
     back to feruscore from pmars' stdout. That's not a fast process.
+  id: totrans-326
   prefs: []
   type: TYPE_NORMAL
 - en: 'The remainder of the instruction module follows this general outline. Here,
     for instance, is the `Modifier` struct:'
+  id: totrans-327
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE113]'
+  id: totrans-328
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE113]'
 - en: 'Here''s the implementation:'
+  id: totrans-329
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE114]'
+  id: totrans-330
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE114]'
 - en: Individuals
+  id: totrans-331
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -1726,34 +2490,44 @@
     instance, we also have to remember to update `gen_range(0, 7)` appropriately.
     Removal is not so bad, the compiler will complain some, but addition is easy to
     forget and overlook.
+  id: totrans-332
   prefs: []
   type: TYPE_NORMAL
 - en: 'Let''s now look at the individual module. The bulk of the code is in src/individual/mod.rs.
     The struct for Individual is very short:'
+  id: totrans-333
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE115]'
+  id: totrans-334
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE115]'
 - en: 'An `Individual` is a chromosome and little else, a vector of instructions just
     as we discussed. The functions on the `Individual` provide what you might expect,
     given the discussion of the evolution algorithm. Firstly, we have to be able to
     make a new `Individual`:'
+  id: totrans-335
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE116]'
+  id: totrans-336
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE116]'
 - en: 'Ah! Here now we''ve run into something new. What in the world is `par_extend`?
     It''s a rayon function, short for parallel extend. Let''s work inside out. The
     interior map ignores its argument and produces a `None` with 1/28 chance—14 being
     the total number of `OpCode` variants—and some other random `Instruction` with
     27/28th chance:'
+  id: totrans-337
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE117]'
+  id: totrans-338
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE117]'
 - en: 'The input that the interior map is so studiously ignoring is `(0..(chromosome_size
     as usize)).into_par_iter()`. That''s a `ParallelIterator` over a range of numbers,
     from 0 to the maximum number of chromosomes an Individual is allowed to have.
@@ -1763,23 +2537,30 @@
     overwritten. `Instruction` length limits were quickly put into place and we obey
     that here, too. Serialization of an `Individual` follows the pattern we''re familiar
     with:'
+  id: totrans-339
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE118]'
+  id: totrans-340
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE118]'
 - en: Mutation and reproduction
+  id: totrans-341
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 'Before we discuss competition between two `Individual`s, let''s talk about
     mutation and reproduction. Mutation is the easier of the two to understand, in
     my opinion, because it operates on one `Individual` at a time. Our implementation:'
+  id: totrans-342
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE119]'
+  id: totrans-343
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE119]'
 - en: 'The call to `par_iter_mut` creates a `ParallelIterator` in which the elements
     of the iterator are mutable, much like `iter_mut` from the standard library. The
     `for_each` operator applies the closure to each. The `for_each` operator  is similar
@@ -1792,11 +2573,14 @@
     reader will have noticed that the serializer stops serializing instructions when
     a `None` is found in the chromosome, making everything after that point junk DNA.
     The junk still comes into play during reproduction:'
+  id: totrans-344
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE120]'
+  id: totrans-345
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE120]'
 - en: Feruscore uses a reproduction strategy called half-uniform crossover. Each gene
     from a parent has even odds of finding its way into the child. The child is passed
     as a mutable reference, which is creepy if you think about it too hard. I'm not
@@ -1810,9 +2594,11 @@
     with. As is, the chromosomes are very small. Most Corewars games limit a warrior
     to 100 instructions. rayon is impressive but it is not *free*, either in runtime
     cost or programming effort.
+  id: totrans-346
   prefs: []
   type: TYPE_NORMAL
 - en: Competition – calling out to pMARS
+  id: totrans-347
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -1820,35 +2606,45 @@
     calling out to pmars on-system, which requires on-disk representations of the
     two competing Individual warriors. True to that, competition first serializes
     both warriors to temporary locations on the disk:'
+  id: totrans-348
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE121]'
+  id: totrans-349
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE121]'
 - en: 'We haven''t interacted much with the filesystem in this book but, suffice it
     to say, Rust has an *excellent* filesystem setup in the standard library, most
     of it under `std::fs`. You are warmly encouraged to take a gander at the documentation
     for any of the functions here if they are not already familiar with them. Anyway,
     with both warriors written to disk, we can run pmars on them:'
+  id: totrans-350
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE122]'
+  id: totrans-351
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE122]'
 - en: 'Let''s break down what''s happening here. `std::process::Command` is a builder
     struct for running an OS process. If we did nothing but call `Command::output(&mut
     self)` on the new `Command` then:'
+  id: totrans-352
   prefs: []
   type: TYPE_NORMAL
 - en: pmars would be run without arguments
+  id: totrans-353
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: The working directory and environment of feruscore would become pmars
+  id: totrans-354
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: The stdout of pmars will be piped back to the feruscore process
+  id: totrans-355
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1865,15 +2661,19 @@
     output, which might happen if the executable can''t be found or we trigger a crash-bug
     in pmars and don''t have permissions to run the program. Crashing is a bit user-hostile,
     but good enough for our purposes here.'
+  id: totrans-356
   prefs: []
   type: TYPE_NORMAL
 - en: 'Now, `output: std::process::Output`, a struct with three members. We''ve ignored
     the exit status in favor of pulling the last stdio line:'
+  id: totrans-357
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE123]'
+  id: totrans-358
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE123]'
 - en: 'If there was output on stdio, then pmars successfully ran the passed warriors,
     if not, then the warriors were invalid. The parser in pmars is very forgiving
     if the warriors failed to load the serializer in Individual or Instruction is
@@ -1882,11 +2682,14 @@
     right program won 55 times, and they tied 32 times. A tie happens when neither
     warrior is able to force the other out of the game by some pre-determined number
     of executions, often around 10,000\. Parsing that last line is a rugged affair:'
+  id: totrans-359
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE124]'
+  id: totrans-360
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE124]'
 - en: 'Note the assertion. `ROUNDS` is a constant set in the module, set to 100\.
     Our `Command` informed pmars to play 100 rounds with the passed warriors, if the
     result doesn''t add up to 100, we''ve got a real problem. Placing these sanity
@@ -1896,17 +2699,23 @@
     Is every generation getting fitter? Has the population bottlenecked somewhere?
     To that end, the next step of compete is to tally the fitness of the left and
     right warriors:'
+  id: totrans-361
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE125]'
+  id: totrans-362
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE125]'
 - en: 'The `tally_fitness` function is defined like so:'
+  id: totrans-363
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE126]'
+  id: totrans-364
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE126]'
 - en: What is this, you ask? Well, I'll tell you! `tally_fitness` takes the input
     score—the wins of the warrior—and buckets that score into a histogram. Usually
     this is done with a modulo operation but we're stuck here. The implementation
@@ -1918,20 +2727,25 @@
     fine with that histogram also being static. This implementation is. The histogram
     is not used for decision making so much as it's meant for diagnostic display.
     We'll come to that when we discuss the main loop.
+  id: totrans-365
   prefs: []
   type: TYPE_NORMAL
 - en: 'The final lines of `compete` are underwhelming:'
+  id: totrans-366
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE127]'
+  id: totrans-367
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE127]'
 - en: The win counts of each warrior are compared and the winner is declared to be
     the one with the higher score, or neither wins and a tie is declared. Depending
     on your problem domain, this fitness' rubric might be too coarse. From the output,
     we don't know how much fitter an individual was compared to its competitor, only
     that it was. The warriors may have tied at 0 wins each, or gone 50/50\. We believe
     this simple signal is enough, at least for our purposes now.
+  id: totrans-368
   prefs: []
   type: TYPE_NORMAL
 - en: 'At least as far as creating an `Individual`, mutating it, reproducing it, and
@@ -1939,67 +2753,87 @@
     that we have to jump to `main.rs`. Before we do, though, I want to point out briefly
     that there''s a submodule here, `individuals::ringers`. This module has functions
     such as:'
+  id: totrans-369
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE128]'
+  id: totrans-370
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE128]'
 - en: Sometimes it's wise to nudge evolution along by sprinkling a little starter
     into the random mixture. Feruscore has no parser—at least, not until some kind
     reader contributes one—so the ringers are written out long-form.
+  id: totrans-371
   prefs: []
   type: TYPE_NORMAL
 - en: Now, on to `main`!
+  id: totrans-372
   prefs: []
   type: TYPE_NORMAL
 - en: Main
+  id: totrans-373
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 'The preamble to `src/main.rs` is typical for the programs we''ve seen so far
     in this book:'
+  id: totrans-374
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE129]'
+  id: totrans-375
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE129]'
 - en: 'The program does start, however, with an abnormally large block of constants
     and statics:'
+  id: totrans-376
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE130]'
+  id: totrans-377
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE130]'
 - en: 'Realistically, the configuration constants could be adjusted into actual configuration,
     via clap or some configuration-parsing library. The toml ([https://crates.io/crates/toml](https://crates.io/crates/toml))
     crate paired with serde is very useful for parsing straightforward configuration,
     where the validation steps are a few checks we now encode as comments. The reporting
     statics are the same static `AtomicUsize`s we''ve seen through the book. In fact,
     starting the reporting thread is the first thing that the `main` function does:'
+  id: totrans-378
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE131]'
+  id: totrans-379
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE131]'
 - en: 'The `report` thread works in a similar fashion to the threads that fill a comparable
     role elsewhere in the book: the global statics—including `FITNESS_*` from `feruscore::individuals`—are
     swapped for zero, a little bit of computation happens, then there''s a block that
     prints to stdout, and finally the thread sleeps for a bit before looping around
     again, forever. It''s a well-worn technique by this point.'
+  id: totrans-380
   prefs: []
   type: TYPE_NORMAL
 - en: 'With the reporting thread online, feruscore creates its initial population:'
+  id: totrans-381
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE132]'
+  id: totrans-382
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE132]'
 - en: rayon's `par_extend` makes an appearance again, useful when `POPULATION_SIZE`
     is a large number but not harmful with its current value. As we saw, rayon will
     decline to split a parallel collection too small to be effectively parallelized,
     the distribution to threads overwhelming the time to compute. `Individual::new`
     is called with the actual chromosome and core sizes, and two unlucky, random members
     of the population are ejected and deallocated in favor of ringers from `individual::ringers`.
+  id: totrans-383
   prefs: []
   type: TYPE_NORMAL
 - en: 'There are many ways to decide the fitness of individuals in a population. The
@@ -2007,33 +2841,42 @@
     of the first tournament becomes the first parent, the winner of the second becomes
     the second parent, and so forth until each parent is filled up. That implementation
     is brief but contains multitudes:'
+  id: totrans-384
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE133]'
+  id: totrans-385
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE133]'
 - en: 'What''s going on here? The population is shuffled at the start to avoid pairing
     up the same individuals in each tournament. Indeterminacy in thread makes this
     somewhat unnecessary and the speed-obsessed evolver might do well to remove this.
     The main show is the fold and reduce of the population. Readers familiar with
     functional programming will be surprised to learn that rayon''s `fold` and `reduce`
     are not synonymous. The type of `ParallelIterator::fold` is:'
+  id: totrans-386
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE134]'
+  id: totrans-387
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE134]'
 - en: 'Readers familiar with functional programming will not be surprised to learn
     that `fold`''s type is somewhat involved. Jokes aside, note that the function
     does not return an instance of `T` but `Fold<Self, ID, F>` where `Fold: ParallelIterator`.
     rayon''s `fold` does not produce a single `T` but, instead, a parallel iterator
     over chunks that will have `Fn(T, Self::Item) -> T` applied: an iterator over
     folded chunks. `ParallelIterator::reduce` has the following type:'
+  id: totrans-388
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE135]'
+  id: totrans-389
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE135]'
 - en: 'The `OP` takes two `Item`s and combines them into one `Item`. `Reduce`, then,
     takes a `ParallelIterator` of `Item`s and reduces them down into a single instance
     of `Item` type. Our tournament implementation folds `regional_tournament` over
@@ -2043,26 +2886,33 @@
     `reduce` step, then, takes the winners of the regional tournaments and reduces
     them into one final winner. The implementation of these two functions is similar.
     First, `regional_tournament`:'
+  id: totrans-390
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE136]'
+  id: totrans-391
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE136]'
 - en: 'Note the call to compete and the choice to promote the existing `chmp`—champion—to
     the next tournament round in the event of a tie. `REGIONAL_BATTLES` sees an update,
     feeding the report thread information. The less fit individual is pushed back
     into the population. `finals_tournament` is a little more complicated but built
     along the same lines:'
+  id: totrans-392
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE137]'
+  id: totrans-393
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE137]'
 - en: This function is responsible for rerunning competitions and for joining up the
     previously split parts of the population. Note the call to `lpop.extend`. The
     right population—`rpop`—is always merged into the left population, as are less
     fit individuals. There's no special reason for this, we could equally have merged
     right and returned right.
+  id: totrans-394
   prefs: []
   type: TYPE_NORMAL
 - en: Now, take a minute to look at these two functions. They are sequential. We are
@@ -2073,6 +2923,7 @@
     outside model is unique, compared to all the techniques we've discussed in the
     book so far. rayon's implementation is undoubtedly complicated, but the programming
     model it admits is quite straightforward, once you get the hang of iterator style.
+  id: totrans-395
   prefs: []
   type: TYPE_NORMAL
 - en: 'Once the tournament selection is completed, the parents vector is filled with
@@ -2083,40 +2934,53 @@
     the population, we''re not able to easily turn a direct loop into a parallel iterator.
     Given that the total number of reproductions is small, the implementation does
     not attempt anything but a serial loop:'
+  id: totrans-396
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE138]'
+  id: totrans-397
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE138]'
 - en: 'Two parents are popped off, a child is popped off, reproduction happens, and
     everyone is pushed into their respective collection. Children exist to avoid reproducing
     into the same `Individual` multiple times. Once reproduction is completed, `children` is
     merged back into the population, but not before some sanity-checks take place:'
+  id: totrans-398
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE139]'
+  id: totrans-399
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE139]'
 - en: 'Once `children` is integrated into the population, mutation:'
+  id: totrans-400
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE140]'
+  id: totrans-401
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE140]'
 - en: The careful reader will note that the parents are not included in the mutation
     step. This is intentional. Some implementations do mutate the parents in a given
     generation, and whether or not this is a good thing to do depends very much on
     domain. Here, the difference between a fit `Individual` and an unfit one is so
     small that I deemed it best to leave parents alone. A matter for experimentation.
+  id: totrans-402
   prefs: []
   type: TYPE_NORMAL
 - en: 'Finally, we bump the `generation`, potentially `checkpoint`, and re-integrate
     the parents into the population:'
+  id: totrans-403
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE141]'
+  id: totrans-404
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE141]'
 - en: 'There is no stop condition in feruscore. Instead, every 100 generations, the
     program will write out its best warriors—the parents—to disk. The user can use
     this information as they want. It would be reasonable to stop simulation after
@@ -2124,15 +2988,20 @@
     warriors, exiting when a warrior had been evolved that could beat them all. That
     last would be especially nifty but would require either a parser or a fair deal
     of hand-assembly. Checkpointing looks the way you may imagine it:'
+  id: totrans-405
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE142]'
+  id: totrans-406
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE142]'
 - en: Okay! Let's evolve some warriors.
+  id: totrans-407
   prefs: []
   type: TYPE_NORMAL
 - en: Running feruscore
+  id: totrans-408
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -2142,15 +3011,19 @@
     *venerable* C code and getting it compiled can be a bit fiddly. On my Debian system,
     I had to tweak the makefile some, but on OS X I found a helpful brew cask to get
     pMARS installed.
+  id: totrans-409
   prefs: []
   type: TYPE_NORMAL
 - en: 'Once you''ve got pMARS installed, you should be able to run `cargo run --release`
     at the head of the project and receive output like the following:'
+  id: totrans-410
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE143]'
+  id: totrans-411
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE143]'
 - en: 'Woo! Look at it go. This instance of feruscore has been running for 4 seconds—RUNTIME
     (sec): 4—and has computed two parents so far. This generation has gone through
     660 battles: 131 regional and 25 final. The fitness histogram shows that the population
@@ -2158,17 +3031,21 @@
     clump at the 100 end. You should see something similar. I bet you''ll also find
     that your CPUs are pegged. But, there''s a problem. This is *slow*. It gets worse.
     Once I evolved more fit warriors, the generations took longer and longer to compute:'
+  id: totrans-412
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE144]'
+  id: totrans-413
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE144]'
 - en: That makes sense though. The better the population is, the longer members will
     hold out in a round. It's not uncommon to run a genetic algorithm for *thousands*
     of generations before it settles on a really excellent solution. A generation
     in the present implementation takes, generously, 30 seconds at least. By the time
     we're able to evolve a halfway-decent warrior, it'll be the 30th anniversary of
     the '94 ICWS Corewars standard! That's no good.
+  id: totrans-414
   prefs: []
   type: TYPE_NORMAL
 - en: Turns out, serializing an `Individual` to disk, spawning a pMARS process, and
@@ -2179,12 +3056,15 @@
     requires. We can fix all of these things, but it'll have to wait until the next
     chapter. We're going to embed a MARS written in C into feruscore and all sorts
     of changes will fall out as a result.
+  id: totrans-415
   prefs: []
   type: TYPE_NORMAL
 - en: Should be fun!
+  id: totrans-416
   prefs: []
   type: TYPE_NORMAL
 - en: Summary
+  id: totrans-417
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -2200,9 +3080,11 @@
     operating systems, but well-thought-out and quite useful, as demonstrated in the
     feruscore project that closed out the chapter. We'll pick up feruscore in the
     next chapter when we integrate C code into it, in lieu of calling out to a process.
+  id: totrans-418
   prefs: []
   type: TYPE_NORMAL
 - en: Further reading
+  id: totrans-419
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -2210,16 +3092,19 @@
     papers the reader could look to for further research these notes are, overwhelmingly,
     suggestions of codebases to read. Data parallel iterators are *amazing* but take
     a little getting used to.
+  id: totrans-420
   prefs: []
   type: TYPE_NORMAL
 - en: 'Nothing helps more than reading existing projects. Me, I figure every thousand
     lines of source code takes an hour to understand well. Makes for a peaceful afternoon:'
+  id: totrans-421
   prefs: []
   type: TYPE_NORMAL
 - en: '*rayon*, available at [https://github.com/rayon-rs/rayon](https://github.com/rayon-rs/rayon). We
     discussed this crate quite a bit in the chapter but only skimmed the surface of
     it. I highly, highly recommend that the motivated reader go through ParallelIterator
     and work to understand the operators exposed there.'
+  id: totrans-422
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2229,6 +3114,7 @@
     CSV querying and manipulation. The threadpool crate discussed earlier drives the
     whole thing. Well worth reading if you''ve got ambitions for fast text processing
     and want to see the application of thread pooling to such.'
+  id: totrans-423
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2240,6 +3126,7 @@
     Each search thread communicates results to the print thread via an MPSC, thereby
     ensuring that printed results are not torn and search can exploit the available
     machine CPUs.'
+  id: totrans-424
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2250,6 +3137,7 @@
     makes use of rayon. Where the project has chosen sequential std iterators over
     rayon''s parallel iterators is something readers should discover for themselves.
     Then, they should ponder through the reasons why such choices were made.'
+  id: totrans-425
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2257,6 +3145,7 @@
     In addition to tokei, Aaron Power wrote an impressive Intel 8080 emulator in Rust.
     MARS is a deeply odd machine and the reader will probably have an excellent time
     discovering how an actual, simple CPU is emulated.'
+  id: totrans-426
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2267,6 +3156,7 @@
     had got fast enough to support type-directed generation as well as shipping with
     the implementation in a single-page appendix. Many, many subsequent papers have
     built on this one to improve the probing ability of property testers.'
+  id: totrans-427
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2276,6 +3166,7 @@
     defects are to be found on s*mall* input first. The Lazy Smallcheck discussion
     in the second half of the paper is especially interesting. I found myself reading
     this with a growing ambition to implement a Prolog.'
+  id: totrans-428
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2284,6 +3175,7 @@
     implementation is unloved and a new macro system is coming, gradually, to replace
     it. Meanwhile, if you want to build macros to use in code, you''re going to need
     this reference.'
+  id: totrans-429
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2295,6 +3187,7 @@
     operating systems at that time, in terms of kernal versions and the inclusion
     of new, better polling APIs. Though old—the many-connection problem is often now
     stated as C1M—it''s still an excellent and informative read.'
+  id: totrans-430
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -2304,6 +3197,7 @@
     to standardize the behavior of both in 1994\. The standard was not accepted—the
     standard body was dying—but the proposal document is very clear and even comes
     with a brief C implementation of a MARS.'
+  id: totrans-431
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
