@@ -770,6 +770,9 @@
   id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，我们将开始向通道发送 `Result`，这样我们就可以在以后区分成功和失败。你需要确保导入 `std::rc::Rc` 和 `std::sync::Mutex`。现在
+    `success_tx` 已经被更改为 `Rc<Mutex<Sender>>`，你需要更新 `success` 回调以反映这一点。你将想要锁定对 `Mutex`
+    的访问并然后发送 `success` 消息。你的第一次尝试可能看起来像这样：
 - en: '[PRE20]'
   id: totrans-106
   prefs: []
@@ -780,6 +783,7 @@
   id: totrans-107
   prefs: []
   type: TYPE_NORMAL
+  zh: 这会锁定 `Mutex` 并向其 `oneshot` 发送 `Ok(())`。这几乎是对的，但有一个问题导致编译器错误，如下所示：
 - en: '[PRE21]'
   id: totrans-108
   prefs: []
@@ -797,6 +801,10 @@
   id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: 编译器错误信息很长，所以值得分解。正如错误所说，`.and_then(|oneshot| Ok(oneshot.send(Ok(()))));` 这一行需要将
+    `oneshot` 值移动到闭包中。这是因为 `oneshot` 没有实现拷贝。这很有道理；如果你可以拷贝 `oneshot`，那么你可以多次使用它。好吧，所以
+    `oneshot` 必须移动到闭包中——那么问题是什么？移动并不坏，但错误信息说，“错误[E0507]：不能从 `std::sync::MutexGuard`
+    的解引用中移动”。`Mutex` 会获取你移动到其中的值的所有权，你不能只是移动它的值而留下“什么也没有”。因此，编译器阻止了这个操作。
 - en: These are the kinds of errors that are both a great feature of Rust and the
     bane of a Rustacean's existence. Here, the compiler is preventing us from making
     a threading mistake, the kind that would be easy to do in almost any other language,
@@ -807,6 +815,8 @@
   id: totrans-110
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些错误既是 Rust 的一个伟大特性，也是 Rustacean 存在的痛苦之源。在这里，编译器正在阻止我们犯线程错误，这种错误在几乎所有其他语言中都很容易犯，但副作用是难以阅读的错误。Rust
+    团队一直在努力改进编译器信息的清晰度，但有些事情确实很难。当编译器让你感到困惑时，请慢慢仔细地阅读错误，你通常会弄清楚它试图告诉你什么。
 - en: So, how do you get around this problem? What you need to do is make sure to
     never move out of the `Mutex` reference while still getting access to the underlying
     `Sender`. The way we can do that is to use the `Option<T>` type, which implements
@@ -816,11 +826,15 @@
   id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 那么，如何解决这个问题呢？你需要确保在仍然可以访问底层 `Sender` 的同时，永远不要从 `Mutex` 引用中移出。我们可以通过使用 `Option<T>`
+    类型来实现这一点，它实现了拷贝和 `take` 函数。这将允许我们在锁定 `Mutex` 内部用 `None` 替换 `Sender`。然后，任何其他使用该
+    `Mutex` 引用的用户都将拥有 `None` 并能适当地使用它。
 - en: 'Start by modifying the creation of `success_tx` to take `Option`, as shown
     in the following code:'
   id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，修改 `success_tx` 的创建，使其接受 `Option`，如下面的代码所示：
 - en: '[PRE22]'
   id: totrans-113
   prefs: []
@@ -832,6 +846,8 @@
   id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，在 `success` 回调中，我们需要修改代码以考虑传输器是可选的。这里我们将使用 `take` 来立即将 `Some(transmitter)`
+    替换为 `None`，当它被使用时。这是 `success` 回调：
 - en: '[PRE23]'
   id: totrans-115
   prefs: []
@@ -850,11 +866,13 @@
   id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们使用了`if let`构造来从`Mutex`和`Option`中获取发送器。如果你从`success_tx.lock()`的代码跟下来，你会看到我们调用`ok`将`lock()`的结果转换为`Option`，使用`and_then`函数对`Option`的`Some`版本进行操作，然后最终使用`take`来获取`Option`的值。在`if`条件中，我们用`Ok`结果调用发送器的`send`函数，并且我们不再需要围绕`send`调用的奇怪`Ok`包装器。关键是`Option`永远不会从`Mutex`中移出；它被`None`替换。由于在锁定期间没有人可以访问`oneshot`结构，代码是线程安全的，而且因为我们使用了`Option`，`Mutex`总是包含某些东西——即使它是`None`。
 - en: 'We can finally write the `error` callback that started all this, and it''s
     very similar:'
   id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们终于可以编写开始所有这些的`error`回调了，它非常相似：
 - en: '[PRE24]'
   id: totrans-118
   prefs: []
@@ -866,6 +884,7 @@
   id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: 那个`error`回调需要使用`set_onerror`调用设置。我们之前有那个，但以防你之前没有添加，它看起来如下：
 - en: '[PRE25]'
   id: totrans-120
   prefs: []
@@ -879,6 +898,7 @@
   id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 我将`set_onerror`调用放在现有的`set_onload`调用下面，以保持对称。我们不需要为错误添加第二个`await`调用。因为`error_tx`是`success_tx`的克隆，并且我们受到保护，不会同时收到错误和成功，因为`oneshot`只能触发一次。
 - en: Now, we're handling the error and success cases correctly, and we aren't getting
     compiler errors. If you look at your browser right now, you should see just the
     triangle, as we aren't stuck at the `await` call anymore. Go ahead and restore
@@ -887,16 +907,20 @@
   id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，我们正确地处理了错误和成功的情况，并且没有收到编译器错误。如果你现在看看你的浏览器，你应该只看到三角形，因为我们不再卡在`await`调用了。继续恢复`image.set_src("Idle
+    (1).png")`的调用，使其再次使用正确的文件，RHB就会重新出现。
 - en: So, there it is – our game now displays an image again *and* handles errors.
     But what if your game displays...more than one image?
   id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: 所以，就是这样——我们的游戏现在再次显示图像并处理错误。但是，如果你的游戏显示的图像是...多于一个呢？
 - en: Sprite sheets
   id: totrans-124
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 精灵表
 - en: 'Creating a game where every sprite is its own individual file is certainly
     possible, but it would mean making the player wait for every file to load individually
     when the game started. One common way to organize sprites for a game is a **sprite
@@ -905,14 +929,17 @@
   id: totrans-125
   prefs: []
   type: TYPE_NORMAL
+  zh: 创建一个每个精灵都是其自身独立文件的游戏当然可能，但这意味着当游戏开始时，玩家需要等待每个文件单独加载。组织游戏精灵的一种常见方式是**精灵表**，它由两部分组成。第一部分是包含许多精灵的图像文件，就像这样：
 - en: '![Figure 2.4 – The top of the sprite sheet](img/Figure_2.04_B17151.jpg)'
   id: totrans-126
   prefs: []
   type: TYPE_IMG
+  zh: '![图2.4 – 精灵表顶部](img/Figure_2.04_B17151.jpg)'
 - en: Figure 2.4 – The top of the sprite sheet
   id: totrans-127
   prefs: []
   type: TYPE_NORMAL
+  zh: 图2.4 – 精灵表顶部
 - en: 'The second part is a map of coordinates and metadata that lets us "cut out"
     each image we need, like a cookie cutter. For instance, if we want to show the
     first sprite in the preceding figure (which happens to be named `Dead (7).png`),
@@ -920,20 +947,25 @@
   id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: 第二部分是坐标和元数据的映射，它允许我们“裁剪”我们需要的每个图像，就像饼干切割器一样。例如，如果我们想要显示前面图中的第一个精灵（碰巧命名为`Dead
+    (7).png`），我们需要知道其位置和尺寸：
 - en: '![Figure 2.5 – One sprite in the sheet](img/Figure_2.05_B17151.jpg)'
   id: totrans-129
   prefs: []
   type: TYPE_IMG
+  zh: '![图2.5 – 图表中一个精灵](img/Figure_2.05_B17151.jpg)'
 - en: Figure 2.5 – One sprite in the sheet
   id: totrans-130
   prefs: []
   type: TYPE_NORMAL
+  zh: 图2.5 – 图表中一个精灵
 - en: I've drawn a box marking the frame you'd want to "cut out" of the image when
     you want to draw `Dead (7).png`. When you want to draw a different file, say `Slide
     (1).png`, you can use the same image but a different frame when drawing.
   id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: 我画了一个框，标记了你想要从图像中“裁剪”的帧，当你想要绘制`Dead (7).png`时。当你想要绘制不同的文件，比如`Slide (1).png`时，你可以在绘制时使用相同的图像但不同的帧。
 - en: 'In order to know the frame and names of every sprite sheet, we need to load
     a separate file that stores all that information alongside the image itself. In
     our case, we will use files I''ve already generated for you with a tool called
@@ -942,6 +974,9 @@
   id: totrans-132
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了知道每个精灵表格的帧和名称，我们需要加载一个单独的文件，该文件存储所有这些信息以及图像本身。在我们的情况下，我们将使用一个名为 *TexturePacker*
+    的工具（[https://www.codeandweb.com/texturepacker](https://www.codeandweb.com/texturepacker)）为我生成的文件，该工具允许你导出一个看起来像这样的
+    JSON 文件：
 - en: '[PRE26]'
   id: totrans-133
   prefs: []
@@ -957,40 +992,49 @@
   id: totrans-134
   prefs: []
   type: TYPE_NORMAL
+  zh: '*TexturePacker* 通过精灵名称生成了一个包含查找表的 JSON 文件。在这种情况下，名为 "`Dead` `(7).png`" 的精灵位于
+    (`0,0`)，宽度为 109 像素，高度为 67 像素，因此位于较大图像的左上角。要绘制图像，你最终将使用一个 `drawImage` 函数版本，它接受源坐标，即你在前面的代码中看到的尺寸，以及你想要在画布上定位绘制的目标坐标。'
 - en: 'So, to render the same `Idle` `(1).png` that we rendered earlier from the sprite
     sheet, we need to do the following:'
   id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，为了渲染之前从精灵表格中渲染的相同的 `Idle` `(1).png`，我们需要做以下事情：
 - en: Load the JSON file.
   id: totrans-136
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 加载 JSON 文件。
 - en: Parse the JSON file into a Rust structure.
   id: totrans-137
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将 JSON 文件解析为 Rust 结构体。
 - en: Load the image into `HtmlImageElement`.
   id: totrans-138
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将图像加载到 `HtmlImageElement`。
 - en: Use the version of `drawImage` that lets us draw only a part of an image element.
   id: totrans-139
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用允许我们只绘制图像元素一部分的 `drawImage` 版本。
 - en: There isn't anything else to do, so let's get started.
   id: totrans-140
   prefs: []
   type: TYPE_NORMAL
+  zh: 没有其他事情要做，让我们开始吧。
 - en: Loading JSON
   id: totrans-141
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 加载 JSON
 - en: Inside the assets that you downloaded earlier, there's a directory called `sprite_sheets`
     that has two files, `rhb.json` and `rhb.png`. Go ahead and copy both of those
     to the `static` directory so that they can be loaded by our project. Now, let's
@@ -998,6 +1042,8 @@
   id: totrans-142
   prefs: []
   type: TYPE_NORMAL
+  zh: 在你之前下载的资产中，有一个名为 `sprite_sheets` 的目录，其中包含两个文件，`rhb.json` 和 `rhb.png`。请将这两个文件都复制到
+    `static` 目录中，以便它们可以被我们的项目加载。现在，让我们回到 `lib.rs` 并开始编辑以加载我们的表格。
 - en: 'In this case, we''ll start by writing an entirely new function to call `fetch_json`.
     It will use the `window.fetch` call to retrieve the JSON file and then pull the
     JSON off of the response body. This requires two asynchronous calls, so we''re
@@ -1006,6 +1052,8 @@
   id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这种情况下，我们将首先编写一个全新的函数来调用 `fetch_json`。它将使用 `window.fetch` 调用来检索 JSON 文件，然后从响应体中提取
+    JSON。这需要两个异步调用，因此我们将整个内容编写为一个 `async` 函数。请将所有这些内容放在 `main` 之后：
 - en: '[PRE27]'
   id: totrans-144
   prefs: []
@@ -1016,12 +1064,14 @@
   id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 目前还有一些事情甚至无法编译，我们将在逐行分析时修复它们。
 - en: 'First, we retrieve `window`. Once again, we''re using `unwrap` because `window()`
     is an `Option`; in the next chapter, we''ll do a better job of dealing with our
     errors. That second line is a doozy; we''ll go through it in parts:'
   id: totrans-146
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，我们检索 `window`。再一次，我们使用 `unwrap` 因为 `window()` 是一个 `Option`；在下一章，我们将更好地处理我们的错误。第二条线是一个难题；我们将分部分来处理它：
 - en: '[PRE28]'
   id: totrans-147
   prefs: []
@@ -1034,6 +1084,9 @@
   id: totrans-148
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一部分是调用 `wasm_bindgen_futures::JsFuture::from`，这有点误导。`JsFuture` 不是一个 JavaScript
+    future，而是一个由 JavaScript promise 支持的 Rust future。我们想要一个 Rust future，这样我们最终可以在它上面调用
+    `await`。我们使用以下内容调用 `from`：
 - en: '[PRE29]'
   id: totrans-149
   prefs: []
@@ -1048,6 +1101,9 @@
   id: totrans-150
   prefs: []
   type: TYPE_NORMAL
+  zh: 这对应于 JavaScript 中的 `window.fetch` 函数，但就像许多其他 JavaScript 函数一样，`fetch` 是重载的，因此我们需要显式调用它为
+    `with_str`。该函数返回 `Promise`，我们立即通过之前讨论的 `from` 调用将其转换为 future。最后，我们调用 `await?`，这将阻塞直到
+    `fetch` 返回。这是允许的，因为 `fetch_json` 函数是 `async`。
 - en: Still with me? If you understood that, you've figured out the hardest part.
     Next, we cast the returned `resp_value` into `Response` because the `fetch` call
     resolves to `JsValue`. Once again, we must convert from the dynamic typing of
@@ -1055,6 +1111,7 @@
   id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 你还在吗？如果你理解了这一点，你就已经解决了最困难的部分。接下来，我们将返回的`resp_value`转换为`Response`，因为`fetch`调用解析为`JsValue`。再一次，我们必须从JavaScript的动态类型转换为Rust的静态类型，而`dyn_into()`函数就是做这件事的。
 - en: Now that we've got a response (corresponding to the `Response` object in the
     browser), we can call its `json()` function, corresponding to the `json()` function
     on the web's `Response` object. That function also returns a promise, so we wrap
@@ -1062,12 +1119,14 @@
   id: totrans-152
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经得到了一个响应（对应于浏览器中的`Response`对象），我们可以调用它的`json()`函数，对应于网络`Response`对象的`json()`函数。该函数也返回一个promise，所以我们用`JsFuture`包装它，并用`await`调用阻塞它。
 - en: Finally, this function returns `Result<JsValue, JsValue>`, which means it's
     `Result` with a dynamic JavaScript object as both its `Ok` or `Err` cases. That's
     why we can use `?` everywhere.
   id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，这个函数返回`Result<JsValue, JsValue>`，这意味着它是一个`Result`，其`Ok`或`Err`情况都是动态JavaScript对象。这就是为什么我们可以在任何地方使用`?`。
 - en: But of course, this still doesn't compile because, once again, we're missing
     a feature flag. Make sure you add `Response` to the list of `web-sys` dependencies,
     and you should be green again. Well, except for the warning that says `fetch_json`
@@ -1075,17 +1134,20 @@
   id: totrans-154
   prefs: []
   type: TYPE_NORMAL
+  zh: 但当然，这仍然无法编译，因为我们再次缺少一个功能标志。确保你将`Response`添加到`web-sys`依赖项列表中，你应该再次变为绿色。嗯，除了那个说`fetch_json`没有被调用的警告。
 - en: Parsing JSON
   id: totrans-155
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 解析JSON
 - en: 'Back in `main`, we''ll make the draw order as Red Hat Boy, the Sierpiński triangle,
     and then another Red Hat Boy. So, after the call to `sierpinski`, let''s fetch
     the "`rhb.json`" file corresponding to the Red Hat Boy''s data file:'
   id: totrans-156
   prefs: []
   type: TYPE_NORMAL
+  zh: 回到`main`函数中，我们将绘制顺序设置为红帽男孩、Sierpiński三角形，然后是另一个红帽男孩。所以，在调用`sierpinski`之后，让我们获取对应红帽男孩数据文件的"`rhb.json`"文件：
 - en: '[PRE30]'
   id: totrans-157
   prefs: []
@@ -1097,12 +1159,14 @@
   id: totrans-158
   prefs: []
   type: TYPE_NORMAL
+  zh: 这会获取JSON，但不会将其解析成我们可以使用的结构。我们有几种JSON解析的选项，包括使用浏览器内置的功能，但这是本Rust书籍，所以让我们使用Rust库，**Serde**。
 - en: 'Serde is one of the more popular serialization libraries for Rust and is excellent
     at taking JSON (as well as many other formats) and converting it to Rust structures.
     Add the necessary dependency to `Cargo.toml`:'
   id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: Serde是Rust中更受欢迎的序列化库之一，它擅长将JSON（以及许多其他格式）转换为Rust结构。在`Cargo.toml`中添加必要的依赖项：
 - en: '[PRE31]'
   id: totrans-160
   prefs: []
@@ -1114,6 +1178,7 @@
   id: totrans-161
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们需要的crate是`serde`，它可以泛型处理序列化和反序列化（你之前在编辑器中将`rhb.json`文件复制到`static`目录中的文件。在顶部，你应该看到类似这样的内容：
 - en: '[PRE32]'
   id: totrans-162
   prefs: []
@@ -1127,11 +1192,14 @@
   id: totrans-163
   prefs: []
   type: TYPE_NORMAL
+  zh: 这份JSON文档描述了一个帧的哈希，其中每个帧的键是图像的名称`("Dead (1).png")`，下面的结构是该图像的属性。我们关心的属性是`frame`。"`Dead
+    (1).png`"的图像位于（`210, 493`），宽度为71像素，高度为115像素。回到代码中，我们可以解析我们之前获取的JSON。
 - en: 'First, we need to set up data structures that `serde` can use. At the top of
     `lib.rs`, we can add the `Deserialize` procedural macro to the scope:'
   id: totrans-164
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，我们需要设置`serde`可以使用的数据结构。在`lib.rs`的顶部，我们可以添加`Deserialize`过程宏到作用域中：
 - en: '[PRE33]'
   id: totrans-165
   prefs: []
@@ -1141,6 +1209,7 @@
   id: totrans-166
   prefs: []
   type: TYPE_NORMAL
+  zh: 你还想要添加`HashMap`从`std::collections`：
 - en: '[PRE34]'
   id: totrans-167
   prefs: []
@@ -1152,6 +1221,7 @@
   id: totrans-168
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，我们将逆向工作。你将有一个包含前面JSON中查找表的`Sheet`类。你可以在`lib.rs`文件中的任何地方放置这个结构体，只是不要在函数内部。我把它放在了顶部：
 - en: '[PRE35]'
   id: totrans-169
   prefs: []
@@ -1165,6 +1235,7 @@
   id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: '`[derive(Deserialize)]`宏意味着我们可以将`Sheet`用作反序列化JSON的目标，`HashMap`和`String`会自动工作，但我们还没有定义`Cell`。这将代表包含`frame`的部分JSON，这是我们关心的，因为它是目标精灵所在的位置。我们将在`Sheet`之上添加所有需要的结构体：'
 - en: '[PRE36]'
   id: totrans-171
   prefs: []
@@ -1178,6 +1249,7 @@
   id: totrans-172
   prefs: []
   type: TYPE_NORMAL
+  zh: 太好了——我们有一系列结构可以保存我们需要绘制图像的数据映射，但我们还没有填充它们，但幸运的是，`wasm-bindgen`通过`serde-serialize`功能使这变得非常简单。要启用该功能，你需要再次更新`Cargo.toml`，将基本的`wasm-bindgen`依赖项替换为以下内容：
 - en: '[PRE37]'
   id: totrans-173
   prefs: []
@@ -1190,6 +1262,7 @@
   id: totrans-174
   prefs: []
   type: TYPE_NORMAL
+  zh: 之前你只有`wasm-bindgen = "0.2.78"`，现在你需要添加`serde-serialize`功能标志，所以你必须使用稍微复杂一点的语法。构建之后，你只需用一行代码`into_serde`导入JSON数据，在你获取JSON之后：
 - en: '[PRE38]'
   id: totrans-175
   prefs: []
@@ -1200,10 +1273,12 @@
   id: totrans-176
   prefs: []
   type: TYPE_NORMAL
+  zh: 我移除了`unwrap`调用，并用`expect`替换了它们，因为我希望在这些情况下有一个特定的消息。
 - en: Tip
   id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 提示
 - en: Almost all of the dependencies that we are using are very young, and it's unlikely
     that this book will be able to keep up with every quirk. To follow along, stick
     to versions the book is using, but for your own future projects, remember to check
@@ -1212,65 +1287,78 @@
   id: totrans-178
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们使用的几乎所有依赖都非常年轻，这本书不太可能跟上每一个怪癖。为了跟上，请坚持使用书中使用的版本，但为了你自己的未来项目，记住，当依赖似乎不起作用时，要检查文档中的功能标志、版本号或两者。
 - en: Now that we have the sheet, we are ready to load the image and draw a sprite
     in it.
   id: totrans-179
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们有了sheet，我们就可以加载图片并在其中绘制精灵了。
 - en: Drawing with our "cookie cutter"
   id: totrans-180
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 用我们的“饼干切割器”绘制
 - en: 'Recall that we had four steps to draw from a sprite sheet. We''ve completed
     the first two:'
   id: totrans-181
   prefs: []
   type: TYPE_NORMAL
+  zh: 回想一下，我们已经有四个步骤来从精灵图中绘制。我们已经完成了前两个：
 - en: Load the JSON file.
   id: totrans-182
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 加载JSON文件。
 - en: Parse the JSON file into a Rust structure.
   id: totrans-183
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将JSON文件解析为Rust结构。
 - en: Load the image into `HtmlImageElement`.
   id: totrans-184
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将图像加载到`HtmlImageElement`。
 - en: Use the version of `drawImage` that lets us draw only a part of an image element.
   id: totrans-185
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用允许我们只绘制图像元素一部分的`drawImage`版本。
 - en: Step 3 is something you've already done before, and like all good programmers,
     we go immediately to one tool when we need to write the same code twice…
   id: totrans-186
   prefs: []
   type: TYPE_NORMAL
+  zh: 第3步是你之前已经做过的，就像所有优秀的程序员一样，当我们需要两次编写相同的代码时，我们会立即使用一个工具…
 - en: Copy and paste, of course! What, you thought that I was gonna say a function?
     We'll save that for later.
   id: totrans-187
   prefs: []
   type: TYPE_NORMAL
+  zh: 当然是复制粘贴！你以为我会说一个函数吗？我们会留到以后再说。
 - en: Tip
   id: totrans-188
   prefs: []
   type: TYPE_NORMAL
+  zh: 提示
 - en: More seriously, copying and pasting to get something working a second time is
     perfectly acceptable; just avoid checking that in as the final version.
   id: totrans-189
   prefs: []
   type: TYPE_NORMAL
+  zh: 更重要的是，为了使某物第二次工作而复制粘贴是完全可接受的；只是避免将其作为最终版本提交。
 - en: 'Copy everything from `let (success_tx, success_rx)` to `success_rx.await` and
     paste it right below, where we converted `rhb.json` into `Sheet`:'
   id: totrans-190
   prefs: []
   type: TYPE_NORMAL
+  zh: 将从`let (success_tx, success_rx)`到`success_rx.await`的所有内容复制并粘贴到下面，在那里我们将`rhb.json`转换为`Sheet`：
 - en: '[PRE39]'
   id: totrans-191
   prefs: []
@@ -1283,6 +1371,8 @@
   id: totrans-192
   prefs: []
   type: TYPE_NORMAL
+  zh: 多亏了Rust的工作方式，你不需要重命名任何变量，因为每次你使用`let`，你都会覆盖之前的变量版本并创建一个新的绑定。在粘贴的代码中，我们只需要做一个小改动——加载图像sheet而不是"`Idle
+    (1().png`"：
 - en: '[PRE40]'
   id: totrans-193
   prefs: []
@@ -1299,6 +1389,7 @@
   id: totrans-194
   prefs: []
   type: TYPE_NORMAL
+  zh: 第3步现在已经完成；我们已加载包含许多精灵的大图像。最后，我们将绘制我们想要的精灵。让我们绘制"`Run (1).png`"精灵，它虽然看起来相似，但将允许我们添加一些与之配合的动画。我们将使用带有源位置的`drawImage`调用版本，这是我们之前讨论过的帧，以及目标位置，我们将在这里放置图像在画布上。为了确保我们看到新图像，让我们将其放置在中间附近。在最后一个`await`调用之后添加此图像：
 - en: '[PRE41]'
   id: totrans-195
   prefs: []
@@ -1318,14 +1409,17 @@
   id: totrans-196
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一行，`sheet.frames.get`通过名称检索精灵，如果名称错误，会抛出`expect`异常。下一行是一个怪物，因为`drawImage`在JavaScript中有九种参数版本，在Rust中通过调用`draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh`来表示。这听起来很复杂，但它的意思是用源矩形（我们的帧）绘制图像到目标矩形，其中源矩形由四个位置和大小坐标表示，目标矩形也由四个坐标表示。源矩形是我们的帧，从我们之前加载的JSON文件中绘制。目标矩形从（`300,300`）开始，将RHB放置在画布的大约中心，并使用相同的宽度和高度，因为我们不想改变图像的大小。最终结果是这个：
 - en: '![Figure 2.6 – Multiple Red Hat Boys](img/Figure_2.06_B17151.jpg)'
   id: totrans-197
   prefs: []
   type: TYPE_IMG
+  zh: '![图2.6 – 多个红帽男孩](img/Figure_2.06_B17151.jpg)'
 - en: Figure 2.6 – Multiple Red Hat Boys
   id: totrans-198
   prefs: []
   type: TYPE_NORMAL
+  zh: 图2.6 – 多个红帽男孩
 - en: The original RHB is up in the left, using its own image file, and the second
     RHB from the sprite sheet is approximately in the center of the triangle. You'll
     notice his right hand is slightly tucked in because it's at the start of his run
@@ -1333,14 +1427,17 @@
   id: totrans-199
   prefs: []
   type: TYPE_NORMAL
+  zh: 原始RHB在左上角，使用自己的图像文件，而精灵图集中的第二个RHB大约在三角形的中心。你会注意到他的右手稍微缩回，因为这是他跑步动画的开始。
 - en: Speaking of the run animation, how about we see it in action?
   id: totrans-200
   prefs: []
   type: TYPE_NORMAL
+  zh: 说到跑步动画，我们不妨看看它是如何运作的？
 - en: Important Note
   id: totrans-201
   prefs: []
   type: TYPE_NORMAL
+  zh: 重要提示
 - en: Loading the sprite sheet and images the way we did here is just one of many
     ways to implement this technique. For example, another option would have been
     to embed the JSON and the images in the Rust executable, perhaps by Base64-encoding
@@ -1352,11 +1449,13 @@
   id: totrans-202
   prefs: []
   type: TYPE_NORMAL
+  zh: 以我们在这里的方式加载精灵图集和图像只是实现这种技术的方式之一。例如，另一种选择可能是将JSON和图像嵌入Rust可执行文件中，可能通过Base64编码它们，从而一次性完成所有数据加载。它们也可以通过webpack打包到目标应用程序中，并暴露给我们的Rust应用程序。所有这些不同的方式都伴随着它们自己的权衡，在我们的情况下，我们为了满足调用服务器的需求，牺牲了一些复杂性和初始加载时间。为你的游戏找到最佳解决方案。
 - en: Adding animation
   id: totrans-203
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 添加动画
 - en: 'Sprite animation works just like a flip-book or a movie. Show a sequence of
     images fast enough, where each image is drawn to be only slightly different than
     the previous one, and it causes the illusion of motion. Animation on the canvas
@@ -1365,19 +1464,23 @@
   id: totrans-204
   prefs: []
   type: TYPE_NORMAL
+  zh: 小精灵动画的工作原理就像翻页书或电影。快速展示一系列图像，其中每个图像都绘制得与前一个图像略有不同，从而产生运动的错觉。画布上的动画以类似的方式工作，其中精灵图集中的每一帧都像翻页书中的一幅画：
 - en: '![Figure 2.7 – The run animation for Red Hat Boy](img/Figure_2.07_B17151.jpg)'
   id: totrans-205
   prefs: []
   type: TYPE_IMG
+  zh: '![图2.7 – 红帽男孩的跑步动画](img/Figure_2.07_B17151.jpg)'
 - en: Figure 2.7 – The run animation for Red Hat Boy
   id: totrans-206
   prefs: []
   type: TYPE_NORMAL
+  zh: 图2.7 – 红帽男孩的跑步动画
 - en: To draw Red Hat Boy running, we have to simply draw the images in order, one
     at a time, and loop after drawing the last one. Simple for a loop, right?
   id: totrans-207
   prefs: []
   type: TYPE_NORMAL
+  zh: 要绘制正在跑步的红帽男孩，我们只需按顺序绘制图像，一次一个，并在绘制最后一个图像后循环。对于循环来说很简单，对吧？
 - en: Of course, it's not quite that simple. First, we can't just use an infinite
     loop, as that would block the browser from any processing, resulting in a frozen
     browser tab. Second, we have to make sure to clear the canvas between each frame.
@@ -1387,16 +1490,19 @@
   id: totrans-208
   prefs: []
   type: TYPE_NORMAL
+  zh: 当然，事情并不那么简单。首先，我们不能简单地使用无限循环，因为这将会阻止浏览器进行任何处理，导致浏览器标签页冻结。其次，我们必须确保在每一帧之间清除画布。否则，我们会看到所有图像合并在一起，因为一个图像会在另一个图像之上绘制。所以，每次我们绘制画布时，我们都需要先清除它，然后绘制所需的帧。
 - en: Important Note
   id: totrans-209
   prefs: []
   type: TYPE_NORMAL
+  zh: 重要提示
 - en: If you're familiar with double buffering in traditional game development and
     are worried about seeing flicker when we clear the canvas and then redraw, don't.
     The canvas element already handles this for you.
   id: totrans-210
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你熟悉传统游戏开发中的双缓冲，并且担心我们在清除画布然后重新绘制时看到闪烁，不用担心。画布元素已经为你处理了这个。
 - en: 'Fortunately, you already know almost all you need to in order to draw the animated
     RHB. You''ll need to pass a Rust closure to a function and draw a sprite from
     a sprite sheet. The only thing you don''t know is how to clear the canvas, and
@@ -1404,12 +1510,14 @@
   id: totrans-211
   prefs: []
   type: TYPE_NORMAL
+  zh: 幸运的是，你已经几乎知道了绘制动画RHB所需的所有知识。你需要将Rust闭包传递给一个函数，并从精灵表中绘制精灵。唯一你不了解的是如何清除画布，我们稍后会介绍，但我们必须首先说再见：
 - en: '`sierpinski` and all the code it uses, including the `midpoint` and `draw_triangle`
     functions. They served us well and will be missed.'
   id: totrans-212
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '`sierpinski` 以及它所使用的所有代码，包括 `midpoint` 和 `draw_triangle` 函数。它们为我们服务得很好，将会被怀念。'
 - en: '**Delete the idle RHB**: We could probably go to the effort of keeping the
     idle RHB sprite around, but it would require dealing with the duplicated code
     we wrote to create the sprite sheet. It''s best to delete all that copy and paste
@@ -1418,12 +1526,15 @@
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**删除闲置的RHB**: 我们可能需要费力地保留闲置的RHB精灵，但这将需要处理我们为创建精灵表而编写的重复代码。最好在BOSS发现之前删除所有这些复制粘贴的代码。'
 - en: 'No, go ahead and delete everything inside the `spawn_local` closure up until
     we loaded the `rhb.json` file. After those deletions, your code should look like
     this around `spawn_local`:'
   id: totrans-214
   prefs: []
   type: TYPE_NORMAL
+  zh: 不，继续删除 `spawn_local` 闭包中直到我们加载 `rhb.json` 文件之前的所有内容。删除这些内容后，你的代码在 `spawn_local`
+    附近应该看起来像这样：
 - en: '[PRE42]'
   id: totrans-215
   prefs: []
@@ -1434,10 +1545,12 @@
   id: totrans-216
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，在生成本地未来之前，你最后要做的事情是获取 `2d` 上下文，而在生成未来之后的第一件事是加载JSON。
 - en: Now, it's time to change the draw into a callback function.
   id: totrans-217
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，是时候将绘制改为回调函数了。
 - en: '`setInterval` function, which is called `set_interval_with_callback`. First,
     we need to set up the callback itself, using the `Closure` `struct` that we used
     earlier. Right after the `success_rx.await` call, add this:'
@@ -1445,6 +1558,8 @@
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '`setInterval` 函数，被称为 `set_interval_with_callback`。首先，我们需要设置回调本身，使用我们之前使用的 `Closure`
+    `结构体`。在 `success_rx.await` 调用之后，添加以下内容：'
 - en: '[PRE43]'
   id: totrans-219
   prefs:
@@ -1459,11 +1574,14 @@
   id: totrans-220
   prefs: []
   type: TYPE_NORMAL
+  zh: 这设置了一个空的 `Closure`，但与之前我们创建 `Closure` 的时候不同，我们这次使用 `Closure::wrap` 而不是 `Closure::once`。为什么？因为这个闭包将会被多次调用。这也意味着我们需要使用
+    `Box` 并进行显式转换，`as Box<dyn FnMut()>`，因为 `wrap` 函数需要 `Box`，并且编译器没有足够的信息来推断类型。
 - en: 'Now that we have an empty interval callback, we can schedule it to be called.
     On the next line, add the following:'
   id: totrans-221
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们有一个空的间隔回调，我们可以安排它被调用。在下一行，添加以下内容：
 - en: '[PRE44]'
   id: totrans-222
   prefs: []
@@ -1475,6 +1593,7 @@
   id: totrans-223
   prefs: []
   type: TYPE_NORMAL
+  zh: 添加这个将会启动每50毫秒调用我们的 `interval_callback` 的过程；然而，这样做将会导致错误。如果你通过控制台查看浏览器的错误日志，你会看到这个重复的：
 - en: '[PRE45]'
   id: totrans-224
   prefs: []
@@ -1487,6 +1606,8 @@
   id: totrans-225
   prefs: []
   type: TYPE_NORMAL
+  zh: 这听起来应该很熟悉，因为我们已经在本章中修复过一次了。修复方法是将我们传递给 `setInterval` 的闭包再次忘记，这样 Rust 就不会在我们离开这个
+    future 的作用域时销毁它。在 `set_interval` 调用后添加此行：
 - en: '[PRE46]'
   id: totrans-226
   prefs: []
@@ -1498,11 +1619,13 @@
   id: totrans-227
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，返回并检查控制台以验证错误是否已消失。你可能需要刷新浏览器以确保不会出现陈旧的错误消息来混淆你。
 - en: 'Now that you''ve scheduled a regular callback, let''s add one line to that
     callback to clear the screen:'
   id: totrans-228
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在你已经安排了一个定期的回调，让我们在回调中添加一行来清除屏幕：
 - en: '[PRE47]'
   id: totrans-229
   prefs: []
@@ -1515,6 +1638,7 @@
   id: totrans-230
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将无法编译，因为在这个回调之外，我们仍在调用 `draw_image`。由于我们将 `context` 移入这个 `Closure`，我们触犯了借用检查器。为了解决这个问题，我们需要将绘图代码移入闭包，如下所示：
 - en: '[PRE48]'
   id: totrans-231
   prefs: []
@@ -1527,10 +1651,13 @@
   id: totrans-232
   prefs: []
   type: TYPE_NORMAL
+  zh: 恭喜！你现在每 50 毫秒清除屏幕并重新绘制它。不幸的是，看起来什么都没有，因为你总是在绘制相同的图像。让我们改变代码，让它从 "`Run (1).png`"
+    到 "`Run (8).png`" 无限循环。
 - en: 'Initialize a frame counter outside of the closure:'
   id: totrans-233
   prefs: []
   type: TYPE_NORMAL
+  zh: 在闭包外部初始化一个帧计数器：
 - en: '[PRE49]'
   id: totrans-234
   prefs: []
@@ -1541,6 +1668,7 @@
   id: totrans-235
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，在闭包内部，我们将帧计数器在 0 和 7 之间循环：
 - en: '[PRE50]'
   id: totrans-236
   prefs: []
@@ -1551,6 +1679,7 @@
   id: totrans-237
   prefs: []
   type: TYPE_NORMAL
+  zh: 为什么是 0 到 7，而不是到帧 8？因为我们将在下一行调整它，当我们构造 `framename` 时：
 - en: '[PRE51]'
   id: totrans-238
   prefs: []
@@ -1562,6 +1691,8 @@
   id: totrans-239
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们不再每次都获取 "`Run (1).png`"，而是从精灵图集中获取构造的精灵名称。只需将 `sheet.get` 调用改为使用 `&frame_name`，并将
+    `get` 调用移至 `clear_rect` 调用之上：
 - en: '[PRE52]'
   id: totrans-240
   prefs: []
@@ -1571,19 +1702,23 @@
   id: totrans-241
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在看看，红帽男孩正在跑！
 - en: '![Figure 2.8 – You can''t see running in a book, trust me](img/Figure_2.08_B17151.jpg)'
   id: totrans-242
   prefs: []
   type: TYPE_IMG
+  zh: '![图 2.8 – 你在书中看不到跑步，相信我](img/Figure_2.08_B17151.jpg)'
 - en: Figure 2.8 – You can't see running in a book, trust me
   id: totrans-243
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 2.8 – 你在书中看不到跑步，相信我
 - en: Summary
   id: totrans-244
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 摘要
 - en: In this chapter, we have covered rendering sprites to the screen, including
     sprite sheets, but we actually covered so much more than that. We covered how
     to use futures and `async` code in a WebAssembly app, how to parse JSON, and perhaps
@@ -1594,6 +1729,10 @@
   id: totrans-245
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们介绍了将精灵渲染到屏幕上的内容，包括精灵图集，但实际上我们涵盖的内容远不止于此。我们介绍了如何在 WebAssembly 应用中使用 futures
+    和 `async` 代码，如何解析 JSON，以及可能最令人困惑的是，如何通过 `Closure` 结构体将 Rust 闭包发送到 JavaScript。我们还回顾了在
+    WebAssembly 环境中使用 Rust 的一些怪癖，这些怪癖在 [*第 1 章*](B17151_01_Final_PG_ePub.xhtml#_idTextAnchor015)
+    *Hello WebAssembly* 中有所提及。本章很有趣，但我们编写了一些混乱的代码。
 - en: In the next chapter, we'll deal with that by setting up a simple architecture
     for our game and writing a proper game loop. Lest you think [*Chapter 3*](B17151_03_Final_PG_ePub.xhtml#_idTextAnchor063)*,
     Creating a Game Loop*, is all refactoring, we'll also move our friend Red Hat
@@ -1601,3 +1740,5 @@
   id: totrans-246
   prefs: []
   type: TYPE_NORMAL
+  zh: 在下一章中，我们将通过为我们的游戏设置一个简单的架构并编写一个合适的游戏循环来处理这个问题。以免你认为 [*第 3 章*](B17151_03_Final_PG_ePub.xhtml#_idTextAnchor063)*，创建游戏循环*
+    只是对代码进行重构，我们还将让我们的朋友红帽男孩在屏幕上移动。它将开始看起来像一款真正的游戏！
