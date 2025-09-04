@@ -1,0 +1,2099 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Working with Futures</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we will cover the following recipes:</p>
+<ul>
+<li class="li1"><span class="s2">Providing futures with a CPU pool and waiting for them</span></li>
+<li class="li1"><span class="s2">Implementing error handling for futures</span></li>
+<li>Combining futures</li>
+<li class="li1"><span class="s2">Using Streams</span></li>
+<li class="li1"><span class="s2">Using Sinks</span></li>
+<li>Using the oneshot channel</li>
+<li class="li1">Returning futures</li>
+<li class="li1"><span class="s2">Locking resources with BiLocks</span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Introduction</h1>
+                </header>
+            
+            <article>
+                
+<p class="p1"><span class="s1">Futures provide the building blocks for asynchronous computations with zero-cost abstraction. Asynchronous communication is useful for handling timeouts, computing across thread pools, network responses, and any function that does not immediately return a value.</span></p>
+<p class="p1"><span class="s1">In a synchronous block, the computer would execute each command sequentially after waiting for each command to return a value. If you were to apply the synchronous model when sending an email, you would send the message, stare at your inbox, and wait until you have received a response from your recipient.</span></p>
+<p class="p1"><span class="s1">Fortunately, life does not work synchronously. After we send an email, we could switch to another application or get off our chair. We can start performing other tasks such as getting the groceries, cooking dinner, or reading a book. Our attention can focus on, and perform, other tasks simultaneously. Periodically, we will check our inbox for a response from our recipient. The process of periodically checking for the new message illustrates the asynchronous model. Unlike humans, computers can check for a new message in our inbox and perform other tasks at the same time.</span></p>
+<p class="p1"><span class="s1">Rust’s futures work by implementing the polling model, which utilizes a central component (for example, a piece of software, hardware devices, and network hosts) to handle status reports from other components. The central, or master, component sends signals to other components repetitively until the master component receives an update, an interruption signal, or the polling event has timed out.</span></p>
+<div class="packt_tip">To get a better understanding on how concurrency works within Rust's model, you can view Alex Crichton's concurrency presentations at <a href="https://github.com/alexcrichton/talks">https://github.com/alexcrichton/talks</a>. Throughout our recipes, we will be using the <kbd>futures::executor::block_on</kbd> function within our main thread to return values. This is intentionally done for demonstrative purposes only. In a real application, you would use <kbd>block_on</kbd> within another a separate thread and your functions would return some sort of <kbd>futures::Future</kbd> implementation such as <kbd>futures::future::FutureResult</kbd>.</div>
+<div class="packt_tip packt_infobox">At the time of writing, futures is performing a lot of developmental changes throughout its code base. You can view futures' RFCs (Request For Comments) on their official repository at <a href="https://github.com/rust-lang-nursery/futures-rfcs">https://github.com/rust-lang-nursery/futures-rfcs</a></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Providing futures with a CPU pool and waiting for them</h1>
+                </header>
+            
+            <article>
+                
+<p>Futures are usually assigned to a <kbd>Task</kbd>, which gets assigned to an <kbd>Executor</kbd>. When a task is <em>awake,</em> the executor will place the task into a queue, and will <span>call <kbd>poll()</kbd> on the task until the process has been completed. </span>Futures offer us a few convenient ways to execute tasks:</p>
+<ul>
+<li>Spawn a future task manually with <kbd>futures::executor::block_on()</kbd>.</li>
+<li>Using <kbd>futures::executor::LocalPool</kbd>, which is useful for performing many small tasks on a single thread. In our future returns, we would not be required to implement <kbd>Send</kbd> since we are only involving the task on a single thread. However, you are required to use <kbd>futures::executor::spawn_local()</kbd> on the <kbd>Executor</kbd> if you omit the <kbd>Send</kbd> trait.</li>
+<li>Using <kbd>futures::executor::ThreadPool</kbd>, which allows us to offload tasks to other threads.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li><span>Create a Rust project to work on during this chapter with <kbd>cargo new futures</kbd>.</span></li>
+<li class="li1"><span class="s2">Navigate into the newly-created<span> </span><kbd>futures</kbd><span> </span>folder. For the rest of this chapter, we will assume that your command line is within this directory.</span></li>
+<li class="li1"><span class="s2">Inside the<span> </span><kbd>src</kbd><span> </span>folder, create a new folder called<span> </span><kbd>bin</kbd>.</span></li>
+<li><span>Delete the generated</span><span> </span><kbd><span class="s3">lib.rs</span></kbd><span> </span><span>file, as we are not creating a library.</span></li>
+<li class="li1"><span class="s2">Open the<span> </span><kbd>Cargo.toml</kbd><span> </span>file that has been generated.</span></li>
+<li><span class="s2">Under <kbd>[dependencies]</kbd>, add the following lines:</span></li>
+</ol>
+<pre style="padding-left: 60px">futures = "0.2.0-beta"<br/>futures-util = "0.2.0-beta"</pre>
+<ol start="7">
+<li><span>In the </span><kbd>src/bin</kbd><span> folder, create a file called <kbd>pool.rs</kbd>.</span></li>
+<li class="li1"><span class="s2">Add the following code and run it with<span> </span><kbd>cargo run —bin pool</kbd>:</span></li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   
+3   use futures::prelude::*;
+4   use futures::task::Context;
+5   use futures::channel::oneshot;
+6   use futures::future::{FutureResult, lazy, ok};
+7   use futures::executor::{block_on, Executor, LocalPool, <br/>    ThreadPoolBuilder};
+8   
+9   use std::cell::Cell;
+10  use std::rc::Rc;
+11  use std::sync::mpsc;
+12  use std::thread;
+13  use std::time::Duration;</pre>
+<p style="padding-left: 60px">Let's add our constants, enums, structures, and trait implementations:</p>
+<pre style="padding-left: 60px">15  #[derive(Clone, Copy, Debug)]
+16  enum Status {
+17    Loading,
+18    FetchingData,
+19    Loaded,
+20  }
+21  
+22  #[derive(Clone, Copy, Debug)]
+23  struct Container {
+24    name: &amp;'static str,
+25    status: Status,
+26    ticks: u64,
+27  }
+28  
+29  impl Container {
+30    fn new(name: &amp;'static str) -&gt; Self {
+31      Container {
+32        name: name,
+33        status: Status::Loading,
+34        ticks: 3,
+35      }
+36    }
+37  
+38    // simulate ourselves retreiving a score from a remote  <br/>      database
+39    fn pull_score(&amp;mut self) -&gt; FutureResult&lt;u32, Never&gt; {
+40      self.status = Status::Loaded;
+41      thread::sleep(Duration::from_secs(self.ticks));
+42      ok(100)
+43    }
+44  }
+45  
+46  impl Future for Container {
+47    type Item = ();
+48    type Error = Never;
+49  
+50    fn poll(&amp;mut self, _cx: &amp;mut Context) -&gt; Poll&lt;Self::Item,  <br/>      Self::Error&gt; {
+51      Ok(Async::Ready(()))
+52    }
+53  }
+55  const FINISHED: Result&lt;(), Never&gt; = Ok(());
+56  
+57  fn new_status(unit: &amp;'static str, status: Status) {
+58    println!("{}: new status: {:?}", unit, status);
+59  }</pre>
+<p style="padding-left: 60px">Let's add our first local threaded function:</p>
+<pre style="padding-left: 60px">61  fn local_until() {
+62    let mut container = Container::new("acme");
+63  
+64    // setup our green thread pool
+65    let mut pool = LocalPool::new();
+66    let mut exec = pool.executor();
+67  
+68    // lazy will only execute the closure once the future has<br/>      been polled
+69    // we will simulate the poll by returning using the <br/>      future::ok method
+70  
+71    // typically, we perform some heavy computational process  <br/>      within this closure
+72    // such as loading graphic assets, sound, other parts of our  <br/>      framework/library/etc.
+73    let f = lazy(move |_| -&gt; FutureResult&lt;Container, Never&gt; {
+74      container.status = Status::FetchingData;
+75      ok(container)
+76    });
+77  
+78    println!("container's current status: {:?}",  <br/>      container.status);
+79  
+80    container = pool.run_until(f, &amp;mut exec).unwrap();
+81    new_status("local_until", container.status);
+82  
+83    // just to demonstrate a simulation of "fetching data over a  <br/>      network"
+84    println!("Fetching our container's score...");
+85    let score = block_on(container.pull_score()).unwrap();
+86    println!("Our container's score is: {:?}", score);
+87  
+88    // see if our status has changed since we fetched our score
+89    new_status("local_until", container.status);
+90  }</pre>
+<p style="padding-left: 60px">And now for our locally-spawned threading examples:</p>
+<pre style="padding-left: 60px">92  fn local_spawns_completed() {
+93    let (tx, rx) = oneshot::channel();
+94    let mut container = Container::new("acme");
+95  
+96    let mut pool = LocalPool::new();
+97    let mut exec = pool.executor();
+98  
+99    // change our container's status and then send it to our  <br/>      oneshot channel
+100   exec.spawn_local(lazy(move |_| {
+101       container.status = Status::Loaded;
+102       tx.send(container).unwrap();
+103       FINISHED
+104     }))
+105     .unwrap();
+106 
+107   container = pool.run_until(rx, &amp;mut exec).unwrap();
+108   new_status("local_spanws_completed", container.status);
+109 }
+110 
+111 fn local_nested() {
+112   let mut container = Container::new("acme");
+114   // we will need Rc (reference counts) since <br/>      we are referencing multiple owners
+115   // and we are not using Arc (atomic reference counts) <br/>      since we are only using
+116   // a local pool which is on the same thread technically
+117   let cnt = Rc::new(Cell::new(container));
+118   let cnt_2 = cnt.clone();
+119 
+120   let mut pool = LocalPool::new();
+121   let mut exec = pool.executor();
+122   let mut exec_2 = pool.executor();
+123 
+124   let _ = exec.spawn_local(lazy(move |_| {
+125     exec_2.spawn_local(lazy(move |_| {
+126         let mut container = cnt_2.get();
+127         container.status = Status::Loaded;
+128 
+129         cnt_2.set(container);
+130         FINISHED
+131       }))
+132       .unwrap();
+133     FINISHED
+134   }));
+135 
+136   let _ = pool.run(&amp;mut exec);
+137 
+138   container = cnt.get();
+139   new_status("local_nested", container.status);
+140 }</pre>
+<p style="padding-left: 60px">And now for our thread pool example:</p>
+<pre style="padding-left: 60px">142 fn thread_pool() {
+143   let (tx, rx) = mpsc::sync_channel(2);
+144   let tx_2 = tx.clone();
+145 
+146   // there are various thread builder options which are <br/>      referenced at
+147   // https://docs.rs/futures/0.2.0- <br/>      beta/futures/executor/struct.ThreadPoolBuilder.html
+148   let mut cpu_pool = ThreadPoolBuilder::new()
+149     .pool_size(2) // default is the number of cpus
+150     .create();
+151 
+152   // We need to box this part since we need the Send +'static trait
+153   // in order to safely send information across threads
+154   let _ = cpu_pool.spawn(Box::new(lazy(move |_| {
+155     tx.send(1).unwrap();
+156     FINISHED
+157   })));
+158 
+159   let f = lazy(move |_| {
+160     tx_2.send(1).unwrap();
+161     FINISHED
+162   });
+163 
+164   let _ = cpu_pool.run(f);
+165 
+166   let cnt = rx.into_iter().count();
+167   println!("Count should be 2: {:?}", cnt);
+168 }</pre>
+<p style="padding-left: 60px">And lastly, our <kbd>main</kbd> function:</p>
+<pre style="padding-left: 60px">170 fn main() {
+171   println!("local_until():");
+172   local_until();
+173 
+174   println!("\nlocal_spawns_completed():");
+175   local_spawns_completed();
+176 
+177   println!("\nlocal_nested():");
+178   local_nested();
+179 
+180   println!("\nthread_pool():");
+181   thread_pool();
+182 }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's start by introducing the <kbd>Future</kbd> trait: </p>
+<ul>
+<li>Implementing the<span> </span><kbd>Future</kbd><span> </span>trait requires only three constraints: an<span> </span><kbd>Item</kbd>  type, an <kbd>Error</kbd><span> </span>type, and a<span> </span><kbd>poll()</kbd><span> </span>function. The actual trait looks as follows:</li>
+</ul>
+<pre style="padding-left: 60px">pub trait Future {<br/>    type Item;<br/>    type Error;<br/>    fn poll(<br/>        &amp;mut self, <br/>        cx: &amp;mut Context<br/>    ) -&gt; Result&lt;Async&lt;Self::Item&gt;, Self::Error&gt;;<br/>}</pre>
+<ul>
+<li>The<span> </span><kbd>Poll&lt;Self::Item, Self::Error&gt;</kbd><span> </span>is a type that translates into<span> </span><kbd>Result&lt;Async&lt;T&gt;, E&gt;</kbd><span> , </span>where<span> </span><kbd>T = Item</kbd><span> </span>and<span> </span><kbd>E = Error</kbd>. This is what our example is using on line 50.</li>
+<li><kbd>poll()</kbd> is called upon whenever a <kbd>futures::task::Waker</kbd> (can also be known as a <em>Task</em>) is executed with one of our executors located at <kbd>futures::executor</kbd>, or manually woken up by building a <kbd>futures::task::Context</kbd> and running with a future wrapper such as <kbd>futures::future::poll_fn</kbd>.</li>
+</ul>
+<p>Now, onto our <kbd>local_until()</kbd> function:</p>
+<ul>
+<li><kbd>LocalPool</kbd> offers us the ability to run tasks concurrently using a single thread. This is useful for functions with minimal complexity, such as traditional I/O bound functions. <kbd>LocalPools</kbd> can have multiple <kbd>LocalExecutors</kbd> (as we have created one on line 65), which can spawn our task. Since our task is single-threaded, we do not need to <kbd>Box</kbd> or add the <kbd>Send</kbd> trait to our future. </li>
+<li>The <kbd>futures::future::lazy</kbd> function will create a new future, from a <kbd>FnOnce</kbd> closure, which becomes the same future as the one that the closure returns (any <kbd>futures::future::IntoFuture</kbd> trait), which in our case that future is <kbd>FutureResult&lt;Container, Never&gt;</kbd>.</li>
+<li>Executing the <kbd>run_until(F: Future)</kbd> function from the <kbd>LocalPool</kbd> will perform all of the future tasks until the <kbd>Future</kbd> (indicated as <kbd>F</kbd>) has been marked as completed. This function will return <kbd>Result&lt;&lt;F as Future&gt;::Item, &lt;F as Future&gt;::Error&gt;</kbd> upon completion. In the example, we are returning <kbd>futures::future::ok(Container)</kbd>, on line 75, so our <kbd>F::Item</kbd> will be our <kbd>Container</kbd>.</li>
+</ul>
+<p>For our <kbd>local_spawns_completed()</kbd> function:</p>
+<ul>
+<li>First, we set up our <kbd>futures::channel::oneshot</kbd> channel (which is explained later, in the <em>Using the oneshot channel</em> section).</li>
+<li>We will use the <kbd>oneshot</kbd> channel's <kbd>futures::channel::oneshot::Receiver</kbd> as the future to run until completion within the <kbd>run_until()</kbd> function. This allows us to demonstrate how polling would work until a signal has been received from another thread or task (in our example, this happens on line 102 with the <kbd>tx.send(...)</kbd> command).</li>
+<li>The <kbd>LocalExecutor</kbd>'s <kbd>spawn_local()</kbd> is a special <kbd>spawn</kbd> function that gives us the capability of executing future functions without implementing the <kbd>Send</kbd> trait.</li>
+</ul>
+<p>Next, our <kbd>local_nested()</kbd> function:</p>
+<ul>
+<li>We set up our usual <kbd>Container</kbd> and then declare a reference counter that will allow us to keep a value (this would be our <kbd>Container</kbd>) across multiple executors or threads. We do not need to use an atomic reference counter, since we are using <kbd>spawn_local()</kbd>, which performs the future on a green thread (a thread that is scheduled by a virtual machine or a runtime library).</li>
+<li>The <kbd>LocalPool</kbd>'s <kbd>run(exec: &amp;mut Executor)</kbd> function will run any futures spawned within the pool until all of the futures have been completed. This also includes any executors that may <kbd>spawn</kbd> additional tasks within other tasks, as our example shows.</li>
+</ul>
+<p>Onto our <kbd>thread_pool()</kbd> function:</p>
+<ul>
+<li>An <kbd>std::sync::mspc::sync_channel</kbd> is created with the intention of blocking the thread for demonstration purposes.</li>
+<li>Next, we created a <kbd>ThreadPool</kbd> with default settings and called its <kbd>spawn(F: Box&lt;Future&lt;Item = (), Error = Never&gt; + 'static + Send&gt;)</kbd> function, which will poll the task until completion whenever we decide to execute the pool.</li>
+<li>After setting up our tasks, we execute the <kbd>ThreadPool</kbd>'s <kbd>run(F: Future)</kbd> function, which will block the thread in which is invoking <kbd>run()</kbd> until the <kbd>F: Future</kbd> has been completed. The function will return a value upon the future's completion even if there are other tasks spawned, and running, within the pool.  Using the <kbd>mspc::sync_channel</kbd> earlier helps mitigate this issue, but will block the thread upon being invoked.</li>
+<li>With the <kbd>ThreadPoolBuilder</kbd> , you can:
+<ul>
+<li>Set the number of worker threads</li>
+<li>Adjust the stack size</li>
+<li>Set a prefixed name for the pools</li>
+<li>Run a function (with the signature as <kbd>Fn(usize) + Send + Sync + 'static</kbd>) after each worker thread has started, right before the worker thread runs any tasks</li>
+<li>Execute a function (with the signature as <kbd>Fn(usize) + Send + Sync + 'static</kbd>) before each worker thread shuts down</li>
+</ul>
+</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handling errors in futures</h1>
+                </header>
+            
+            <article>
+                
+<p><span>In a real application, we would not be returning a value instantly from an asynchronous function that directly returns </span><kbd>Async::Ready&lt;T&gt;</kbd><span> or </span><kbd>FutureResult&lt;T, E&gt;</kbd><span>. Network requests time out, buffers become full, services become unavailable due to bugs or outages, and many more issues pop up on a daily basis. As much as we like to build order from chaos, usually chaos wins due to naturally-occurring entropy (programmers may know this as <em>scope creep</em>) and decay (software updates, new computer science paradigms, and so on). Luckily for us, the futures library offers us a simple way to implement error handling.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Inside the<span> </span><kbd>bin</kbd><span> </span>folder, create a new file called<span> </span><kbd>errors.rs</kbd>.</li>
+<li>Add the following code and run it with<span> </span><kbd>cargo run --bin errors</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   
+3   use futures::prelude::*;
+4   use futures::executor::block_on;
+5   use futures::stream;
+6   use futures::task::Context;
+7   use futures::future::{FutureResult, err};</pre>
+<ol start="3">
+<li>After that, let's add our structures and implementations:</li>
+</ol>
+<pre style="padding-left: 60px">9   struct MyFuture {}
+10  impl MyFuture {
+11    fn new() -&gt; Self {
+12      MyFuture {}
+13    }
+14  }
+15  
+16  fn map_error_example() -&gt; FutureResult&lt;(), &amp;'static str&gt; {
+17    err::&lt;(), &amp;'static str&gt;("map_error has occurred")
+18  }
+19  
+20  fn err_into_example() -&gt; FutureResult&lt;(), u8&gt; {
+21    err::&lt;(), u8&gt;(1)
+22  }
+23  
+24  fn or_else_example() -&gt; FutureResult&lt;(), &amp;'static str&gt; {
+25    err::&lt;(), &amp;'static str&gt;("or_else error has occurred")
+26  }
+27  
+28  impl Future for MyFuture {
+29    type Item = ();
+30    type Error = &amp;'static str;
+31  
+32    fn poll(&amp;mut self, _cx: &amp;mut Context) -&gt; Poll&lt;Self::Item, Self::Error&gt; {
+33      Err("A generic error goes here")
+34    }
+35  }
+36  
+37  struct FuturePanic {}
+38  
+39  impl Future for FuturePanic {
+40    type Item = ();
+41    type Error = ();
+42  
+43    fn poll(&amp;mut self, _cx: &amp;mut Context) -&gt; Poll&lt;Self::Item, <br/>      Self::Error&gt; {
+44      panic!("It seems like there was a major issue with  <br/>        catch_unwind_example")
+45    }
+46  }</pre>
+<ol start="4">
+<li>After that, let's add our generic error handling functions/examples:</li>
+</ol>
+<pre style="padding-left: 60px">48  fn using_recover() {
+49    let f = MyFuture::new();
+50  
+51    let f_recover = f.recover::&lt;Never, _&gt;(|err| {
+52      println!("An error has occurred: {}", err);
+53      ()
+54    });
+55  
+56    block_on(f_recover).unwrap();
+57  }
+58  
+59  fn map_error() {
+60    let map_fn = |err| format!("map_error_example: {}", err);
+61  
+62    if let Err(e) = block_on(map_error_example().map_err(map_fn)) <br/>     {
+63      println!("block_on error: {}", e)
+64    }
+65  }
+66  
+67  fn err_into() {
+68    if let Err(e) = block_on(err_into_example().err_into::()) {
+69      println!("block_on error code: {:?}", e)
+70    }
+71  }
+72  
+73  fn or_else() {
+74    if let Err(e) = block_on(or_else_example()
+75      .or_else(|_| Err("changed or_else's error message"))) {
+76      println!("block_on error: {}", e)
+77    }
+78  }</pre>
+<ol start="5">
+<li>And now for our <kbd>panic</kbd> functions:</li>
+</ol>
+<pre style="padding-left: 60px">80  fn catch_unwind() {
+81    let f = FuturePanic {};
+82  
+83    if let Err(e) = block_on(f.catch_unwind()) {
+84      let err = e.downcast::&lt;&amp;'static str&gt;().unwrap();
+85      println!("block_on error: {:?}", err)
+86    }
+87  }
+88  
+89  fn stream_panics() {
+90    let stream_ok = stream::iter_ok::&lt;_, bool&gt;(vec![Some(1),  <br/>      Some(7), None, Some(20)]);
+91    // We panic on "None" values in order to simulate a stream  <br/>      that panics
+92    let stream_map = stream_ok.map(|o| o.unwrap());
+93  
+94    // We can use catch_unwind() for catching panics
+95    let stream = stream_map.catch_unwind().then(|r| Ok::&lt;_, ()&gt; <br/>      (r));
+96    let stream_results: Vec&lt;_&gt; =  <br/>       block_on(stream.collect()).unwrap();
+97  
+98    // Here we can use the partition() function to separate the Ok  <br/>      and Err values
+99    let (oks, errs): (Vec&lt;_&gt;, Vec&lt;_&gt;) =  <br/>      stream_results.into_iter().partition(Result::is_ok);
+100   let ok_values: Vec&lt;_&gt; =   <br/>      oks.into_iter().map(Result::unwrap).collect();
+101   let err_values: Vec&lt;_&gt; =  <br/>      errs.into_iter().map(Result::unwrap_err).collect();
+102 
+103   println!("Panic's Ok values: {:?}", ok_values);
+104   println!("Panic's Err values: {:?}", err_values);
+105 }</pre>
+<ol start="6">
+<li>And finally, our <kbd>main</kbd> function:</li>
+</ol>
+<pre style="padding-left: 60px">107 fn main() {
+108   println!("using_recover():");
+109   using_recover();
+110 
+111   println!("\nmap_error():");
+112   map_error();
+113 
+114   println!("\nerr_into():");
+115   err_into();
+116 
+117   println!("\nor_else():");
+118   or_else();
+119 
+120   println!("\ncatch_unwind():");
+121   catch_unwind();
+122 
+123   println!("\nstream_panics():");
+124   stream_panics();
+125 }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's start with the <kbd>using_recover()</kbd> function:</p>
+<ul>
+<li>Any errors that have occurred within the future will be transformed into <kbd>&lt;Self as Future&gt;::Item</kbd>. Any <kbd>&lt;Self as Future&gt;::Error</kbd> type can be passed through, since we never produce an actual error.</li>
+<li>The <kbd>futures::executor::block_on(F: Future)</kbd> function will run a future until completion within the invoking thread. Any tasks within futures' <kbd>default executor</kbd> will also run on the invoking thread, but completion on the tasks may never occur since <kbd>F</kbd> may finish before the tasks have been completed. If this is the case, then the spawned tasks are dropped. <kbd>LocalPool</kbd> is often recommended for mitigating this issue, but for our examples <kbd>block_on()</kbd> will be sufficient.</li>
+</ul>
+<div class="packt_tip"><span>All of these error handling functions can be found within the </span><kbd>futures::FutureExt</kbd><span> trait.</span></div>
+<p>Now, onto our <kbd>map_error()</kbd> function:</p>
+<ul>
+<li>The <kbd>&lt;Self as Future&gt;::map_err&lt;E, F&gt;(F: FnOnce(Self::Error) -&gt; E)</kbd> function will map a future's (<kbd>Self</kbd>) error into another error while returning a new future. This function is often used in conjunction with combinators, such as select or join, since we can guarantee that the futures will have the same error type to complete the composition.</li>
+</ul>
+<p>Next, the <kbd>err_into()</kbd> function:</p>
+<ul>
+<li>Transforms the <kbd>Self::Error</kbd> into another <kbd>Error</kbd> type using the <kbd>std::convert::Into</kbd> trait</li>
+<li>Like <kbd>futures::FutureExt::map_err</kbd>, this function is useful for aggregating combinators together</li>
+</ul>
+<p>The <kbd>or_else()</kbd> function:</p>
+<ul>
+<li>If <kbd>&lt;Self as Future&gt;</kbd> returns an error, <kbd>futures::FutureExt::or_else</kbd> will execute a closure with the following signature:  <kbd>FnOnce(Self::Error) -&gt; futures::future::IntoFuture&lt;Item = Self::Item&gt;</kbd></li>
+<li>Useful for chaining failing combinators together</li>
+<li>The closure will not execute if the future has completed successfully, panics, or its future is dropped</li>
+</ul>
+<p>Then the <kbd>catch_unwind()</kbd> function:</p>
+<ul>
+<li>This function is generally not recommended as a way to handle errors, and is only enabled with Rust's <kbd>std</kbd> option (which is enabled by default)</li>
+<li>Future traits implement the <span><kbd>AssertUnwindSafe</kbd> trait as <kbd>AssertUnwindSafe&lt;F: Future&gt;</kbd> trait</span></li>
+</ul>
+<p>And lastly, the <kbd>stream_panics()</kbd> function:</p>
+<ul>
+<li>On line 95, this <kbd>futures::StreamExt::catch_unwind</kbd> function is similar to <kbd>futures::FutureExt::catch_unwind</kbd></li>
+<li>If a panic occurs, it will be the last element of the stream for the stream</li>
+<li>This feature is only enabled with Rust's <kbd>std</kbd> option as well</li>
+<li>The <kbd>AssertUnwindSafe</kbd> trait is also implemented for streams as <kbd>AssertUnwindSafe&lt;S: Stream&gt;</kbd></li>
+</ul>
+<div class="packt_tip">The combinators for streams are located in the <kbd>futures::StreamExt</kbd> trait, which has the same functions as <kbd>futures::FutureExt</kbd> with some additional stream-specific combinators such as <kbd>split()</kbd> and <kbd>skip_while()</kbd> that may prove to be useful for your projects.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">See also</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><a href="d2c7b7cb-3060-40b8-adb4-408eee7940a1.xhtml">Chapter 6</a>, <em>Handling Errors</em></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Combining futures</h1>
+                </header>
+            
+            <article>
+                
+<p>Combining, and chaining, our futures allows us to perform multiple operations in sequential order and helps organize our code a bit more. They can be used to transform, splice, filter, and so on <kbd>&lt;Self as Future&gt;::Item</kbd>s. </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Inside the<span> </span><kbd>bin</kbd><span> </span>folder, create a new file called<span> </span><kbd>combinators.rs</kbd>.</li>
+</ol>
+<p> </p>
+<ol start="2">
+<li>Add the following code and run it with<span> </span><kbd>cargo run --bin combinators</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   extern crate futures_util;
+3   
+4   use futures::prelude::*;
+5   use futures::channel::{mpsc, oneshot};
+6   use futures::executor::block_on;
+7   use futures::future::{ok, err, join_all, select_all, poll_fn};
+8   use futures::stream::iter_result;
+9   use futures_util::stream::select_all as select_all_stream;
+10  
+11  use std::thread;
+12  
+13  const FINISHED: Result&lt;Async&lt;()&gt;, Never&gt; = Ok(Async::Ready(()));</pre>
+<ol start="3">
+<li>Let's add our <kbd>join_all</kbd> example function:</li>
+</ol>
+<pre style="padding-left: 60px">15  fn join_all_example() {
+16    let future1 = Ok::&lt;_, ()&gt;(vec![1, 2, 3]);
+17    let future2 = Ok(vec![10, 20, 30]);
+18    let future3 = Ok(vec![100, 200, 300]);
+19  
+20    let results = block_on(join_all(vec![future1, future2,  <br/>      future3])).unwrap();
+21    println!("Results of joining 3 futures: {:?}", results);
+22  
+23    // For parameters with a lifetime
+24    fn sum_vecs&lt;'a&gt;(vecs: Vec&lt;&amp;'a [i32]&gt;) -&gt; Box&lt;Future, Error = <br/>      ()&gt; + 'static&gt; {
+25      Box::new(join_all(vecs.into_iter().map(|x| Ok::&lt;i32, ()&gt; <br/>        (x.iter().sum()))))
+26    }
+27  
+28    let sum_results = block_on(sum_vecs(vec![&amp;[1, 3, 5], &amp;[6, 7, <br/>      8], &amp;[0]])).unwrap();
+29    println!("sum_results: {:?}", sum_results);
+30  }
+31  </pre>
+<p style="padding-left: 60px">Next, we will write out our <kbd>shared</kbd> function:</p>
+<pre style="padding-left: 60px">32  fn shared() {
+33    let thread_number = 2;
+34    let (tx, rx) = oneshot::channel::();
+35    let f = rx.shared();
+36    let threads = (0..thread_number)
+37      .map(|thread_index| {
+38        let cloned_f = f.clone();
+39        thread::spawn(move || {
+40          let value = block_on(cloned_f).unwrap();
+41          println!("Thread #{}: {:?}", thread_index, *value);
+42        })
+43      })
+44      .collect::&lt;Vec&lt;_&gt;&gt;();
+45    tx.send(42).unwrap();
+46  
+47    let shared_return = block_on(f).unwrap();
+48    println!("shared_return: {:?}", shared_return);
+49  
+50    for f in threads {
+51      f.join().unwrap();
+52    }
+53  }</pre>
+<p style="padding-left: 60px">And now for our <kbd>select_all</kbd> example:</p>
+<pre style="padding-left: 60px">55  fn select_all_example() {
+56    let vec = vec![ok(3), err(24), ok(7), ok(9)];
+57  
+58    let (value, _, vec) = block_on(select_all(vec)).unwrap();
+59    println!("Value of vec: = {}", value);
+60  
+61    let (value, _, vec) = <br/>      block_on(select_all(vec)).err().unwrap();
+62    println!("Value of vec: = {}", value);
+63  
+64    let (value, _, vec) = block_on(select_all(vec)).unwrap();
+65    println!("Value of vec: = {}", value);
+66  
+67    let (value, _, _) = block_on(select_all(vec)).unwrap();
+68    println!("Value of vec: = {}", value);
+69  
+70    let (tx_1, rx_1) = mpsc::unbounded::();
+71    let (tx_2, rx_2) = mpsc::unbounded::();
+72    let (tx_3, rx_3) = mpsc::unbounded::();
+73  
+74    let streams = vec![rx_1, rx_2, rx_3];
+75    let stream = select_all_stream(streams);
+76  
+77    tx_1.unbounded_send(3).unwrap();
+78    tx_2.unbounded_send(6).unwrap();
+79    tx_3.unbounded_send(9).unwrap();
+80  
+81    let (value, details) = block_on(stream.next()).unwrap();
+82  
+83    println!("value for select_all on streams: {:?}", value);
+84    println!("stream details: {:?}", details);
+85  }</pre>
+<p style="padding-left: 60px">Now we can add our <kbd>flatten</kbd>, <kbd>fuse</kbd>, and <kbd>inspect</kbd> functions:</p>
+<pre style="padding-left: 60px">87  fn flatten() {
+88    let f = ok::&lt;_, _&gt;(ok::&lt;u32, Never&gt;(100));
+89    let f = f.flatten();
+90    let results = block_on(f).unwrap();
+91    println!("results: {}", results);
+92  }
+93  
+94  fn fuse() {
+95    let mut f = ok::&lt;u32, Never&gt;(123).fuse();
+96  
+97    block_on(poll_fn(move |mut cx| {
+98        let first_result = f.poll(&amp;mut cx);
+99        let second_result = f.poll(&amp;mut cx);
+100       let third_result = f.poll(&amp;mut cx);
+101 
+102       println!("first result: {:?}", first_result);
+103       println!("second result: {:?}", second_result);
+104       println!("third result: {:?}", third_result);
+105 
+106       FINISHED
+107     }))
+108     .unwrap();
+109 }
+110 
+111 fn inspect() {
+112   let f = ok::&lt;u32, Never&gt;(111);
+113   let f = f.inspect(|&amp;val| println!("inspecting: {}", val));
+114   let results = block_on(f).unwrap();
+115   println!("results: {}", results);
+116 }</pre>
+<p style="padding-left: 60px">Then we can add our <kbd>chaining</kbd> example:</p>
+<pre style="padding-left: 60px">118 fn chaining() {
+119   let (tx, rx) = mpsc::channel(3);
+120   let f = tx.send(1)
+121     .and_then(|tx| tx.send(2))
+122     .and_then(|tx| tx.send(3));
+123 
+124   let t = thread::spawn(move || {
+125     block_on(f.into_future()).unwrap();
+126   });
+127 
+128   t.join().unwrap();
+129 
+130   let result: Vec&lt;_&gt; = block_on(rx.collect()).unwrap();
+131   println!("Result from chaining and_then: {:?}", result);
+132 
+133   // Chaining streams together
+134   let stream1 = iter_result(vec![Ok(10), Err(false)]);
+135   let stream2 = iter_result(vec![Err(true), Ok(20)]);
+136 
+137   let stream = stream1.chain(stream2)
+138     .then(|result| Ok::&lt;_, ()&gt;(result));
+139 
+140   let result: Vec&lt;_&gt; = block_on(stream.collect()).unwrap();
+141   println!("Result from chaining our streams together: {:?}",   <br/>      result);
+142 }</pre>
+<p style="padding-left: 60px">And now for our <kbd>main</kbd> function:</p>
+<pre style="padding-left: 60px">144 fn main() {
+145   println!("join_all_example():");
+146   join_all_example();
+147 
+148   println!("\nshared():");
+149   shared();
+150 
+151   println!("\nselect_all_example():");
+152   select_all_example();
+153 
+154   println!("\nflatten():");
+155   flatten();
+156 
+157   println!("\nfuse():");
+158   fuse();
+159 
+160   println!("\ninspect():");
+161   inspect();
+162 
+163   println!("\nchaining():");
+164   chaining();
+165 }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>join_all()</kbd> function:</p>
+<ul>
+<li>Collects results from several futures and returns a new future with the <kbd>futures::future::JoinAll&lt;F: Future&gt;</kbd> trait</li>
+<li>The new future will perform commands for all of the aggregated futures within the <kbd>futures::future::join_all</kbd> call, returning a vector of <kbd>Vec&lt;T: Future::Item&gt;</kbd> in FIFO ordering</li>
+<li>An error will return itself immediately and cancel the other related futures</li>
+</ul>
+<p>And the <kbd>shared()</kbd> function:</p>
+<ul>
+<li><kbd>futures::FutureExt::shared</kbd> will create a handle that can be cloned, which resolves to the returning value of <kbd>&lt;T as futures::future::SharedItem&gt;</kbd> which can be deferred into <kbd>T</kbd>.</li>
+<li>Useful for polling a future on more than one thread</li>
+<li>This method is enabled only when Rust's <kbd>std</kbd> option is enabled (which it is by default)</li>
+<li>The underlying result is <kbd>futures::future::Shared&lt;Future::Item&gt;</kbd>, which implements <kbd>Send</kbd> and <kbd>Sync</kbd> traits</li>
+<li>Using <kbd>futures::future::Shared::peek(&amp;self)</kbd> will return a value without blocking if any single shared handle has been completed</li>
+</ul>
+<p>Next, the <kbd>select_all_example()</kbd> function:</p>
+<ul>
+<li><kbd>futures::FutureExt::select_all</kbd> returns a new future that selects from a list of vectors</li>
+<li>The return value is <kbd>futures::future::SelectAll</kbd>, which allows us to iterate through the results</li>
+<li>The future's item, index of execution, and a list of futures that still need to be processed will be returned by this function as soon as one of the futures completes its execution</li>
+</ul>
+<p>Then the <kbd>flatten()</kbd> function:</p>
+<ul>
+<li><kbd>futures::FutureExt::flatten</kbd> will combine futures together with a returning result of their items being flattened</li>
+<li>The resultant item must implement the <kbd>futures::future::IntoFuture</kbd> trait</li>
+</ul>
+<p>Onto the <kbd>fuse()</kbd> function:</p>
+<ul>
+<li>There is a small chance of <kbd>undefined behavior</kbd>, such as panicking or blocking forever, when polling a future that has already returned a <kbd>futures::Async::Ready</kbd> or <kbd>Err</kbd> value. The <kbd>futures::FutureExt::fuse</kbd> function allows us to <kbd>poll</kbd> the future again without worrying about <kbd>undefined behavior</kbd>, and will always return <kbd>futures::Async::Pending</kbd>.</li>
+<li>The future that's being fused will be dropped upon completion in order to reclaim resources.</li>
+</ul>
+<p>The <kbd>inspect()</kbd> function:</p>
+<ul>
+<li><kbd>futures::FutureExt::inspect</kbd> allows us to peek at an item of a future which is useful for when we are chaining combinators.</li>
+</ul>
+<p>And then the <kbd>chaining()</kbd> function:</p>
+<ul>
+<li>We first create a channel with three values, and <kbd>spawn</kbd> a thread to send those three values to the channel's receiver using the <kbd>futures::FutureExt::and_then</kbd> combinator.  We collect the results on line 130 from the channel.</li>
+<li>Then we chain two streams together on line 134 and 135 with the collection occurring on line 140. The result of both streams should be chained together on lines 137 and 138.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">See also</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><span><em>Using a vector</em> and <em>Access collections as iterators</em> recipes in </span><a href="977b8621-cb73-43de-9a2b-4bc9f5583542.xhtml">Chapter 2</a>, <em><em>Working with Collections</em></em></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using Streams</h1>
+                </header>
+            
+            <article>
+                
+<p>A stream is a pipeline for events that returns a value asynchronously to the invoker. <kbd>Streams</kbd> are more useful for items that require the <kbd>Iterator</kbd> trait, while <kbd>Futures</kbd> are more apt for <kbd>Result</kbd> values. When an error occurs throughout a stream, the error will not halt the stream, and polling on the stream will still return other results until the <kbd>None</kbd> value has been returned.</p>
+<div class="packt_tip"><kbd>Streams</kbd> and <kbd>Channels</kbd> can be a bit confusing for some.  <kbd>Streams</kbd> are used for continuous, buffered data, and <kbd>Channels</kbd> are more suited for completed messages between endpoints.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Inside the<span> </span><kbd>bin</kbd><span> </span>folder, create a new file called<span> </span><kbd>streams.rs</kbd>.</li>
+<li>Add the following code and run it with<span> </span><kbd>cargo run --bin streams</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   
+3   use std::thread;
+4   
+5   use futures::prelude::*;
+6   use futures::executor::block_on;
+7   use futures::future::poll_fn;
+8   use futures::stream::{iter_ok, iter_result};
+9   use futures::channel::mpsc;</pre>
+<ol start="3">
+<li>Now, let's add our constants, implementations, and so on:</li>
+</ol>
+<pre style="padding-left: 60px">11  #[derive(Debug)]
+12  struct QuickStream {
+13    ticks: usize,
+14  }
+15  
+16  impl Stream for QuickStream {
+17    type Item = usize;
+18    type Error = Never;
+19  
+20    fn poll_next(&amp;mut self, _cx: &amp;mut task::Context) -&gt; <br/>      Poll&lt;Option, Self::Error&gt; {
+21      match self.ticks {
+22        ref mut ticks if *ticks &gt; 0 =&gt; {
+23          *ticks -= 1;
+24          println!("Ticks left on QuickStream: {}", *ticks);
+25          Ok(Async::Ready(Some(*ticks)))
+26        }
+27        _ =&gt; {
+28          println!("QuickStream is closing!");
+29          Ok(Async::Ready(None))
+30        }
+31      }
+32    }
+33  }
+34  
+35  const FINISHED: Result&lt;Async&lt;()&gt;, Never&gt; = Ok(Async::Ready(()));</pre>
+<ol start="4">
+<li>Our <kbd>quick_streams</kbd> example would be:</li>
+</ol>
+<pre style="padding-left: 60px">37  fn quick_streams() {
+38    let mut quick_stream = QuickStream { ticks: 10 };
+39  
+40    // Collect the first poll() call
+41    block_on(poll_fn(|cx| {
+42        let res = quick_stream.poll_next(cx).unwrap();
+43        println!("Quick stream's value: {:?}", res);
+44        FINISHED
+45      }))
+46      .unwrap();
+47  
+48    // Collect the second poll() call
+49    block_on(poll_fn(|cx| {
+50        let res = quick_stream.poll_next(cx).unwrap();
+51        println!("Quick stream's next svalue: {:?}", res);
+52        FINISHED
+53      }))
+54      .unwrap();
+55  
+56    // And now we should be starting from 7 when collecting the <br/>      rest of the stream
+57    let result: Vec&lt;_&gt; =  <br/>      block_on(quick_stream.collect()).unwrap();
+58    println!("quick_streams final result: {:?}", result);
+59  }</pre>
+<ol start="5">
+<li>There are several ways to iterate through streams; let's add them to our code base:</li>
+</ol>
+<pre style="padding-left: 60px">61  fn iterate_streams() {
+62    use std::borrow::BorrowMut;
+63  
+64    let stream_response = vec![Ok(5), Ok(7), Err(false), Ok(3)];
+65    let stream_response2 = vec![Ok(5), Ok(7), Err(false), Ok(3)];
+66  
+67    // Useful for converting any of the `Iterator` traits into a <br/>      `Stream` trait.
+68    let ok_stream = iter_ok::&lt;_, ()&gt;(vec![1, 5, 23, 12]);
+69    let ok_stream2 = iter_ok::&lt;_, ()&gt;(vec![7, 2, 14, 19]);
+70  
+71    let mut result_stream = iter_result(stream_response);
+72    let result_stream2 = iter_result(stream_response2);
+73  
+74    let ok_stream_response: Vec&lt;_&gt; = <br/>      block_on(ok_stream.collect()).unwrap();
+75    println!("ok_stream_response: {:?}", ok_stream_response);
+76  
+77    let mut count = 1;
+78    loop {
+79      match block_on(result_stream.borrow_mut().next()) {
+80        Ok((res, _)) =&gt; {
+81          match res {
+82            Some(r) =&gt; println!("iter_result_stream result #{}: <br/>              {}", count, r),
+83            None =&gt; { break }
+84          }
+85        },
+86        Err((err, _)) =&gt; println!("iter_result_stream had an <br/>          error #{}: {:?}", count, err),
+87      }
+88      count += 1;
+89    }
+90  
+91    // Alternative way of iterating through an ok stream
+92    let ok_res: Vec&lt;_&gt; = block_on(ok_stream2.collect()).unwrap();
+93    for ok_val in ok_res.into_iter() {
+94      println!("ok_stream2 value: {}", ok_val);
+95    }
+96  
+97    let (_, stream) = block_on(result_stream2.next()).unwrap();
+98    let (_, stream) = block_on(stream.next()).unwrap();
+99    let (err, _) = block_on(stream.next()).unwrap_err();
+100 
+101   println!("The error for our result_stream2 was: {:?}", err);
+102 
+103   println!("All done.");
+104 }</pre>
+<ol start="6">
+<li>And now for our channeling example:</li>
+</ol>
+<pre style="padding-left: 60px">106 fn channel_threads() {
+107   const MAX: usize = 10;
+108   let (mut tx, rx) = mpsc::channel(0);
+109 
+110   let t = thread::spawn(move || {
+111     for i in 0..MAX {
+112       loop {
+113         if tx.try_send(i).is_ok() {
+114           break;
+115         } else {
+116           println!("Thread transaction #{} is still pending!", i);
+117         }
+118       }
+119     }
+120   });
+121 
+122   let result: Vec&lt;_&gt; = block_on(rx.collect()).unwrap();
+123   for (index, res) in result.into_iter().enumerate() {
+124     println!("Channel #{} result: {}", index, res);
+125   }
+126 
+127   t.join().unwrap();
+128 }</pre>
+<ol start="7">
+<li>Dealing with errors and channels can be done as follows:</li>
+</ol>
+<pre style="padding-left: 60px">130 fn channel_error() {
+131   let (mut tx, rx) = mpsc::channel(0);
+132 
+133   tx.try_send("hola").unwrap();
+134 
+135   // This should fail
+136   match tx.try_send("fail") {
+137     Ok(_) =&gt; println!("This should not have been successful"),
+138     Err(err) =&gt; println!("Send failed! {:?}", err),
+139   }
+140 
+141   let (result, rx) = block_on(rx.next()).ok().unwrap();
+142   println!("The result of the channel transaction is: {}",
+143        result.unwrap());
+144 
+145   // Now we should be able send to the transaction since we <br/>      poll'ed a result already
+146   tx.try_send("hasta la vista").unwrap();
+147   drop(tx);
+148 
+149   let (result, rx) = block_on(rx.next()).ok().unwrap();
+150   println!("The next result of the channel transaction is: {}",
+151        result.unwrap());
+152 
+153   // Pulling more should result in None
+154   let (result, _) = block_on(rx.next()).ok().unwrap();
+155   println!("The last result of the channel transaction is:  <br/>      {:?}",
+156        result);
+157 }</pre>
+<ol start="8">
+<li>We can even work with buffers and channels together. Let's add our <kbd>channel_buffer</kbd> function:</li>
+</ol>
+<pre style="padding-left: 60px">159 fn channel_buffer() {
+160   let (mut tx, mut rx) = mpsc::channel::(0);
+161 
+162   let f = poll_fn(move |cx| {
+163     if !tx.poll_ready(cx).unwrap().is_ready() {
+164       panic!("transactions should be ready right away!");
+165     }
+166 
+167     tx.start_send(20).unwrap();
+168     if tx.poll_ready(cx).unwrap().is_pending() {
+169       println!("transaction is pending...");
+170     }
+171 
+172     // When we're still in "Pending mode" we should not be able
+173     // to send more messages/values to the receiver
+174     if tx.start_send(10).unwrap_err().is_full() {
+175       println!("transaction could not have been sent to the <br/>          receiver due \
+176             to being full...");
+177     }
+178 
+179     let result = rx.poll_next(cx).unwrap();
+180     println!("the first result is: {:?}", result);
+181     println!("is transaction ready? {:?}",
+182          tx.poll_ready(cx).unwrap().is_ready());
+183 
+184     // We should now be able to send another message <br/>        since we've pulled
+185     // the first message into a result/value/variable.
+186     if !tx.poll_ready(cx).unwrap().is_ready() {
+187       panic!("transaction should be ready!");
+188     }
+189 
+190     tx.start_send(22).unwrap();
+191     let result = rx.poll_next(cx).unwrap();
+192     println!("new result for transaction is: {:?}", result);
+193 
+194     FINISHED
+195   });
+196 
+197   block_on(f).unwrap();
+198 }</pre>
+<ol start="9">
+<li>Just because we're using the futures crate doesn't mean everything has to be concurrent. Add the following example to demonstrate how to block with channels:</li>
+</ol>
+<pre style="padding-left: 60px">200 fn channel_threads_blocking() {
+201   let (tx, rx) = mpsc::channel::(0);
+202   let (tx_2, rx_2) = mpsc::channel::&lt;()&gt;(2);
+203 
+204   let t = thread::spawn(move || {
+205     let tx_2 = tx_2.sink_map_err(|_| panic!());
+206     let (a, b) = <br/>        block_on(tx.send(10).join(tx_2.send(()))).unwrap();
+207 
+208     block_on(a.send(30).join(b.send(()))).unwrap();
+209   });
+210 
+211   let (_, rx_2) = block_on(rx_2.next()).ok().unwrap();
+212   let (result, rx) = block_on(rx.next()).ok().unwrap();
+213   println!("The first number that we sent was: {}", <br/>      result.unwrap());
+214 
+215   drop(block_on(rx_2.next()).ok().unwrap());
+216   let (result, _) = block_on(rx.next()).ok().unwrap();
+217   println!("The second number that we sent was: {}", <br/>      result.unwrap());
+218 
+219   t.join().unwrap();
+220 }</pre>
+<ol start="10">
+<li>Sometimes we'll need concepts such as unbounded channels; let's add our <kbd>channel_unbounded</kbd> function:</li>
+</ol>
+<pre style="padding-left: 60px">222 fn channel_unbounded() {
+223   const MAX_SENDS: u32 = 5;
+224   const MAX_THREADS: u32 = 4;
+225   let (tx, rx) = mpsc::unbounded::();
+226 
+227   let t = thread::spawn(move || {
+228     let result: Vec&lt;_&gt; = block_on(rx.collect()).unwrap();
+229     for item in result.iter() {
+230       println!("channel_unbounded: results on rx: {:?}", item);
+231     }
+232   });
+233 
+234   for _ in 0..MAX_THREADS {
+235     let tx = tx.clone();
+236 
+237     thread::spawn(move || {
+238       for _ in 0..MAX_SENDS {
+239         tx.unbounded_send(1).unwrap();
+240       }
+241     });
+242   }
+243 
+244   drop(tx);
+245 
+246   t.join().ok().unwrap();
+247 }</pre>
+<ol start="11">
+<li>And now we can add our <kbd>main</kbd> function:</li>
+</ol>
+<pre style="padding-left: 60px">249 fn main() {
+250   println!("quick_streams():");
+251   quick_streams();
+252 
+253   println!("\niterate_streams():");
+254   iterate_streams();
+255 
+256   println!("\nchannel_threads():");
+257   channel_threads();
+258 
+259   println!("\nchannel_error():");
+260   channel_error();
+261 
+262   println!("\nchannel_buffer():");
+263   channel_buffer();
+264 
+265   println!("\nchannel_threads_blocking():");
+266   channel_threads_blocking();
+267 
+268   println!("\nchannel_unbounded():");
+269   channel_unbounded();
+270 }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>First, let's talk about the <kbd>QuickStream</kbd> structure:</p>
+<ul>
+<li>The <kbd>poll_next()</kbd> function will continuously be invoked, and with each iteration, <kbd>i</kbd>'s ticks attribute will be decremented by <kbd>1</kbd></li>
+<li>Polling will stop when the ticks attribute reaches <kbd>0</kbd> and returns <kbd>futures::Async::Ready&lt;None&gt;</kbd></li>
+</ul>
+<p>Within the <kbd>quick_streams()</kbd> function:</p>
+<ul>
+<li>We build a <kbd>futures::task::Context</kbd> by using <kbd>futures::future::poll_on(f: FnMut(|cx: Context|))</kbd>, so that we can explicitly invoke <kbd>QuickStream</kbd>'s <kbd>poll_next()</kbd> function on lines 42 and 50</li>
+<li>Since we have declared <kbd>10</kbd> ticks on line 38, our first two <kbd>block_on</kbd>'s <kbd>poll_next()</kbd> calls should yield <kbd>9</kbd> and <kbd>8</kbd></li>
+<li>The next <kbd>block_on</kbd> call, on line 57, will keep polling <kbd>QuickStream</kbd> until <kbd>futures::Async::Ready&lt;None&gt;</kbd> is returned from the ticks attribute equaling zero</li>
+</ul>
+<p>Within <kbd>iterate_streams()</kbd>:</p>
+<ul>
+<li><kbd>futures::stream::iter_ok</kbd> will convert an <kbd>Iterator</kbd> into a <kbd>Stream</kbd>, which will always be ready to return the next value</li>
+<li><kbd>futures::stream::iter_result</kbd> does the same thing as <kbd>iter_ok</kbd>, except we use <kbd>Result</kbd> values instead of <kbd>Ok</kbd> values</li>
+<li>On lines 78 through 89, we iterate through the stream's results and print out some information depending on whether the value was <kbd>Ok</kbd> or an <kbd>Error</kbd> type. If the <kbd>None</kbd> type has been returned from our stream, then we will break the loop</li>
+<li>Lines 92 through 95 show an alternative way of iterating through a stream's <kbd>Ok</kbd> results by using the <kbd>into_iter()</kbd> calls</li>
+<li>Lines 97 through 99 show an alternative way of iterating through a stream's <kbd>Result</kbd> return types</li>
+</ul>
+<div class="packt_tip">Loops, iterated results, and <kbd>collect()</kbd> calls are synchronous. We used this functions for demonstrative/educational purposes only. Combinators such as <kbd>map()</kbd>, <kbd>filter()</kbd>, <kbd>and_then()</kbd>, etc. would be used in a real application for streams and channels.</div>
+<p>The <kbd>channel_threads()</kbd> function:</p>
+<ul>
+<li>On line 107, we define the maximum number of sends we want to attempt.</li>
+<li>On line 108, we declare a channel to send messages to. <span>Channel capacity is the <kbd>buffer size (the argument of futures::channel::mpsc::channel) + the number of senders</kbd> (each sender is guaranteed a slot within the channel). Channels will return a <kbd>futures::channel::mpsc::Receiver&lt;T&gt;</kbd>, which implements the <kbd>Stream</kbd> trait, and a <kbd>futures::channel::mpsc::Sender&lt;T&gt;</kbd>, which implements the <kbd>Sink</kbd> trait.</span></li>
+<li>Lines 110 through 120 is where we <kbd>spawn</kbd> a thread and attempt to send 10 signals, looping until each send is sent successfully.</li>
+<li>We collect, and display, our results on line 122 through 125, and join our threads on line 127.</li>
+</ul>
+<p>The <kbd>channel_error()</kbd> section:</p>
+<ul>
+<li>On line 131, we declare our channel with a <kbd>0 usize</kbd> buffer as the argument, which gives us one slot for the initial sender</li>
+<li>We send the first message successfully on line 133</li>
+<li>Lines 136 through 139 should fail, since we are trying to send a message to a channel that is considered full (since we did not receive the value, drop the initial sender, flush the stream, and so on)</li>
+<li>On line 146, we use the sender's <kbd>futures::channel::mpsc::Sender::try_send(&amp;mut self, msg: T)</kbd> functions, which won't block our thread unless we don't drop/invoke the sender's destroyer method using <kbd>drop(T)</kbd> on line 147</li>
+<li>Polling the stream any additional times after receiving the last value will always return <kbd>None</kbd></li>
+</ul>
+<p>Next, the <kbd>channel_buffer()</kbd> function:</p>
+<ul>
+<li>We set up a future closure with <kbd>poll_fn()</kbd> on line 162.</li>
+<li>We check to see if our sender is ready to be polled with its <kbd>futures::sink::poll_ready(&amp;mut self, cx: &amp;mut futures::task::Context)</kbd> method on lines 163 through 165.</li>
+<li>Sinks have a method called <kbd>futures::sink::start_send(&amp;mut self, item: &lt;Self as Sink&gt;::SinkItem) -&gt; Result&lt;(), &lt;Self as Sink&gt;::SinkError&gt;</kbd>, which prepares the message to be delivered, but won't until we flush or close the sink. <kbd>poll_flush()</kbd> is often used to guarantee that every message has been sent from the sink.</li>
+<li>Polling the stream for the next value will also alleviate space within the sink/sender using the <kbd>futures::stream::poll_next(&amp;mut self, cx: &amp;mut futures::task::Context)</kbd> method, as we have done on line 179.</li>
+<li>We can check if our sender is ready, as we have done on line 182 using the <kbd>futures::Async::is_ready(&amp;self) -&gt; bool</kbd> method.</li>
+<li>Our final value should be <kbd>22</kbd> and displayed to the console from line 192.</li>
+</ul>
+<p>Then the <kbd>channel_threads_blocking()</kbd> function:</p>
+<ul>
+<li>First, we set up our channels on lines 201 and 202.</li>
+<li>Then we <kbd>spawn</kbd> a thread that will map all of <kbd>tx_2</kbd>'s errors into a <kbd>panic!</kbd> (line 205), and then we send the value of <kbd>10</kbd> to our first channel while joining a second sender with the <kbd>()</kbd> value (line 206). On line 208, we send the value of <kbd>30</kbd> and another empty value <kbd>()</kbd> to our second channel.</li>
+<li>On line 211 we poll the second channel, which would hold a value of <kbd>()</kbd>.</li>
+<li>On line 212 we poll the first channel, which would hold a value of <kbd>10</kbd>.</li>
+<li>We drop the second channel's receiver (line 215), since we need to close or flush for the second <kbd>tx_2.send()</kbd> call on line 208 (<kbd>tx_2</kbd> is known as variable <kbd>b</kbd> on this line).</li>
+<li>After performing the drop, we can finally return our second value from the first channel's sender, which should be <kbd>30</kbd>.</li>
+</ul>
+<p>And the <kbd>channel_unbounded()</kbd> function:</p>
+<ul>
+<li>On line 225 we declare an <kbd>unbounded channel</kbd>, which means that sending messages to this channel will always succeed as long as the receiver is not closed. Messages will be buffered on an as-needed basis, and since this channel is unbounded, our application can exhaust our available memory.</li>
+<li>Lines 227 through 232 <kbd>spawn</kbd> a thread that collects all of the receiver's messages (line 228), and we iterate through them on line 229. The item on line 230 is a tuple of the index in which the message was received and the message's value (in our case, this is always 1).</li>
+<li>Lines 237 through 241 is what will <kbd>spawn</kbd> the number of threads (using the <kbd>MAX_THREADS</kbd> constant) as well as the number of times that we want to send per thread using the <kbd>MAX_THREADS</kbd> constant.</li>
+<li>Lines 244 we will drop (which closes) the channel's sender so that we may collect all of the messages from line 228.</li>
+<li>We join the spawned thread with our current thread on line 246, which will execute the collection and iterations commands (lines 228 through 231).</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using Sinks</h1>
+                </header>
+            
+            <article>
+                
+<p>Sinks are the <em>sending-side</em> of channels, sockets, pipes, and so on, in which messages can be sent from the sink asynchronously. Sinks communicate by initiating a send signal, and then the rest is polled. One thing to watch out for when using sinks is that they can run out of sending space, which will prevent more messages from being sent. </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Inside the<span> </span><kbd>bin</kbd><span> </span>folder, create a new file called<span> </span><kbd>sinks.rs</kbd>.</li>
+<li>Add the following code and run it with<span> </span><kbd>cargo run --bin sinks</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   
+3   use futures::prelude::*;
+4   use futures::future::poll_fn;
+5   use futures::executor::block_on;
+6   use futures::sink::flush;
+7   use futures::stream::iter_ok;
+8   use futures::task::{Waker, Context};
+9   
+10  use std::mem;</pre>
+<ol start="3">
+<li>Let's add our examples with using vectors as <kbd>sinks</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">12  fn vector_sinks() {
+13    let mut vector = Vec::new();
+14    let result = vector.start_send(0);
+15    let result2 = vector.start_send(7);
+16  
+17    println!("vector_sink: results of sending should both be <br/>      Ok(()): {:?} and {:?}",
+18         result,
+19         result2);
+20    println!("The entire vector is now {:?}", vector);
+21  
+22    // Now we need to flush our vector sink.
+23    let flush = flush(vector);
+24    println!("Our flush value: {:?}", flush);
+25    println!("Our vector value: {:?}",  <br/>      flush.into_inner().unwrap());
+26  
+27    let vector = Vec::new();
+28    let mut result = vector.send(2);
+29    // safe to unwrap since we know that we have not flushed the <br/>      sink yet
+30    let result = result.get_mut().unwrap().send(4);
+31  
+32    println!("Result of send(): {:?}", result);
+33    println!("Our vector after send(): {:?}", <br/>      result.get_ref().unwrap());
+34  
+35    let vector = block_on(result).unwrap();
+36    println!("Our vector should already have one element: {:?}", <br/>      vector);
+37  
+38    let result = block_on(vector.send(2)).unwrap();
+39    println!("We can still send to our stick to ammend values: <br/>      {:?}",
+40         result);
+41  
+42    let vector = Vec::new();
+43    let send_all = vector.send_all(iter_ok(vec![1, 2, 3]));
+44    println!("The value of vector's send_all: {:?}", send_all);
+45  
+46    // Add some more elements to our vector...
+47    let (vector, _) = block_on(send_all).unwrap();
+48    let (result, _) = block_on(vector.send_all(iter_ok(vec![0, 6, <br/>      7]))).unwrap();
+49    println!("send_all's return value: {:?}", result);
+50  }</pre>
+<p style="padding-left: 60px">We can map/transform our <kbd>sinks</kbd> values. Let's add our <kbd>mapping_sinks</kbd> example:</p>
+<pre style="padding-left: 60px">52  fn mapping_sinks() {
+53    let sink = Vec::new().with(|elem: i32| Ok::&lt;i32, Never&gt;(elem <br/>      * elem));
+54  
+55    let sink = block_on(sink.send(0)).unwrap();
+56    let sink = block_on(sink.send(3)).unwrap();
+57    let sink = block_on(sink.send(5)).unwrap();
+58    println!("sink with() value: {:?}", sink.into_inner());
+59  
+60    let sink = Vec::new().with_flat_map(|elem| iter_ok(vec![elem; <br/>      elem].into_iter().map(|y| y * y)));
+61  
+62    let sink = block_on(sink.send(0)).unwrap();
+63    let sink = block_on(sink.send(3)).unwrap();
+64    let sink = block_on(sink.send(5)).unwrap();
+65    let sink = block_on(sink.send(7)).unwrap();
+66    println!("sink with_flat_map() value: {:?}", <br/>      sink.into_inner());
+67  }</pre>
+<p style="padding-left: 60px">We can even send messages to multiple <kbd>sinks</kbd>. Let's add our <kbd>fanout</kbd> function:</p>
+<pre style="padding-left: 60px">69  fn fanout() {
+70    let sink1 = vec![];
+71    let sink2 = vec![];
+72    let sink = sink1.fanout(sink2);
+73    let stream = iter_ok(vec![1, 2, 3]);
+74    let (sink, _) = block_on(sink.send_all(stream)).unwrap();
+75    let (sink1, sink2) = sink.into_inner();
+76  
+77    println!("sink1 values: {:?}", sink1);
+78    println!("sink2 values: {:?}", sink2);
+79  }</pre>
+<p style="padding-left: 60px">Next, we'll want to implement a structure for a customized sink. Sometimes our application will require us to manually flush our <kbd>sinks</kbd> instead of doing it automatically. Let's add our <kbd>ManualSink</kbd> structure:</p>
+<pre style="padding-left: 60px">81  #[derive(Debug)]
+82  struct ManualSink {
+83    data: Vec,
+84    waiting_tasks: Vec,
+85  }
+86  
+87  impl Sink for ManualSink {
+88    type SinkItem = Option; // Pass None to flush
+89    type SinkError = ();
+90  
+91    fn start_send(&amp;mut self, op: Option) -&gt; Result&lt;(), <br/>      Self::SinkError&gt; {
+92      if let Some(item) = op {
+93        self.data.push(item);
+94      } else {
+95        self.force_flush();
+96      }
+97  
+98      Ok(())
+99    }
+100 
+101   fn poll_ready(&amp;mut self, _cx: &amp;mut Context) -&gt; Poll&lt;(), ()&gt; {
+102     Ok(Async::Ready(()))
+103   }
+104 
+105   fn poll_flush(&amp;mut self, cx: &amp;mut Context) -&gt; Poll&lt;(), ()&gt; {
+106     if self.data.is_empty() {
+107       Ok(Async::Ready(()))
+108     } else {
+109       self.waiting_tasks.push(cx.waker().clone());
+110       Ok(Async::Pending)
+111     }
+112   }
+113 
+114   fn poll_close(&amp;mut self, _cx: &amp;mut Context) -&gt; Poll&lt;(), ()&gt; {
+115     Ok(().into())
+116   }
+117 }
+118 
+119 impl ManualSink {
+120   fn new() -&gt; ManualSink {
+121     ManualSink {
+122       data: Vec::new(),
+123       waiting_tasks: Vec::new(),
+124     }
+125   }
+126 
+127   fn force_flush(&amp;mut self) -&gt; Vec {
+128     for task in self.waiting_tasks.clone() {
+129       println!("Executing a task before replacing our values");
+130       task.wake();
+131     }
+132 
+133     mem::replace(&amp;mut self.data, vec![])
+134   }
+135 }</pre>
+<p style="padding-left: 60px">And now for our <kbd>manual flush</kbd> function:</p>
+<pre style="padding-left: 60px">137 fn manual_flush() {
+138   let mut sink = ManualSink::new().with(|x| Ok::&lt;Option, ()&gt; <br/>      (x));
+139   let _ = sink.get_mut().start_send(Some(3));
+140   let _ = sink.get_mut().start_send(Some(7));
+141 
+142   let f = poll_fn(move |cx| -&gt; Poll&lt;Option&lt;_&gt;, Never&gt; {
+143     // Try to flush our ManualSink
+144     let _ = sink.get_mut().poll_flush(cx);
+145     let _ = flush(sink.get_mut());
+146 
+147     println!("Our sink after trying to flush: {:?}", <br/>        sink.get_ref());
+148 
+149     let results = sink.get_mut().force_flush();
+150     println!("Sink data after manually flushing: {:?}",
+151          sink.get_ref().data);
+152     println!("Final results of sink: {:?}", results);
+153 
+154     Ok(Async::Ready(Some(())))
+155   });
+156 
+157   block_on(f).unwrap();
+158 }</pre>
+<p style="padding-left: 60px">And lastly, we can add our <kbd>main</kbd> function:</p>
+<pre style="padding-left: 60px">160 fn main() {
+161   println!("vector_sinks():");
+162   vector_sinks();
+163 
+164   println!("\nmapping_sinks():");
+165   mapping_sinks();
+166 
+167   println!("\nfanout():");
+168   fanout();
+169 
+170   println!("\nmanual_flush():");
+171   manual_flush();
+172 }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>First, let's take a look at the <kbd>futures::Sink</kbd> trait itself:</p>
+<pre style="padding-left: 30px">pub trait Sink {<br/>    type SinkItem;<br/>    type SinkError;<br/><br/>    fn poll_ready(<br/>        &amp;mut self, <br/>        cx: &amp;mut Context<br/>    ) -&gt; Result&lt;Async&lt;()&gt;, Self::SinkError&gt;;<br/>    fn start_send(<br/>        &amp;mut self, <br/>        item: Self::SinkItem<br/>    ) -&gt; Result&lt;(), Self::SinkError&gt;;<br/>    fn poll_flush(<br/>        &amp;mut self, <br/>        cx: &amp;mut Context<br/>    ) -&gt; Result&lt;Async&lt;()&gt;, Self::SinkError&gt;;<br/>    fn poll_close(<br/>        &amp;mut self, <br/>        cx: &amp;mut Context<br/>    ) -&gt; Result&lt;Async&lt;()&gt;, Self::SinkError&gt;;<br/>}</pre>
+<p>We are already familiar with the <kbd>Item</kbd> and <kbd>Error</kbd> concepts from futures and streams, so we will move on to the required functions:</p>
+<ul>
+<li><kbd>poll_ready</kbd> must be invoked with the returning value of <kbd>Ok(futures::Async::Ready(()))</kbd> before each attempt at using <kbd>start_send</kbd>. If the sink receives an error, the sink will no longer be able to receive items.</li>
+<li><kbd>start_send</kbd>, as stated previously, <span>prepares the message to be delivered, but won't until we flush or close the sink. If the sink uses buffers, the <kbd>Sink::SinkItem</kbd> won't be processed until the buffer has been fully completed.</span></li>
+<li><kbd>poll_flush</kbd> will flush the sink, which will allow us to collect items that are currently being processed. <kbd>futures::Async::Ready</kbd> will return if the sink does not have any more items within the buffer, otherwise, the sink will return <kbd>futures::Async::Pending</kbd>.</li>
+<li><kbd>poll_close</kbd> will flush and close the sink, following the same return rules as <kbd>poll_flush</kbd>.</li>
+</ul>
+<p>Now, onto our <kbd>vector_sinks()</kbd> function:</p>
+<ul>
+<li>Sinks are implemented for <kbd>Vec&lt;T&gt;</kbd> types, so we can declare a mutable vector and use the <kbd>start_send()</kbd> function, which will immediately poll our values into the vector on lines 13 through 15.</li>
+<li>On line 28 we use the <kbd>futures::SinkExt::send(self, item: Self::SinkItem)</kbd>, which will complete after the item has been processed and flushed through the sink. <kbd>futures::SinkExt::send_all</kbd> is recommended for batching multiple items to send through, versus having to manually flush between each send call (as demonstrated on line 43).</li>
+</ul>
+<p>Our <kbd>mapping_sinks()</kbd> function:</p>
+<ul>
+<li>Line 51 demonstrates how you can map/manipulate elements within a sink using the <kbd>futures::SinkExt::with</kbd> function. This function produces a new sink that iterates through each item and sends the final value <em>as a future</em> to the <em>parent</em> sink.</li>
+<li>Line 60 illustrates the <kbd>futures::SinkExt::flat_with_map</kbd> function that has mostly the same functionality as the <kbd>futures::SinkExt::with</kbd> function except each iterated item is sent as a stream value to the <em>parent</em> sink and will return an <kbd>Iterator::flat_map</kbd> value instead of a <kbd>Iterator::map</kbd>. </li>
+</ul>
+<p>Next, the <kbd>fanout()</kbd> function:</p>
+<ul>
+<li>The <kbd>futures::SinkExt::fanout</kbd> function allows us to send messages to multiple sinks at one time, as we have done on line 72.</li>
+</ul>
+<p>And then <kbd>manual_flush()</kbd>:</p>
+<ul>
+<li>We first implement our own <kbd>Sink</kbd> trait with the <kbd>ManualSink&lt;T&gt;</kbd> construct (lines 81 through 135). Our <kbd>ManualSink</kbd>'s <kbd>poll_flush</kbd> method will only return <kbd>Async::Ready()</kbd> if our data vector is empty, otherwise, we are going to push the task (<kbd>futures::task::Waker</kbd>) into a queue line through the <kbd>waiting_tasks</kbd> attribute. We use the <kbd>waiting_tasks</kbd> attribute within our <kbd>force_flush()</kbd> function (line 128) in order to manually <em>wake up</em> our tasks (line 130).</li>
+<li>On lines 138 through 140, we build our <kbd>ManualSink&lt;Option&lt;i32&gt;&gt;</kbd> and start sending some values.</li>
+<li>We use <kbd>poll_fn</kbd> on line 142 in order to quickly build a <kbd>futures::task::Context</kbd> so that we may pass this value down to our underlying poll calls.</li>
+<li>On line 144 we manually call our <kbd>poll_flush()</kbd> function, which will not execute our actual tasks since they are placed within the <kbd>waiting_tasks</kbd> attribute. </li>
+<li>Until we invoke <kbd>force_flush()</kbd>, our sink will not return any values (as indicated on lines 150-151). Once this function has been called upon and the underlying <kbd>Waker</kbd> tasks have finished executing, then we can see the messages (line 152) that we sent earlier (lines 139 and 140).</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using the oneshot channel</h1>
+                </header>
+            
+            <article>
+                
+<p>Oneshot channels are useful for when you need to send only one message to a channel. The oneshot channel is applicable for tasks that really only need to be updated/notified once, such as whether or not a recipient has read your message, or as a final destination within a task pipeline to notify the end user that the task has been completed.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Inside the<span> </span><kbd>bin</kbd><span> </span>folder, create a new file called<span> </span><kbd>oneshot.rs</kbd>.</li>
+<li>Add the following code and run it with<span> </span><kbd>cargo run --bin oneshot</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   
+3   use futures::prelude::*;
+4   use futures::channel::oneshot::*;
+5   use futures::executor::block_on;
+6   use futures::future::poll_fn;
+7   use futures::stream::futures_ordered;
+8   
+9   const FINISHED: Result&lt;Async&lt;()&gt;, Never&gt; =<br/>    Ok(Async::Ready(()));
+10  
+11  fn send_example() {
+12    // First, we'll need to initiate some oneshot channels like <br/>      so:
+13    let (tx_1, rx_1) = channel::();
+14    let (tx_2, rx_2) = channel::();
+15    let (tx_3, rx_3) = channel::();
+16  
+17    // We can decide if we want to sort our futures by FIFO <br/>      (futures_ordered)
+18    // or if the order doesn't matter (futures_unordered)
+19    // Note: All futured_ordered()'ed futures must be set as a <br/>      Box type
+20    let mut ordered_stream = futures_ordered(vec![
+21      Box::new(rx_1) as Box&lt;Future&gt;,
+22      Box::new(rx_2) as Box&lt;Future&gt;,
+23    ]);
+24  
+25    ordered_stream.push(Box::new(rx_3) as Box&lt;Future&gt;);
+26  
+27    // unordered example:
+28    // let unordered_stream = futures_unordered(vec![rx_1, rx_2, <br/>      rx_3]);
+29  
+30    // Call an API, database, etc. and return the values (in our  <br/>      case we're typecasting to u32)
+31    tx_1.send(7).unwrap();
+32    tx_2.send(12).unwrap();
+33    tx_3.send(3).unwrap();
+34  
+35    let ordered_results: Vec&lt;_&gt; = <br/>      block_on(ordered_stream.collect()).unwrap();
+36    println!("Ordered stream results: {:?}", ordered_results);
+37  }
+38  
+39  fn check_if_closed() {
+40    let (tx, rx) = channel::();
+41  
+42    println!("Is our channel canceled? {:?}", tx.is_canceled());
+43    drop(rx);
+44  
+45    println!("Is our channel canceled now? {:?}", <br/>      tx.is_canceled());
+46  }
+47  
+48  fn check_if_ready() {
+49    let (mut tx, rx) = channel::();
+50    let mut rx = Some(rx);
+51  
+52    block_on(poll_fn(|cx| {
+53        println!("Is the transaction pending? {:?}",
+54             tx.poll_cancel(cx).unwrap().is_pending());
+55        drop(rx.take());
+56  
+57        let is_ready = tx.poll_cancel(cx).unwrap().is_ready();
+58        let is_pending = <br/>          tx.poll_cancel(cx).unwrap().is_pending();
+59  
+60        println!("Are we ready? {:?} This means that the pending <br/>          should be false: {:?}",
+61             is_ready,
+62             is_pending);
+63        FINISHED
+64      }))
+65      .unwrap();
+66  }
+67  
+68  fn main() {
+69    println!("send_example():");
+70    send_example();
+71  
+72    println!("\ncheck_if_closed():");
+73    check_if_closed();
+74  
+75    println!("\ncheck_if_ready():");
+76    check_if_ready();
+77  }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>Within our <kbd>send_example()</kbd> function:</p>
+<ul>
+<li>On lines 13 through 15, we set up three <kbd>oneshot</kbd> channels.</li>
+<li>On lines 20 through 23 we use <kbd>futures::stream::futures_ordered</kbd>, which will convert a list (any <kbd>IntoIterator</kbd> value) of futures into a <kbd>Stream</kbd> yielding results on a first in, first out (FIFO) basis. If any underlying futures do not complete before the next future is invoked, this function will wait until the long-running future has been completed and will then internally re-sort that future into its proper order.</li>
+<li>Line 25 shows us that we can push additional futures into the <kbd>futures_ordered</kbd> iterator separately.</li>
+<li>Line 28 demonstrates another function that doesn't rely on sorting on a FIFO basis, called <kbd>futures::stream::futures_unordered</kbd>. This function will have better performance than its counterpart <kbd>futures_ordered</kbd>, but for our example, we are not sending enough values to make a difference.</li>
+<li>On lines 31 through 33 we send values to our channels, mimicking the process of returning values from an API, a database, and so on. If the send is successful then <kbd>Ok(())</kbd> will be returned, otherwise, an <kbd>Err</kbd> type will be returned.</li>
+<li>And on our last two lines (35 and 36), we collect our <kbd>futures_ordered</kbd> values and display them to the console.</li>
+</ul>
+<p>Next, the <kbd>check_if_closed()</kbd> function:</p>
+<ul>
+<li>Our channel should remain open until we explicitly drop/destroy the receiver (or send a value to the channel). We can check the status of our receiver by invoking the <kbd>futures::channel::oneshot::Sender::is_canceled(&amp;self) -&gt; bool</kbd> function, which we have done on lines 42 and 45.</li>
+</ul>
+<p>Then the <kbd>check_if_ready()</kbd> function:</p>
+<ul>
+<li>On line 50 we explicitly assign a value to the oneshot's receiver, which would put our receiver in a state of pending (since it already has a value).</li>
+<li>We drop our receiver on line 55 and we can check if our receiver is ready by using our sender's <kbd>futures::channel::oneshot::Sender::poll_cancel</kbd> function, which we use on lines 57 and 58. <kbd>poll_cancel</kbd> will return <kbd>Ok(Async::Ready)</kbd> if the receiver has been dropped or <kbd>Ok(Async::Pending)</kbd> if the receiver has not been dropped.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Returning futures</h1>
+                </header>
+            
+            <article>
+                
+<p class="p1"><span class="s1">The <kbd>Future</kbd> trait relies on three main ingredients: a type, an error, and a <kbd>poll()</kbd> function that returns a <kbd>Result&lt;Async&lt;T&gt;, E&gt;</kbd> structure. The <kbd>poll()</kbd> method will never block the main thread, and <kbd>Async&lt;T&gt;</kbd> is an enumerator with two variants: <kbd>Ready(T)</kbd> and <kbd>Pending</kbd>. Periodically, the <kbd>poll()</kbd> method will be invoked by a task’s context's <kbd>waker()</kbd> trait, located in <kbd>futures::task::context::waker</kbd>, until a value is ready to be returned.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol start="1">
+<li class="li1"><span class="s2">In the <kbd>src/bin</kbd> folder, create a file called <kbd><span class="s3">returning.rs</span></kbd><span class="s3">.</span></span></li>
+<li class="li1"><span class="s2">Add the following code and run it with <kbd>cargo run —bin returning</kbd>:</span></li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   
+3   use futures::executor::block_on;
+4   use futures::future::{join_all, Future, FutureResult, ok};
+5   use futures::prelude::*;
+6   
+7   #[derive(Clone, Copy, Debug, PartialEq)]
+8   enum PlayerStatus {
+9     Loading,
+10    Default,
+11    Jumping,
+12  }
+13  
+14  #[derive(Clone, Copy, Debug)]
+15  struct Player {
+16    name: &amp;'static str,
+17    status: PlayerStatus,
+18    score: u32,
+19    ticks: usize,
+20  }</pre>
+<ol start="3">
+<li>Now comes the implementations for the structs:</li>
+</ol>
+<pre style="padding-left: 60px">22  impl Player {
+23    fn new(name: &amp;'static str) -&gt; Self {
+24      let mut ticks = 1;
+25      // Give Bob more ticks explicitly
+26      if name == "Bob" {
+27        ticks = 5;
+28      }
+29  
+30      Player {
+31        name: name,
+32        status: PlayerStatus::Loading,
+33        score: 0,
+34        ticks: ticks,
+35      }
+36    }
+37  
+38    fn set_status(&amp;mut self, status: PlayerStatus) -&gt;  <br/>      FutureResult&lt;&amp;mut Self, Never&gt; {
+39      self.status = status;
+40      ok(self)
+41    }
+42  
+43    fn can_add_points(&amp;mut self) -&gt; bool {
+44      if self.status == PlayerStatus::Default {
+45        return true;
+46      }
+47  
+48      println!("We couldn't add any points for {}!", self.name);
+49      return false;
+50    }
+51  
+52    fn add_points(&amp;mut self, points: u32) -&gt; Async&lt;&amp;mut Self&gt; {
+53      if !self.can_add_points() {
+54        Async::Ready(self)
+55      } else {
+56        let new_score = self.score + points;
+57        // Here we would send the new score to a remote server
+58        // but for now we will manaully increment the player's <br/>          score.
+59  
+60        self.score = new_score;
+61  
+62        Async::Ready(self)
+63      }
+64    }
+65  }
+66  
+67  impl Future for Player {
+68    type Item = Player;
+69    type Error = ();
+70  
+71    fn poll(&amp;mut self, cx: &amp;mut task::Context) -&gt; <br/>      Poll&lt;Self::Item, Self::Error&gt; {
+72      // Presuming we fetch our player's score from a
+73      // server upon initial load.
+74      // After we perform the fetch send the Result value.
+75  
+76      println!("Player {} has been poll'ed!", self.name);
+77  
+78      if self.ticks == 0 {
+79        self.status = PlayerStatus::Default;
+80        Ok(Async::Ready(*self))
+81      } else {
+82        self.ticks -= 1;
+83        cx.waker().wake();
+84        Ok(Async::Pending)
+85      }
+86    }
+87  }</pre>
+<ol start="4">
+<li>Next, we'll want to add our <kbd>helper</kbd> functions and our <kbd>Async</kbd> function for adding points to our players:</li>
+</ol>
+<pre style="padding-left: 60px">89  fn async_add_points(player: &amp;mut Player,
+90            points: u32)
+91            -&gt; Box&lt;Future + Send&gt; {
+92    // Presuming that player.add_points() will send the points to a
+93    // database/server over a network and returns an updated
+94    // player score from the server/database.
+95    let _ = player.add_points(points);
+96  
+97    // Additionally, we may want to add logging mechanisms,
+98    // friend notifications, etc. here.
+99  
+100   return Box::new(ok(*player));
+101 }
+102 
+103 fn display_scoreboard(players: Vec&lt;&amp;Player&gt;) {
+104   for player in players {
+105     println!("{}'s Score: {}", player.name, player.score);
+106   }
+107 }</pre>
+<ol start="5">
+<li>And finally, the actual usage:</li>
+</ol>
+<pre style="padding-left: 60px">109 fn main() {
+110   let mut player1 = Player::new("Bob");
+111   let mut player2 = Player::new("Alice");
+112 
+113   let tasks = join_all(vec![player1, player2]);
+114 
+115   let f = join_all(vec![
+116     async_add_points(&amp;mut player1, 5),
+117     async_add_points(&amp;mut player2, 2),
+118   ])
+119     .then(|x| {
+120       println!("First batch of adding points is done.");
+121       x
+122     });
+123 
+124   block_on(f).unwrap();
+125 
+126   let players = block_on(tasks).unwrap();
+127   player1 = players[0];
+128   player2 = players[1];
+129 
+130   println!("Scores should be zero since no players were  <br/>      loaded");
+131   display_scoreboard(vec![&amp;player1, &amp;player2]);
+132 
+133   // In our minigame, a player cannot score if they are  <br/>      currently
+134   // in the air or "jumping."
+135   // Let's make one of our players' status set to the jumping <br/>      status.
+136 
+137   let f = <br/>       player2.set_status(PlayerStatus::Jumping).and_then(move |mut <br/>       new_player2| {
+138     async_add_points(&amp;mut player1, 10)
+139       .and_then(move |_| {
+140         println!("Finished trying to give Player 1 points.");
+141         async_add_points(&amp;mut new_player2, 2)
+142       })
+143       .then(move |new_player2| {
+144         println!("Finished trying to give Player 2 points.");
+145         println!("Player 1 (Bob) should have a score of 10 and <br/>            Player 2 (Alice) should \
+146               have a score of 0");
+147 
+148         // unwrap is used here to since
+149         display_scoreboard(vec![&amp;player1, <br/>            &amp;new_player2.unwrap()]);
+150         new_player2
+151       })
+152   });
+153 
+154   block_on(f).unwrap();
+155 
+156   println!("All done!");
+157 }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's start by introducing the structures that participate in this example:</p>
+<ul>
+<li><kbd>PlayerStatus</kbd> is an enumerator for maintaining a <em>global</em> state on the player's instance. The variants are:
+<ul>
+<li><kbd>Loading</kbd>, which is the initial state</li>
+<li><kbd>Default</kbd>, which is applied after we are done loading the player's stats</li>
+<li><kbd>Jumping</kbd> is a special state that won't allow us to add points to the player's scoreboard due to the rules of the game</li>
+</ul>
+</li>
+<li><kbd>Player</kbd> holds our player's main attributes, along with a special attribute called ticks that stores the amount of cycles that we want to run through with <kbd>poll()</kbd> before assigning the player's status from <kbd>Loading</kbd> to <kbd>Default</kbd>.</li>
+</ul>
+<p>Now, onto our implementations:</p>
+<ul>
+<li>Jumping down to the <kbd>fn set_status(&amp;mut self, status: PlayerStatus) -&gt; FutureResult&lt;&amp;mut Self, Never&gt;</kbd> function on our <kbd>Player</kbd> structure, we will notice a return value of <kbd>FutureResult</kbd>, which tells futures that this function will immediately return a computed value from the <kbd>result()</kbd>, <kbd>ok()</kbd>, or <kbd>err()</kbd> functions from <kbd>futures::futures</kbd>.  This is useful for quickly prototyping our application while being able to utilize our <kbd>executors</kbd> and futures combinators.</li>
+<li>At the <kbd>fn add_points(&amp;mut self, points: u32) -&gt; Async&lt;&amp;mut Self&gt;</kbd> function we return our <kbd>Async</kbd> value immediately, since we currently do not have a server to use, but we would implement the <kbd>Async&lt;T&gt;</kbd> value over <kbd>FutureResult</kbd> for functions that require computations asynchronously.</li>
+</ul>
+<ul>
+<li>We mimic the time it takes for a network request using our player's <kbd>ticks</kbd> attribute. <kbd>Poll&lt;I, E&gt;</kbd> will keep executing as long as we are returning <kbd>Async::Pending</kbd> (line [x]).  The executor needs to know whether or not a task needs to be polled again. The task's <kbd>Waker</kbd> trait is what handles these notifications, and we can manually invoke it using <kbd>cx.waker().wake()</kbd> on line 83 . Once our player's <kbd>ticks</kbd> attribute reaches zero we send an <kbd>Async::Ready(self)</kbd> signal, which tells the executor to no longer poll this function.</li>
+</ul>
+<p>For our <kbd>async_add_points()</kbd> helper method:</p>
+<ul>
+<li>We return <kbd>Box&lt;Future&lt;Item = Player, Error = Never&gt; + Send</kbd>, which tells futures that this function will eventually return a value of <kbd>Player</kbd> (since we <kbd>Never</kbd> return an error).</li>
+<li>The <kbd>+ Send</kbd> part of the return is not necessary for our current code base, but in the future, we may want to offload some of these tasks onto other threads which executors require. Spawning across threads requires us to return the <kbd>futures::prelude::Never</kbd> type as an error and a <kbd>'static</kbd> variable as well. </li>
+<li>When calling future functions with combinators (such as <kbd>then</kbd> and <kbd>and_then</kbd>), we will need to return a <kbd>Never</kbd> error type or the same error type as every other future function that is being called within the same combinator flow.</li>
+</ul>
+<p>Finally, onto our main block:</p>
+<ul>
+<li>We use the <kbd>futures::future::join_all</kbd> function, which accepts any <kbd>IntoIterator</kbd> that contains all <kbd>InfoFuture</kbd> trait elements (which should be all future functions). This either collects and returns <kbd>Vec&lt;T&gt;</kbd> sorted FIFO, or cancels executing as soon as the first error returns from any of the future functions within the collection, which becomes the returning value for the <kbd>join_all()</kbd> call.</li>
+<li><kbd>then()</kbd> and <kbd>and_then()</kbd> are combinators that internally use <kbd>future::Chain</kbd> and return a <kbd>Future</kbd> trait value, which allows us to add more combinators if we wanted. See the <em>Using combinators and utilities</em> section for more information on combinators.</li>
+<li><kbd>block_on()</kbd> is an executor method that handles any future function or value as its input and returns a <kbd>Result&lt;Future::Item, Future::Error&gt;</kbd>. When running this method, the function containing the method will block until the future(s) have been completed. Spawned tasks will execute on the default executor, but they may not be completed before <kbd>block_on</kbd> finishes its task(s). If <kbd>block_on()</kbd> finishes before the spawned tasks, then those spawned tasks will be dropped.</li>
+<li>We can also use <kbd>block_on()</kbd> as a quick way to run our cycles/ticks and execute task(s), which invokes our <kbd>poll()</kbd> functions. We used this method on line 124 for <em>initially loading players</em> onto the game.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">There's more...</h1>
+                </header>
+            
+            <article>
+                
+<p class="p1"><span class="s1">The <kbd>box()</kbd> method for returning futures does cause an additional allocation to the heap. Another method of returning futures relies on using a <kbd>nightly</kbd> version of Rust or for this issue  <a href="https://github.com/rust-lang/rust/issues/34511"><span class="s2">https://github.com/rust-lang/rust/issues/34511</span></a> to be resolved. The new <kbd>async_add_points()</kbd> method would return an implied <kbd>Future</kbd> trait and would look as follows:</span></p>
+<pre style="padding-left: 30px">fn async_add_points&lt;F&gt;(f: F, player: &amp;mut Player, points: u32) -&gt; impl Future&lt;Item = Player, Error = F::Error&gt;<br/>where F: Future&lt;Item = Player&gt;,<br/>{<br/>    // Presuming that player.add_points() will send the points to a  <br/>    // database/server over a network and returns<br/>    // an updated player score from the server/database.<br/>    let _ = player.add_points(points).flatten();<br/><br/>    // Additionally, we may want to add logging mechanisms, friend <br/>    notifications, etc. here.<br/><br/>    return f.map(player.clone());<br/>}</pre>
+<div class="packt_tip">
+<p class="p1"><span class="s1">Rust may cause <kbd>undefined behavior</kbd> if we were to call <kbd>poll()</kbd> more than once for a future. This problem can be mitigated by converting the future into a stream by using the <kbd>into_stream()</kbd> method or using the <kbd>fuse()</kbd> adapter, which adds a tiny bit of runtime overhead.</span></p>
+</div>
+<div class="packt_tip">Tasks are usually executed/polled from using an <kbd>executor</kbd> such as the <kbd>block_on()</kbd> helper function. You can manually execute tasks by creating a <kbd>task::Context</kbd> and calling <kbd>poll()</kbd> directly from the task. As a general rule, it is recommended to not invoke <kbd>poll()</kbd> manually and to have an executor manage polling automatically.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">See also</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><span><em>Boxing data</em> recipe in <a href="6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml">Chapter 5</a>, <em>Advanced Data Structures</em></span></li>
+<li><span><span><a href="ca93ce61-1a86-4588-9da0-766bed49876f.xhtml">Chapter 7</a>, <em>Parallelism and Rayon</em></span></span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Locking resources with BiLocks</h1>
+                </header>
+            
+            <article>
+                
+<p>BiLocks are used when we need to store a value across multiple threads with up to two owners associated with that value. Applicable uses for a BiLock type would be splitting TCP/UDP data for reading and writing, or adding a layer between a sink and a stream (for logging, monitoring, and so on), or it can be a sink and a stream at the same time.</p>
+<p>When using futures with an additional crate (such as tokio or hyper), knowing BiLocks can help us wrap data around the other crate's common methods. This would allow us to build futures and concurrency on top of existing crates without having to wait until the crate's maintainers support concurrency explicitly. BiLocks are a very low-level utility, but understanding how they work can help us further down the road with our (web) applications.</p>
+<p>In the next chapter, we will mostly focus on networking with Rust, but we will also get to practice integrating futures with other crates. BiLocks can be used throughout these next examples, if you wanted to split a TCP/UDP stream in a mutex state, although it is not necessary to do so with the crates that we will be using. </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol start="1">
+<li class="li1"><span class="s2">In the<span> </span><kbd>src/bin</kbd><span> </span>folder, create a file called<span> </span><kbd><span class="s3">bilocks.rs</span></kbd><span class="s3">.</span></span></li>
+<li class="li1"><span class="s2">Add the following code and run it with<span> </span><kbd>cargo run —bin bilocks</kbd>:</span></li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   extern crate futures_util;
+3   
+4   use futures::prelude::*;
+5   use futures::executor::LocalPool;
+6   use futures::task::{Context, LocalMap, Wake, Waker};
+7   use futures_util::lock::BiLock;
+8   
+9   use std::sync::Arc;
+10  
+11  struct FakeWaker;
+12  impl Wake for FakeWaker {
+13    fn wake(_: &amp;Arc) {}
+14  }
+15  
+16  struct Reader {
+17    lock: BiLock,
+18  }
+19  
+20  struct Writer {
+21    lock: BiLock,
+22  }
+23  
+24  fn split() -&gt; (Reader, Writer) {
+25    let (a, b) = BiLock::new(0);
+26    (Reader { lock: a }, Writer { lock: b })
+27  }
+29  fn main() {
+30    let pool = LocalPool::new();
+31    let mut exec = pool.executor();
+32    let waker = Waker::from(Arc::new(FakeWaker));
+33    let mut map = LocalMap::new();
+34    let mut cx = Context::new(&amp;mut map, &amp;waker, &amp;mut exec);
+35  
+36    let (reader, writer) = split();
+37    println!("Lock should be ready for writer: {}",
+38         writer.lock.poll_lock(&amp;mut cx).is_ready());
+39    println!("Lock should be ready for reader: {}",
+40         reader.lock.poll_lock(&amp;mut cx).is_ready());
+41  
+42    let mut writer_lock = match writer.lock.lock().poll(&amp;mut <br/>      cx).unwrap() {
+43      Async::Ready(t) =&gt; t,
+44      _ =&gt; panic!("We should be able to lock with writer"),
+45    };
+46  
+47    println!("Lock should now be pending for reader: {}",
+48         reader.lock.poll_lock(&amp;mut cx).is_pending());
+49    *writer_lock = 123;
+50  
+51    let mut lock = reader.lock.lock();
+52    match lock.poll(&amp;mut cx).unwrap() {
+53      Async::Ready(_) =&gt; {
+54        panic!("The lock should not be lockable since writer has <br/>          already locked it!")
+55      }
+56      _ =&gt; println!("Couldn't lock with reader since writer has <br/>        already initiated the lock"),
+57    };
+58  
+59    let writer = writer_lock.unlock();
+60  
+61    let reader_lock = match lock.poll(&amp;mut cx).unwrap() {
+62      Async::Ready(t) =&gt; t,
+63      _ =&gt; panic!("We should be able to lock with reader"),
+64    };
+65  
+66    println!("The new value for the lock is: {}", *reader_lock);
+67  
+68    let reader = reader_lock.unlock();
+69    let reunited_value = reader.reunite(writer).unwrap();
+70  
+71    println!("After reuniting our locks, the final value is <br/>      still: {}",
+72         reunited_value);
+73  }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><span>First, we need to implement a fake <kbd>futures::task::Waker</kbd> for when we create a new context (this is what our <kbd>FakeWaker</kbd> structure is for on lines 11 through 14)</span></li>
+<li><span>Since BiLocks require two owners, we will divide the ownership into two different structures, called <kbd>Reader&lt;T&gt;</kbd> (on lines 16 through 18) and <kbd>Writer&lt;T&gt;</kbd> (on lines 20 through 22)</span></li>
+<li>Our <kbd>split() -&gt; (Reader&lt;u32&gt;, Writer&lt;u32&gt;)</kbd> function is just to structure/organize our code a bit better, and when calling <kbd>BiLock::new(t: T)</kbd> the return type is a tuple of two <kbd>futures_util::lock::BiLock</kbd> elements</li>
+</ul>
+<p>Now that the preliminary code has been explained, let's dive into our <kbd>main()</kbd> function:</p>
+<ul>
+<li>On lines 30 through 34 we set up a new <kbd>LocalPool</kbd>, <kbd>LocalExecutor</kbd>, <kbd>Waker</kbd> (<kbd>FakeWaker</kbd>), and a <kbd>LocalMap</kbd> (map storage of local data within tasks) for creating a new <kbd>Context</kbd>, since we will be polling our locks manually for demonstration purposes.</li>
+<li>Lines 38 and 40 use the <kbd>futures_util::lock::BiLock::poll_lock</kbd> function, which returns an <kbd>Async&lt;futures_util::lock::BiLockGuard&lt;T&gt;&gt;</kbd> value if the lock is available. If the lock is not available then the function will return <kbd>Async::Pending</kbd>. The lock (the <kbd>BiLockGuard&lt;T&gt;</kbd>) will unlock when the reference is dropped.</li>
+<li>On line 42 we execute <kbd>writer.lock.lock()</kbd>, which will block the lock and a <kbd>BiLockAcquire&lt;T&gt;</kbd> will be returned, which is a future that can be polled. When <kbd>BiLockAcquire</kbd> is polled, a <kbd>Poll&lt;BiLockAcquired&lt;T&gt;, ()&gt;</kbd> value is returned and that value can be dereferenced mutably.</li>
+<li>On line 48, we can now see that the lock is currently in an <kbd>Async::Pending</kbd> state, which would not allow us to lock the BiLock again, as shown on lines 51 through 57.</li>
+<li>After modifying our lock's value (line 49), we should now unlock it (line 59) so that the other owner can reference it (lines 61 through 64).</li>
+<li>When we call <kbd>BiLockAcquired::unlock()</kbd> (line 68), the original <kbd>BiLock&lt;T&gt;</kbd> is returned and the lock is officially unlocked.</li>
+<li>On line 69 we perform <kbd>futures_util::lock::BiLock::reunite(other: T)</kbd>, which recovers the value of the lock and destroys the <em>two halves</em> of the BiLock references (presuming that <kbd>T</kbd> is the other half of the BiLock from the <kbd>BiLock::new()</kbd> call).</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

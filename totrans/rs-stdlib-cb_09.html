@@ -1,0 +1,880 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Networking</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we will cover the following recipes:</p>
+<ul>
+<li>Setting up a basic HTTP server</li>
+<li>Configuring an HTTP server to perform echoing and routing</li>
+<li>Configuring an HTTP server to perform file serving</li>
+<li>Making requests to APIs</li>
+<li>Setting up a basic UDP Socket</li>
+<li>Configuring a UDP socket to perform echoing</li>
+<li>Setting up a secure connection via TLS</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Introduction</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">Through the internet, the world is getting smaller every day. The web connects people in amazing ways. Countless services are available at your fingertips for free. Millions of people can use your apps without even installing it.</p>
+<p>As a developer wanting to take advantage of this, porting your app to the internet can be quite easy if you have set your architecture up in a clean way. The only thing you need to change is the layer that interacts with the outside world.</p>
+<p>This chapter is going to show you how to create this layer by allowing your application to accept requests, respond to them, and show you how to create requests to other web services on your own.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Setting up a basic HTTP server</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's start our chapter by bringing the famous Hello World program into the 21<sup>st</sup> century by hosting it on a server. We are going to use the <kbd>hyper</kbd> crate for this, which is a strongly typed wrapper around all things HTTP. In addition to being one of the fastest HTTP implementations in the world (<a href="https://www.techempower.com/benchmarks/#section=data-r15&amp;hw=ph&amp;test=plaintext">https://www.techempower.com/benchmarks/#section=data-r15&amp;hw=ph&amp;test=plaintext</a>), it is used by nearly <em>all</em> major high-level frameworks (<a href="https://github.com/flosse/rust-web-framework-comparison#high-level-frameworks">https://github.com/flosse/rust-web-framework-comparison#high-level-frameworks</a>), the only exception being the ones that reimplemented it all on the extremely basic <em>stringly-typed</em> TCP library that Rust provides under <kbd>std::net::TcpStream</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Getting ready</h1>
+                </header>
+            
+            <article>
+                
+<p>All <kbd>hyper</kbd> recipes work with <kbd>futures</kbd>, so you should read all of <a href="dccc0c20-85ff-46a7-a1b8-463a5dd92ba0.xhtml" target="_blank">Chapter 8</a>, <em>Working with Futures</em>, before continuing.</p>
+<p>At the time of writing, <kbd>hyper</kbd> has not yet upgraded to <kbd>futures v0.2</kbd> (tracking issue: <a href="https://github.com/hyperium/hyper/issues/1448">https://github.com/hyperium/hyper/issues/1448</a>), so we going to use <kbd>futures v0.1</kbd>. This should be no problem in the future (no pun intended), as all relevant code is written in a way that should be compatible with <kbd>0.2</kbd> when it's released.</p>
+<p>If some unexpected API change breaks the recipes, you will be able to find a fixed version of them at the book's GitHub repository (<a href="https://github.com/jnferner/rust-standard-library-cookbook/tree/master/chapter-nine/src/bin">https://github.com/jnferner/rust-standard-library-cookbook/tree/master/chapter-nine/src/bin</a>), which will always be updated in order to work with the newest versions of all libraries.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Create a Rust project to work on during this chapter with <kbd>cargo new chapter-nine</kbd></li>
+<li>Navigate into the newly created <kbd>chapter-nine</kbd> folder. For the rest of this chapter, we will assume that your command line is currently in this directory</li>
+<li>Open the <kbd>Cargo.toml</kbd> file that has been generated for you</li>
+<li>
+<p>Under <kbd>[dependencies]</kbd>, add the following lines:</p>
+</li>
+</ol>
+<pre style="padding-left: 60px">futures = "0.1.18"<br/>hyper = "0.11.21"</pre>
+<ol start="5">
+<li>If you want, you can go to futures' (<a href="https://crates.io/crates/futures">https://crates.io/crates/futures</a>) and hyper's (<a href="https://crates.io/crates/hyper">https://crates.io/crates/hyper</a>) <em>crates.io</em> pages to check for the newest version and use that one instead</li>
+<li>Inside the folder <kbd>src</kbd>, create a new folder called <kbd>bin</kbd></li>
+<li>Delete the generated <kbd>lib.rs</kbd> file, as we are not creating a library</li>
+<li>In the folder <kbd>src/bin</kbd>, create a file called <kbd>hello_world_server.rs</kbd></li>
+<li>Add the following code and run it with <kbd>cargo run --bin hello_world_server</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   extern crate hyper;
+3   
+4   use futures::future::Future;
+5   use hyper::header::{ContentLength, ContentType};
+6   use hyper::server::{const_service, service_fn, Http, Request, Response, Service};
+7   use std::net::SocketAddr;
+8   
+9   const MESSAGE: &amp;str = "Hello World!";
+10  
+11  fn main() {
+12    // [::1] is the loopback address for IPv6, 3000 is a port
+13    let addr = "[::1]:3000".parse().expect("Failed to parse address");
+14    run_with_service_function(&amp;addr).expect("Failed to run web server");
+15  }</pre>
+<p style="padding-left: 60px">Run a server by creating a service with <kbd>service_fn</kbd>:</p>
+<pre style="padding-left: 60px">17  fn run_with_service_function(addr: &amp;SocketAddr) -&gt; Result&lt;(), <br/>     hyper::Error&gt; {
+18    // Hyper is based on Services, which are construct that
+19    // handle how to respond to requests.
+20    // const_service and service_fn are convenience functions
+21    // that build a service out of a closure
+22    let hello_world = const_service(service_fn(|_| {
+23      println!("Got a connection!");
+24      // Return a Response with a body of type hyper::Body
+25      Ok(Response::::new()
+26        // Add header specifying content type as plain text
+27        .with_header(ContentType::plaintext())
+28        // Add header specifying the length of the message in <br/>          bytes
+29        .with_header(ContentLength(MESSAGE.len() as u64))
+30        // Add body with our message
+31        .with_body(MESSAGE))
+32    }));
+33  
+34    let server = Http::new().bind(addr, hello_world)?;
+35    server.run()
+36  }</pre>
+<p style="padding-left: 60px">Run a server by manually creating a <kbd>struct</kbd> that implements <kbd>Service</kbd>:</p>
+<pre style="padding-left: 60px">38  // The following function does the same, but uses an explicitely <br/>    created
+39  // struct HelloWorld that implements the Service trait
+40  fn run_with_service_struct(addr: &amp;SocketAddr) -&gt; Result&lt;(), <br/>     hyper::Error&gt; {
+41    let server = Http::new().bind(addr, || Ok(HelloWorld))?;
+42    server.run()
+43  }
+44  
+45  struct HelloWorld;
+46  impl Service for HelloWorld {
+47    // Implementing a server requires specifying all involved <br/>      types
+48    type Request = Request;
+49    type Response = Response;
+50    type Error = hyper::Error;
+51    // The future that wraps your eventual Response
+52    type Future = Box&lt;Future&gt;;
+53  
+54    fn call(&amp;self, _: Request) -&gt; Self::Future {
+55      // In contrast to service_fn, we need to explicitely return <br/>        a future
+56      Box::new(futures::future::ok(
+57        Response::new()
+58          .with_header(ContentType::plaintext())
+59          .with_header(ContentLength(MESSAGE.len() as u64))
+60          .with_body(MESSAGE),
+61      ))
+62    }
+63  }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>In <kbd>main</kbd>, we first parse a string representing our IPv6 loopback address (think <kbd>localhost</kbd>) as an <kbd>std::net::SocketAddr</kbd>, which is a type holding an IP address and a port [13]. Granted, we could have used a constant for our address, but we are showing how to parse it from a string, because in a real application you will probably fetch the address from an environment variable, as shown in <a href="0620f24b-d897-497a-b000-d63a1426c3ff.xhtml">Chapter 1</a>, <em>Learning the Basics</em>; <em>Interacting with environment variables</em>.</p>
+<p>We then run our <kbd>hyper</kbd> server, which we create in <kbd>run_with_service_function</kbd> <span>[17]. Let's take a look at that function by learning a bit about</span> <kbd>hyper</kbd><span>.</span></p>
+<div>
+<p>The most fundamental trait in <kbd>hyper</kbd> is the <kbd>Service</kbd>. It is defined as follows:</p>
+<pre style="padding-left: 30px">pub trait Service where<br/>    &lt;Self::Future as Future&gt;::Item == Self::Response,<br/>    &lt;Self::Future as Future&gt;::Error == Self::Error, {<br/>    type Request;<br/>    type Response;<br/>    type Error;<br/>    type Future: Future;<br/>    fn call(&amp;self, req: Self::Request) -&gt; Self::Future;<br/>}</pre></div>
+<p>It should be easy to read the signature of <kbd>call</kbd>: It takes a <kbd>Request</kbd> and returns a <kbd>Future</kbd> of a <kbd>Response</kbd>. <kbd>hyper</kbd> uses this trait to answer to an incoming request. We generally have two ways to define a <kbd>Service</kbd>:</p>
+<ul>
+<li>Manually create a <kbd>struct</kbd> that implements <kbd>Service</kbd>, explicitly setting its associated types to whatever <kbd>call</kbd> returns</li>
+<li>Let a <kbd>Service</kbd> be built for you by passing a closure that returns a <kbd>Result</kbd> to <kbd>service_fn</kbd>, which you wrap in a <kbd>const_service</kbd></li>
+</ul>
+<p>Both variants result in the exact same thing, so this example contains both versions to give you a taste of them.</p>
+<div>
+<p><kbd>run_with_service_function</kbd> uses the second style [22]. It returns a <kbd>Result</kbd> of a <kbd>Response</kbd>, which <kbd>service_fn</kbd> converts to a <kbd>Future</kbd> of <kbd>Response</kbd> because <kbd>Result</kbd> implements <kbd>Future</kbd>. <kbd>service_fn</kbd> then does some type deduction for us and creates a kind of <kbd>Service</kbd>. But we aren't done yet. You see, when <kbd>hyper</kbd> receives a new connection, it will not call our <kbd>Service</kbd> directly with the <kbd>Request</kbd>, but first makes a copy of it in order to handle every connection with its very own <kbd>Service</kbd>. This means that our <kbd>Service</kbd> must have the ability to create new instances of itself, which is indicated by the <kbd>NewService</kbd> trait. Luckily, we don't need to implement it ourselves either. The closure at the heart of our <kbd>Service</kbd> doesn't manage any state, so we can call it a constant function. Constants are very easy to copy, as all copies are guaranteed to be identical. We can mark our <kbd>Service</kbd> as constant by calling <kbd>const_service</kbd> on it, which basically just wraps the <kbd>Service</kbd> in an <kbd>Arc</kbd> and then implements <kbd>NewService</kbd> by simply returning a copy of it. But what exactly is our <kbd>Service</kbd> returning anyways?</p>
+<p><kbd>Response&lt;hyper::Body&gt;</kbd> creates a new HTTP response [25] and manages its body as a <kbd>hyper::Body</kbd>, which is a future <kbd>Stream&lt;Chunk&gt;</kbd>. A <kbd>Chunk</kbd> is just a piece of an HTTP message. This <kbd>Response</kbd> is a builder, so we can change the contents of it by calling various methods. In our code, we set its <kbd>Content-Type</kbd> header to <kbd>plaintext</kbd>, which is a <kbd>hyper</kbd> shortcut for the MIME type <kbd>text/plain</kbd> [27].</p>
+<div class="packt_infobox">A MIME type is a label for data served over HTTP. It tells the client how to treat the data it receives. For example, most browsers will not render the message <kbd>&lt;p&gt;Hello World!&lt;/p&gt;</kbd> as HTML unless it comes with the header <kbd>Content-Type: text/html</kbd>.</div>
+</div>
+<p>We also set its <kbd>Content-Length</kbd> header to the length (in bytes) of our message so the client knows how much data they should expect [29]. Finally, we set the message's body to the message, which then gets sent to the client as <kbd>"Hello World!"</kbd> [31].</p>
+<p>Our service can now be bound to a new instance of <kbd>hyper::server::Http</kbd>, which we then run [34 and 35]. You can now open your browser of choice and point it to <kbd>http://localhost:3000</kbd>. If everything went right, you should be greeted by a <kbd>Hello World!</kbd> message.</p>
+<p>The same thing would happen if we called <kbd>run_with_service_struct</kbd> instead, which uses a manually created <kbd>Service</kbd> instead [40]. A quick inspection of its implementation shows us the key differences to the last approach [45 to 63]:</p>
+<pre style="padding-left: 30px">struct HelloWorld;<br/>impl Service for HelloWorld {<br/>    type Request = Request;<br/>    type Response = Response;<br/>    type Error = hyper::Error;<br/>    type Future = Box&lt;Future&lt;Item = Self::Response, Error = <br/>    Self::Error&gt;&gt;;<br/><br/>    fn call(&amp;self, _: Request) -&gt; Self::Future {<br/>        Box::new(futures::future::ok(<br/>            Response::new()<br/>                .with_header(ContentType::plaintext())<br/>                .with_header(ContentLength(MESSAGE.len() as u64))<br/>                .with_body(MESSAGE),<br/>        ))<br/>    }<br/>}</pre>
+<p>As you can see, we need to explicitly specify the concrete type of basically everything [48 to 52]. We also can't simply return a <kbd>Result</kbd> in our <kbd>call</kbd> method and need to return the actual <kbd>Future</kbd>, wrapped in a <kbd>Box</kbd> [56], so we don't need to think about which exact flavor of <kbd>Future</kbd> we are using.</p>
+<p>On the other hand, this approach has one big advantage over the other: It can manage state in the form of members. Because all <kbd>hyper</kbd> recipes in this chapter work with constant Services, that is Services that will return the same <kbd>Response</kbd> to equal Requests, we will use the first variant to create Services. This is simply a stylistic decision based on simplicity, as they are all small enough that it wouldn't be worth it to extract them into an own <kbd>struct</kbd>. In your projects, use whichever form suits the current use case best.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">See also</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><span><em>Using the builder pattern</em> and <em>Interacting with environment variables</em> recipe in </span><a href="0620f24b-d897-497a-b000-d63a1426c3ff.xhtml" target="_blank">Chapter 1</a>, <em>Learning the Basics</em></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Configuring an HTTP server to perform echoing and routing</h1>
+                </header>
+            
+            <article>
+                
+<p>We learned how to serve the same response forever, but that would get pretty dull after a while. In this recipe, you are going to learn how to read requests and respond to them individually. For this, we will use routing to differentiate between requests to different endpoints.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Getting ready</h1>
+                </header>
+            
+            <article>
+                
+<p>To test this recipe, you will need a way to easily send HTTP requests. An excellent free tool for this is Postman (<a href="https://www.getpostman.com/">https://www.getpostman.com/</a>), which features a nice and self-explanatory UI. If you'd rather not download anything, you can use your terminal for this. If you're on Windows, you can open PowerShell and enter the following to do an HTTP request:</p>
+<pre>Invoke-WebRequest -UseBasicParsing &lt;Your URL&gt; -Method &lt;Your method in CAPSLOCK&gt; -Body &lt;Your message as a string&gt;</pre>
+<p>So, if you wanted to POST the message <kbd>hello there, my echoing friend</kbd> to <kbd>http://localhost:3000/echo</kbd>, as you will be asked to later in the recipe, you'd need to enter the following command:</p>
+<pre>Invoke-WebRequest -UseBasicParsing http://localhost:3000/echo -Method POST -Body "Hello there, my echoing friend"</pre>
+<p>On Unix systems, you can use cURL for that (<a href="https://curl.haxx.se/">https://curl.haxx.se/</a>). The analog command is the following:</p>
+<pre><strong>curl -X &lt;Your method&gt; --data &lt;Your message&gt; -g &lt;Your URL&gt;</strong></pre>
+<p>cURL will resolve <kbd>localhost</kbd> to its entry in <kbd>/etc/hosts</kbd>. In some configurations, this will only be the IPv4 loopback address (<kbd>127.0.0.1</kbd>). In some others, you will have to use <kbd>ip6-localhost</kbd>. Check your <kbd>/etc/hosts</kbd> to find out what to use. In any case, an explicit <kbd>[::1]</kbd> will always work. As an example, the following command will again POST the message <kbd>hello there, my echoing friend</kbd> to <kbd>http://localhost:3000/echo</kbd>:</p>
+<pre><strong>curl -X POST --data "Hello there my echoing friend" -g "http://[::1]:3000/echo"</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Open the <kbd>Cargo.toml</kbd> file that has been generated for you</li>
+<li>Under <kbd>[dependencies]</kbd>, if you didn't do so in the last recipe, add the following lines:</li>
+</ol>
+<pre style="padding-left: 60px">futures = "0.1.18"<br/>hyper = "0.11.21"</pre>
+<ol start="3">
+<li>If you want, you can go to futures' (<a href="https://crates.io/crates/futures">https://crates.io/crates/futures</a>) and hyper's (<a href="https://crates.io/crates/hyper">https://crates.io/crates/hyper</a>) <em>crates.io</em> pages to check for the newest version and use that one instead</li>
+<li>In the folder <kbd>src/bin</kbd>, create a file called <kbd>echo_server_with_routing.rs</kbd></li>
+<li>Add the following code and run it with <kbd>cargo run --bin echo_server_with_routing</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate hyper;
+2
+3   use hyper::{Method, StatusCode};
+4   use hyper::server::{const_service, service_fn, Http, Request, <br/>    Response};
+5   use hyper::header::{ContentLength, ContentType};
+6   use std::net::SocketAddr;
+7
+8   fn main() {
+9     let addr = "[::1]:3000".parse().expect("Failed to parse <br/>      address");
+10    run_echo_server(&amp;addr).expect("Failed to run web server");
+11  }
+12
+13  fn run_echo_server(addr: &amp;SocketAddr) -&gt; Result&lt;(),  <br/>    hyper::Error&gt; {
+14    let echo_service = const_service(service_fn(|req: Request| {
+15      // An easy way to implement routing is
+16      // to simply match the request's path
+17      match (req.method(), req.path()) {
+18        (&amp;Method::Get, "/") =&gt; handle_root(),
+19        (&amp;Method::Post, "/echo") =&gt; handle_echo(req),
+20        _ =&gt; handle_not_found(),
+21      }
+22    }));
+23
+24    let server = Http::new().bind(addr, echo_service)?;
+25    server.run()
+26  }</pre>
+<p style="padding-left: 60px">The functions are handling the routes:</p>
+<pre style="padding-left: 60px">28  type ResponseResult = Result&lt;Response, hyper::Error&gt;;
+29  fn handle_root() -&gt; ResponseResult {
+30    const MSG: &amp;str = "Try doing a POST at /echo";
+31    Ok(Response::new()
+32      .with_header(ContentType::plaintext())
+33      .with_header(ContentLength(MSG.len() as u64))
+34      .with_body(MSG))
+35  }
+36
+37  fn handle_echo(req: Request) -&gt; ResponseResult {
+38    // The echoing is implemented by setting the response's
+39    // body to the request's body
+40    Ok(Response::new().with_body(req.body()))
+41  }
+42
+43  fn handle_not_found() -&gt; ResponseResult {
+44    // Return a 404 for every unsupported route
+45    Ok(Response::new().with_status(StatusCode::NotFound))
+46  }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">This recipe begins like the last one, so let's skip straight into the definition of our <kbd>Service</kbd>[14 to 22]:</p>
+<pre style="padding-left: 30px">|req: Request| {<br/>    match (req.method(), req.path()) {<br/>        (&amp;Method::Get, "/") =&gt; handle_root(),<br/>        (&amp;Method::Post, "/echo") =&gt; handle_echo(req),<br/>        _ =&gt; handle_not_found(),<br/>    }<br/>}</pre>
+<p>We are now using the <kbd>Request</kbd> parameter that the last recipe simply ignored.</p>
+<p>Because Rust allows us to pattern match on tuples, we can directly differentiate between HTTP methods and path combinations. We then pass on the control flow of our program to dedicated route handlers, which in turn are responsible for returning the response.</p>
+<div class="packt_tip">In bigger programs with tons of routes, we would not specify them all in one function, but spread them across namespaces and split them into subrouters.</div>
+<p>The code for <kbd>handle_root</kbd> [29] looks nearly identical to the hello world <kbd>Service</kbd> from the last chapter, but instructs the caller to POST at the <kbd>/post</kbd> route.</p>
+<p>Our match for said POST leads to <kbd>handle_echo</kbd> [37], which simply returns the request's body as the response's body [40]. You can try this for yourself by POSTing a message to <kbd>http://localhost:3000/echo</kbd>, as described in the <em>Getting ready</em> section. If everything goes right, your message will come right back at you.</p>
+<p>Last, but not least, <kbd>handle_not_found</kbd> [43] is called when no routes matched. This time, we don't send a message back, but instead, return the possible most famous status code of the world: <kbd>404 Not Found</kbd> [45].</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Configuring an HTTP server to perform file serving</h1>
+                </header>
+            
+            <article>
+                
+<p>The last recipes were really useful for building web services, but let's take a look at how to do the thing HTTP was originally created for: serving HTML files to the web.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Open the <kbd>Cargo.toml</kbd> file that has been generated for you.</li>
+<li>Under <kbd>[dependencies]</kbd>, if you didn't do so in the last recipe, add the following lines:</li>
+</ol>
+<pre style="padding-left: 90px">futures = "0.1.18"<br/>hyper = "0.11.21"</pre>
+<ol start="3">
+<li>If you want, you can go to futures' (<a href="https://crates.io/crates/futures">https://crates.io/crates/futures</a>) and hyper's (<a href="https://crates.io/crates/hyper">https://crates.io/crates/hyper</a>) <em>crates.io</em> pages to check for the newest version and use that one instead.</li>
+<li>In the folder <kbd>chapter-nine</kbd>, create a folder called <kbd>files</kbd>.</li>
+<li><span>In the folder</span> <kbd>files</kbd><span>, create a file called</span> <kbd>index.html</kbd> <span>and add the following code to it:</span></li>
+</ol>
+<pre style="padding-left: 60px">&lt;!doctype html&gt;<br/>&lt;html&gt;<br/><br/>&lt;head&gt;<br/>    &lt;link rel="stylesheet" type="text/css" href="/style.css"&gt;<br/>    &lt;title&gt;Home&lt;/title&gt;<br/>&lt;/head&gt;<br/><br/>&lt;body&gt;<br/>    &lt;h1&gt;Home&lt;/h1&gt;<br/>    &lt;p&gt;Welcome. You can access other files on this web server  <br/>    aswell! Available links:&lt;/p&gt;<br/>    &lt;ul&gt;<br/>        &lt;li&gt;<br/>            &lt;a href="/foo.html"&gt;Foo!&lt;/a&gt;<br/>        &lt;/li&gt;<br/>        &lt;li&gt;<br/>            &lt;a href="/bar.html"&gt;Bar!&lt;/a&gt;<br/>        &lt;/li&gt;<br/>    &lt;/ul&gt;<br/>&lt;/body&gt;<br/><br/>&lt;/html&gt;</pre>
+<ol start="6">
+<li><span>In the folder</span> <kbd>files</kbd><span>, create a file called</span> <kbd>foo.html</kbd> <span>and add the following code to it:</span></li>
+</ol>
+<pre style="padding-left: 60px">&lt;!doctype html&gt;<br/>&lt;html&gt;<br/><br/>&lt;head&gt;<br/>    &lt;link rel="stylesheet" type="text/css" href="/style.css"&gt;<br/>    &lt;title&gt;Foo&lt;/title&gt;<br/>&lt;/head&gt;<br/><br/>&lt;body&gt;<br/>    &lt;p&gt;Foo!&lt;/p&gt;<br/>&lt;/body&gt;<br/><br/>&lt;/html&gt;</pre>
+<ol start="7">
+<li><span>In the folder</span> <kbd>files</kbd><span>, create a file called</span> <kbd>bar.html</kbd> <span>and add the following code to it:</span></li>
+</ol>
+<pre style="padding-left: 60px">&lt;!doctype html&gt;<br/>&lt;html&gt;<br/><br/>&lt;head&gt;<br/>    &lt;link rel="stylesheet" type="text/css" href="/style.css"&gt;<br/>    &lt;title&gt;Bar&lt;/title&gt;<br/>&lt;/head&gt;<br/><br/>&lt;body&gt;<br/>    &lt;p&gt;Bar!&lt;/p&gt;<br/>&lt;/body&gt;<br/><br/>&lt;/html&gt;</pre>
+<ol start="8">
+<li><span>In the folder</span> <kbd>files</kbd><span>, create a file called</span> <kbd>not_found.html</kbd> <span>and add the following code to it:</span></li>
+</ol>
+<pre style="padding-left: 60px">&lt;!doctype html&gt;<br/>&lt;html&gt;<br/><br/>&lt;head&gt;<br/>    &lt;link rel="stylesheet" type="text/css" href="/style.css"&gt;<br/>    &lt;title&gt;Page Not Found&lt;/title&gt;<br/>&lt;/head&gt;<br/><br/>&lt;body&gt;<br/>    &lt;h1&gt;Page Not Found&lt;/h1&gt;<br/>    &lt;p&gt;We're sorry, we couldn't find the page you requested.&lt;/p&gt;<br/>    &lt;p&gt;Maybe it was renamed or moved?&lt;/p&gt;<br/>    &lt;p&gt;Try searching at the<br/>        &lt;a href="/index.html"&gt;start page&lt;/a&gt;<br/>    &lt;/p&gt;<br/>&lt;/body&gt;<br/><br/>&lt;/html&gt;</pre>
+<ol start="9">
+<li>In the folder <kbd>files</kbd>, create a file called <kbd>invalid_method.html</kbd> and add the following code to it:</li>
+</ol>
+<pre style="padding-left: 60px">&lt;!doctype html&gt;<br/>&lt;html&gt;<br/><br/>&lt;head&gt;<br/>    &lt;link rel="stylesheet" type="text/css" href="/style.css"&gt;<br/>    &lt;title&gt;Error 405 (Method Not Allowed)&lt;/title&gt;<br/>&lt;/head&gt;<br/><br/>&lt;body&gt;<br/>    &lt;h1&gt;Error 405&lt;/h1&gt;<br/>    &lt;p&gt;The method used is not allowed for this URL&lt;/p&gt;<br/>&lt;/body&gt;<br/><br/>&lt;/html&gt;</pre>
+<ol start="10">
+<li>In the folder <kbd>src/bin</kbd>, create a file called <kbd>file_server.rs</kbd>.</li>
+<li>Add the following code and run it with <kbd>cargo run --bin echo_server_with_routing</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate futures;
+2   extern crate hyper;
+3
+4   use hyper::{Method, StatusCode};
+5   use hyper::server::{const_service, service_fn, Http, Request,  <br/>    Response};
+6   use hyper::header::{ContentLength, ContentType};
+7   use hyper::mime;
+8   use futures::Future;
+9   use futures::sync::oneshot;
+10  use std::net::SocketAddr;
+11  use std::thread;
+12  use std::fs::File;
+13  use std::io::{self, copy};
+14
+15  fn main() {
+16    let addr = "[::1]:3000".parse().expect("Failed to parse <br/>      address");
+17    run_file_server(&amp;addr).expect("Failed to run web server");
+18  }
+19
+20  fn run_file_server(addr: &amp;SocketAddr) -&gt; Result&lt;(), <br/>    hyper::Error&gt; {
+21    let file_service = const_service(service_fn(|req: Request| {
+22      // Setting up our routes
+23      match (req.method(), req.path()) {
+24        (&amp;Method::Get, "/") =&gt; handle_root(),
+25        (&amp;Method::Get, path) =&gt; handle_get_file(path),
+26        _ =&gt; handle_invalid_method(),
+27      }
+28    }));
+29
+30    let server = Http::new().bind(addr, file_service)?;
+31    server.run()
+32  }</pre>
+<p class="mce-root" style="padding-left: 60px">The following are the route handlers:</p>
+<pre style="padding-left: 60px">34  // Because we don't want the entire server to block when serving <br/>     a file,
+35  // we are going to return a response wrapped in a future
+36  type ResponseFuture = Box&lt;Future&gt;;
+37  fn handle_root() -&gt; ResponseFuture {
+38    // Send the landing page
+39    send_file_or_404("index.html")
+40  }
+41
+42  fn handle_get_file(file: &amp;str) -&gt; ResponseFuture {
+43    // Send whatever page was requested or fall back to a 404 page
+44    send_file_or_404(file)
+45  }
+46
+47  fn handle_invalid_method() -&gt; ResponseFuture {
+48    // Send a page telling the user that the method he used is not   <br/>      supported
+49    let response_future = send_file_or_404("invalid_method.html")
+50      // Set the correct status code
+51      .and_then(|response| <br/>        Ok(response.with_status(StatusCode::MethodNotAllowed)));
+52    Box::new(response_future)
+53  }</pre>
+<p style="padding-left: 60px">The following is the code for the functions returning the futures with our files:</p>
+<pre style="padding-left: 60px">55  // Send a future containing a response with the requested file  <br/>    or a 404 page
+56  fn send_file_or_404(path: &amp;str) -&gt; ResponseFuture {
+57    // Sanitize the input to prevent unwanted data access
+58    let path = sanitize_path(path);
+59
+60    let response_future = try_to_send_file(&amp;path)
+61      // try_to_send_file returns a future of Result&lt;Response, <br/>        io::Error&gt;
+62      // turn it into a future of a future of Response with an <br/>        error of hyper::Error
+63      .and_then(|response_result| response_result.map_err(|error| <br/>         error.into()))
+64      // If something went wrong, send the 404 page instead
+65      .or_else(|_| send_404());
+66    Box::new(response_future)
+67  }
+68
+69  // Return a requested file in a future of Result&lt;Response, <br/>    io::Error&gt;
+70  // to indicate whether it exists or not
+71  type ResponseResultFuture = Box&lt;Future, Error = hyper::Error&gt;&gt;;
+72  fn try_to_send_file(file: &amp;str) -&gt; ResponseResultFuture {
+73    // Prepend "files/" to the file
+74    let path = path_on_disk(file);
+75    // Load the file in a separate thread into memory.
+76    // As soon as it's done, send it back through a channel
+77    let (tx, rx) = oneshot::channel();
+78    thread::spawn(move || {
+79      let mut file = match File::open(&amp;path) {
+80        Ok(file) =&gt; file,
+81        Err(err) =&gt; {
+82          println!("Failed to find file: {}", path);
+83          // Send error through channel
+84          tx.send(Err(err)).expect("Send error on file not <br/>            found");
+85          return;
+86        }
+87      };
+88
+89      // buf is our in-memory representation of the file
+90      let mut buf: Vec = Vec::new();
+91      match copy(&amp;mut file, &amp;mut buf) {
+92        Ok(_) =&gt; {
+93          println!("Sending file: {}", path);
+94          // Detect the content type by checking the file <br/>            extension
+95          // or fall back to plaintext
+96          let content_type = <br/>            get_content_type(&amp;path).unwrap_or_else<br/>            (ContentType::plaintext);
+97          let res = Response::new()
+98            .with_header(ContentLength(buf.len() as u64))
+99            .with_header(content_type)
+100           .with_body(buf);
+101         // Send file through channel
+102         tx.send(Ok(res))
+103           .expect("Send error on successful file read");
+104       }
+105       Err(err) =&gt; {
+106         // Send error through channel
+107         tx.send(Err(err)).expect("Send error on error reading <br/>            file");
+108       }
+109     };
+110   });
+111   // Convert all encountered errors to hyper::Error
+112   Box::new(rx.map_err(|error|  <br/>      io::Error::new(io::ErrorKind::Other, <br/>      error).into()))
+113 }
+114
+115 fn send_404() -&gt; ResponseFuture {
+116   // Try to send our 404 page
+117   let response_future = <br/>      try_to_send_file("not_found.html").and_then(|response_result|   <br/>      {
+118     Ok(response_result.unwrap_or_else(|_| {
+119       // If the 404 page doesn't exist, sent fallback text  <br/>          instead
+120       const ERROR_MSG: &amp;str = "Failed to find \"File not found\" <br/>          page. How ironic\n";
+121       Response::new()
+122         .with_status(StatusCode::NotFound)
+123         .with_header(ContentLength(ERROR_MSG.len() as u64))
+124         .with_body(ERROR_MSG)
+125     }))
+126   });
+127   Box::new(response_future)
+128 }</pre>
+<p style="padding-left: 60px">The following are some helper functions:</p>
+<pre style="padding-left: 60px">130  fn sanitize_path(path: &amp;str) -&gt; String {
+131    // Normalize the separators for the next steps
+132    path.replace("\\", "/")
+133      // Prevent the user from going up the filesystem
+134      .replace("../", "")
+135      // If the path comes straigh from the router,
+136      // it will begin with a slash
+137      .trim_left_matches(|c| c == '/')
+138      // Remove slashes at the end as we only serve files
+139      .trim_right_matches(|c| c == '/')
+140      .to_string()
+141  }
+142
+143  fn path_on_disk(path_to_file: &amp;str) -&gt; String {
+144    "files/".to_string() + path_to_file
+145  }
+146
+147  fn get_content_type(file: &amp;str) -&gt; Option {
+148    // Check the file extension and return the respective MIME type
+149   let pos = file.rfind('.')? + 1;
+150   let mime_type = match &amp;file[pos..] {
+151     "txt" =&gt; mime::TEXT_PLAIN_UTF_8,
+152     "html" =&gt; mime::TEXT_HTML_UTF_8,
+153     "css" =&gt; mime::TEXT_CSS,
+154     // This list can be extended for all types your server <br/>        should support
+155     _ =&gt; return None,
+156   };
+157   Some(ContentType(mime_type))
+158 }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>Wow! That was a lot of files. Of course, the exact content of the HTML and CSS doesn't matter for this recipe, as we're going to be focused on Rust. We've put them all in the <kbd>files</kbd> folder because we are going to make its contents publicly accessible by name for any client.</p>
+<p>The basics of the server setup are the same as with the echoing recipe: create a <kbd>Service</kbd> with <kbd>const_service</kbd> and <kbd>service_fn</kbd> [21], match the request's method and path, and then handle the routes in different functions. When looking at our return type, however, we can notice a difference [36]:</p>
+<pre style="padding-left: 30px">type ResponseFuture = Box&lt;Future&lt;Item = Response, Error = hyper::Error&gt;&gt;;</pre>
+<p>We are no longer returning a <kbd>Response</kbd> directly, but instead, wrapping it in a <kbd>Future</kbd>. This allows us to not block the server when loading a file into memory; we can continue handling requests in the main thread while the file serving <kbd>Future</kbd> is run in the background.</p>
+<p>When looking at our route handlers, you can see that they all use the <kbd>send_file_or_404</kbd> function. Let's take a look at it [56]:</p>
+<pre style="padding-left: 30px">fn send_file_or_404(path: &amp;str) -&gt; ResponseFuture {<br/>    let path = sanitize_path(path);<br/><br/>    let response_future = try_to_send_file(&amp;path)<br/>        .and_then(|response_result| response_result.map_err(|error| <br/>         error.into()))<br/>        .or_else(|_| send_404());<br/>    Box::new(response_future)<br/>}</pre>
+<p>First, the function sanitizes our input. The implementation of <kbd>sanitize_path</kbd> [130 to 141] should be pretty straightforward. It filters out potential troublemakers so that a malicious client cannot do any shenanigans, such as requesting the file <kbd>localhost:3000/../../../../home/admin/.ssh/id_rsa</kbd>.</p>
+<p>We then call <kbd>try_to_send_file</kbd> on the sanitized path [72]. We are going to look at that function in a minute, but for now, it's enough to look at its signature. It tells us that it returns a <kbd>Future</kbd> of a <kbd>Result</kbd> that can be a <kbd>Response</kbd> or an <kbd>io::Error</kbd>, as that's the error encountered on invalid filesystem access. We cannot return this <kbd>Future</kbd> directly, since we already told <kbd>hyper</kbd> that we are going to return a <kbd>Future</kbd> of <kbd>Response</kbd>, so we need to convert the types. If the file retrieving <kbd>Future</kbd> generated from <kbd>try_to_send_file</kbd> succeeded, we act on its item, which is a <kbd>Result&lt;Response, io::Error&gt;</kbd>.</p>
+<p>Because <kbd>hyper::Error</kbd> implements <kbd>From&lt;io::Error&gt;</kbd>, we can convert them easily by calling <kbd>.into()</kbd> [63] (see <a href="6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml">Chapter 5</a>, <em>Advanced Data Structures</em>; <em>Converting types</em>, for an introduction to the <kbd>From</kbd> trait). This will return a <kbd>Result&lt;Response, hyper::Error&gt;</kbd>. Because a <kbd>Future</kbd> is constructable from a <kbd>Result</kbd>, it will be implicitly converted to a <kbd>Future&lt;Response, hyper::Error&gt;</kbd> for us, which is exactly what we want. A little cherry on top is our handling of <kbd>try_to_send_file</kbd> returning an error, in which case we can safely assume that the file doesn't exist, so we return a <kbd>Future</kbd> with a custom <kbd>404 Not Found</kbd> page by calling <kbd>send_404()</kbd> [65]. Before looking at its implementation, let's check out <kbd>try_to_send_file</kbd> first [72].</p>
+<p>First, we convert the requested path into a local filesystem path with <kbd>path_on_disk</kbd> [74], which is simply implemented as follows [144]:</p>
+<pre style="padding-left: 30px">"files/".to_string() + path_to_file</pre>
+<p>We created an own function for this so it will be easy for you to extend the filesystem logic. For example, for Unix systems, it is usual to put all static HTML in <kbd>/var/www/</kbd>, while Windows web servers usually put all of their data in their own installation folder. Or you may want to read a configuration file provided by the user and store its value in a <kbd>lazy_static</kbd>, as shown in <a href="6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml" target="_blank">Chapter 5</a>, <em>Advanced Data Structures</em>; <em>Using lazy static variable</em>, and use that path instead. You can implement all of those rules in this function.</p>
+<div>
+<div><span>Back in <kbd>try_to_send_file</kbd>, we create a <kbd>oneshot::channel</kbd> to send data as a <kbd>Future</kbd> [77]. This concept is explained in detail in</span> <a href="dccc0c20-85ff-46a7-a1b8-463a5dd92ba0.xhtml" target="_blank">Chapter 8</a>, <em>Working with Futures</em>; <em>Using the</em> <em>oneshot channel</em>.<span><br/></span></div>
+<p>The rest of the function now creates a new thread to load the file into memory in the background [78]. We first open the file [79] and return an error through the channel if it doesn't exist. We then copy the entire file into a local vector of bytes [91] and again propagate any error that might occur [107]. If the process of copying into RAM succeeded, we return a <kbd>Response</kbd> with the content of the file as its body [100]. Along the way, we have to figure out the file's appropriate MIME type [96], as promised in the recipe <em>Setting up a basic HTTP server</em>. For that, we simply match the extension of the file [147 to 158]:</p>
+<pre style="padding-left: 30px">fn get_content_type(file: &amp;str) -&gt; Option&lt;ContentType&gt; {<br/>    let pos = file.rfind('.')? + 1;<br/>    let mime_type = match &amp;file[pos..] {<br/>        "txt" =&gt; mime::TEXT_PLAIN_UTF_8,<br/>        "html" =&gt; mime::TEXT_HTML_UTF_8,<br/>        "css" =&gt; mime::TEXT_CSS,<br/>        _ =&gt; return None,<br/>    };<br/>    Some(ContentType(mime_type))<br/>}</pre></div>
+<p>You may think this implementation is pretty lazy and that there should be a better way, but, trust me, this is exactly how all big web servers do it. Case in point, you can find <kbd>nginx</kbd> (<a href="https://nginx.org/en/">https://nginx.org/en/</a>) mime detection algorithm here: <a href="https://github.com/nginx/nginx/blob/master/conf/mime.types">https://github.com/nginx/nginx/blob/master/conf/mime.types</a>. If you plan on serving new file types, you can extend the <kbd>match</kbd> for their extensions. The <kbd>nginx</kbd> source is a good resource for this.</p>
+<p><kbd>get_content_type</kbd> returns <kbd>None</kbd> if there was no match [155] instead of a default content type, so that every caller can decide on a default for themselves. In <kbd>try_to_send_file</kbd>, we use <kbd>.unwrap_or_else(ContentType::plaintext);</kbd> [96] to set the fallback MIME type to <kbd>text/plain</kbd>.</p>
+<p>The last unexplained function left in our example is <kbd>send_404</kbd>, which we use a lot as a fallback. You can see that all it really does is call <kbd>try_to_send_file</kbd> on the 404 page [117] and on error send a static message instead [124].</p>
+<div class="packt_infobox">The fallback in <kbd>send_404</kbd> really shows us the beauty in Rust's error handling concept. Because strongly typed errors are part of a function's signature, as opposed to languages such as C++, where you never know who might throw an exception, you are forced to consciously handle the error cases. Try to remove <kbd>and_then</kbd> and its associated closure and you'll see that the compiler doesn't let you compile your program because you didn't handle the <kbd>Result</kbd> of <kbd>try_to_send_file</kbd> in any way.</div>
+<p>Go ahead now and see the results of our file server with your own eyes by pointing your browser to <kbd>http://localhost:3000/</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">There's more...</h1>
+                </header>
+            
+            <article>
+                
+<p>Despite being relatively easy to understand, our implementation of <kbd>try_to_send_file</kbd> is not endlessly scalable. Imagine serving and loading huge files into memory for millions of clients at the same time. That would bring your RAM to its limits pretty quickly. A more scalable solution is to send the file in chunks, that is part by part, so that you only need to hold a small part of it in memory at any given time. To implement this, you'll need to copy the contents of your file to a limited <kbd>[u8]</kbd> buffer with a fixed size and send that through an additional channel as an instance of <kbd>hyper::Chunk</kbd>, which implements <kbd>From&lt;Vec&lt;T&gt;&gt;</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">See also</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><span><em>Converting types into each other</em> and <em>Creating</em> <em>lazy static variables </em>recipe in </span><a href="6b8b0c3c-2644-4684-b1f4-b1e08d62450c.xhtml" target="_blank">Chapter 5</a>, <em>Advanced Data Structures</em></li>
+<li><span><em>Using the oneshot channel</em> recipe in <a href="dccc0c20-85ff-46a7-a1b8-463a5dd92ba0.xhtml" target="_blank">Chapter 8</a>, <em>Working with Futures</em></span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Making requests to APIs</h1>
+                </header>
+            
+            <article>
+                
+<p>Our last destination in this chapter brings us away from the server in favor of the other party participating in internet communication: the client. We will use <kbd>reqwest</kbd>, which is built around <kbd>hyper</kbd>, to create HTTPS requests to web services and parse their data into nicely usable Rust structures. You can also use the content of this recipe to write integration tests for your own web services.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How to do it...</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Open the <kbd>Cargo.toml</kbd> file that has been generated for you</li>
+<li>Under <kbd>[dependencies]</kbd>, if you didn't do so in the last recipe, add the following lines:</li>
+</ol>
+<pre style="padding-left: 60px">reqwest = "0.8.5"<br/>serde = "1.0.30"<br/>serde_derive = "1.0.30"</pre>
+<ol start="3">
+<li>If you want, you can go to <kbd>request</kbd>'s (<a href="https://crates.io/crates/reqwest">https://crates.io/crates/reqwest</a>), <kbd>serde</kbd>'s (<a href="https://crates.io/crates/serde">https://crates.io/crates/serde</a>), and <kbd>serde_derive</kbd>'s (<a href="https://crates.io/crates/serde_derive">https://crates.io/crates/serde_derive</a>) <em>crates.io</em> pages to check for the newest versions and use those ones instead</li>
+<li>In the folder <kbd>src/bin</kbd>, create a file called <kbd>making_requests.rs</kbd></li>
+<li>Add the following code and run it with <kbd>cargo run --bin making_requests</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">1   extern crate reqwest;
+2   #[macro_use]
+3   extern crate serde_derive;
+4   
+5   use std::fmt;
+6   
+7   #[derive(Serialize, Deserialize, Debug)]
+8   // The JSON returned by the web service that hands posts out
+9   // it written in camelCase, so we need to tell serde about that
+10  #[serde(rename_all = "camelCase")]
+11  struct Post {
+12    user_id: u32,
+13    id: u32,
+14    title: String,
+15    body: String,
+16  }
+17  
+18  #[derive(Serialize, Deserialize, Debug)]
+19  #[serde(rename_all = "camelCase")]
+20  struct NewPost {
+21    user_id: u32,
+22    title: String,
+23    body: String,
+24  }
+25  
+26  #[derive(Serialize, Deserialize, Debug)]
+27  #[serde(rename_all = "camelCase")]
+28  // The following struct could be rewritten with a builder
+29  struct UpdatedPost {
+30    #[serde(skip_serializing_if = "Option::is_none")]
+31    user_id: Option,
+32    #[serde(skip_serializing_if = "Option::is_none")]
+33    title: Option,
+34    #[serde(skip_serializing_if = "Option::is_none")]
+35    body: Option,
+36  }
+37  
+38  struct PostCrud {
+39    client: reqwest::Client,
+40    endpoint: String,
+41  }
+42  
+43  impl fmt::Display for Post {
+44    fn fmt(&amp;self, f: &amp;mut fmt::Formatter) -&gt; fmt::Result {
+45      write!(
+46        f,
+47        "User ID: {}\nID: {}\nTitle: {}\nBody: {}\n",
+48        self.user_id, self.id, self.title, self.body
+49      )
+50    }
+51  }</pre>
+<p style="padding-left: 60px">The following code shows the requests being implemented:</p>
+<pre style="padding-left: 60px">53  impl PostCrud {
+54    fn new() -&gt; Self {
+55      PostCrud {
+56        // Build an HTTP client. It's reusable!
+57        client: reqwest::Client::new(),
+58        // This is a link to a fake REST API service
+59        endpoint: <br/>          "https://jsonplaceholder.typicode.com/posts".to_string(),
+60      }
+61    }
+62  
+63    fn create(&amp;self, post: &amp;NewPost) -&gt; Result&lt;Post, <br/>      reqwest::Error&gt; {
+64      let response = <br/>        self.client.post(&amp;self.endpoint).json(post).send()?.json()?;
+65      Ok(response)
+66    }
+67  
+68    fn read(&amp;self, id: u32) -&gt; Result&lt;Post, reqwest::Error&gt; {
+69      let url = format!("{}/{}", self.endpoint, id);
+70      let response = self.client.get(&amp;url).send()?.json()?;
+71      Ok(response)
+72    }
+73  
+74    fn update(&amp;self, id: u32, post: &amp;UpdatedPost) -&gt; Result&lt;Post, <br/>      reqwest::Error&gt; {
+75      let url = format!("{}/{}", self.endpoint, id);
+76      let response = <br/>        self.client.patch(&amp;url).json(post).send()?.json()?;
+77      Ok(response)
+78    }
+79  
+80    fn delete(&amp;self, id: u32) -&gt; Result&lt;(), reqwest::Error&gt; {
+81      let url = format!("{}/{}", self.endpoint, id);
+82      self.client.delete(&amp;url).send()?;
+83      Ok(())
+84    }
+85  }</pre>
+<p style="padding-left: 60px">The following code shows us using our CRUD client:</p>
+<pre style="padding-left: 60px">87  fn main() {
+88    let post_crud = PostCrud::new();
+89    let post = post_crud.read(1).expect("Failed to read post");
+90    println!("Read a post:\n{}", post);
+91  
+92    let new_post = NewPost {
+93      user_id: 2,
+94      title: "Hello World!".to_string(),
+95      body: "This is a new post, sent to a fake JSON API <br/>        server.\n".to_string(),
+96    };
+97    let post = post_crud.create(&amp;new_post).expect("Failed to  <br/>      create post");
+98    println!("Created a post:\n{}", post);
+99  
+100   let updated_post = UpdatedPost {
+101     user_id: None,
+102     title: Some("New title".to_string()),
+103     body: None,
+104   };
+105   let post = post_crud
+106     .update(4, &amp;updated_post)
+107     .expect("Failed to update post");
+108   println!("Updated a post:\n{}", post);
+109 
+110   post_crud.delete(51).expect("Failed to delete post");
+111 }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">How it works...</h1>
+                </header>
+            
+            <article>
+                
+<p>At the top, we define our structures. <kbd>Post</kbd>[11], <kbd>NewPost</kbd> [20], and <kbd>UpdatedPost</kbd> [29] all just represent convenient ways to handle the different requirements of the API. The particular JSON API we are interacting with uses camelCase variables, so we need to specify this on every <kbd>struct</kbd>, otherwise <kbd>serde</kbd> won't be able to parse them correctly [10, 19 and 27].</p>
+<p>Because the <kbd>PATCH</kbd> method we're communicating with doesn't accept null values on unchanged variables, we mark them all in <kbd>UpdatedPost</kbd> as not serialized when equal to <kbd>None</kbd> [30, 32 and 34]:</p>
+<pre style="padding-left: 30px">#[serde(skip_serializing_if = "Option::is_none")]</pre>
+<p>Additionally, we implement the <kbd>fmt::Display</kbd> trait on <kbd>Post</kbd>, so we can print it nicely [43 to 51].</p>
+<p>But enough about our models; let's take a look at <kbd>PostCrud</kbd> [53]. Its purpose is to abstract a CRUD (Create, Read, Update, Delete) service. For this, it is equipped with a reusable HTTP client via <kbd>reqwest::Client</kbd> [57] and a mock JSON API endpoint from <a href="https://jsonplaceholder.typicode.com/">https://jsonplaceholder.typicode.com/</a></p>
+<p><a href="https://jsonplaceholder.typicode.com/"/></p>
+<p>Its methods show you how easy <kbd>reqwest</kbd> is to use: you simply use the required HTTP method directly as a function on the client, pass optional data to it, which it will automatically deserialize for you with <kbd>.json()</kbd>, <kbd>.send()</kbd> the request, and then parse the response again as JSON with a second call to  <kbd>.json()</kbd> [64].</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">There's more...</h1>
+                </header>
+            
+            <article>
+                
+<p>Of course, <kbd>reqwest</kbd> is able to work with non-JSON-based web services as well. It has various methods for this such as <kbd>query</kbd>, which adds an array of key-value queries to the URL, or <kbd>form</kbd>, which will add <kbd>url-encoded</kbd> form bodies to the request. While using all these methods, <kbd>reqwest</kbd> will manage the headers for you, but you can manage them however explicitly you want using the <kbd>headers</kbd> method.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">See also</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><span><em>Using the builder pattern</em> recipe in </span><a href="0620f24b-d897-497a-b000-d63a1426c3ff.xhtml" target="_blank">Chapter 1</a>, <em>Learning the Basics</em></li>
+<li><span><em>Serialization basics with Serde</em> recipe in </span><a href="c9c593dc-fc0e-4305-b819-4b112cb98684.xhtml" target="_blank">Chapter 4</a>, <em>Serialization</em></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>
