@@ -202,16 +202,25 @@
   id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 返回未来的主要方法有几种。第一种是使用特质对象，就像在 `check_prime_boxed` 中做的那样。现在，`Box` 是一个指向堆上对象的指针类型。它是一个受管理的指针，意味着当对象超出作用域时，对象将被自动清理。函数的返回类型是一个特质对象，它可以代表任何将
+    `Item` 设置为 bool 且将 `Error` 设置为 `io::Error` 的未来。因此，这代表了动态分派。返回未来的第二种方法是使用 `impl`
+    特质特性。在 `check_prime_impl_trait` 的情况下，我们就是这样做的。我们说该函数返回一个实现了 `Future<Item=bool,
+    Error=io::Error>` 的类型，并且由于任何实现了 `Future` 特质的类型都是未来，我们的函数正在返回一个未来。请注意，在这种情况下，我们不需要在返回结果之前装箱。因此，这种方法的一个优点是返回未来不需要进行分配。我们的两个函数都使用
+    `future::ok` 函数来表示我们的计算已经成功完成，并给出了给定的结果。另一种选择是实际上不返回一个未来，而是使用基于未来的线程池 crate 来执行创建未来和管理未来的繁重工作。这就是
+    `check_prime` 的情况，它只返回一个 `bool`。在我们的主函数中，我们使用 futures-`cpupool` crate 设置了一个线程池，并在该池中运行最后一个函数。我们得到一个可以调用
+    `wait` 来获取结果的未来。为了达到相同的目标，还有一个完全不同的选项，即返回一个实现了 `Future` 特质的自定义类型。这是最不便捷的，因为它需要编写一些额外的代码，但它是最灵活的方法。
 - en: The `impl` trait is not a stable feature yet. Thus, `check_prime_impl_trait`
     will only work on nightly Rust.
   id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: '`impl` 特性目前还不是稳定特性。因此，`check_prime_impl_trait` 只能在 nightly Rust 上工作。'
 - en: 'Having constructed a future, the next goal is to execute it. There are three
     ways of doing this:'
   id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 构建了一个未来之后，下一个目标是执行它。有三种方法可以做到这一点：
 - en: 'In the current thread: This will end up blocking the current thread till the
     future has finished executing. In our previous example, `res_one` and `res_two`
     are executed on the main thread, blocking user interaction.'
@@ -219,6 +228,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在当前线程中：这将导致当前线程被阻塞，直到未来完成执行。在我们之前的例子中，`res_one` 和 `res_two` 在主线程上执行，阻止了用户交互。
 - en: 'In a thread pool: This is the case with `res_three`, which is executed in a
     thread pool named `thread_pool`. Thus, in this case, the calling thread is free
     to move on with its own processing.'
@@ -226,6 +236,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在线程池中：对于 `res_three` 来说，这是这种情况，它在名为 `thread_pool` 的线程池中执行。因此，在这种情况下，调用线程可以自由地继续自己的处理。
 - en: 'In an event loop: In some cases, neither of the above is possible. The only
     option then is to execute futures in an event loop. Conveniently, the tokio-core
     crate provides futures-friendly APIs to use event loops. We will look deeper into
@@ -234,6 +245,8 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在事件循环中：在某些情况下，上述两种方法都不可能。那时唯一的选择是在事件循环中执行未来。方便的是，tokio-core crate 提供了面向未来的 API
+    来使用事件循环。我们将在下一节更深入地探讨这个模型。
 - en: 'In our main function, we call the first two functions in the main thread. Thus,
     they will block execution of the main thread. The last one, however, is run on
     a different thread. In that case, the main thread is immediately free to print
@@ -318,12 +331,18 @@
   id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的两个玩家非常相似；它们都生成一个介于 `1` 和 `5` 之间的随机数，并睡眠相应的时间。之后，它们返回一个与它们名称对应的固定字符串。我们稍后会使用这些字符串来唯一标识它们。在我们的主函数中，我们初始化线程池和计时器。我们使用计时器上的组合器来返回一个在
+    `3` 秒后出错的未来。然后我们在线程池中启动两个玩家，并从这些玩家返回 `Result` 作为未来。请注意，这些函数现在实际上并没有真正运行，因为 futures
+    是懒加载的。然后我们将这些未来放入一个列表中，并使用 `select_ok` 组合器并行运行这些。这个函数接受一个未来的可迭代集合，并选择第一个成功的未来；这里的唯一限制是传递给此函数的所有未来都应该属于同一类型。因此，我们不能将超时未来传递到这里。我们使用接受两个未来的
+    `select` 组合器将 `select_ok` 的结果与超时未来链接起来，该组合器等待任一完成执行。结果未来将包含已经完成和尚未完成的部分。然后我们使用
+    `map` 组合器丢弃第二部分。最后，我们阻塞在未来的上，并使用 `ok()` 信号结束链。然后我们可以将结果与已知的字符串进行比较，以确定哪个未来获胜，并相应地打印出消息。
 - en: This is how a few runs will look. As our timeout is smaller than the maximum
     sleep period of either of the two functions, we should see a few timeouts. Whenever
     a function chooses a time less than the timeout, it gets a shot at winning.
   id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一些运行的结果。由于我们的超时时间小于两个函数中任一的最大睡眠时间，我们应该看到一些超时。每当一个函数选择的时间小于超时时间时，它就有机会获胜。
 - en: '[PRE10]'
   id: totrans-40
   prefs: []
@@ -334,6 +353,7 @@
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 与流和汇一起工作
 - en: 'The futures crate provides another useful abstraction for a lazily evaluated
     series of events, called `Stream`. If `Future` corresponds to `Result`, a `Stream`
     corresponds to `Iterator`. Semantically, they are very similar to futures, and
@@ -341,6 +361,8 @@
   id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: futures crate 提供了另一个用于懒加载一系列事件的有用抽象，称为 `Stream`。如果 `Future` 对应于 `Result`，那么
+    `Stream` 就对应于 `Iterator`。从语义上看，它们与 futures 非常相似，看起来是这样的：
 - en: '[PRE11]'
   id: totrans-43
   prefs: []
@@ -355,6 +377,8 @@
   id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的唯一区别是返回类型被包裹在一个 `Option` 中，就像 `Iterator` 特性一样。因此，这里的 `None` 会表示流已终止。此外，所有流都是未来，可以使用
+    `into_future` 转换。让我们看看使用这个构造的一个例子。我们将部分重用之前章节中的 collatz 示例。第一步是设置项目：
 - en: '[PRE12]'
   id: totrans-45
   prefs: []
@@ -364,6 +388,7 @@
   id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 添加了所有依赖项后，我们的 Cargo 配置看起来如下：
 - en: '[PRE13]'
   id: totrans-47
   prefs: []
@@ -376,6 +401,8 @@
   id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 在设置好一切之后，我们的主文件将如下所示。在这种情况下，我们有一个名为 `CollatzStream` 的结构体，它有两个字段用于当前状态和结束状态（始终为
+    `1`）。我们将在这个结构体上实现 `Stream` 特性，使其表现得像一个流：
 - en: '[PRE14]'
   id: totrans-49
   prefs: []
@@ -393,6 +420,9 @@
   id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们通过在 `1` 到 `5` 秒之间随机暂停来模拟返回结果的延迟。在我们的轮询实现中，当达到 `1` 时，我们返回 `Ok(Async::Ready(None))`
+    来表示流已结束。否则，我们返回当前状态作为 `Ok(Async::Ready(Some(self.current)))`。很容易注意到，除了流语义外，这个实现与迭代器的实现相同。在我们的主函数中，我们初始化结构体并使用
+    `for_each` 组合子来打印流中的每个项目。这个组合子返回一个未来，我们在其上调用 `wait` 和 `ok` 来阻塞并获取所有结果。以下是运行最后一个示例时我们看到的内容：
 - en: '[PRE15]'
   id: totrans-51
   prefs: []
@@ -406,6 +436,8 @@
   id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 就像 `Future` 特性一样，`Stream` 特性也支持许多其他组合子，这些组合子适用于不同的目的。`Stream` 的对偶是 `Sink`，它是异步事件的接收者。这在模拟
+    Rust 通道的发送端、网络套接字、文件描述符等时非常有用。
 - en: 'A common pattern in any asynchronous system is synchronization. This becomes
     important, as more often than not, components need to communicate with one another
     to pass data or coordinate tasks. We solved this exact problem in the past using
@@ -416,6 +448,8 @@
   id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 在任何异步系统中，一个常见的模式是同步。这变得很重要，因为组件通常需要相互通信以传递数据或协调任务。我们过去使用通道解决了这个确切的问题。但是，这些构造在这里不适用，因为标准库中的通道实现不是异步的。因此，futures
+    有自己的通道实现，它提供了您从异步系统期望的所有保证。让我们看看一个例子；我们的项目设置应该如下所示：
 - en: '[PRE16]'
   id: totrans-54
   prefs: []
@@ -425,6 +459,7 @@
   id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: Cargo 配置应该如下所示：
 - en: '[PRE17]'
   id: totrans-56
   prefs: []
@@ -436,6 +471,7 @@
   id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们有两个函数。一个函数会等待随机的时间，然后随机返回 `"ping"` 或 `"pong"`。这个函数将是我们的发送者。以下是它的样子：
 - en: '[PRE18]'
   id: totrans-58
   prefs: []
@@ -454,12 +490,17 @@
   id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: futures 库提供了两种类型的通道：一种是一次性使用的 *oneshot* 通道，可以用来发送和接收任何消息，还有一种是可以多次使用的常规 *mpsc*
+    通道。在我们的主函数中，我们获取通道的两端，并在另一个线程中将发送者作为未来启动。接收者也在另一个线程中启动。在这两种情况下，我们记录处理程序以便稍后等待它们完成（使用
+    `join`）。请注意，我们的接收者将通道的接收端作为参数。因为 `Receiver` 实现了 `Stream`，我们可以使用 `and_then` 组合子在它上面来打印值。最后，我们在退出接收函数之前在未来的
+    `wait()` 和 `ok()` 上调用。在主函数中，我们通过两个线程处理程序来连接它们，以驱动它们完成。
 - en: Running the last example will randomly print either `"ping"` or `"pong"`, depending
     on what was sent via the channel. Note that the actual printing happens on the
     receiving end.
   id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 运行最后一个示例将随机打印 `"ping"` 或 `"pong"`，具体取决于通过通道发送的内容。请注意，实际的打印操作发生在接收端。
 - en: '[PRE19]'
   id: totrans-61
   prefs: []
@@ -475,6 +516,9 @@
   id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: '`futures` crate 还在 `futures::sync::BiLock` 中提供了一个锁定机制，这与 `std::sync::Mutex`
+    非常相似。这是一个面向未来的互斥锁，用于在两个所有者之间仲裁资源共享。请注意，`BiLock` 只适用于两个未来，这是一个令人烦恼的限制。以下是它是如何工作的：我们感兴趣的是修改我们的最后一个示例，以在发送函数被调用时显示一个计数器。现在我们的计数器需要是线程安全的，以便可以在消费者之间共享。使用
+    Cargo 设置项目：'
 - en: '[PRE20]'
   id: totrans-63
   prefs: []
@@ -485,6 +529,7 @@
   id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的 `Cargo.toml` 文件应该完全相同，以下是主文件的外观：
 - en: '[PRE21]'
   id: totrans-65
   prefs: []
@@ -504,12 +549,17 @@
   id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 虽然这基本上与上一个示例相同，但有一些区别。在我们的主函数中，我们将计数器设置为零。然后我们在计数器上创建一个 `BiLock`。构造函数返回两个类似于通道的句柄，然后我们可以将它们传递出去。然后我们创建我们的通道并启动发送者。现在，如果我们查看发送者，它已经被修改为接受一个
+    `BiLock` 的引用。在该函数中，我们尝试使用 `poll_lock` 获取锁，如果成功，我们增加计数器。否则，我们不做任何事情。然后我们继续我们通常的业务，返回
+    `"ping"` 或 `"pong"`。接收者也被修改为接受一个 `BiLock`。在那里，我们尝试获取锁，如果成功，我们打印出被锁定数据的值。在我们的主函数中，我们使用线程启动这些
+    futures，并在它们上等待它们完成。
 - en: 'Here is what happens on an unsuccessful run, when both parties fail to acquire
     the lock. In a real example, we would want to handle the error gracefully and
     retry. We left out that part for the sake of brevity:'
   id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一个在尝试获取锁失败时发生的情况，当双方都未能获取锁。在真实示例中，我们希望优雅地处理错误并重试。我们为了简洁起见省略了这部分内容：
 - en: '[PRE22]'
   id: totrans-68
   prefs: []
@@ -519,6 +569,7 @@
   id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一个良好的运行示例：
 - en: '[PRE23]'
   id: totrans-70
   prefs: []
@@ -529,6 +580,7 @@
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 正在前往 tokio
 - en: 'The tokio ecosystem is an implementation of a network stack in Rust. It has
     all the major functionality of the standard library, the major difference being
     that it is non-blocking (most common calls do not block the current thread). This
@@ -538,18 +590,22 @@
   id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: tokio 生态系统是 Rust 中网络堆栈的一个实现。它具有标准库的所有主要功能，主要区别在于它是非阻塞的（大多数常见调用不会阻塞当前线程）。这是通过使用
+    mio 来完成所有底层繁重工作，并使用 futures 来抽象长运行操作来实现的。该生态系统有两个基本 crate，其他所有内容都是围绕这些构建的：
 - en: '`tokio-proto` provides primitives for building asynchronous servers and clients.
     This depends heavily on mio for low-level networking and on futures for abstraction.'
   id: totrans-73
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`tokio-proto` 提供了构建异步服务器和客户端的原语。这严重依赖于 mio 进行底层网络和 futures 进行抽象。'
 - en: '`tokio-core` provides an event loop to run futures in and a number of related
     APIs. This is useful when an application needs fine-grained control over IO.'
   id: totrans-74
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`tokio-core` 提供了一个事件循环来运行 futures，以及一些相关的 API。当应用程序需要精细控制 IO 时，这很有用。'
 - en: 'As we mentioned in the last section, one way to run futures is on an event
     loop. An event loop (called a `reactor` in tokio) is an infinite loop that listens
     for defined events and takes appropriate action once it receives one. Here is
@@ -559,6 +615,8 @@
   id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 正如我们在上一节中提到的，运行 futures 的一种方法是在事件循环上。事件循环（在 tokio 中称为 `reactor`）是一个无限循环，它监听定义的事件，并在接收到一个事件时采取适当的行动。以下是它是如何工作的：我们将借用我们之前的示例，该示例确定给定的输入是否为素数。这返回一个包含结果的
+    future，然后我们将其打印出来。项目设置与以往相同：
 - en: '[PRE24]'
   id: totrans-76
   prefs: []
@@ -568,6 +626,7 @@
   id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里是`Cargo.toml`应该看起来像什么：
 - en: '[PRE25]'
   id: totrans-78
   prefs: []
@@ -578,6 +637,7 @@
   id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于这个例子，我们将在一个无限循环中接收输入。对于每个输入，我们将去除换行符和空格，并尝试将其解析为`u64`。看起来是这样的：
 - en: '[PRE26]'
   id: totrans-80
   prefs: []
@@ -590,6 +650,7 @@
   id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的主函数中，我们创建核心并启动我们的无限循环。我们使用核心的`run`方法来启动一个任务以异步执行未来。结果被收集并在标准输出上打印。一个会话应该看起来像这样：
 - en: '[PRE27]'
   id: totrans-82
   prefs: []
@@ -600,6 +661,7 @@
   id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: '`tokio-proto`是一个异步服务器（和客户端）构建工具包。任何使用此工具包的服务器都有以下三个不同的层：'
 - en: A codec that dictates how data should be read from and written to the underlying
     socket forming the transport layer for our protocol. Subsequently, this layer
     is the bottom-most (closest to the physical medium). In practice, writing a codec
@@ -609,6 +671,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一个编解码器，它决定了如何从底层套接字读取和写入数据，形成我们协议的传输层。随后，这一层是最低的（最接近物理介质）。在实践中，编写编解码器相当于实现库中的一些给定特质，这些特质处理字节流。
 - en: 'A protocol sits above a codec and below the actual event loop running the protocol.
     This acts as a glue to bind those together. tokio supports multiple protocol types,
     depending on the application: a simple request-response type protocol, a multiplexed
@@ -617,6 +680,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一个协议位于编解码器之上和实际运行协议的事件循环之下。这充当粘合剂，将它们绑定在一起。tokio支持多种协议类型，具体取决于应用程序：一个简单的请求-响应类型协议、一个多路复用协议和一个流协议。我们将很快深入探讨这些。
 - en: A service that actually runs all this as a future. As this is just a future,
     an easy way to think of this is as an asynchronous function that transforms an
     input to an eventual response (which could be an error). In practice, most of
@@ -625,6 +689,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一个实际运行所有这些操作作为未来的服务。由于这只是一个未来，一个简单的方式来思考它是一个将输入转换为最终响应（可能是错误）的异步函数。在实践中，大部分计算都在这一层完成。
 - en: 'Because the layers are swappable, an implementation is perfectly free to swap
     the protocol type for another, or the service for another one, or the codec. Let
     us look at an example of a simple service using `tokio-proto`. This one is a traditional
@@ -634,6 +699,7 @@
   id: totrans-87
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于层是可互换的，实现可以完全自由地交换协议类型、服务或编解码器。让我们看看一个使用`tokio-proto`的简单服务的例子。这是一个传统的请求-响应服务，提供基于文本的接口。它接收一个数字并返回其Collatz序列作为数组。如果输入不是一个有效的整数，它将返回一条消息指出这一点。我们的项目设置相当简单：
 - en: '[PRE28]'
   id: totrans-88
   prefs: []
@@ -643,6 +709,7 @@
   id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: Cargo配置看起来像以下示例：
 - en: '[PRE29]'
   id: totrans-90
   prefs: []
@@ -655,6 +722,7 @@
   id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 如前所述，我们需要实现不同的层。在我们的当前情况下，我们的每一层都不需要保留太多状态。因此，它们可以用单元结构体来表示。如果不是这种情况，我们就需要在这些层中放入一些数据。
 - en: '[PRE30]'
   id: totrans-92
   prefs: []
@@ -670,6 +738,7 @@
   id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 如前所述，第一步是告诉编解码器如何从套接字读取数据。这是通过从`tokio_io::codec`实现`Encoder`和`Decoder`来完成的。请注意，我们在这里不需要处理原始套接字；我们得到一个字节流作为输入，我们可以自由地处理它。根据我们之前定义的协议，换行符表示输入的结束。因此，在我们的解码器中，我们读取到换行符，然后返回去除该换行符后的数据作为一个UTF-8编码的字符串。在发生错误的情况下，我们返回`None`。
 - en: 'The `Encoder` implementation is exactly the reverse: it transforms a string
     into a stream of bytes. The next step is the protocol definition, this one is
     really simple, as it does not do multiplexing or streaming. We implement `bind_transport`
@@ -690,10 +759,12 @@
   id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Encoder`实现正好相反：它将字符串转换成字节流。下一步是协议定义，这个协议非常简单，因为它既不做多路复用也不做流处理。我们实现`bind_transport`将编解码器绑定到我们的原始套接字，我们稍后会得到它。这里的唯一问题是这里的`Request`和`Response`类型应该与编解码器匹配。设置好这些之后，下一步是实现服务，通过声明一个单元结构体并在其上实现`Service`特质。我们的辅助函数`get_sequence`根据输入的`u64`返回柯朗序列。`Service`中的`call`方法实现了计算响应的逻辑。我们将输入解析为`u64`（记住，我们的编解码器将输入作为字符串返回）。如果没有出错，我们调用我们的辅助函数并返回一个静态字符串作为结果，否则返回一个错误。我们的主函数看起来与使用标准网络类型的函数类似，但我们使用tokio的`TcpServer`类型，它接受我们的套接字（将其绑定到编解码器）和我们的协议定义。最后，我们调用`serve`方法，并将我们的服务作为闭包传递。这个方法负责管理事件循环并在退出时清理事物。'
 - en: 'Let us use `telnet` to interact with it. Here is how a session will look:'
   id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们使用`telnet`与之交互。下面是一个会话的示例：
 - en: '[PRE31]'
   id: totrans-96
   prefs: []
@@ -705,6 +776,7 @@
   id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 和往常一样，编写一个客户端来与我们的服务器交互将更有用。我们将从在事件循环中运行future的示例中借用很多内容。我们首先设置我们的项目：
 - en: '[PRE32]'
   id: totrans-98
   prefs: []
@@ -714,6 +786,7 @@
   id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的货物设置将看起来像这样：
 - en: '[PRE33]'
   id: totrans-100
   prefs: []
@@ -723,6 +796,7 @@
   id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面是我们的主文件：
 - en: '[PRE34]'
   id: totrans-102
   prefs: []
@@ -742,6 +816,7 @@
   id: totrans-103
   prefs: []
   type: TYPE_NORMAL
+  zh: 当然，这个设置会将单个整数发送到服务器（十进制中的110），但将这个操作放入循环以读取输入并发送这些数据是微不足道的。我们将这个任务留给读者去练习。在这里，我们创建了一个事件循环并获取其句柄。然后，我们使用异步的`TcpStream`实现连接到给定地址的服务器。这会返回一个future，我们使用`and_then`将其与闭包结合以写入给定的套接字。整个结构返回一个新的future，称为`request`，它与一个读取future链在一起。最终的future称为`response`，并在事件循环上运行。最后，我们读取响应并将其打印出来。在每一步，我们必须遵守我们的协议，即换行符表示服务器和客户端的输入结束。下面是一个会话的示例：
 - en: '[PRE35]'
   id: totrans-104
   prefs: []
@@ -752,6 +827,7 @@
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: tokio中的套接字多路复用
 - en: One model of asynchronous-request processing in a server is through multiplexing
     incoming connections. In this case, each connection is assigned a unique ID of
     some kind and replies are issued whenever one is ready, irrespective of the order
@@ -763,6 +839,7 @@
   id: totrans-106
   prefs: []
   type: TYPE_NORMAL
+  zh: 服务器中异步请求处理的一种模式是通过多路复用传入的连接。在这种情况下，每个连接被分配一个某种类型的唯一ID，并且每当有一个准备好时就会发出回复，而不考虑它接收的顺序。因此，这允许更高的吞吐量，因为最短的任务隐含地获得了最高的优先级。这种模型也使得服务器在面对大量不同复杂度的传入请求时具有高度的响应性。传统的类Unix系统使用select和poll系统调用来支持套接字多路复用。
 - en: 'In the tokio ecosystem, this is mirrored by a number of traits that enable
     implementing multiplexed protocols. The basic anatomy of the server is the same
     as a simple server: we have the codec, the protocol using the codec, and a service
@@ -776,6 +853,7 @@
   id: totrans-107
   prefs: []
   type: TYPE_NORMAL
+  zh: 在tokio生态系统中，这通过一系列特性来实现，这些特性使得实现多路复用协议成为可能。服务器的基本结构与简单服务器相同：我们有编解码器、使用编解码器的协议，以及实际运行协议的服务。这里唯一的区别是我们将给每个传入的请求分配一个请求ID。这将用于稍后发送响应时的去歧义。我们还需要实现`tokio_proto::multiplex`命名空间中的一些特性。作为一个例子，我们将修改我们的collatz服务器并为其添加多路复用功能。在这个情况下，我们的项目设置略有不同，因为我们计划使用Cargo运行二进制文件，并且我们的项目将是一个库。我们是这样设置的：
 - en: '[PRE36]'
   id: totrans-108
   prefs: []
@@ -785,6 +863,7 @@
   id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: Cargo配置类似：
 - en: '[PRE37]'
   id: totrans-110
   prefs: []
@@ -794,6 +873,7 @@
   id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面是`lib.rs`文件的样子：
 - en: '[PRE38]'
   id: totrans-112
   prefs: []
@@ -817,6 +897,7 @@
   id: totrans-113
   prefs: []
   type: TYPE_NORMAL
+  zh: Tokio提供了一个内置类型`RequestId`来表示传入请求的唯一ID，所有与其相关的状态都由tokio内部管理。我们定义了一个名为`CollatzFrame`的自定义数据类型来表示我们的帧；它包含`RequestId`和用于我们数据的`String`。我们继续实现`Decoder`和`Encoder`，就像上次一样，为`CollatzCodec`。但是，在这两种情况下，我们必须考虑到头部中的请求ID和尾随的换行符。因为`RequestId`类型在底层是`u64`，它总是占用四个字节，再加上一个换行符的字节。因此，如果我们收到了少于5个字节，我们知道整个帧还没有收到。请注意，这并不是一个错误情况，帧仍在传输中，所以我们返回`Ok(None)`。然后我们检查缓冲区是否有换行符（符合我们的协议）。如果一切看起来都很好，我们从前4个字节解析请求ID（请注意，这将是在网络字节序）。然后我们构造一个`CollatzFrame`实例并返回它。编码器的实现是相反的；我们只需要将请求ID放回，然后是实际的数据，最后以换行符结束。
 - en: The next steps are to implement `ServerProto` and `ClientProto` for `CollatzProto`;
     both of these are boilerplates that bind the codec with the transport. Like last
     time, the last step is to implement the service. This step does not change at
@@ -826,18 +907,22 @@
   id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一步是实现`ServerProto`和`ClientProto`的`CollatzProto`；这两个都是绑定编解码器与传输的样板代码。像上次一样，最后一步是实现服务。这一步没有任何变化。请注意，在实现编解码器后，我们不需要关心处理请求ID，因为后续阶段根本看不到它。编解码器处理并管理它，同时将实际数据传递到后续层。
 - en: 'Here is what our frame looks like:'
   id: totrans-115
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是我们帧的外观：
 - en: '![](img/00016.jpeg)'
   id: totrans-116
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](img/00016.jpeg)'
 - en: Our request frame with the RequestId as header and a trailing newline
   id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的请求帧，其中包含作为头部的RequestId和一个尾随换行符
 - en: 'This time, our client will be based on tokio too. Our `Client` struct wraps
     an instance of `ClientService`, which takes in the underlying TCP stream and the
     protocol implementation to use. We have a convenience function called `connect`
@@ -849,6 +934,7 @@
   id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: 这次，我们的客户端也将基于tokio。我们的`Client`结构体封装了一个`ClientService`实例，它接受底层的TCP流和要使用的协议实现。我们有一个名为`connect`的便利函数，用于`Client`类型，它连接到指定的服务器并返回一个future。最后，我们在`Client`中实现`Service`，其中`call`方法返回一个future。我们将服务器和客户端作为示例放入名为`examples`的目录中。这样，cargo就知道这些应该作为与此crate关联的示例运行。服务器看起来是这样的：
 - en: '[PRE39]'
   id: totrans-119
   prefs: []
@@ -860,6 +946,7 @@
   id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: 这基本上和上次一样，只是在一个不同的文件中。我们必须将父crate声明为外部依赖，这样Cargo才能正确地链接一切。这是客户端的外观：
 - en: '[PRE40]'
   id: totrans-121
   prefs: []
@@ -874,12 +961,14 @@
   id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在事件循环中运行我们的客户端，使用tokio-core。我们使用客户端上定义的`connect`方法获取一个封装连接的future。我们使用`and_then`组合器，并使用`call`方法向服务器发送一个字符串。由于此方法也返回一个future，我们可以在内部future上使用`and_then`组合器来提取响应，然后通过返回`Ok(())`来解析它。这也解析了外部future。
 - en: 'Now, if we open two terminals and run the server in one and the client in another,
     here is what we should see in the client. Note that as we do not have sophisticated
     retries and error handling, the server should be run before the client:'
   id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，如果我们打开两个终端，在一个终端中运行服务器，在另一个终端中运行客户端，我们应该在客户端看到以下内容。请注意，由于我们没有复杂的重试和错误处理，服务器应该在客户端之前运行：
 - en: '[PRE41]'
   id: totrans-124
   prefs: []
@@ -889,11 +978,13 @@
   id: totrans-125
   prefs: []
   type: TYPE_NORMAL
+  zh: 如预期的那样，这个输出与之前的结果匹配。
 - en: Writing streaming protocols
   id: totrans-126
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 编写流式协议
 - en: 'In a number of cases, a protocol has a data unit with a header attached to
     it. The server typically reads the header first and, based on that, decides how
     to process the data. In some cases, the server may be able to do some processing
@@ -906,6 +997,7 @@
   id: totrans-127
   prefs: []
   type: TYPE_NORMAL
+  zh: 在许多情况下，一个协议有一个数据单元，其中包含一个附加的头部。服务器通常首先读取头部，然后根据这个头部决定如何处理数据。在某些情况下，服务器可能能够根据头部进行一些处理。一个这样的例子是IP，它有一个包含目标地址的头部。服务器可能开始根据该信息运行最长前缀匹配，然后再读取主体。在本节中，我们将探讨如何使用tokio编写这样的服务器。我们将扩展我们的玩具collatz协议，包括一个头部和一些数据主体，并从这里开始。让我们从一个例子开始，我们的项目设置将与上次完全相同，使用Cargo进行设置：
 - en: '[PRE42]'
   id: totrans-128
   prefs: []
@@ -915,6 +1007,7 @@
   id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: Cargo配置没有太大变化：
 - en: '[PRE43]'
   id: totrans-130
   prefs: []
@@ -925,6 +1018,7 @@
   id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于这个示例较大，我们将其分解为几个组成部分，如下所示。第一部分展示了设置客户端的过程：
 - en: '[PRE44]'
   id: totrans-132
   prefs: []
@@ -948,6 +1042,11 @@
   id: totrans-133
   prefs: []
   type: TYPE_NORMAL
+  zh: 总是首先设置外部 crate 并包含所有必需的内容。我们定义了一些我们将要使用的类型。`CollatzMessage` 是我们的协议接收到的消息；它有一个头部和一个主体，都是
+    `String` 类型。`CollatzInput` 是协议的输入流，它是一个枚举，有两个变体：`Once` 代表我们以非流式方式接收数据的情况，而 `Stream`
+    是第二种情况。协议实现是一个名为 `CollatzProto` 的单元结构。然后我们定义了一个客户端结构，它有一个内部的 `ClientProxy` 实例，这是实际客户端的实现。它接受三种类型，前两种是整个服务器的请求和响应，最后一种是错误。然后我们为
+    `Client` 结构实现一个连接方法，使用 `CollatzProto` 进行连接，并返回一个包含连接的 future。最后一步是实现 `Client`
+    的 `Service`，输入和输出都是 `CollatzInput` 类型，因此我们必须使用 future 上的 map 将输出转换为该类型。让我们继续到服务器；它看起来是这样的：
 - en: '[PRE45]'
   id: totrans-134
   prefs: []
@@ -971,6 +1070,12 @@
   id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: 如预期，`CollatzStream` 的主体要么是一个字符串，要么是发生了错误。现在，对于流式协议，我们需要提供一个函数的实现，该函数返回流的一半发送者；我们在
+    `CollatzStream` 的 `pair` 函数中这样做。接下来，我们为我们的自定义流实现 `Stream` 特性；在这种情况下，`poll` 方法简单地轮询内部
+    `Body` 以获取更多数据。在设置好流之后，我们可以实现编解码器。在这里，我们需要维护一种方式来知道我们此刻正在处理帧的哪一部分。这是通过一个名为 `decoding_head`
+    的布尔值来完成的，我们需要根据需要翻转它。我们需要为我们的编解码器实现 `Decoder`，这基本上和上次一样；只需注意我们需要跟踪流和非流的情况以及之前定义的布尔值。`Encoder`
+    的实现是相反的。我们还需要将协议实现绑定到编解码器；这是通过实现 `ClientProto` 和 `ServerProto` 为 `CollatzProto`
+    来完成的。在两种情况下，我们都将布尔值设置为 true，因为接收消息后要读取的第一个东西是头部。
 - en: 'The last step in the stack is to implement the services by implementing the
     `Service` trait for `CollatzService`. In that, we read the header and try to parse
     it as a `u64`. If that works fine, we move on to calculating the collatz sequence
@@ -980,6 +1085,8 @@
   id: totrans-136
   prefs: []
   type: TYPE_NORMAL
+  zh: 在堆栈中的最后一步是通过实现 `Service` 特性为 `CollatzService` 实现服务。在那里，我们读取头部并尝试将其解析为 `u64`。如果这做得很好，我们就继续计算该
+    `u64` 的 collatz 序列，并以 `CollatzInput::Once` 的形式在 leaf future 中返回结果。在另一种情况下，我们遍历主体并在控制台上打印它。最后，我们向客户端返回一个固定的字符串。这就是它的样子：
 - en: '[PRE46]'
   id: totrans-137
   prefs: []
@@ -993,6 +1100,7 @@
   id: totrans-138
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们还编写了两个从`CollatzMessage`到`CollatzInput`以及相反的转换辅助器，通过相应地实现`From`特质。像其他所有内容一样，我们不得不面对两种情况：当消息有主体时，以及当它没有主体时（换句话说，头部已经到达，但消息的其他部分还没有到达）。以下是这些：
 - en: '[PRE47]'
   id: totrans-139
   prefs: []
@@ -1003,6 +1111,7 @@
   id: totrans-140
   prefs: []
   type: TYPE_NORMAL
+  zh: 在设置好服务器和客户端之后，我们将像上次一样以示例的形式实现我们的测试。它们看起来是这样的：
 - en: '[PRE48]'
   id: totrans-141
   prefs: []
@@ -1018,6 +1127,7 @@
   id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 客户端看起来是这样的。与服务器相比，这里有一些内容需要消化：
 - en: '[PRE50]'
   id: totrans-144
   prefs: []
@@ -1033,10 +1143,12 @@
   id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们使用之前定义的`connect`方法在已知地址和端口上设置到服务器的连接。我们使用`and_then`组合器向服务器发送一个固定字符串，并打印响应。此时，我们已经发送了头部，接下来我们将发送主体。这是通过将流分成两半并使用发送者发送多个字符串来完成的。一个最终的组合器打印响应并解决未来。所有之前的内容都在事件循环中运行。
 - en: 'This is what a session looks like for the server:'
   id: totrans-146
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是服务器会话的样子：
 - en: '[PRE51]'
   id: totrans-147
   prefs: []
@@ -1046,6 +1158,7 @@
   id: totrans-148
   prefs: []
   type: TYPE_NORMAL
+  zh: 而客户端看起来是这样的：
 - en: '[PRE52]'
   id: totrans-149
   prefs: []
@@ -1056,6 +1169,7 @@
   id: totrans-150
   prefs: []
   type: TYPE_NORMAL
+  zh: 如预期，服务器在收到请求的实际主体之前处理了头部（我们知道这一点是因为我们在发送头部之后发送了主体）。
 - en: Other than what we discussed here, tokio supports a bunch of other features
     as well. For instance, you can implement a protocol handshake by changing the
     `ServerProto` and `ClientProto` implementations to exchange setup messages before
@@ -1068,84 +1182,102 @@
   id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 除了我们在这里讨论的内容之外，tokio还支持许多其他功能。例如，你可以通过更改`ServerProto`和`ClientProto`实现来交换设置消息，在构建`BindTransport`未来之前实现协议握手。这一点非常重要，因为许多网络协议需要某种形式的握手来设置共享状态以协同工作。请注意，一个协议可以是流式和管道化的，或者流式和复用的。对于这些，实现需要分别替换`streaming::pipeline`或`streaming::multiplex`命名空间中的特质。
 - en: The larger tokio ecosystem
   id: totrans-152
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 更大的tokio生态系统
 - en: 'Let us take a look at the current state of the tokio ecosystem. Here are the
     commonly useful crates in the `tokio-rs` GitHub organization, at the time of writing:'
   id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们看看tokio生态系统当前的状态。以下是写作时在`tokio-rs` GitHub组织中的常用crate：
 - en: '| **Crate** | **Function** |'
   id: totrans-154
   prefs: []
   type: TYPE_TB
+  zh: '| **Crate** | **函数** |'
 - en: '| `tokio-minihttp` | Simple HTTP server implementation in tokio; should not
     be used in production. |'
   id: totrans-155
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-minihttp` | 在tokio中的简单HTTP服务器实现；不应在生产中使用。|'
 - en: '| `tokio-core` | Future-aware networking implementations; the core event loop.
     |'
   id: totrans-156
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-core` | 具有未来感知的网络实现；核心事件循环。|'
 - en: '| `tokio-io` | IO primitives for tokio. |'
   id: totrans-157
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-io` | tokio的IO原语。|'
 - en: '| `tokio-curl` | A `libcurl`-based HTTP client implementation using tokio.
     |'
   id: totrans-158
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-curl` | 使用tokio的基于`libcurl`的HTTP客户端实现。|'
 - en: '| `tokio-uds` | Non-blocking unix domain sockets using tokio. |'
   id: totrans-159
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-uds` | 使用tokio的非阻塞Unix域套接字。|'
 - en: '| `tokio-tls` | TLS and SSL implementation based on tokio. |'
   id: totrans-160
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-tls` | 基于tokio的TLS和SSL实现。|'
 - en: '| `tokio-service` | Provides the `Service` trait that we have used extensively.
     |'
   id: totrans-161
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-service` | 提供了我们广泛使用的`Service`特质。|'
 - en: '| `tokio-proto` | Provides a framework for building network protocols using
     tokio; we have used this one extensively. |'
   id: totrans-162
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-proto` | 提供了一个使用tokio构建网络协议的框架；我们广泛使用了这个。|'
 - en: '| `tokio-socks5` | A SOCKS5 server using tokio, not production-ready. |'
   id: totrans-163
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-socks5` | 使用tokio的SOCKS5服务器，尚未准备好用于生产。|'
 - en: '| `tokio-middleware` | Collection of middlewares for tokio services; lacks
     essential services at the moment. |'
   id: totrans-164
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-middleware` | 用于 tokio 服务的中间件集合；目前缺少基本服务。|'
 - en: '| `tokio-times` | Timer-related functionality based on tokio. |'
   id: totrans-165
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-times` | 基于 tokio 的定时器相关功能。|'
 - en: '| `tokio-line` | Sample-line protocol for demonstrating tokio. |'
   id: totrans-166
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-line` | 用于演示 tokio 的样本行协议。|'
 - en: '| `tokio-redis` | Proof-of-concept redis client based on tokio; should not
     be used in production. |'
   id: totrans-167
   prefs: []
   type: TYPE_TB
+  zh: '| `tokio-redis` | 基于 tokio 的证明概念 Redis 客户端；不应在生产中使用。|'
 - en: '| `service-fn` | Provides a function that implements the Service trait for
     a given closure. |'
   id: totrans-168
   prefs: []
   type: TYPE_TB
+  zh: '| `service-fn` | 为给定的闭包提供实现 Service 特性的函数。|'
 - en: Note that a number of these are either not updated in a long time or proof-of-concept
     implementations that should not be used in anything useful. But that is not a
     problem. A large number of independent utilities have adopted tokio since it was
@@ -1154,6 +1286,7 @@
   id: totrans-169
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，其中许多已经很长时间没有更新，或者是一些应该不用于任何有用目的的证明概念实现。但这不是问题。自它推出以来，大量独立的实用工具已经采用了 tokio，从而形成了一个充满活力的生态系统。而且，据我们观察，这是任何开源项目成功的真正标志。
 - en: 'Let us look at some commonly used libraries in the preceding list , starting
     with `tokio-curl`. For our example, we will simply download a single file from
     a known location, write it to local disk, and print out the headers we got back
@@ -1161,6 +1294,7 @@
   id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们看看前面列表中一些常用的库，首先是 `tokio-curl`。在我们的示例中，我们将简单地从已知位置下载单个文件，将其写入本地磁盘，并打印出我们从服务器获取的头部信息。由于这是一个二进制文件，我们将按照以下方式设置项目：
 - en: '[PRE53]'
   id: totrans-171
   prefs: []
@@ -1170,6 +1304,7 @@
   id: totrans-172
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面是 Cargo 设置的示例：
 - en: '[PRE54]'
   id: totrans-173
   prefs: []
@@ -1180,6 +1315,7 @@
   id: totrans-174
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于 `tokio-curl` 库是 Rust `curl` 库的包装器，因此我们还需要包含它。以下是主文件：
 - en: '[PRE55]'
   id: totrans-175
   prefs: []
@@ -1197,10 +1333,14 @@
   id: totrans-176
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将使用来自 `curl` crate 的 `Easy` API。我们首先创建我们的事件循环和 HTTP 会话。然后创建一个 `libcurl` 将用于处理我们请求的句柄。我们使用布尔值调用
+    `get` 方法来表示我们感兴趣进行 HTTP GET 操作。然后我们将 URL 传递给句柄。接下来，我们设置两个作为闭包传递的回调函数。第一个被称为 `header_function`；这个函数显示客户端的每个头部信息。第二个被称为
+    `write_function`，它将我们获取的数据写入我们的文件。最后，我们通过调用会话的 `perform` 函数创建一个请求。最后，我们在事件循环中运行请求并打印出我们得到的状态码。
 - en: 'Running this does the following:'
   id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 运行此操作将执行以下操作：
 - en: '[PRE56]'
   id: totrans-178
   prefs: []
@@ -1212,11 +1352,13 @@
   id: totrans-179
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将在当前目录中生成一个名为 `foo.zip` 的文件。您可以使用常规文件下载该文件，并比较两个文件的 SHA 哈希值，以验证它们确实相同。
 - en: Conclusion
   id: totrans-180
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 结论
 - en: This chapter was an introduction to one of the most exciting components of the
     larger Rust ecosystem. Futures and the Tokio ecosystem provide powerful primitives
     that can be widely used in applications, including networking software. In itself,
@@ -1226,6 +1368,8 @@
   id: totrans-181
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章是 Rust 更大生态系统中最激动人心的组件之一的一个介绍。Futures 和 Tokio 生态系统提供了强大的原语，这些原语可以广泛应用于应用程序中，包括网络软件。本身，Futures
+    可以用来模拟任何其他情况下缓慢的或依赖于外部资源的计算。与 tokio 结合使用，它可以用来模拟复杂的流水线或复用等协议行为。
 - en: Some major drawbacks of using these center around lack of proper documentation
     and examples. Also, error messages from these applications are often heavily templated
     and, hence, verbose. Because the Rust compiler itself does not know of the abstractions
@@ -1236,8 +1380,10 @@
   id: totrans-182
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用这些工具的主要缺点集中在缺乏适当的文档和示例。此外，这些应用程序的错误信息通常非常模板化，因此往往冗长。因为Rust编译器本身并不了解这些抽象，它经常会抱怨类型不匹配，用户必须深入推理嵌套的类型。在某个阶段，实现一个能够将这些错误转换为更直观形式的编译器插件可能是有意义的。
 - en: In the following chapter, we will look at implementing common security-related
     primitives in Rust.
   id: totrans-183
   prefs: []
   type: TYPE_NORMAL
+  zh: 在下一章中，我们将探讨在Rust中实现常见的与安全相关的原语。
