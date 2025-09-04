@@ -1,0 +1,1417 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Atomics – the Primitives of Synchronization</h1>
+                </header>
+            
+            <article>
+                
+<p>In <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>, and <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>, we discussed the fundamentals of lock-based concurrency in Rust. However, there are some cases where lock-based programming is not suitable, such as when extreme performance is a concern or threads may <em>never</em> block. In such domains, the programmer must rely on the atomic synchronization primitives of modern CPUs.</p>
+<p>In this chapter, we'll be discussing the atomic primitives available to the Rust programmer. Programming with atomics is a complex topic and an area of active research. An entire book could be dedicated to the topic of atomic Rust programming. As such, we'll be shifting our tactics slightly for this chapter, focusing on more of a tutorial style than previous chapters where we've done deep dives on existing software. Everything presented in the prior chapters will come to bear here. By the end of this chapter, you ought to have a working understanding of atomics, being able to digest existing literature with more ease and validate your implementations.</p>
+<p><span>By the end of this chapter, we will have:</span></p>
+<ul>
+<li>Discussed the concept of linearizability</li>
+<li>Discussed the various atomic memory orderings, along with their meanings and implications</li>
+<li>Built a mutex from atomic primitives</li>
+<li>Built a queue from atomic primitives</li>
+<li>Built a semaphore</li>
+<li>Made clear the difficulties of memory reclamation in an atomic context</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">This chapter requires a working Rust installation. The details of verifying your installation are covered in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust</em>. No additional software tools are required.</p>
+<p class="mce-root">You can find the source code for this book's projects on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust">https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust</a>. This chapter has its source code under <kbd>Chapter06</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Linearizability</h1>
+                </header>
+            
+            <article>
+                
+<p>Up till this point in the book, we've avoided dipping into the formal terms for specifying concurrent systems, because while they are <em>very</em> useful for discussing ideas and reasoning, they can be difficult to learn absent some context. Now that we have context, it's time.</p>
+<p>How do we decide whether a concurrent algorithm is correct? How, if we're game for the algorithm, do we analyze an implementation and reason about it's correctness? To this point, we've used techniques to demonstrate fitness-for-purpose of an implementation through randomized and repeat testing as well as simulation, in the case of helgrind. We will continue to do so. In fact, if that's all we did, demonstrating fitness-for-purpose of implementations, then we'd be in pretty good condition. The working programmer will find themselves inventing more often than not, taking an algorithm and adapting it—as was seen in the previous chapter's discussion of hopper—to fit some novel domain. It's easy enough to do this and not notice.</p>
+<p>What we're searching for, when we sit down to reason about the systems we're constructing, is a unifying concept that'll separate the workable ideas from the goofs. That concept for us, here, in the design and construction of concurrent data structures, is linearizability. What we're looking to build are objects that, paraphrasing Nancy Lynch, make it seem like operations on them occur one at a time, in some sequential order, consistent with the order of operations and responses. Lynch's <em>Distributed Algorithms</em> is concerned with the behavior of distributed systems, but I've always thought that her explanation of what she refers to as atomic objects is brilliantly concise.</p>
+<p>The notion of linearizability was introduced in <em>Axioms for Concurrent Objects</em> by Herlihy and Wing in 1986. Their definition is a bit more involved, done up in terms of histories—<em>a finite sequence of operation invocation and response events</em><em>—</em>and specifications<em>,</em> which are, to be quick about it, a set of axiomatic pre and post conditions that hold on, the object in terms of the operations defined on it.</p>
+<p>Let the result of an operation be called <kbd>res(op)</kbd> and the application or invocation of an operation be called <kbd>inv(op)</kbd>, and distinguish operations by some extra identifier. <kbd>op_1</kbd> is distinct from <kbd>op_2</kbd> but the identifier has no bearing on their ordering; it's just a name. A history <kbd>H</kbd> is a partial order over operations so that <kbd>op_0 &lt; op_1</kbd> if <kbd>res(op_0)</kbd> happens before <kbd>inv(op_1)</kbd> in <kbd>H</kbd>. Operations that have no ordering according to <kbd>&lt;</kbd> are concurrent in the history. A history <kbd>H</kbd> is sequential if all of its operations are ordered with regard to <kbd>&lt;</kbd>. Now, the history <kbd>H</kbd> is linearizable if it can be adjusted by adding zero or more operations into the history to make some other history <kbd>H'</kbd> so that:</p>
+<ol type="1">
+<li><kbd>H'</kbd> is composed only of invocations and responses and are equivalent to some legal, sequential history <kbd>S</kbd></li>
+<li>The ordering operation of <kbd>H'</kbd> is an inclusive subset of the ordering of <kbd>S</kbd>.</li>
+</ol>
+<p>Phew! An object is linearizable if you can record the order of the operations done to it, fiddle with them some, and find an equivalent sequential application of operations on the same object. We've actually done linearizabilty analysis in previous chapters, I just didn't call it out as such. Let's keep on with Herlihy and Wing and take a look at their examples of linearizable vs. unlinearizable histories. Here's a history on a familiar queue:</p>
+<pre style="padding-left: 30px">A: Enq(x)       0
+B: Enq(y)       1
+B: Ok(())       2
+A: Ok(())       3
+B: Deq()        4
+B: Ok(x)        5
+A: Deq()        6
+A: Ok(y)        7
+A: Enq(z)       8</pre>
+<p>We have two threads, <kbd>A</kbd> and <kbd>B</kbd>, performing the operations <kbd>enq(val: T) -&gt; Result((), Error)</kbd> and <kbd>deq() -&gt; Result(T, Error)</kbd>, in pseudo-Rust types. This history is in fact linearizable and is equivalent to:</p>
+<pre style="padding-left: 30px">A: Enq(x)       0
+A: Ok(())       3
+B: Enq(y)       1
+B: Ok(())       2
+B: Deq()        4
+B: Ok(x)        5
+A: Deq()        6
+A: Ok(y)        7
+A: Enq(z)       8
+A: Ok(())</pre>
+<p>Notice that the last operation does not exist in the original history. It's possible for a history to be linearizable, as Herlihy and Wing note it, even if an operation <em>takes effect</em> before its response. For example:</p>
+<pre style="padding-left: 30px">A: Enq(x)       0
+B: Deq()        1
+C: Ok(x)        2</pre>
+<p>This is equivalent to the sequential history:</p>
+<pre style="padding-left: 30px">A: Enq(x)       0
+A: Ok(())
+B: Deq()        1
+B: Ok(x)        2</pre>
+<p>This history is not linearizable:</p>
+<pre style="padding-left: 30px">A: Enq(x)       0
+A: Ok(())       1
+B: Enq(y)       2
+B: Ok(())       3
+A: Deq()        4
+A: Ok(y)        5</pre>
+<p>The culprit in this case is the violation of the queue's ordering. In sequential history, the dequeue would receive <em>x</em> and not <em>y</em>.</p>
+<p>That's it. When we talk about a structure being <em>linearizable,</em> what we're really asking is, can any list of valid operations against the structure be shuffled around or added to in such a way that the list is indistinguishable from a sequential history? Each of the synchronization tools we looked at in the last chapter were used to force linearizability by carefully sequencing the ordering of operations across threads. At a different level, these tools also manipulated the ordering of memory loads and stores. Controlling this ordering directly, while also controlling the order of operations on structures, will consume the remainder of this chapter.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Memory ordering – happens-before and synchronizes-with</h1>
+                </header>
+            
+            <article>
+                
+<p>Each CPU architecture treats memory ordering—the dependency relationships between loads and stores—differently. We discussed this in detail in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust</em>. Suffice it to say here in summary, x86 is a <em>strongly-ordered</em> architecture; stores by some thread will be seen by all other threads in the order they were performed. ARM, meanwhile, is a weakly-ordered architecture with data-dependency; loads and stores may be re-ordered in any fashion excepting those that would violate the behavior of a single, isolated thread, and<em>,</em> if a load depends on the results of a previous load, you are guaranteed that the previous load will occur rather than be cached. Rust exposes its own model of memory ordering to the programmer, abstracting away these details. Our programs must, then, be correct according to Rust's model<em>,</em> and we must trust <kbd>rustc</kbd> to interpret this correctly for our target CPU. If we mess up in Rust's model, we might see <kbd>rustc</kbd> come and re-order instructions to break linearizability, even if the guarantees of our target CPU would otherwise have helped us skate by.</p>
+<p>We discussed Rust's memory model in detail in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>, <em>The Rust Memory Model – Ownership, References and Manipulation</em>, noting that its low-level details are inherited near whole-cloth from LLVM (and thus C/C++). We did, however, defer a discussion of dependency relationships in the model until this chapter. The topic is tricky enough in its own right, as you'll see directly. We will not go into the full details here, owing to the major difficulty in doing so; see LLVM's <em>Memory Model for Concurrent Operations</em> (<a href="http://llvm.org/docs/LangRef.html#memory-model-for-concurrent-operations">http://llvm.org/docs/LangRef.html#memory-model-for-concurrent-operations</a>) and its link tree for the full, challenging read. We will instead note that, outside of writing optimizers or especially challenging low-level code for which you do need to study up on the LLVM memory model reference, it's sufficient to understand that when we talk about ordering in Rust we're talking about a particular kind of causality—<em>happens-before</em>/<em>synchronizes-with</em>. So long as we structure our operations according to this causality and can demonstrate linearizability, we'll be in good shape.</p>
+<p>What is the happens-before/synchronizes-with causality? Each of these refers to a particular kind of ordering relationship. Say we have three operations <kbd>A</kbd>, <kbd>B</kbd>, and <kbd>C</kbd>. We say that <kbd>A</kbd> <em>happens-before</em> <kbd>B</kbd> if:</p>
+<ul>
+<li><kbd>A</kbd> and <kbd>B</kbd> are performed on the same thread and <kbd>A</kbd> is executed and then <kbd>B</kbd> is executed according to program order</li>
+<li><kbd>A</kbd> happens-before <kbd>C</kbd> and <kbd>C</kbd> happens-before <kbd>B</kbd> </li>
+<li><kbd>A</kbd> <em>synchronizes-with</em> <kbd>B</kbd></li>
+</ul>
+<p>Note that the first point refers to single-thread program order. Rust makes no guarantees about multi-threaded program order but does assert that single-threaded code will run in its apparent textual order, even if, in actuality, both the optimized Rust is re-ordered and the underlying hardware is re-ordering as well. We can say that <kbd>A</kbd> <em>synchronizes-with</em> <kbd>B</kbd> if all of the following are true:</p>
+<ul>
+<li><kbd>B</kbd> is a load from some atomic variable <kbd>var</kbd> with <kbd>Acquire</kbd> or <kbd>SeqCst</kbd> ordering</li>
+<li><kbd>A</kbd> is a store to the same atomic variable <kbd>var</kbd> with <kbd>Release</kbd> or <kbd>SeqCst</kbd> ordering</li>
+<li><kbd>B</kbd> reads the value from <kbd>var</kbd></li>
+</ul>
+<p>The last point exists to ensure that compilers or hardware won't optimize away the load in the first point. But, did some additional information get stuck in there? Yep! More on that in a minute.</p>
+<p>How does linearizability link up to the causal ordering we've just described? It's important to understand this. A structure in Rust can obey the causal ordering but still not linearize under examination. Take, for instance, the discussion of Ring in previous chapters, where, even though the causal ordering was protected by a mutex, writes were stomped due to an offset bug. That implementation was not linearizable but it was causally ordered. In that sense, then, getting the causality of your program is a necessary but not sufficient condition for writing a fit-for-purpose concurrent data structure. Linearizability is an analysis done in terms of the operations on a structure, while happens-before/synchronizes-with is an ordering that happens inside of and between operations.</p>
+<p>Now, we mentioned <kbd>Acquire</kbd>, <kbd>SeqCst</kbd>, and <kbd>Release</kbd>; what were they? Rust's memory ordering model allows for different atomic orderings to be applied to loads and stores. These orderings control the underlying CPU and the <kbd>rustc</kbd> optimizer's take on which instructions to shuffle around and when to stall pipelines waiting for results from a load. The orderings are defined in an enumeration called <kbd>std::sync::atomic::Ordering</kbd>. We'll go through them one by one.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Ordering::Relaxed</h1>
+                </header>
+            
+            <article>
+                
+<p>This ordering didn't show up in the definition of happens-before/synchronizes-with. There's a very good reason for that. <kbd>Relaxed</kbd> ordering implies no guarantees. Loads and stores are free to be re-ordered around a load or store with relaxed ordering. That is, loads and stores can migrate <em>up</em> or <em>down</em> in program order from the point of view of a <kbd>Relaxed</kbd> operation.</p>
+<p>The compiler and the hardware are free to do whatever they please in the presence of <kbd>Relaxed</kbd> ordering. There's quite a lot of utility in this, as we'll see in the upcoming detailed examples. For now, consider counters in a concurrent program used for self-telemetry, or data structures that have been designed to be eventually consistent. No need for strict ordering there.</p>
+<p>Before we move on, it's worth being very clear about what we mean by the ordering of loads and stores. Loads and stores on <em>what</em>? Well, atomics. In Rust, these are exposed in <kbd>std::sync::atomic</kbd> and there are, as of writing this book, four stable atomic types available:</p>
+<ul>
+<li><kbd>AtomicUsize</kbd></li>
+<li><kbd>AtomicIsize</kbd></li>
+<li><kbd>AtomicPtr</kbd></li>
+<li><kbd>AtomicBool</kbd></li>
+</ul>
+<p>There's an ongoing discussion centered around using Rust issue <kbd>#32976</kbd> to support smaller atomic types—you'll note, of the stable four, three are machine word sized and <kbd>AtomicBool</kbd> is currently also one of them—but progress there looks to have stalled out, for want of a champion. So, for now, these are the types. Of course, there's more loads and stores than just atomics—manipulation of raw pointers, to name a familiar example. These are data accesses and have no ordering guarantees beyond those that are built into Rust to begin with. Two threads may load and store to the same raw pointer at the exact same moment and there's nothing that can be done about it without prior coordination.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Ordering::Acquire</h1>
+                </header>
+            
+            <article>
+                
+<p><kbd>Acquire</kbd> is an ordering that deals with loads. Recall that we previously said that if a thread, <kbd>B</kbd>, loads var with <kbd>Acquire</kbd> ordering and thread <kbd>A</kbd> then stores with <kbd>Release</kbd> ordering, then <kbd>A</kbd> synchronizes-with <kbd>B</kbd>, which means that <kbd>A</kbd> happens-before <kbd>B</kbd>. Recall that back in the previous chapter we ran into <kbd>Acquire</kbd> in the context of hopper:</p>
+<pre>    pub unsafe fn push_back(
+        &amp;self,
+        elem: T,
+        guard: &amp;mut MutexGuard&lt;BackGuardInner&lt;S&gt;&gt;,
+    ) -&gt; Result&lt;bool, Error&lt;T&gt;&gt; {
+        let mut must_wake_dequeuers = false;
+        if self.size.load(Ordering::Acquire) == self.capacity {
+            return Err(Error::Full(elem));
+        } else {
+            assert!((*self.data.offset((*guard).offset)).is_none());
+            *self.data.offset((*guard).offset) = Some(elem);
+            (*guard).offset += 1;
+            (*guard).offset %= self.capacity as isize;
+            if self.size.fetch_add(1, Ordering::Release) == 0 {
+                must_wake_dequeuers = true;
+            }
+        }
+        Ok(must_wake_dequeuers)
+    }</pre>
+<p>The size seen there is an <kbd>AtomicUsize</kbd>, which the current thread is using to determine if there's space left for it to emplace a new element. Later, once the element has been emplaced, the thread increases the size with <kbd>Release</kbd> ordering. That… seems preposterous. It's clearly counter-intuitive to program order for the increase of size to happen-before the capacity check. And, that's true. It's worth keeping in mind that there's another thread in the game:</p>
+<pre>    pub unsafe fn pop_front(&amp;self) -&gt; T {
+        let mut guard = self.front_lock.lock()<br/>                          .expect("front lock poisoned");
+        while self.size.load(Ordering::Acquire) == 0 {
+            guard = self.not_empty
+                .wait(guard)
+                .expect("oops could not wait pop_front");
+        }
+        let elem: Option&lt;T&gt; = mem::replace(&amp;mut <br/>        *self.data.offset((*guard).offset), None);
+        assert!(elem.is_some());
+        *self.data.offset((*guard).offset) = None;
+        (*guard).offset += 1;
+        (*guard).offset %= self.capacity as isize;
+        self.size.fetch_sub(1, Ordering::Release);
+        elem.unwrap()
+    }</pre>
+<p>Consider what would happen if there were only two threads, <kbd>A</kbd> and <kbd>B</kbd>, and <kbd>A</kbd> only performed <kbd>push_back</kbd> and <kbd>B</kbd> only performed <kbd>pop_front</kbd>. The <kbd>mutexes</kbd> function to provide isolation for threads of the same kind—those that push or pop—and so are meaningless in this hypothesis and can be ignored. All that matters are the atomics. If the size is zero and <kbd>B</kbd> is scheduled first, it will empty the condvar loop on an Acquire-load of size. When <kbd>A</kbd> is scheduled and finds that there is spare capacity for its element, the element will be enqueued and, once done, the size will be <kbd>Release</kbd>-stored, meaning that some lucky loop of <kbd>B</kbd> will happen-after a successful push-back from <kbd>A</kbd>.</p>
+<p>The Rust documentation for <kbd>Acquire</kbd> says:</p>
+<div class="packt_quote">
+<p>"When coupled with a load, all subsequent loads will see data written before a store with Release ordering on the same value in other threads."</p>
+</div>
+<p>The LLVM documentation says:</p>
+<div class="packt_quote">
+<p>"Acquire provides a barrier of the sort necessary to acquire a lock to access other memory with normal loads and stores."</p>
+</div>
+<p>How should we take this? An <kbd>Acquire</kbd> load keeps loads and stores those that come after it from migrating up, with regard to program order. Loads and stores prior to the <kbd>Acquire</kbd> might migrate down, with regard to program order, though. Think of an <kbd>Acquire</kbd> as akin to the starting line of a lock, but one that is porous on the top side.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Ordering::Release</h1>
+                </header>
+            
+            <article>
+                
+<p>If <kbd>Acquire</kbd> is the starting line of a lock, then <kbd>Release</kbd> is the finish line. In fact, the LLVM documentation says:</p>
+<div class="packt_quote">
+<p>"Release is similar to Acquire, but with a barrier of the sort necessary to release a lock."</p>
+</div>
+<p>It's may be a little more subtle than <kbd>lock</kbd> might suggest, though. Here's what the Rust documentation has to say:</p>
+<div class="packt_quote">
+<p>"When coupled with a store, all previous writes become visible to the other threads that perform a load with Acquire ordering on the same value."</p>
+</div>
+<p>Where <kbd>Acquire</kbd> stopped loads and stores after itself from migrating upward, <kbd>Release</kbd> stops loads and stores prior to itself from migrating downward, with regard to program order. Like <kbd>Acquire</kbd>, <kbd>Release</kbd> does not stop loads and stores prior to itself from migrating up. A <kbd>Release</kbd> store is akin to the finish line of a lock, but one that is porous on the bottom side.</p>
+<p>Incidentally, there's an interesting complication here that lock intuition is not helpful with. Question: can two <kbd>Acquire</kbd> loads or two <kbd>Release</kbd> stores happen simultaneously? The answer is, well, it depends on quite a lot, but it is possible. In the preceding hopper example, the spinning <kbd>pop_front</kbd> thread does not block the <kbd>push_back</kbd> thread from performing its check of size, either by permanently holding the size until a <kbd>Release</kbd> came along to free the <kbd>pop_front</kbd> thread, even temporarily, until the while loop can be checked. Remember, the causality model of the language says nothing about the ordering of two <kbd>Acquire</kbd> loads or <kbd>Release</kbd> stores. It's undefined what happens and is probably going to strongly depend on your hardware. All we do know is that the <kbd>pop_front</kbd> thread will not partially see the stores done to memory by <kbd>push_back</kbd>; it'll be all-or-none. All of the loads and stores after an <kbd>Acquire</kbd> and before a <kbd>Release</kbd> come as a unit.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Ordering::AcqRel</h1>
+                </header>
+            
+            <article>
+                
+<p>This variant is a combination of <kbd>Acquire</kbd> and <kbd>Release.</kbd> When a load is performed with <kbd>AcqRel</kbd>, then <kbd>Acquire</kbd> is used, and stored to <kbd>Release</kbd>. <kbd>AcqRel</kbd> is not just a convenience in that it combines the ordering behaviors of both <kbd>Acquire</kbd> and <kbd>Release</kbd>—the ordering is porous on neither side. That is, loads and stores after an <kbd>AcqRel</kbd> cannot move up, as with <kbd>Acquire</kbd>, and loads and stores prior to an <kbd>AcqRel</kbd> cannot move down, as with <kbd>Release</kbd>. Nifty trick.</p>
+<p>Before moving on to the next ordering variation, it's worth pointing out that so far we've only seen examples of a thread performing an <kbd>Acquire</kbd>/<kbd>Release</kbd> in a pair, in cooperation with another thread. It doesn't have to be this way. One thread can always perform <kbd>Acquire</kbd> and another can always perform <kbd>Release</kbd>. The causality definition is specifically in terms of threads that perform one but not both, except in cases when <kbd>A</kbd> is equal to <kbd>B</kbd>, of course. Let's break down an example:</p>
+<pre style="padding-left: 30px">A: store X                   1
+A: store[Release] Y          2
+B: load[Acquire] Y           3
+B: load X                    4
+B: store[Release] Z          5
+C: load[Acquire] Z           6
+C: load X                    7</pre>
+<p>Here, we have three threads, <kbd>A</kbd>, <kbd>B</kbd>, and <kbd>C</kbd>, performing a mix of plain loads and stores with atomic loads and stores. <kbd>store[Release]</kbd> is an atomic store where store is not. As in the section on linearizability, we've numbered each one of the operations, but be aware that this does not represent a timeline so much as the numbers are convenient names. What can we say of the causality of this example? We know:</p>
+<ul>
+<li><kbd>1 happens-before 2</kbd></li>
+<li><kbd>2 synchronizes-with 3</kbd></li>
+<li><kbd>3 happens-before 4</kbd></li>
+<li><kbd>3 happens-before 5</kbd></li>
+<li><kbd>5 synchronizes-with 6</kbd></li>
+<li><kbd>6 happens-before 7</kbd></li>
+</ul>
+<p>We'll see more analysis of this sort later in the chapter.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Ordering::SeqCst</h1>
+                </header>
+            
+            <article>
+                
+<p>Finally, and on the opposite side of the spectrum from <kbd>Relaxed</kbd>, there is <kbd>SeqCst</kbd>, which stands for SEQuentially ConsiSTent. <kbd>SeqCst</kbd> is like <kbd>AcqRel</kbd> but with the added bonus that there's a total order across all threads between sequentially consistent operations, hence the name. <kbd>SeqCst</kbd> is a pretty serious synchronization primitive and one that you should use only at great need, as forcing a total order between all threads is not cheap; every atomic operation is going to require a synchronization cycle, for whatever that means for your CPU. A mutex, for instance, is an acquire-release structure—more on that shortly—but there are legitimate cases for a super-mutex like <kbd>SeqCst</kbd>. For one, implementing older papers. In the early days of atomic programming, the exact consequence of more relaxed—but not <kbd>Relaxed</kbd>—memory orders were not fully understood. You'll see literature that'll make use of sequentially consistent memory and think nothing of it. At the very least, follow along and then relax as needed. This happens more than you might think, at least to your author. Your mileage may vary. There are cases where it seems like we're stuck on <kbd>SeqCst</kbd>. Consider a multiple-producer, multiple-consumer setup like this one that has been adapted from CppReference (see the <em>Further reading</em> section shown in the final section):</p>
+<pre style="padding-left: 30px">#[macro_use]
+extern crate lazy_static;
+
+use std::thread;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+lazy_static! {
+static ref X: Arc&lt;AtomicBool&gt; = Arc::new(AtomicBool::new(false));
+static ref Y: Arc&lt;AtomicBool&gt; = Arc::new(AtomicBool::new(false));
+static ref Z: Arc&lt;AtomicUsize&gt; = Arc::new(AtomicUsize::new(0));
+}
+
+fn write_x() {
+    X.store(true, Ordering::SeqCst);
+}
+
+fn write_y() {
+    Y.store(true, Ordering::SeqCst);
+}
+
+fn read_x_then_y() {
+    while !X.load(Ordering::SeqCst) {}
+    if Y.load(Ordering::SeqCst) {
+        Z.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn read_y_then_x() {
+    while !Y.load(Ordering::SeqCst) {}
+    if X.load(Ordering::SeqCst) {
+        Z.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn main() {
+    let mut jhs = Vec::new();
+    jhs.push(thread::spawn(write_x)); // a
+    jhs.push(thread::spawn(write_y)); // b
+    jhs.push(thread::spawn(read_x_then_y)); // c
+    jhs.push(thread::spawn(read_y_then_x)); // d
+    for jh in jhs {
+        jh.join().unwrap();
+    }
+    assert!(Z.load(Ordering::Relaxed) != 0);
+}</pre>
+<p>Say we weren't enforcing <kbd>SeqCst</kbd> between the threads in our example. What then? The thread <kbd>c</kbd> loops until the thread <kbd>a</kbd> flips Boolean <kbd>X</kbd>, loads <kbd>Y</kbd> and, if true, increments <kbd>Z</kbd>. Likewise for thread <kbd>d</kbd>, except <kbd>b</kbd> flips the Boolean <kbd>Y</kbd> and the increment is guarded on <kbd>X</kbd>. For this program to not crash after its threads have hung up, the threads have to see the flips of <kbd>X</kbd> and <kbd>Y</kbd> happen in the same order. Note that the order itself does not matter, only so much as it is the same as seen from every thread. Otherwise it's possible that the stores and loads will interleave in such a way as to avoid the increments. The reader is warmly encouraged to fiddle with the ordering on their own.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Building synchronization</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that we have a good grounding on the atomic primitives available to us in the Rust standard library, and have, moreover, a solid theoretical background, it's time for us to build on these foundations. In the past few chapters, we've been teasing our intention to build up mutexes and semaphores from primitives and, well, now the time has come.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Mutexes</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that we understand linearizability and memory orderings, let's ask ourselves a question. What <em>exactly</em> is a mutex? We know its properties as an atomic object:</p>
+<ul>
+<li>Mutex supports two operations, <em>lock</em> and <em>unlock</em>.</li>
+<li>A mutex is either <em>locked</em> or <em>unlocked</em>.</li>
+<li>The operation <em>lock</em> will move a mutex into a <em>locked</em> state if and only if the mutex is <em>unlocked</em>. The thread that completes <em>lock</em> is said to hold the lock.</li>
+<li>The operation <em>unlock</em> will move a mutex into <em>unlocked</em> state if an only if the mutex is previously <em>locked</em> and the caller of <em>unlock</em> is the holder of the lock.</li>
+<li>All loads and stores which occur after and before a <em>lock</em> in program order must not be moved prior to or after the <em>lock</em> operation.</li>
+<li>All loads and stores that occur before an <em>unlock</em> in program order must not be moved to after the <em>unlock</em>.</li>
+</ul>
+<p>The second to last point is subtle. Consider a soft-mutex whose lock only keeps loads and stores after migrating up. This means that load/stores could migrate into the soft-mutex, which is all well and good unless your migration is the lock of another soft-mutex. Consider the following:</p>
+<pre style="padding-left: 30px">lock(m0)
+unlock(m0)
+lock(m1)
+unlock(m1)</pre>
+<p>This could be re-arranged to the following:</p>
+<pre style="padding-left: 30px">lock(m0)
+lock(m1)
+unlock(m0)
+unlock(m1)</pre>
+<p>Here, the <kbd>unlock(m0)</kbd> has migrated down in program order into the mutual exclusion zone of <kbd>m1</kbd>, deadlocking the program. That is a problem.</p>
+<p>You might not be surprised to learn that there's decades of research, at this point, into the question of mutual exclusion. How should a mutex be made? How does fairness factor into the implementation? The latter is a significantly broad topic, avoiding thread <em>starvation</em>, and is one we'll more or less dodge here. Much of the historical research is written with regard to machines that have no concept of concurrency control. Lamport's Bakery algorithm—see the <em>Further reading</em> section– provides mutual exclusion that's absent in any hardware support but assumes reads and writes are sequentially consistent, an assumption that does not hold on modern memory hierarchies. In no small sense do we live in a very happy time for concurrent programming: our machines expose synchronization primitives directly, greatly simplifying the production of fast and correct synchronization mechanisms.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Compare and set mutex</h1>
+                </header>
+            
+            <article>
+                
+<p>First, let's look at a very simple mutex implementation, an atomic swap mutex that spins around in a loop until the correct conditions arrive. That is, let's build a <em>spin-lock</em>. This mutex is so named because every thread that blocks on <kbd>lock</kbd> is burning up CPU, spinning on the condition that holds it from acquiring the lock. Anyhow, you'll see. We'll lay down our <kbd>Cargo.toml</kbd> first:</p>
+<pre>[package]
+name = "synchro"
+version = "0.1.0"
+authors = ["Brian L. Troutwine &lt;brian@troutwine.us&gt;"]
+
+[[bin]]
+name = "swap_mutex"
+doc = false
+
+[[bin]]
+name = "status_demo"
+doc = false
+
+[[bin]]
+name = "mutex_status_demo"
+doc = false
+
+[[bin]]
+name = "spin_mutex_status_demo"
+doc = false
+
+[[bin]]
+name = "queue_spin"
+doc = false
+
+[[bin]]
+name = "crossbeam_queue_spin"
+doc = false
+
+[dependencies]
+crossbeam = { git = "https://github.com/crossbeam-rs/crossbeam.git", rev = "89bd6857cd701bff54f7a8bf47ccaa38d5022bfb" }
+
+[dev-dependencies]
+quickcheck = "0.6"</pre>
+<p>Now, we need <kbd>src/lib.rs</kbd>:</p>
+<pre style="padding-left: 30px">extern crate crossbeam;
+
+mod queue;
+mod swap_mutex;
+mod semaphore;
+
+pub use semaphore::*;
+pub use swap_mutex::*;
+pub use queue::*;</pre>
+<p>There's a fair bit here we're not going to use straight away, but we'll come to it shortly. Now, let's dive into <kbd>src/swap_mutex.rs</kbd>. First, our preamble:</p>
+<pre>extern crate crossbeam;
+
+mod queue;
+mod swap_mutex;
+mod semaphore;</pre>
+<p>Very little surprise here by this point. We see the usual imports, plus a few new ones—<kbd>AtomicBool</kbd> and <kbd>Ordering</kbd>, as discussed previously. We implement <kbd>Send</kbd> and <kbd>Sync</kbd> ourselves—discussed in the previous chapter—because while <em>we</em> can prove that our <kbd>SwapMutex&lt;T&gt;</kbd> is <kbd>threadsafe</kbd>, Rust cannot. The <kbd>SwapMutex&lt;T&gt;</kbd> is small:</p>
+<pre>pub struct SwapMutex&lt;T&gt; {
+    locked: AtomicBool,
+    data: *mut T,
+}</pre>
+<p>The field <kbd>locked</kbd> is an <kbd>AtomicBool</kbd>, which we'll be using to provide isolation between threads. The idea is simple enough—if a thread shows up and finds that <kbd>locked</kbd> is false then the thread may acquire the lock, else it has to spin. It's also worth noting that our implementation lives a little on the wild side by keeping a raw pointer to <kbd>T</kbd>. The Rust standard library <kbd>std::sync::Mutex</kbd> keeps its interior data, as of writing this book, in an <kbd>UnsafeCell</kbd>, which we don't have access to in stable. In this implementation we're just going to be storing the pointer and not doing any manipulation through it. Still, we've got to be careful about dropping the <kbd>SwapMutex</kbd>. Creating a <kbd>SwapMutex</kbd> happens like you might expect:</p>
+<pre style="padding-left: 30px">impl&lt;T&gt; SwapMutex&lt;T&gt; {
+    pub fn new(t: T) -&gt; Self {
+        let boxed_data = Box::new(t);
+        SwapMutex {
+            locked: AtomicBool::new(false),
+            data: Box::into_raw(boxed_data),
+        }
+    }</pre>
+<p>The <kbd>T</kbd> is moved into <kbd>SwapMutex</kbd> and we box it to then get its raw pointer. That's necessary to avoid a stack value being pushed into <kbd>SwapMutex</kbd> and promptly disappearing when the stack frame changes, all of which was discussed in great detail in <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapter 2</a>, <em>Sequential Rust Performance and Testing</em>. A mutex always starts unlocked, else there'd be no way to ever acquire it. Now, let's look at locking the mutex:</p>
+<pre>    pub fn lock(&amp;self) -&gt; SwapMutexGuard&lt;T&gt; {
+        while self.locked.swap(true, Ordering::AcqRel) {
+            thread::yield_now();
+        }
+        SwapMutexGuard::new(self)
+    }</pre>
+<p>The API is a little different compared to the <span>standard library </span><kbd>Mutex</kbd>. For one, <kbd>SwapMutex</kbd> does not track poisoning, and, as a result, if lock is invoked it's guaranteed to return with a guard, called <kbd>SwapMutexGuard</kbd>. <kbd>SwapMutex</kbd> <em>is</em> scope-based, however; just like <span>standard library </span><kbd>MutexGuard</kbd> there's no need—nor ability—to ever call an explicit unlock. There is an unlock though, used by the drop of <kbd>SwapMutexGuard</kbd>:</p>
+<pre>    fn unlock(&amp;self) -&gt; () {
+        assert!(self.locked.load(Ordering::Relaxed) == true);
+        self.locked.store(false, Ordering::Release);
+    }</pre>
+<p>In this simple mutex, all that needs to be done to unlock is set the <kbd>locked</kbd> field <span>to false, but not before confirming that, in fact, the calling thread has a right to unlock the mutex.</span></p>
+<p>Now, can we convince ourselves that this mutex is correct? Let's go through our criteria:</p>
+<div class="packt_quote">"Mutex supports two operations, <em>lock</em> and <em>unlock</em>."</div>
+<p>Check. Next:</p>
+<div class="packt_quote">"A mutex is either <em>locked</em> or <em>unlocked."</em></div>
+<p>Check, by reason that this is flagged by a Boolean. Finally:</p>
+<div class="packt_quote">"The operation <em>lock</em> will move a mutex into a <em>locked</em> state if and only if the mutex is <em>unlocked</em>. The thread that completes the <em>lock</em> is said to hold the <em>lock</em>."</div>
+<p>Let's talk through what <kbd>AtomicBool::swap</kbd> does. The full type is <kbd>swap(&amp;self, val: bool, order: Ordering) -&gt; bool</kbd> and the function does what you might expect by the name; it atomically swaps the bool at self with the bool <kbd>val</kbd> atomically, according to the passed ordering, and returns the previous value. Here, then, each thread is competing to write true into the locked flag and only one thread at a time will see false returned as the previous value, owing to the atomicity of swapping. The thread that has written false is now the holder of the lock, returning <kbd>SwapMutexGuard</kbd>. Locking a <kbd>SwapMutex</kbd> can only be done to an unlocked <kbd>SwapMutex</kbd> and it is done exclusive of other threads.</p>
+<div class="packt_quote">"The operation unlock will move a mutex into an unlocked state if and only if the mutex is previously locked and the caller of unlock is the holder of the lock."</div>
+<p>Let's consider unlock. Recall first that it's only possible to call from <kbd>SwapMutexGuard</kbd>, so the assertion that the caller has the right to unlock the <kbd>SwapMutex</kbd> is a check against a malfunctioning lock: only one thread at a time can hold <kbd>SwapMutex</kbd>, and as a result there will only ever be one <kbd>SwapMutexGuard</kbd> in memory. Because of the nature of <kbd>Release</kbd> ordering, we're guaranteed that the <kbd>Relaxed</kbd> load of <kbd>locked</kbd> will occur before the store, so it's guaranteed that when the store does happen the value of <kbd>locked</kbd> will be true. Only the holder of the lock can unlock it, and this property is satisfied as well.</p>
+<div class="packt_quote">"All loads and stores that occur after and before a lock in program order must not be moved prior to or after the lock."</div>
+<p>This follows directly from the behavior of <kbd>AcqRel</kbd> ordering.</p>
+<div class="packt_quote">"All loads and stores that occur before an unlock in program order must not be moved to after the unlock."</div>
+<p>This follows from the behavior of <kbd>Release</kbd> ordering.</p>
+<p>Bang, we have ourselves a mutex. It's not an especially power-friendly mutex, but it does have the essential properties. Here's the rest of the thing, for completeness's sake:</p>
+<pre style="padding-left: 30px">impl&lt;T&gt; Drop for SwapMutex&lt;T&gt; {
+    fn drop(&amp;mut self) {
+        let data = unsafe { Box::from_raw(self.data) };
+        drop(data);
+    }
+}
+
+pub struct SwapMutexGuard&lt;'a, T: 'a&gt; {
+    __lock: &amp;'a SwapMutex&lt;T&gt;,
+}
+
+impl&lt;'a, T&gt; SwapMutexGuard&lt;'a, T&gt; {
+    fn new(lock: &amp;'a SwapMutex&lt;T&gt;) -&gt; SwapMutexGuard&lt;'a, T&gt; {
+        SwapMutexGuard { __lock: lock }
+    }
+}
+
+impl&lt;'a, T&gt; Deref for SwapMutexGuard&lt;'a, T&gt; {
+    type Target = T;
+
+    fn deref(&amp;self) -&gt; &amp;T {
+        unsafe { &amp;*self.__lock.data }
+    }
+}
+
+impl&lt;'a, T&gt; DerefMut for SwapMutexGuard&lt;'a, T&gt; {
+    fn deref_mut(&amp;mut self) -&gt; &amp;mut T {
+        unsafe { &amp;mut *self.__lock.data }
+    }
+}
+
+impl&lt;'a, T&gt; Drop for SwapMutexGuard&lt;'a, T&gt; {
+    #[inline]
+    fn drop(&amp;mut self) {
+        self.__lock.unlock();
+    }
+}</pre>
+<p>Now, let's build something with <kbd>SwapMutex</kbd>. In <kbd>src/bin/swap_mutex.rs</kbd>, we'll replicate the bridge problem from the last chapter, but on top of <kbd>SwapMutex</kbd>, plus some fancy add-ons now that we know some clever things to do with atomics. Here's the preamble:</p>
+<pre style="padding-left: 30px">extern crate synchro;
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use synchro::SwapMutex;
+use std::{thread, time};
+
+#[derive(Debug)]
+enum Bridge {
+    Empty,
+    Left(u8),
+    Right(u8),
+}</pre>
+<p>Familiar enough. We pull in our <kbd>SwapMutex</kbd>, and define <kbd>Bridge</kbd>. Fairly unsurprising material. To continue:</p>
+<pre style="padding-left: 30px">static LHS_TRANSFERS: AtomicUsize = AtomicUsize::new(0);
+static RHS_TRANSFERS: AtomicUsize = AtomicUsize::new(0);</pre>
+<p>This is new, though. Statics in Rust are compile-time globals. We've seen their lifetime static floating around from time to time but have never remarked on it. A static will be part of the binary itself and any initialization code needed for the static will have to be evaluated at compile-time as well as being threadsafe. We're creating two static <kbd>AtomicUsizes</kbd> here at the top of our program. Why? One of the major issues with the previous rope bridge implementation was its silence. You could watch it in a debugger, sure, but that's slow and won't impress your friends. Now that we have atomics at hand, what we're going to do is get each side of the bridge to tally up how many baboons cross. <kbd>LHS_TRANSFERS</kbd> are the number of baboons that go from right to left, <kbd>RHS_TRANSFERS</kbd> is the other direction. Our left and right sides of the bridge are broken out into functions this time around, too:</p>
+<pre style="padding-left: 30px">fn lhs(rope: Arc&lt;SwapMutex&lt;Bridge&gt;&gt;) -&gt; () {
+    loop {
+        let mut guard = rope.lock();
+        match *guard {
+            Bridge::Empty =&gt; {
+                *guard = Bridge::Right(1);
+            }
+            Bridge::Right(i) =&gt; {
+                if i &lt; 5 {
+                    *guard = Bridge::Right(i + 1);
+                }
+            }
+            Bridge::Left(0) =&gt; {
+                *guard = Bridge::Empty;
+            }
+            Bridge::Left(i) =&gt; {
+                LHS_TRANSFERS.fetch_add(1, Ordering::Relaxed);
+                *guard = Bridge::Left(i - 1);
+            }
+        }
+    }
+}
+
+fn rhs(rope: Arc&lt;SwapMutex&lt;Bridge&gt;&gt;) -&gt; () {
+    loop {
+        let mut guard = rope.lock();
+        match *guard {
+            Bridge::Empty =&gt; {
+                *guard = Bridge::Left(1);
+            }
+            Bridge::Left(i) =&gt; {
+                if i &lt; 5 {
+                    *guard = Bridge::Left(i + 1);
+                }
+            }
+            Bridge::Right(0) =&gt; {
+                *guard = Bridge::Empty;
+            }
+            Bridge::Right(i) =&gt; {
+                RHS_TRANSFERS.fetch_add(1, Ordering::Relaxed);
+                *guard = Bridge::Right(i - 1);
+            }
+        }
+    }
+}</pre>
+<p>This ought to be familiar enough from the previous chapter, but do note that the transfer counters are now being updated. We've used <kbd>Relaxed</kbd> ordering—the increments are guaranteed to land but it's not especially necessary for them to occur strictly before or after the modification to the guard. Finally, the <kbd>main</kbd> function:</p>
+<pre style="padding-left: 30px">fn main() {
+    let mtx: Arc&lt;SwapMutex&lt;Bridge&gt;&gt; = Arc::new(SwapMutex::new(Bridge::Empty));
+
+    let lhs_mtx = Arc::clone(&amp;mtx);
+    let _lhs = thread::spawn(move || lhs(lhs_mtx));
+    let _rhs = thread::spawn(move || rhs(mtx));
+
+    let one_second = time::Duration::from_millis(1_000);
+    loop {
+        thread::sleep(one_second);
+        println!(
+            "Transfers per second:\n    LHS: {}\n    RHS: {}",
+            LHS_TRANSFERS.swap(0, Ordering::Relaxed),
+            RHS_TRANSFERS.swap(0, Ordering::Relaxed)
+        );
+    }
+}</pre>
+<p>We can see here that the mutex is set up, the threads have been spawned, and that the main thread spends its time in an infinite loop printing out information on transfer rates. This is done by sleeping the thread in one-second intervals, swapping the transfer counters with zero and printing the previous value. The output looks something like this:</p>
+<pre><strong>&gt; cargo build
+&gt; ./target/debug/swap_mutex
+Transfers per second:
+    LHS: 787790
+    RHS: 719371
+Transfers per second:
+    LHS: 833537
+    RHS: 770782
+Transfers per second:
+    LHS: 848662
+    RHS: 776678
+Transfers per second:
+    LHS: 783769
+    RHS: 726334
+Transfers per second:
+    LHS: 828969
+    RHS: 761439</strong></pre>
+<p>The exact numbers will vary depending on your system. Also note that the numbers are not very close in some instances, either. The <kbd>SwapMutex</kbd> is not <em>fair</em>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">An incorrect atomic queue</h1>
+                </header>
+            
+            <article>
+                
+<p>Before we build anything else, we're going to need a key data structure—a unbounded queue. In <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers, and RWLock</em>, we discussed a bounded deque protected at either end by mutexes. We're in the business, now, of building synchronization and can't make use of the mutex approach. Our ambition is going to be to produce an unbounded first-in-first-out data structure that has no locks, never leaves an enqueuer or dequeuer deadlocked, and is linearizable to a sequential queue. It turns out there's a pretty straightforward data structure that achieves this aim; the Michael and Scott Queue, introduced in their 1995 paper <em>Simple, Fast, and Practical Non-Blocking and Blocking Concurrent Queue Algorithms</em>. The reader is encouraged to breeze through that paper before continuing on with our discussion here, but it's not strictly necessary.</p>
+<p>A word of warning. Our implementation will be <em>wrong</em>. The careful reader will note that we're following the paper closely. There are two, and maybe more, issues with the implementation we'll present, one major and unresolvable and the other addressable with some care. Both are fairly subtle. Let's dig in.</p>
+<p>Queue is defined in <kbd>src/queue.rs</kbd>, the preamble of which is:</p>
+<pre style="padding-left: 30px">use std::ptr::null_mut;
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+unsafe impl&lt;T: Send&gt; Send for Queue&lt;T&gt; {}
+unsafe impl&lt;T: Send&gt; Sync for Queue&lt;T&gt; {}</pre>
+<p>Right off you can see from <kbd>null_mut</kbd> that we're going to be dealing with raw pointers. The <kbd>AtomicPtr</kbd> is new, though we did mention it in passing earlier in the chapter. An atomic pointer adapts a raw pointer—<kbd>*mut T</kbd>—to be suitable for atomic operations. There's no runtime overhead associated with AtomicPtr; the Rust documentation notes that the type has the same in-memory representation as a <kbd>*mut T</kbd>. Modern machines expose instructions, giving the programmer the ability to fiddle with memory atomically. Capabilities vary by processor, as you'd expect. LLVM and therefore Rust expose these atomic memory fiddling capabilities through <kbd>AtomicPtr</kbd>, allowing the range of pointer fiddling in the sequential language but atomically. What this means, in practice, is that we can start setting up happens-before/synchronizes-with causality relationships for pointer manipulation, which is essential for building data structures.</p>
+<p>Here's the next part:</p>
+<pre style="padding-left: 30px">struct Node&lt;T&gt; {
+    value: *const T,
+    next: AtomicPtr&lt;Node&lt;T&gt;&gt;,
+}
+
+impl&lt;T&gt; Default for Node&lt;T&gt; {
+    fn default() -&gt; Self {
+        Node {
+            value: null_mut(),
+            next: AtomicPtr::default(),
+        }
+    }
+}
+
+impl&lt;T&gt; Node&lt;T&gt; {
+    fn new(val: T) -&gt; Self {
+        Node {
+            value: Box::into_raw(Box::new(val)),
+            next: AtomicPtr::default(),
+        }
+    }
+}</pre>
+<p>The interior of deque from the previous chapter was a single, contiguous block. That's not the approach we're taking here. Instead, every element inserted into the queue will get a <kbd>Node</kbd> and that <kbd>Node</kbd> will point to the next <kbd>Node</kbd>, which may or may not exist yet. It's a linked list. The contiguous block approach is a bit harder to pull off in an atomic context—though it is entirely possible and there are discussions in the <em>Further reading</em> section papers—and would come down to a linked list of contiguous blocks. It's more trouble than it's worth for our purposes here:</p>
+<pre>struct InnerQueue&lt;T&gt; {
+    head: AtomicPtr&lt;Node&lt;T&gt;&gt;,
+    tail: AtomicPtr&lt;Node&lt;T&gt;&gt;,
+}</pre>
+<p>One key thing to note is that <kbd>Node</kbd> holds a pointer to a heap allocated <kbd>T</kbd>, not the <kbd>T</kbd> directly. In the preceding code, we have the <kbd>InnerQueue&lt;T&gt;</kbd> of <kbd>Queue&lt;T&gt;</kbd>, pulling the usual inner/outer structure detailed elsewhere in this book and in <kbd>rustc</kbd>. Why is it important to note that <kbd>Node</kbd> doesn't hold its <kbd>T</kbd> directly? The value inside of the head of the <kbd>Queue&lt;T&gt;</kbd> is never inspected. The head of the <kbd>Queue</kbd> is a sentinel. When the <kbd>InnerQueue</kbd> is created, we'll see the following:</p>
+<pre style="padding-left: 30px">impl&lt;T&gt; InnerQueue&lt;T&gt; {
+    pub fn new() -&gt; Self {
+        let node = Box::into_raw(Box::new(Node::default()));
+        InnerQueue {
+            head: AtomicPtr::new(node),
+            tail: AtomicPtr::new(node),
+        }
+    }</pre>
+<p>Both the <kbd>head</kbd> and <kbd>tail</kbd> of the <kbd>InnerQueue</kbd> point to the same nonsense-valued <kbd>Node</kbd>, as expected. The value at the outset is, in fact, null. Atomic data structures have issues with memory reclamation in that coordinating drops is problematic and must be done only once. It's possible to alleviate this issue somewhat by relying on Rust's type system, but it's still a non-trivial project and is an active area of research, generally. Here, we note that we're careful to hand out the ownership of the element only once. Being a raw pointer, it can be given away more than once at a time, but that path leads to double-frees. <kbd>InnerQueue</kbd> converts <kbd>*const T</kbd> into <kbd>T</kbd>—an unsafe operation—and just never dereferences the <kbd>*const T</kbd> again, allowing the caller to do the drop in its own sweet time:</p>
+<pre>    pub unsafe fn enq(&amp;mut self, val: T) -&gt; () {
+        let node = Box::new(Node::new(val));
+        let node: *mut Node&lt;T&gt; = Box::into_raw(node);
+
+        loop {
+            let tail: *mut Node&lt;T&gt; = self.tail.load(Ordering::Acquire);
+            let next: *mut Node&lt;T&gt; = <br/>            (*tail).next.load(Ordering::Relaxed);
+            if tail == self.tail.load(Ordering::Relaxed) {
+                if next.is_null() {
+                    if (*tail).next.compare_and_swap(next, node, <br/>                     Ordering::Relaxed) == next {
+                        self.tail.compare_and_swap(tail, node, <br/>                         Ordering::Release);
+                        return;
+                    }
+                }
+            } else {
+                self.tail.compare_and_swap(tail, next, <br/>                Ordering::Release);
+            }
+        }
+    }</pre>
+<p>This is the <kbd>enq</kbd> operation, marked unsafe because of the raw pointer manipulation going on. That's an important point to consider—<kbd>AtomicPtr</kbd> is necessarily going to be done with raw pointers. There's a lot going on here, so let's break it up into smaller chunks:</p>
+<pre>    pub unsafe fn enq(&amp;mut self, val: T) -&gt; () {
+        let node = Box::new(Node::new(val));
+        let node: *mut Node&lt;T&gt; = Box::into_raw(node);</pre>
+<p>Here, we're constructing the <kbd>Node</kbd> for <kbd>val</kbd>. Notice we're using the same boxing, the <kbd>into_raw</kbd> approach used so often in previous chapters. This node doesn't have a place in the queue yet and the calling thread does not hold an exclusive lock over the queue. Insertion will have to take place in the midst of other insertions:</p>
+<pre>        loop {
+            let tail: *mut Node&lt;T&gt; = self.tail.load(Ordering::Acquire);
+            let next: *mut Node&lt;T&gt; = <br/>            (*tail).next.load(Ordering::Relaxed);</pre>
+<p>With that in mind, it's entirely possible that an insertion attempt can fail. The enqueing of an element in a queue takes place at the <kbd>tail</kbd>, the pointer to which we load up and call last. The next node after <kbd>tail</kbd> is called <kbd>next</kbd>. In a sequential queue, we'd be guaranteed that the next of <kbd>tail</kbd> is null, but that's not so here. Consider that between the load of the <kbd>tail</kbd> pointer and the load of the <kbd>next</kbd> pointer an <kbd>enq</kbd> run by another thread may have already completed.</p>
+<p>Enqueing is, then, an operation that might take several attempts before we hit just the right conditions for it to succeed. Those conditions are last still being the <kbd>tail</kbd> of the structure and next being <kbd>null</kbd>:</p>
+<pre>            if tail == self.tail.load(Ordering::Relaxed) {
+                if next.is_null() {</pre>
+<p>Note that the first load of <kbd>tail</kbd> is <kbd>Acquire</kbd> and each of the possible stores of it, in either branch, are <kbd>Release</kbd>. This satisfies our <kbd>Acquire</kbd>/<kbd>Release</kbd> needs, with regard to locking primitives. All other stores and loads here are conspicuously <kbd>Relaxed</kbd>. How can we be sure we're not accidentally stomping writes or, since this is a linked list, cutting them loose in memory? That's where the <kbd>AtomicPtr</kbd> comes in:</p>
+<pre>                    if (*tail).next.compare_and_swap(next, node, <br/>                     Ordering::Relaxed) == next {
+                        self.tail.compare_and_swap(tail, node, <br/>                         Ordering::Release);
+                        return;
+                    }</pre>
+<p>It <em>is</em> entirely possible that by the time we've detected the proper conditions for enqueing another thread will have been scheduled in, have detected the proper conditions for enqueing, and have been enqueued. We attempt to slot our new node in with <kbd>(*last).next.compare_and_swap(next, node, Ordering::Relaxed)</kbd>, that is, we compare the current next of last and if and only if that succeeds—that's the <kbd>== next</kbd> bit—do we attempt to set <kbd>tail</kbd> to the node pointer, again with a compare and swap. If both of those succeed then the new element has been fully enqueued. It's possible that the swap of <kbd>tail</kbd> will fail, however, in which case the linked list is correctly set up but the <kbd>tail</kbd> pointer is off. Both the <kbd>enq</kbd> and <kbd>deq</kbd> operations must be aware they could stumble into a situation where the <kbd>tail</kbd> pointer needs to be adjusted. That is in fact how the <kbd>enq</kbd> function finishes off:</p>
+<pre>                }
+            } else {
+                self.tail.compare_and_swap(tail, next, <br/>                 Ordering::Release);
+            }
+        }
+    }</pre>
+<p>On an x86, all of these <kbd>Relaxed</kbd> operations are more strict but on ARMv8 there will be all sorts of reordering. It's very important, and difficult, to establish a causal relationship between all modifications. If, for example, we swapped the <kbd>tail</kbd> pointer and then the <kbd>next</kbd> of the <kbd>tail</kbd> pointer, we'd open ourselves up to breaking the linked list, or making whole isolated chains depending on the threads' view of memory. The <kbd>deq</kbd> operation is similar:</p>
+<pre>    pub unsafe fn deq(&amp;mut self) -&gt; Option&lt;T&gt; {
+        let mut head: *mut Node&lt;T&gt;;
+        let value: T;
+        loop {
+            head = self.head.load(Ordering::Acquire);
+            let tail: *mut Node&lt;T&gt; = self.tail.load(Ordering::Relaxed);
+            let next: *mut Node&lt;T&gt; = <br/>            (*head).next.load(Ordering::Relaxed);
+            if head == self.head.load(Ordering::Relaxed) {
+                if head == tail {
+                    if next.is_null() {
+                        return None;
+                    }
+                    self.tail.compare_and_swap(tail, next, <br/>                     Ordering::Relaxed);
+                } else {
+                    let val: *mut T = (*next).value as *mut T;
+                    if self.head.compare_and_swap(head, next, <br/>                    Ordering::Release) == head {
+                        value = *Box::from_raw(val);
+                        break;
+                    }
+                }
+            }
+        }
+        let head: Node&lt;T&gt; = *Box::from_raw(head);
+        drop(head);
+        Some(value)
+    }
+}</pre>
+<p>The function is a loop, like <kbd>enq</kbd>, in which we search for the correct conditions and circumstance to dequeue an element. The first outer if clause checks that head hasn't shifted on us, while the inner first branch is to do with a queue that has no elements, where first and last are pointers to the same storage. Note here that if next is not null we try and patch up a partially completed linked list of nodes before looping back around again for another pass at dequeing.</p>
+<p>This is because, as discussed previously, <kbd>enq</kbd> may not fully succeed. The second inner loop is hit when <kbd>head</kbd> and <kbd>tail</kbd> are not equal, meaning there's an element to be pulled. As the inline comment explains, we give out the ownership of the element <kbd>T</kbd> when the first hasn't shifted on us but are careful not to dereference the pointer until we can be sure we're the only thread that will ever manage that. We can be on account of only one thread that will ever manage to swap the particular first and next pair the calling thread currently holds.</p>
+<p>After all of that, the actual outer <kbd>Queue&lt;T&gt;</kbd> is a touch anti-climactic:</p>
+<pre style="padding-left: 30px">pub struct Queue&lt;T&gt; {
+    inner: *mut InnerQueue&lt;T&gt;,
+}
+
+impl&lt;T&gt; Clone for Queue&lt;T&gt; {
+    fn clone(&amp;self) -&gt; Queue&lt;T&gt; {
+        Queue { inner: self.inner }
+    }
+}
+
+impl&lt;T&gt; Queue&lt;T&gt; {
+    pub fn new() -&gt; Self {
+        Queue {
+            inner: Box::into_raw(Box::new(InnerQueue::new())),
+        }
+    }
+
+    pub fn enq(&amp;self, val: T) -&gt; () {
+        unsafe { (*self.inner).enq(val) }
+    }
+
+    pub fn deq(&amp;self) -&gt; Option&lt;T&gt; {
+        unsafe { (*self.inner).deq() }
+    }</pre>
+<p>We've already reasoned our way through the implementation and, hopefully, you, dear reader, are convinced that the idea should function. Where the rubber meets the road is in testing:</p>
+<pre style="padding-left: 30px">#[cfg(test)]
+mod test {
+    extern crate quickcheck;
+
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicUsize;
+    use std::thread;
+    use std::sync::Arc;
+    use self::quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Enq(u32),
+        Deq,
+    }
+
+    impl Arbitrary for Op {
+        fn arbitrary&lt;G&gt;(g: &amp;mut G) -&gt; Self
+        where
+            G: Gen,
+        {
+            let i: usize = g.gen_range(0, 2);
+            match i {
+                0 =&gt; Op::Enq(g.gen()),
+                _ =&gt; Op::Deq,
+            }
+        }
+    }</pre>
+<p>This is the usual <kbd>test</kbd> preamble that we've seen elsewhere in the book. We define an <kbd>Op</kbd> enumeration to drive an interpreter style <kbd>quickcheck test</kbd>, which we call here <kbd>sequential</kbd>:</p>
+<pre>    #[test]
+    fn sequential() {
+        fn inner(ops: Vec&lt;Op&gt;) -&gt; TestResult {
+            let mut vd = VecDeque::new();
+            let q = Queue::new();
+
+            for op in ops {
+                match op {
+                    Op::Enq(v) =&gt; {
+                        vd.push_back(v);
+                        q.enq(v);
+                    }
+                    Op::Deq =&gt; {
+                        assert_eq!(vd.pop_front(), q.deq());
+                    }
+                }
+            }
+            TestResult::passed()
+        }
+        QuickCheck::new().quickcheck(inner as fn(Vec&lt;Op&gt;) -&gt; <br/>        TestResult);
+    }</pre>
+<p>We have a <kbd>VecDeque</kbd> as the model; we know it's a proper queue. Then, without dipping into any kind of real concurrency, we confirm that <kbd>Queue</kbd> behaves similarly to a <kbd>VecDeque</kbd>. At least in a sequential setting, <kbd>Queue</kbd> will work. Now, for a parallel <kbd>test</kbd>:</p>
+<pre>    fn parallel_exp(total: usize, enqs: u8, deqs: u8) -&gt; bool {
+        let q = Queue::new();
+        let total_expected = total * (enqs as usize);
+        let total_retrieved = Arc::new(AtomicUsize::new(0));
+
+        let mut ejhs = Vec::new();
+        for _ in 0..enqs {
+            let mut q = q.clone();
+            ejhs.push(
+                thread::Builder::new()
+                    .spawn(move || {
+                        for i in 0..total {
+                            q.enq(i);
+                        }
+                    })
+                    .unwrap(),
+            );
+        }
+
+        let mut djhs = Vec::new();
+        for _ in 0..deqs {
+            let mut q = q.clone();
+            let total_retrieved = Arc::clone(&amp;total_retrieved);
+            djhs.push(
+                thread::Builder::new()
+                    .spawn(move || {
+                        while total_retrieved.load(Ordering::Relaxed) <br/>                        != total_expected {
+                            if q.deq().is_some() {
+                                total_retrieved.fetch_add(1, <br/>                                Ordering::Relaxed);
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
+        }
+
+        for jh in ejhs {
+            jh.join().unwrap();
+        }
+        for jh in djhs {
+            jh.join().unwrap();
+        }
+
+        assert_eq!(total_retrieved.load(Ordering::Relaxed), <br/>        total_expected);
+        true
+    }</pre>
+<p>We set up two groups of threads, one responsible for enqueing and the other for dequeing. The enqueuing threads push a <kbd>total</kbd> number of items through the <kbd>Queue</kbd> and the dequeuers pull until a counter—shared between each of the dequeuers—hits bingo. Finally, back in the main <kbd>test</kbd> thread, we confirm that the total number of retrieved items is the same as the expected number of items. It's possible that our dequeing threads will read <em>past the end</em> of the queue because of a race between the check on the while loop and the call of <kbd>q.deq</kbd>, which works in our favor because confirming the queue allows the deque of no more elements than were enqueued. That, and there are no double-free crashes when the <kbd>test</kbd> is run. This inner <kbd>test</kbd> function is used twice, once in repeated runs and then again in a <kbd>quickcheck</kbd> setup:</p>
+<pre>    #[test]
+    fn repeated() {
+        for i in 0..10_000 {
+            println!("{}", i);
+            parallel_exp(73, 2, 2);
+        }
+    }
+
+    #[test]
+    fn parallel() {
+        fn inner(total: usize, enqs: u8, deqs: u8) -&gt; TestResult {
+            if enqs == 0 || deqs == 0 {
+                TestResult::discard()
+            } else {
+                TestResult::from_bool(parallel_exp(total, enqs, deqs))
+            }
+        }
+        QuickCheck::new().quickcheck(inner as fn(usize, u8, u8) -&gt; <br/>        TestResult);
+    }
+}</pre>
+<p>What's wrong here? If you run the <kbd>test</kbd> suite, you may or may not hit one of the issues. They are fairly improbable, though we'll shortly see a way to reliably trigger the worst. The first issue our implementation runs into is the ABA problem. In a compare-and-swap operation, pointer <kbd>A</kbd> is to be swapped by some thread with <kbd>B</kbd>. Before the check can be completed in the first thread, another thread swaps <kbd>A</kbd> with <kbd>C</kbd> and then <kbd>C</kbd> back again to <kbd>A</kbd>. The first thread is then rescheduled and performs its compare-and-swap of <kbd>A</kbd> to <kbd>B</kbd>, none the wiser that <kbd>A</kbd> is not really the <kbd>A</kbd> it had at the start of the swap. This will cause chunks of the queue's linked list to point incorrectly, possibly into the memory that the queue does not rightly own. That's bad enough. What could be worse?</p>
+<p>Let's cause a use-after-free violation with this structure. Our demonstration program is short and lives at <kbd>src/bin/queue_spin.rs</kbd>:</p>
+<pre style="padding-left: 30px">extern crate synchro;
+
+use synchro::Queue;
+use std::thread;
+
+fn main() {
+    let q = Queue::new();
+
+    let mut jhs = Vec::new();
+
+    for _ in 0..4 {
+        let eq = q.clone();
+        jhs.push(thread::spawn(move || {
+            let mut i = 0;
+            loop {
+                eq.enq(i);
+                i += 1;
+                eq.deq();
+            }
+        }))
+    }
+
+    for jh in jhs {
+        jh.join().unwrap();
+    }
+}</pre>
+<p>The program creates four threads, each of which enqueue and dequeue in sequence as rapidly as possible with no coordination between them. It's important to have at least two threads, else the queue is used sequentially and the issue does not exist:</p>
+<pre><strong>&gt; time cargo run --bin queue_spin
+    Finished dev [unoptimized + debuginfo] target(s) in 0.0 secs
+     Running `target/debug/queue_spin`
+Segmentation fault
+
+real    0m0.588s
+user    0m0.964s
+sys     0m0.016s</strong></pre>
+<p>Ouch. That took no time at all. Let's have a look at the program in a debugger. We'll use <kbd>lldb</kbd>, but if you're using <kbd>gdb</kbd>, the results will be the same:</p>
+<pre><strong>&gt; lldb-3.9 target/debug/queue_spin
+(lldb) target create "target/debug/queue_spin"
+Current executable set to 'target/debug/queue_spin' (x86_64).
+(lldb) run
+Process 12917 launched: '/home/blt/projects/us/troutwine/concurrency_in_rust/external_projects/synchro/target/debug/queue_spin' (x86_64)
+Process 12917 stopped
+* thread #2: tid = 12920, 0x0000555555560585 queue_spin`_$LT$synchro..queue..InnerQueue$LT$T$GT$$GT$::deq::heefaa8c9b1d410ee(self=0x00007ffff6c2a010) + 261 at queue.rs:78, name = 'queue_spin', stop reason = signal SIGSEGV: invalid address (fault address: 0x0)
+    frame #0: 0x0000555555560585 queue_spin`_$LT$synchro..queue..InnerQueue$LT$T$GT$$GT$::deq::heefaa8c9b1d410ee(self=0x00007ffff6c2a010) + 261 at queue.rs:78
+   75                       }
+   76                       self.tail.compare_and_swap(tail, next, <br/>                            Ordering::Relaxed);
+   77                   } else {
+-&gt; 78                       let val: *mut T = (*next).value as *mut T;
+   79                       if self.head.compare_and_swap(head, next, <br/>                            Ordering::Release) == head {
+   80                           value = *Box::from_raw(val);
+   81                           break;
+  thread #3: tid = 12921, 0x0000555555560585 queue_spin`_$LT$synchro..queue..InnerQueue$LT$T$GT$$GT$::deq::heefaa8c9b1d410ee(self=0x00007ffff6c2a010) + 261 at queue.rs:78, name = 'queue_spin', stop reason = signal SIGSEGV: invalid address (fault address: 0x0)
+    frame #0: 0x0000555555560585 queue_spin`_$LT$synchro..queue..InnerQueue$LT$T$GT$$GT$::deq::heefaa8c9b1d410ee(self=0x00007ffff6c2a010) + 261 at queue.rs:78
+   75                       }
+   76                       self.tail.compare_and_swap(tail, next, <br/>                            Ordering::Relaxed);
+   77                   } else {
+-&gt; 78                       let val: *mut T = (*next).value as *mut T;
+   79                       if self.head.compare_and_swap(head, next, <br/>                            Ordering::Release) == head {
+   80                           value = *Box::from_raw(val);
+   81                           break;</strong></pre>
+<p>Well look at that! And, just to confirm:</p>
+<pre><strong>(lldb) p next
+(synchro::queue::Node&lt;i32&gt; *) $0 = 0x0000000000000000</strong></pre>
+<p>Can we turn up another? Yes:</p>
+<pre><strong>(lldb) Process 12893 launched: '/home/blt/projects/us/troutwine/concurrency_in_rust/external_projects/synchro/target/debug/queue_spin' (x86_64)
+Process 12893 stopped
+* thread #2: tid = 12896, 0x000055555555fb3e queue_spin`core::sync::atomic::atomic_load::hd37078e3d501f11f(dst=0x0000000000000008, order=Relaxed) + 78 at atomic.rs:1502, name = 'queue_spin', stop reason = signal SIGSEGV: invalid address (fault address: 0x8)
+    frame #0: 0x000055555555fb3e queue_spin`core::sync::atomic::atomic_load::hd37078e3d501f11f(dst=0x0000000000000008, order=Relaxed) + 78 at atomic.rs:1502
+  thread #3: tid = 12897, 0x000055555555fb3e queue_spin`core::sync::atomic::atomic_load::hd37078e3d501f11f(dst=0x0000000000000008, order=Relaxed) + 78 at atomic.rs:1502, name = 'queue_spin', stop reason = signal SIGSEGV: invalid address (fault address: 0x8)
+    frame #0: 0x000055555555fb3e queue_spin`core::sync::atomic::atomic_load::hd37078e3d501f11f(dst=0x0000000000000008, order=Relaxed) + 78 at atomic.rs:1502
+  thread #4: tid = 12898, 0x000055555555fb3e queue_spin`core::sync::atomic::atomic_load::hd37078e3d501f11f(dst=0x0000000000000008, order=Relaxed) + 78 at atomic.rs:1502, name = 'queue_spin', stop reason = signal SIGSEGV: invalid address (fault address: 0x8)
+    frame #0: 0x000055555555fb3e queue_spin`core::sync::atomic::atomic_load::hd37078e3d501f11f(dst=0x0000000000000008, order=Relaxed) + 78 at atomic.rs:1502
+  thread #5: tid = 12899, 0x000055555555fb3e queue_spin`core::sync::atomic::atomic_load::hd37078e3d501f11f(dst=0x0000000000000008, order=Relaxed) + 78 at atomic.rs:1502, name = 'queue_spin', stop reason = signal SIGSEGV: invalid address (fault address: 0x8)
+    frame #0: 0x000055555555fb3e</strong></pre>
+<pre><strong>queue_spin`core::sync::atomic::atomic_load::hd37078e3d501f11f(dst=0x0000000000000008, order=Relaxed) + 78 at atomic.rs:1502</strong></pre>
+<p>In the first example, the head is pointing to null, which will happen when the queue is empty, but this particular branch is only hit when the queue is not empty. What's going on here? It turns out there's a nasty race and its down to deallocation. Let's look at <kbd>deq</kbd> again, this time with line numbers:</p>
+<pre> 64    pub unsafe fn deq(&amp;mut self) -&gt; Option&lt;T&gt; {
+ 65        let mut head: *mut Node&lt;T&gt;;
+ 66        let value: T;
+ 67        loop {
+ 68            head = self.head.load(Ordering::Acquire);
+ 69            let tail: *mut Node&lt;T&gt; = <br/>               self.tail.load(Ordering::Relaxed);
+ 70            let next: *mut Node&lt;T&gt; = <br/>               (*head).next.load(Ordering::Relaxed);
+ 71            if head == self.head.load(Ordering::Relaxed) {
+ 72                if head == tail {
+ 73                    if next.is_null() {
+ 74                        return None;
+ 75                    }
+ 76                    self.tail.compare_and_swap(tail, next, <br/>                       Ordering::Relaxed);
+ 77                } else {
+ 78                    let val: *mut T = (*next).value as *mut T;
+ 79                    if self.head.compare_and_swap(head, next,  <br/>                       Ordering::Release) == head {
+ 80                        value = *Box::from_raw(val);
+ 81                        break;
+ 82                    }
+ 83                }
+ 84            }
+ 85        }
+ 86        let head: Node&lt;T&gt; = *Box::from_raw(head);
+ 87        drop(head);
+ 88        Some(value)
+ 89    }</pre>
+<p>Say we have four threads, <kbd>A</kbd> through <kbd>D</kbd>. Thread <kbd>A</kbd> gets to line 78 and is stopped. Thread <kbd>A</kbd> is now in possession of a <kbd>head</kbd>, a <kbd>tail</kbd>, and a <kbd>next</kbd>, which point to a sensible linked-list in memory. Now, threads <kbd>B</kbd>, <kbd>C</kbd>, and <kbd>D</kbd> each perform multiple <kbd>enq</kbd> and <kbd>deq</kbd> operations such that when <kbd>A</kbd> wakes up the linked list pointed to by the head of <kbd>A</kbd> is long gone. In fact, head itself is actually deallocated, but <kbd>A</kbd> gets lucky and the OS hasn't overwritten its memory yet.</p>
+<p>Thread <kbd>A</kbd> wakes up and performs line 78 but next now points off to nonsense and the whole thing crashes. Alternatively, say we have two threads, <kbd>A</kbd> and <kbd>B</kbd>. Thread <kbd>A</kbd> wakes up and advances through to line 70 and is stopped. Thread <kbd>B</kbd> wakes up and is very fortunate and advances all the way through to line 88, deallocating head. The OS is feeling its oats and overwrites the memory that <kbd>A</kbd> is pointing at. Thread <kbd>A</kbd> then wakes up, fires <kbd>(*head).next.load(Ordering::Relaxed)</kbd>, and subsequently crashes. There are many alternatives here. What's common between them all is deallocation happening while there's still outstanding references to one or more nodes. In fact, Michael and Scott's paper does mention this as a problem, but briefly in a way that's easy to overlook:</p>
+<div class="packt_quote">
+<p>"To obtain consistent values of various pointers we rely on sequences of reads that re-check earlier values to be sure they haven't changed. These sequences of reads are similar to, but simpler than, the snapshots of Prakash et al. (we need to check only one shared variable rather than two). A similar technique can be used to prevent the race condition in Stone's blocking algorithm. We use Treiber's simple and efficient non-blocking stack algorithm to implement a non-blocking free list."</p>
+</div>
+<p>The key ideas here are <em>sequences of reads that re-check earlier values</em> and <em>free list</em>. What we've seen by inspection is that it's entirely possible to compare-and-swap a value that has changed—the ABA problem—which leaves our implementation pointing off into space. Also, immediately deallocating nodes will leave us open to crashes even absent a compare-and-swap. What Michael and Scott have done is create a minimal kind of memory management; rather than delete nodes, they move them into a <em>free list</em> to be reused or deleted at a later time. Free lists can be thread-local, in which case you avoid expensive synchronization, but it's still kind of tricky to be sure your thread-local free list doesn't have the same pointer as another thread.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Options to correct the incorrect queue</h1>
+                </header>
+            
+            <article>
+                
+<p>What should we do? Well, it turns out there's lots of options in the literature. Hart, McKenney, Brown and Walpole's 2007 <em>Performance of Memory Reclamation for Lockless Synchronization</em> discusses four, along with references to their originating papers:</p>
+<ul>
+<li>
+<p><strong>Quiescent-state-based reclamation</strong> (<strong>QSRB</strong>): The application's signal quiescent'periods in which reclamation is allowed</p>
+</li>
+<li>
+<p><strong>Epoch-based reclamation</strong> (<strong>EBR</strong>): The applications make use of structures that determine when reclamation is allowed by moving memory through epochs</p>
+</li>
+<li>
+<p><strong>Hazard-pointer-based reclamation</strong> (<strong>HPBR</strong>): Threads cooperate and signal pointers as being hazardous for reclamation</p>
+</li>
+<li>
+<p><strong>Lock-free reference counting (LFRC</strong>): Pointers carry an atomic counter of uses alongside them, which threads use to determine safe reclamation periods</p>
+</li>
+</ul>
+<p>Quiescent state reclamation works by having threads that operate on a shared concurrent structure signal that have entered a <em>quiescent state</em> for a period of time, meaning that for the signaled state the thread does not claim any stake over a reference from inside the shared structure. A separate reclamation actor, which may be the structure itself or a thread in a quiescent state, searched for <em>grace periods</em> in which it's safe to reclaim storage, either because all threads have gone quiescent or because some relevant subsets have. It's quite tricky and involves peppering your code with notifications of entering and exiting quiescent states. Hart et al note that this reclamation method was commonly used in the Linux kernel at the time of writing, which remains true at the time of <em>this</em> writing. Interested readers are referred to the available literature on the Linux kernel's read-copy update mechanism. The key difficulty of QSRB as a technique is that it's not always clear in user-space when a natural quiescent period exists; if you signal one incorrectly you're going to get data-races. Context switches in an operating system are a natural quiescent period—the relevant contexts won't be manipulating anything until they get called back in—but it's less clear to me in our queue where such a period would comfortably exist. The benefit of QSRB is that it's a very <em>fast</em> technique, requiring less thread synchronization than any of the other methods below.</p>
+<p>Epoch-based reclamation is similar to QSRB, except that it's application independent. That is, the application interacts with storage through an intermediary layer and this layer stores enough information to decide when a grace period has come. In particular, every thread ticks a flag, indicating that it means to interact with shared data, interacts, and then ticks the flag the other direction on its way out. The number of flag cycles is referred to as an 'epoch'. Once shared data has gone through enough epochs, the thread will attempt to reclaim the storage. This method has the benefit of being more automatic than QSRB—the application developer uses specially designed intermediary types—but has the downside of requiring some synchronization on either side of the data access—those flag ticks. (The paper actually introduces a fifth, new epoch-based reclamation, which improves on epoch-based replication but does require hints from the application developer. In some sense, it is an EBR/QSRB hybrid approach.)</p>
+<p>The hazard pointer reclamation scheme is entirely data structure dependent. The idea is that every involved thread will keep a collection of hazard pointers, one for each lockless operation it intended to perform. This thread-local collection of hazard pointers is mirrored into some reclamation system—perhaps a special-purpose garbage collector or plug-in allocator—and this system is able to check the status of the hazard pointers. When a thread is intended to perform a lockless operation on some shared data, it signals the hazard pointer as protected, disallowing its reclamation. When the thread is done, it signals that the shared data is no longer protected. Depending on context, the shared data may now be free for reclamation or may be subject to later reclamation. Like EBR, HPBR requires access to shared data through special structures and has overheads in terms of synchronization. Also, there maybe be a higher burden of implementation compared to EBR, but less than QSRB. Harder yet, if your data structure passes references to its internal storage, that also requires a hazard pointer. The more threads, the more hazard pointer lists you require. Memory overheads can get non-trivial real quick. Compared to grace period approaches, hazard pointers can be much faster at reclaiming memory, due to there being no need to search for a time when a reference is not hazardous. It is or it isn't. HPBR has higher overheads per operation and higher memory requirements overall, but is potentially better at reclamation. That's a non-trivial detail. If QSBR or EBR are run on systems where allocation blocks the CPU, it's possible for these methods to <em>never</em> find a grace period, eventually exhausting system memory.</p>
+<p>The last of the bunch is atomic reference counting, akin to <span>standard library</span>'s <kbd>Arc</kbd> but for atomics. This method is not especially fast, incurring a cost per access to the reference counter as well as the branch on that counter, but it is simple and reclamation occurs promptly.</p>
+<p>Aside from reference counting, each of these methods are tricky to implement. But we're in luck; the crate ecosystem has an implementation of epoch-based reclamation <em>and</em> hazard pointer reclamation. The relevant libraries are crossbeam (<a href="https://crates.io/crates/crossbeam">https://crates.io/crates/crossbeam</a>) and conc (<a href="https://crates.io/crates/conc">https://crates.io/crates/conc</a>). We'll discuss them in great detail in the next chapter. Crossbeam aims to be the <kbd>libcds</kbd> (<a href="https://github.com/khizmax/libcds">https://github.com/khizmax/libcds</a>) of Rust and has a Michael and Scott queue already implemented for us. Let's give it a spin. The relevant file is <kbd>src/bin/crossbeam_queue_spin.rs</kbd>:</p>
+<pre>extern crate crossbeam;
+
+use crossbeam::sync::MsQueue;
+use std::sync::Arc;
+use std::thread;
+
+fn main() {
+    let q = Arc::new(MsQueue::new());
+
+    let mut jhs = Vec::new();
+
+    for _ in 0..4 {
+        let q = Arc::clone(&amp;q);
+        jhs.push(thread::spawn(move || {
+            let mut i = 0;
+            loop {
+                q.push(i);
+                i += 1;
+                q.pop();
+            }
+        }))
+    }
+
+    for jh in jhs {
+        jh.join().unwrap();
+    }
+}</pre>
+<p>This is fairly similar to <kbd>queue_spin</kbd>, save that <kbd>enq</kbd> is now push and <kbd>deq</kbd> is <kbd>pop</kbd>. It's worth noting as well that <kbd>MsQueue::pop</kbd> is blocking. The mechanism for that is very neat; we'll discuss that in the next chapter.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Semaphore</h1>
+                </header>
+            
+            <article>
+                
+<p>We discussed semaphores in passing in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <span> </span><span class="cdp-chapters-widget-post-title"><em>Locks – Mutex, Condvar, Barriers, and RWLock</em>, </span>especially with regard to the concurrency puzzles from <em>The Little Semaphore</em>. It's now, as promised, time to implement a semaphore. What <em>exactly</em> is a semaphore? Similar to our analysis of mutex as an <em>atomic object</em>, let's consider it:</p>
+<ul>
+<li>Semaphore supports two operations, <kbd>wait</kbd> and <kbd>signal</kbd>.</li>
+<li>A semaphore has an isize <kbd>value</kbd> that is used to track the available resource capacity of the semaphore. This value is only manipulable by <kbd>wait</kbd> and <kbd>signal</kbd>.</li>
+<li>The operation <kbd>wait</kbd> decrements <kbd>value</kbd>. If the value is less than zero, 'wait' blocks the calling thread until such time as a value becomes available. If the value is not less than zero, the thread does not block.</li>
+<li>The operation <kbd>signal</kbd> increments <kbd>value</kbd>. After increment, if the value is less than or equal to zero then there are one or more waiting threads. One of these threads is woken up. If the value is greater than zero after increment, there are no waiting threads.</li>
+<li>All loads and stores that occur after and before a wait in program order must not be moved prior to or after the wait.</li>
+<li>All loads and stores that occur before an signal in program order must not be moved to after the signal.</li>
+</ul>
+<p>If this seems familiar, there's a good reason for that. Viewed a certain way, a mutex is a semaphore with only one resource available; a locking mutex maps to wait and signaling maps to unwait. We have specified the behaviour of loads and stores around the waiting and signaling of the semaphore to avoid the same deadlock behaviour identified previously in the mutex analysis.</p>
+<p>There are some subtleties not captured in the preceding breakdown that don't affect the analysis of the semaphore but do affect the programming model. We'll be building a semaphore with fixed resources. That is, when the semaphore is created, the programmer is responsible for setting the maximum total resources available in the semaphore <em>and</em> ensuring that the semaphore starts with these resources available. Some semaphore implementations allow for the resource capacity to shift over time. These are commonly called <em>counting semaphores</em>. Our variant is called a <em>bounded semaphore;</em> the subvariant of this sort with only a single resource is called a <em>binary semaphore</em>. Behavior around the signaling of waiting threads may vary. We will signal our threads on a first-come, first-serve basis.</p>
+<p>Let's dig in. Our semaphore implementation is in <kbd>src/semaphore.rs</kbd> and it's very short:</p>
+<pre style="padding-left: 30px">use crossbeam::sync::MsQueue;
+
+unsafe impl Send for Semaphore {}
+unsafe impl Sync for Semaphore {}
+
+pub struct Semaphore {
+    capacity: MsQueue&lt;()&gt;,
+}
+
+impl Semaphore {
+    pub fn new(capacity: usize) -&gt; Self {
+        let q = MsQueue::new();
+        for _ in 0..capacity {
+            q.push(());
+        }
+        Semaphore { capacity: q }
+    }
+
+    pub fn wait(&amp;self) -&gt; () {
+        self.capacity.pop();
+    }
+
+    pub fn signal(&amp;self) -&gt; () {
+        self.capacity.push(());
+    }
+}</pre>
+<p>Well! Crossbeam's <kbd>MsQueue</kbd> has the correct ordering semantics when <kbd>MsQueue::push</kbd> and then <kbd>MsQueue::pop</kbd> are done in that sequence by the same thread, where pop has the added bonus of blocking until such a time where the queue is empty. So, our semaphore is an <kbd>MsQueue</kbd> filled with the capacity total <kbd>()</kbd>. The operation <kbd>wait</kbd> decreases the <kbd>value</kbd>—the total number of <kbd>()</kbd> in the queue—and does so with <kbd>Acquire</kbd>/<kbd>Release</kbd> ordering. The operation signal increases the <em>value</em> of the semaphore by pushing an additional <kbd>()</kbd> onto the queue with <kbd>Release</kbd> semantics. It is possible for a programming error to result in <kbd>wait</kbd>/<kbd>signal</kbd> invocations that are not one-to-one, and we can resolve this with the same <kbd>Guard</kbd> approach taken by Mutex and <kbd>SwapMutex</kbd>. The underlying queue linearizes <kbd>Guard</kbd><span>—</span>see the next chapter for that discussion—and so our semaphore does so also. Let's try this thing out. We've got a program in-project to demonstrate the use of <kbd>Semaphore</kbd>, <kbd>src/bin/status_demo.rs</kbd>:</p>
+<pre style="padding-left: 30px">extern crate synchro;
+
+use std::sync::Arc;
+use synchro::Semaphore;
+use std::{thread, time};
+
+const THRS: usize = 4;
+static mut COUNTS: &amp;'static mut [u64] = &amp;mut [0; THRS];
+static mut STATUS: &amp;'static mut [bool] = &amp;mut [false; THRS];
+
+fn worker(id: usize, gate: Arc&lt;Semaphore&gt;) -&gt; () {
+    unsafe {
+        loop {
+            gate.wait();
+            STATUS[id] = true;
+            COUNTS[id] += 1;
+            STATUS[id] = false;
+            gate.signal();
+        }
+    }
+}
+
+fn main() {
+    let semaphore = Arc::new(Semaphore::new(1));
+
+    for i in 0..THRS {
+        let semaphore = Arc::clone(&amp;semaphore);
+        thread::spawn(move || worker(i, semaphore));
+    }
+
+    let mut counts: [u64; THRS] = [0; THRS];
+    loop {
+        unsafe {
+            thread::sleep(time::Duration::from_millis(1_000));
+            print!("|");
+            for i in 0..THRS {
+                print!(" {:&gt;5}; {:010}/sec |", STATUS[i], <br/>                       COUNTS[i] - counts[i]);
+                counts[i] = COUNTS[i];
+            }
+            println!();
+        }
+    }
+}</pre>
+<p>We make <kbd>THRS</kbd> total worker threads, whose responsibilities are to wait on the semaphore, flip their <kbd>STATUS</kbd> to true, add one to their <kbd>COUNT</kbd>, and flip their <kbd>STATUS</kbd> to false before signaling the semaphore. Mutable static arrays is kind of a goofy setup for any program, but it's a neat trick and causes no harm here, except for interacting oddly with the optimizer. If you compile this program under release mode, you may find that the optimizer determines worker to be a no-op. The <kbd>main</kbd> function creates a semaphore with a capacity of two, carefully offsets the workers, and then spins, forever printing out the contents of <kbd>STATUS</kbd> and <kbd>COUNT</kbd>. A run on my x86 test article looks like the following:</p>
+<pre><strong>&gt; ./target/release/status_demo
+| false; 0000170580/sec |  true; 0000170889/sec |  true; 0000169847/sec | false; 0000169220/sec |
+| false; 0000170262/sec | false; 0000170560/sec |  true; 0000169077/sec |  true; 0000169699/sec |
+| false; 0000169109/sec | false; 0000169333/sec | false; 0000168422/sec | false; 0000168790/sec |</strong></pre>
+<pre><strong>| false; 0000170266/sec |  true; 0000170653/sec | false; 0000168184/sec |  true; 0000169570/sec |
+| false; 0000170907/sec | false; 0000171324/sec |  true; 0000170137/sec | false; 0000169227/sec |
+...</strong></pre>
+<p>And from my ARMv7 machine:</p>
+<pre><strong>&gt; ./target/release/status_demo
+| false; 0000068840/sec |  true; 0000063798/sec | false; 0000063918/sec | false; 0000063652/sec |
+| false; 0000074723/sec | false; 0000074253/sec |  true; 0000074392/sec |  true; 0000074485/sec |
+|  true; 0000075138/sec | false; 0000074842/sec | false; 0000074791/sec |  true; 0000074698/sec |
+| false; 0000075099/sec | false; 0000074117/sec | false; 0000074648/sec | false; 0000075083/sec |
+| false; 0000075070/sec |  true; 0000074509/sec | false; 0000076196/sec |  true; 0000074577/sec |
+|  true; 0000075257/sec |  true; 0000075682/sec | false; 0000074870/sec | false; 0000075887/sec |
+...</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Binary semaphore, or, a less wasteful mutex</h1>
+                </header>
+            
+            <article>
+                
+<p>How does our semaphore stack up against standard library's Mutex? How about our spinlock <kbd>Mutex</kbd>? Apply this <kbd>diff</kbd> to <kbd>status_demo</kbd>:</p>
+<pre>diff --git a/external_projects/synchro/src/bin/status_demo.rs b/external_projects/synchro/src/bin/status_demo.rs
+index cb3e850..fef2955 100644
+--- a/external_projects/synchro/src/bin/status_demo.rs
++++ b/external_projects/synchro/src/bin/status_demo.rs
+@@ -21,7 +21,7 @@ fn worker(id: usize, gate: Arc&lt;Semaphore&gt;) -&gt; () {
+ }
+
+ fn main() {
+-    let semaphore = Arc::new(Semaphore::new(2));
++    let semaphore = Arc::new(Semaphore::new(1));
+
+     for i in 0..THRS {
+         let semaphore = Arc::clone(&amp;semaphore);</pre>
+<p>You'll create a mutex variant of the semaphore status demo. The numbers for that on my x86 test article look like this:</p>
+<pre><strong>| false; 0000090992/sec |  true; 0000090993/sec |  true; 0000091000/sec | false; 0000090993/sec |
+| false; 0000090469/sec | false; 0000090468/sec |  true; 0000090467/sec |  true; 0000090469/sec |
+|  true; 0000090093/sec | false; 0000090093/sec | false; 0000090095/sec | false; 0000090093/sec |</strong></pre>
+<p>The numbers at capacity two were 170,000 per second, so there's quite a dip. Let's compare that against standard library mutex first. The adaptation is in <kbd>src/bin/mutex_status_demo.rs</kbd>:</p>
+<pre style="padding-left: 30px">use std::sync::{Arc, Mutex};
+use std::{thread, time};
+
+const THRS: usize = 4;
+static mut COUNTS: &amp;'static mut [u64] = &amp;mut [0; THRS];
+static mut STATUS: &amp;'static mut [bool] = &amp;mut [false; THRS];
+
+fn worker(id: usize, gate: Arc&lt;Mutex&lt;()&gt;&gt;) -&gt; () {
+    unsafe {
+        loop {
+            let guard = gate.lock().unwrap();
+            STATUS[id] = true;
+            COUNTS[id] += 1;
+            STATUS[id] = false;
+            drop(guard);
+        }
+    }
+}
+
+fn main() {
+    let mutex = Arc::new(Mutex::new(()));
+
+    for i in 0..THRS {
+        let mutex = Arc::clone(&amp;mutex);
+        thread::spawn(move || worker(i, mutex));
+    }
+
+    let mut counts: [u64; THRS] = [0; THRS];
+    loop {
+        unsafe {
+            thread::sleep(time::Duration::from_millis(1_000));
+            print!("|");
+            for i in 0..THRS {
+                print!(" {:&gt;5}; {:010}/sec |", STATUS[i], <br/>                       COUNTS[i] - counts[i]);
+                counts[i] = COUNTS[i];
+            }
+            println!();
+        }
+    }
+}</pre>
+<p>Straightforward, yeah? The numbers from that on the same x86 test article are as follows:</p>
+<pre><strong>| false; 0001856267/sec | false; 0002109238/sec |  true; 0002036852/sec |  true; 0002172337/sec |
+| false; 0001887803/sec |  true; 0002072647/sec | false; 0002065467/sec |  true; 0002143558/sec |
+| false; 0001848387/sec | false; 0002044828/sec |  true; 0002098595/sec |  true; 0002178304/sec |</strong></pre>
+<p>Let's be a little generous and say that the standard library mutex is clocking in at 2,000,000 per second, while our binary semaphore is getting 170,000 per second. How about the spinlock? At this point, I will avoid the source listing. Just be sure to import <kbd>SwapMutex</kbd> and adjust it from the <span>standard library </span><kbd>Mutex</kbd> accordingly. The numbers for that are as follows:</p>
+<pre><strong>|  true; 0012527450/sec | false; 0011959925/sec |  true; 0011863078/sec | false; 0012509126/sec |
+|  true; 0012573119/sec | false; 0011949160/sec |  true; 0011894659/sec | false; 0012495174/sec |
+| false; 0012481696/sec |  true; 0011952472/sec |  true; 0011856956/sec | false; 0012595455/sec |</strong></pre>
+<p>Which, you know what, makes sense. The spinlock is doing the least amount of work and every thread is burning up CPU time to be right there when it's time to enter their critical section. Here is a summary of our results:</p>
+<ul>
+<li>Spinlock mutex: 11,000,000/sec</li>
+<li><span>Standard library </span>mutex: 2,000,000/sec</li>
+<li>Binary semaphore: 170,000/sec</li>
+</ul>
+<p>The reader is warmly encouraged to investigate each of these implementations in Linux perf. The key thing to understand, from these results, is not that any of these implementations is better or worse than the other. Rather, that they are suitable for different purposes.</p>
+<p>We could, for instance, use techniques from the next chapter to reduce the CPU consumption of the spinlock mutex. This would slow it down some, likely bringing it within the range of <span>standard library </span>Mutex. In this case, use the <span>standard library </span>Mutex.</p>
+<p>Atomics programming is not a thing to take lightly. It's difficult to get right, and an implementation that may <em>seem</em> right might well not obey the causal properties of the memory model. Furthermore, just because a thing is lock-free does not mean that it is <em>faster</em> to execute.</p>
+<p>Writing software is about recognizing and adapting to trade-offs. Atomics demonstrates that in abundance.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we discussed the atomic primitives available on modern CPU architectures and their reflection in Rust. We built higher-level synchronization primitives of the sort discussed in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>, and <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers, and RWLock</em>, as well as our own semaphore, which does not exist in Rust. The semaphore implementation could be improved, depending on your needs, and I warmly encourage the readers to give that a shot. We also ran into a common problem of atomic programming, memory reclamation, which we discussed in terms of a Michael Scott queue. We'll discuss approaches to this problem in-depth in the next chapter.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><em>Axioms for Concurrent Objects</em>, Maurice Herlihy and Jeannette Wing. This paper by Herlihy and Wing introduced the formal definition of linearizability and the formal analysis framework. Subsequent work has expanded or simplified on this paper, but the reader is warmly encouraged to digest the first half of the paper, at least.</li>
+<li><em>Distributed Algorithms</em>, Nancy Lynch. To my knowledge, Lynch's work was the first general overview of distributed algorithms in textbook form. It is incredibly accessible and Chapter 13 of Lynch's book is especially relevant to this discussion.</li>
+<li><em>In C++, are acquire-release memory order semantics transitive?</em>, available at <a href="https://softwareengineering.stackexchange.com/questions/253537/in-c-are-acquire-release-memory-order-semantics-transitive">https://softwareengineering.stackexchange.com/questions/253537/in-c-are-acquire-release-memory-order-semantics-transitive</a>. The consequences of memory orderings are not always clear. This question on <kbd>StackExchange</kbd>, which influenced the writing of this chapter, is about the consequence of splitting <kbd>Acquire</kbd> and <kbd>Release </kbd>across threads. The reader is encouraged to ponder the question before reading the answer.</li>
+<li><em>std::memory_order, CppReference</em>, available at <a href="http://en.cppreference.com/w/cpp/atomic/memory_order">http://en.cppreference.com/w/cpp/atomic/memory_order</a>. Rust's memory model is LLVM's, which is, in turn, influenced by the C++ memory model. This discussion of memory ordering is particularly excellent, as it has example code and a less language-lawyer approach to explaining orders.</li>
+<li><em>Peterson's lock with C++0x atomics</em>, available at <a href="https://www.justsoftwaresolutions.co.uk/threading/petersons_lock_with_C++0x_atomics.html">https://www.justsoftwaresolutions.co.uk/threading/petersons_lock_with_C++0x_atomics.html</a>. This post discusses Bartosz Milewski's implementation of Peterson's algorithm for Mutex, demonstrates how and why it is incorrect, and describes a functional alternative. Milewski is a well-known C++ expert. It just goes to show, atomic programming is difficult and easy to get subtly wrong.</li>
+<li><em>Algorithms for Mutual Exclusion</em>, Michael Raynal. This book by Raynal was written in 1986, well before the x86_64 architecture we've discussed was introduced and a mere year after ARMv1 was introduced. Raynal's book remains useful, both as a historical overview of mutual exclusion algorithms and for environments where synchronization primitives are not available, such as on file systems.</li>
+<li><em>Review of many Mutex implementations</em>, available at <a href="http://cbloomrants.blogspot.com/2011/07/07-15-11-review-of-many-mutex.html">http://cbloomrants.blogspot.com/2011/07/07-15-11-review-of-many-mutex.html</a>. As it says on the tin, this post is a review of many mutex implementations that are given a more modern context than Raynal's book. Some explanations rely on Microsoft Windows features, which may be welcome to the reader as this book is heavily invested in a Unix-like environment.</li>
+<li><em>Encheapening Cernan Metrics</em>, available at <a href="http://blog.troutwine.us/2017/08/31/encheapening-cernan-internal-metrics/">http://blog.troutwine.us/2017/08/31/encheapening-cernan-internal-metrics/</a>. In this chapter we have discussed atomics largely in terms of synchronization. There are many other use cases. This post discusses the application of atomics to providing cheap self-telemetry to a complicated software project.</li>
+<li><em>Roll Your Own Lightweight Mutex</em>, available at <a href="http://preshing.com/20120226/roll-your-own-lightweight-mutex/">http://preshing.com/20120226/roll-your-own-lightweight-mutex/</a>. Preshing On Programming has a run of excellent atomics material, focused on C++ and Microsoft environments. This particular post is to do with implementing mutexes—a topic dear to this chapter—and has an excellent follow-up conversation in the comments. The post discusses a variant of semaphores called benaphores.</li>
+<li><em>Simple, Fast, and Practical Non-Blocking and Blocking Concurrent Queue Algorithms</em>, Maged Michael and Michael Scott. This paper introduces the Michael and Scott Queue, discussed in this chapter, and that's what it's best known for. You may also recognize their queue with two locks from the previous chapter, adapted through the Erlang VM, of course.</li>
+<li><em>Lock-Free Data Structures. The Evolution of a Stack</em>, available at <a href="https://kukuruku.co/post/lock-free-data-structures-the-evolution-of-a-stack/">https://kukuruku.co/post/lock-free-data-structures-the-evolution-of-a-stack/</a>. This post discusses the <kbd>libcds</kbd> implementation of Trieber stacks, as well as making reference to other areas of the literature. Readers will note that previous <em>Further reading</em> have introduced some of the same literature; it's always good to seek alternate takes. Readers are especially encouraged to investigate the Hendler, Shavit, and Yerushalmi paper referenced in the post.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  </body></html>

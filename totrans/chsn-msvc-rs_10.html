@@ -1,0 +1,738 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Background Tasks and Thread Pools in Microservices</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, you'll learn how to use background tasks in microservices. In <a href="ed541ef5-4701-4e70-aabf-14882b4cecb3.xhtml">Chapter 5</a>, <em>Understanding Asynchronous Operations with the Futures Crate,</em> we created a microservice that provides a feature that enables the user to upload images. Now, we'll create another version of this service, which loads an image and returns a resized version of that image.</p>
+<p>To utilize the available resources fully, microservices have to be implemented with asynchronous code, but not every part of a microservices can be asynchronous. For example, parts that require massive CPU load or parts that have to use shared resources should be implemented in a separate thread or use a pool of threads to avoid blocking the main threads that are used to process the event loops used by asynchronous code.</p>
+<p><span>In this chapter, we'll cover the following topics:</span></p>
+<ul>
+<li>How to interact with spawned threads</li>
+<li>How to use the <kbd>futures-cpupool</kbd> and <kbd>tokio-threadpool</kbd><strong> </strong>crates</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we'll improve the images microservice from <a href="ed541ef5-4701-4e70-aabf-14882b4cecb3.xhtml">Chapter 5</a>, <em>Understanding Asynchronous Operations with the Futures Crate,</em> by adding an image-resizing feature. To compile the examples, you need the Rust compiler, version 1.31 or newer.</p>
+<p>You can get the sources of the examples in this chapter from the project on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter10">https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter10</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Interacting with threads</h1>
+                </header>
+            
+            <article>
+                
+<p>We'll first implement this using a separate thread that will resize all incoming images. After that, we'll improve the microservice with multiple threads using thread pools. In this section, we'll start to use threads to perform tasks in the background.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Synchronous or asynchronous?</h1>
+                </header>
+            
+            <article>
+                
+<p>In this book, we prefer to create asynchronous microservices, because these can handle a lot of concurrent requests. Not every task, however, can be handled in an asynchronous way. Whether we can use an asynchronous microservice depends on the kind of task and the resources it needs. Let's explore the difference further.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">IO-bound versus CPU-bound tasks</h1>
+                </header>
+            
+            <article>
+                
+<p>There are two types of tasks. If a task doesn't carry out many calculations, but it does do a lot of input/output operations, it's called an I/O-bound task. Since CPU is much faster than input/output buses, we have to wait a long time for a bus or device to be available for reading or writing. I/O-bound tasks can be handled well in an asynchronous way.</p>
+<p>If a task does a lot operations using CPU, it's called a CPU-bound task. For example, image resizing is a kind of CPU-bound task, because it recalculates the pixels from an original image, but only saves the result when it's ready.</p>
+<p>The difference between I/O-bound and CPU-bound tasks isn't obvious and not every task can be classified strictly to an I/O or CPU domain. To resize an image, you have to keep the whole image in the memory, but if your service transcodes video streams, it may take a lot of I/O and CPU resources simultaneously.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Synchronous tasks inside asynchronous contexts</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's say you know which class the task belongs to, either I/O or CPU. IO tasks can be handled in a single thread, because they have to wait for a lot of I/O data. If your hardware has multicore CPUs and a lot of I/O devices, however, a single thread isn't enough. You may decide to use multiple threads with a single asynchronous context, but there's a problem—not every asynchronous task can be transferred between threads. For example, SQLite-embedded databases stores service data in thread-local storage, and you can't use the same database handle with multiple threads.</p>
+<p>SQLite can't work with databases asynchronously; it has asynchronous methods that interact with instances that run in a separate thread, but you have to remember that not every task can be run in multithreaded contexts.</p>
+<p>A good solution if we have a multicore hardware is to use a thread pool to handle connections. You can transfer connection contexts to any thread from the pool, which can handle connections asynchronously.</p>
+<p>Rust and well-written crates prevent you from making mistakes; in my opinion, Rust is the best tool in existence for writing fast and secure software. However, it's important to be aware of a certain situation that's hard to detect with a compiler, which occurs when you call a blocking operation in an asynchronous context. Asynchronous applications use a reactor that calls the necessary code when a piece of data is ready to read or write, but if you've called the blocking method, the reactor can't be called and all connections that are handled by the blocked thread will be blocked as well. Even worse, the application might be completely blocked if you call a synchronous method related to the reactor. For example, if you try to send a message to a receiver handled by a reactor, but the channel is full, the program will be blocked, because the reactor must be called to drain the channel, but this can't be done because the thread is already blocked by the message being sent. Take a look at the following example:</p>
+<pre>fn do_send(tx: mpsc::Sender&lt;Msg&gt;) -&gt; impl Future&lt;Item = (), Error = ()&gt; {<br/>    future::lazy(|| {<br/>      tx.send(Msg::Event).wait(); // The program will be blocked here<br/>    })<br/>}</pre>
+<p>The conclusion is simple—only use asynchronous operations in asynchronous contexts.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The limitations of using IO operations on files</h1>
+                </header>
+            
+            <article>
+                
+<p>As mentioned, some libraries, such as SQLite, use blocking operations to perform queries to a database and get the result back, but this depends on what kind of IO they use. A network stack is completely asynchronous in modern operating systems, but the input/output of files is harder to use asynchronously. Operating systems contain functions to carry out asynchronous reading or writing, but it's hard to implement this with cross-platform compatibility. It's simpler to use a separate thread to handle hard-drive IO interactions. The <kbd>tokio</kbd> crate uses a separate thread to handle the IO of files. Other platforms, such as Go or Erlang, do the same thing. You can use asynchronous IO for files for specific operating systems, but this isn't a very flexible approach.</p>
+<p>Now that you know the difference between synchronous and asynchronous tasks, we're ready to create an asynchronous service that uses a separate thread for the CPU-bound task of resizing images.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Spawning a thread for image processing</h1>
+                </header>
+            
+            <article>
+                
+<p class="CDPAlignLeft CDPAlign">In our first example, we'll create a microservice that expects a request with an image, loads it completely to the memory, sends it to a thread for resizing, and waits for the result. Let's start by creating a thread that expects image data and responses. To receive the request, we'll use the <kbd>mpsc::channel</kbd> module and <kbd>oneshot::channel</kbd> for responses, because multiple clients can't send requests and we only expect one response per image. For the requests, we'll use the following struct:</p>
+<pre>struct WorkerRequest {<br/>    buffer: Vec&lt;u8&gt;,<br/>    width: u16,<br/>    height: u16,<br/>    tx: oneshot::Sender&lt;WorkerResponse&gt;,<br/>}</pre>
+<p><kbd>WorkerRequest</kbd> contains the <kbd>buffer</kbd> field for binary image data, the desired <kbd>width</kbd> and <kbd>height</kbd> of the resized image, and a <kbd>tx</kbd> sender of the <kbd>oneshot::Sender</kbd> <span>type</span><span> </span><span>for sending a</span> <kbd>WorkerReponse</kbd> <span>response.</span></p>
+<p>The response is presented by a type alias to the <kbd>Result</kbd> type, which holds the successful result with the binary data of the resized image or an error:</p>
+<pre>type WorkerResponse = Result&lt;Vec&lt;u8&gt;, Error&gt;;</pre>
+<p>We can now create a thread that supports these messages and carries out resizing:</p>
+<pre>fn start_worker() -&gt; mpsc::Sender&lt;WorkerRequest&gt; {<br/>    let (tx, rx) = mpsc::channel::&lt;WorkerRequest&gt;(1);<br/>    thread::spawn(move || {<br/>        let requests = rx.wait();<br/>        for req in requests {<br/>            if let Ok(req) = req {<br/>                let resp = convert(req.buffer, req.width, req.height).map_err(other);<br/>                req.tx.send(resp).ok();<br/>            }<br/>        }<br/>    });<br/>    tx<br/>}</pre>
+<p>Since we use a single thread for all resizing requests, we can use the <kbd>wait</kbd> method of the <kbd>Sender</kbd> and <kbd>Receiver</kbd> for interacting with clients. The preceding code creates a <kbd>channel</kbd> from the <kbd>mpsc</kbd> module that can keep one message in a buffer. We don't need more space in the buffer for the message, because resizing takes a long period of time and we just need to send the next message to a receiver while we're processing an image.</p>
+<p>We use the <kbd>thread::spawn</kbd> method to spawn a new thread with a processing function. The <kbd>Receiver::wait</kbd> method converts a <kbd>Receiver</kbd> to a blocking iterator of the incoming messages. We use a simple loop to iterate over all the requests. The reactor isn't needed here. If the message is received successfully, we'll process the request. To convert the image, we use the <kbd>convert</kbd> method that's described in the following code snippet. We send the result to <kbd>oneshot::Sender</kbd>, which doesn't have a <kbd>wait</kbd> method; all we need to do is call the <kbd>send</kbd> method, which returns a <kbd>Result</kbd>. This operation won't block and doesn't need a reactor, because it uses <kbd>UnsafeCell</kbd> <span>internally</span><span> </span><span>to provide a value for the </span><kbd>Receiver</kbd> <span>that implements the </span><kbd>Future</kbd> <span>trait.</span></p>
+<p>To resize the image, we use an <kbd>image</kbd> crate. This contains a rich set of methods for image transformation and supports multiple image formats. Take a look at the implementation of the <kbd>convert</kbd> function:</p>
+<pre>fn convert(data: Vec&lt;u8&gt;, width: u16, height: u16) -&gt; ImageResult&lt;Vec&lt;u8&gt;&gt; {<br/>    let format = image::guess_format(&amp;data)?;<br/>    let img = image::load_from_memory(&amp;data)?;<br/>    let scaled = img.resize(width as u32, height as u32, FilterType::Lanczos3);<br/>    let mut result = Vec::new();<br/>    scaled.write_to(&amp;mut result, format)?;<br/>    Ok(result)<br/>}</pre>
+<p>The function expects binary data of an image, related to its width and height. The <kbd>convert</kbd> function returns an <kbd>ImageResult</kbd>, which is a type alias for <kbd>Result</kbd> with <kbd>ImageError</kbd> as the error type. We use this error type, because some methods inside the <kbd>convert</kbd> function implementation can return errors of this type.</p>
+<p>The first line of the implementation tries to guess the format of incoming data with the <kbd>guess_format</kbd> function. We can use this format value later on to use the same format for the output image. After that, we use the <kbd>load_from_memory</kbd> function to read an image from a data vector. This call reads the data and actually doubles the amount of consumed memory for the image <span>–</span> be aware of this if you want to process multiple images simultaneously. After resizing, we write the scaled image to a vector and return it as a <kbd>Result</kbd>. The scaled image also consumes some memory, meaning we're almost tripling the consumption. It's better to add limits for the size of the incoming message, the width, and the height to prevent memory overflow.</p>
+<p>We can now implement the <kbd>main</kbd> function, which spawns a worker thread and starts a server instance:</p>
+<pre>fn main() {<br/>    let addr = ([127, 0, 0, 1], 8080).into();<br/>    let builder = Server::bind(&amp;addr);<br/>    let tx = start_worker();<br/>    let server = builder.serve(move || {<br/>        let tx = tx.clone();<br/>        service_fn(move |req| microservice_handler(tx.clone(), req))<br/>    });<br/>    let server = server.map_err(drop);<br/>    hyper::rt::run(server);<br/>}</pre>
+<p>The only difference here from the <kbd>main</kbd> function of the previous chapter is that we call the <kbd>start_worker</kbd> function and use the returned <kbd>Sender</kbd> as a parameter for the handler function along with a request.</p>
+<p>Let's look at an implementation of <kbd>microservice_handler</kbd> and learn how it interacts with a worker.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Interacting with a thread in an asynchronous way</h1>
+                </header>
+            
+            <article>
+                
+<p>The handler function of the image-resizing microservice contains two branches: one for the index page and one for the resize request. Take a look at the following code:</p>
+<pre>fn microservice_handler(tx: mpsc::Sender&lt;WorkerRequest&gt;, req: Request&lt;Body&gt;)<br/>    -&gt; Box&lt;Future&lt;Item=Response&lt;Body&gt;, Error=Error&gt; + Send&gt;<br/>{<br/>    match (req.method(), req.uri().path().to_owned().as_ref()) {<br/>        (&amp;Method::GET, "/") =&gt; {<br/>            Box::new(future::ok(Response::new(INDEX.into())))<br/>        },<br/>        (&amp;Method::POST, "/resize") =&gt; {<br/>            let (width, height) = {<br/>                // Extracting parameters here<br/>            };<br/>            let body = ; // It's a Future for generating a body of the Response<br/>            Box::new(body)<br/>        },<br/>        _ =&gt; {<br/>            response_with_code(StatusCode::NOT_FOUND)<br/>        },<br/>    }<br/>}</pre>
+<p>In the <kbd>resize</kbd> branch part of the handler, we have to carry out various actions: extract parameters, collect a body from a stream, send a task to a worker, and generate a body. Since we use asynchronous code, we'll create a chain of method calls to construct the necessary <kbd>Future</kbd> object.</p>
+<p>To extract the parameters, we use the following code:</p>
+<pre>let (width, height) = {<br/>    let uri = req.uri().query().unwrap_or("");<br/>    let query = queryst::parse(uri).unwrap_or(Value::Null);<br/>    let w = to_number(&amp;query["width"], 180);<br/>    let h = to_number(&amp;query["height"], 180);<br/>    (w, h)<br/>};</pre>
+<p>We use the <kbd>query</kbd> part of <kbd>uri</kbd> and the <kbd>parse</kbd> function of the <kbd>queryst</kbd> crate to parse the parameters to <kbd>Json::Value</kbd>. After that, we can extract the necessary values by index because the <kbd>Value</kbd> type implements the <kbd>std::ops::Index</kbd> trait. Taking a value by index returns a <kbd>Value</kbd>, which will be <kbd>Value::Null</kbd> if the value isn't set. The <kbd>to_number</kbd> function tries to represent a value as a string and parse it to the <kbd>u16</kbd> value. Alternatively, it returns a default value, which you set as a second parameter:</p>
+<pre>fn to_number(value: &amp;Value, default: u16) -&gt; u16 {<br/>    value.as_str()<br/>        .and_then(|x| x.parse::&lt;u16&gt;().ok())<br/>        .unwrap_or(default)<br/>}</pre>
+<p>By default, we'll use an image size of 180 × 180 pixels. </p>
+<p>The next part of the handling branch creates the body of the response using the size parameters we extracted from the query string. The following code collects a stream of the request to a vector and uses a worker instance to resize an image:</p>
+<pre>let body = req.into_body()<br/>    .map_err(other)<br/>    .concat2()<br/>    .map(|chunk| chunk.to_vec())<br/>    .and_then(move |buffer| {<br/>        let (resp_tx, resp_rx) = oneshot::channel();<br/>        let resp_rx = resp_rx.map_err(other);<br/>        let request = WorkerRequest { buffer, width, height, tx: resp_tx };<br/>        tx.send(request)<br/>            .map_err(other)<br/>            .and_then(move |_| resp_rx)<br/>            .and_then(|x| x)<br/>    })<br/>    .map(|resp|  Response::new(resp.into()));</pre>
+<p>To interact with a worker, we create a <kbd>oneshot::channel</kbd> instance and a <kbd>WorkerRequest</kbd> with the necessary parameters. After that, we <kbd>send</kbd> a request to a worker using the <kbd>tx</kbd> variable, which is a <kbd>Sender</kbd> instance connected to a worker and was provided with the <kbd>microservice_handler</kbd> function call. The <kbd>send</kbd> method creates a future that succeeds if a message is sent successfully. We add a step to this future with the <kbd>and_then</kbd> method, which reads a value from a <kbd>oneshot::Recevier</kbd> that implements the <kbd>Future</kbd> trait as well.</p>
+<p>When the scaled message is ready, we take it as a result of <kbd>Future</kbd> and <kbd>map</kbd> it to a response.</p>
+<p>Test the example by sending an image using <kbd>curl</kbd>:</p>
+<pre><strong>curl --request POST \</strong><br/><strong>     --data-binary "@../../media/image.jpg" \</strong><br/><strong>     --output "files/resized.jpg" \</strong><br/><strong>     "http://localhost:8080/resize?width=100&amp;height=100"</strong></pre>
+<p>We've sent <kbd>image.jpg</kbd> from the media folder and saved the result to the <kbd>files/resized.jpg</kbd> file.</p>
+<p>The major drawback of this microservice is that it only uses a single thread, which will quickly become a bottleneck. To prevent this, we can use multiple threads to share CPU resources to handle more requests. Let's now look at how to use thread pools.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using thread pools</h1>
+                </header>
+            
+            <article>
+                
+<p>To use thread pools, you don't need a special library. Instead, you can implement a scheduler that sends requests to a bunch of threads. You can even check the responses of workers to decide which thread to choose for processing, but there are ready-to-use crates that help to solve this issue more elegantly. In this section, we're going to look at the <kbd>futures-cpupool</kbd> and <kbd>tokio-threadpool</kbd> crates. </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">CpuPool</h1>
+                </header>
+            
+            <article>
+                
+<p>Here, we'll reuse an existing microservice and remove the <kbd>start_worker</kbd> function, and the <kbd>WorkerRequest</kbd> and <kbd>WorkerResult</kbd> types. Keep the <kbd>convert</kbd> function and add a new dependency to <kbd>Cargo.toml</kbd>:</p>
+<pre>futures-cpupool = "0.1"</pre>
+<p>Import the <kbd>CpuPool</kbd> type from that crate:</p>
+<pre>use futures_cpupool::CpuPool;</pre>
+<p>The pool is now ready to use in the request handler. We can pass it as a parameter, like we did with the <kbd>Sender</kbd> of the worker thread in the previous example:</p>
+<pre>fn main() {<br/>    let addr = ([127, 0, 0, 1], 8080).into();<br/>    let pool = CpuPool::new(4);<br/>    let builder = Server::bind(&amp;addr);<br/>    let server = builder.serve(move || {<br/>        let pool = pool.clone();<br/>        service_fn(move |req| microservice_handler(pool.clone(), req))<br/>    });<br/>    let server = server.map_err(drop);<br/>    hyper::rt::run(server);<br/>}</pre>
+<p>In the preceding code, we created a thread pool with four threads and passed it to the <kbd>serve</kbd> function to <kbd>clone</kbd> it for the handler. The handler function takes a pool as the first argument:</p>
+<pre>fn microservice_handler(pool: CpuPool, req: Request&lt;Body&gt;)<br/>     -&gt; Box&lt;Future&lt;Item=Response&lt;Body&gt;, Error=Error&gt; + Send&gt;</pre>
+<p>We use the same branches and the code to extract the width and height parameters. We change how we convert the image, however:</p>
+<pre>let body = req.into_body()<br/>    .map_err(other)<br/>    .concat2()<br/>    .map(|chunk| chunk.to_vec())<br/>    .and_then(move |buffer| {<br/>        let task = future::lazy(move || convert(&amp;buffer, width, height));<br/>        pool.spawn(task).map_err(other)<br/>    })<br/>    .map(|resp| Response::new(resp.into()));</pre>
+<p>The code of this implementation has become more compact and accurate. In this implementation, we also collect a body to a <kbd>Vec</kbd> binary, but to convert the image we use a lazy <kbd>Future</kbd> that spawned in a thread pool using the <kbd>spawn</kbd> method of <kbd>CpuPool</kbd>.</p>
+<p>We use the <kbd>future::lazy</kbd> call to postpone the execution of the <kbd>convert</kbd> function. Without the <kbd>lazy</kbd> call, the <kbd>convert</kbd> function will be called immediately and will block all IO activities. You <span>can</span><span> </span><span>also set specific parameters for</span> <kbd>CpuPool</kbd> <span>using</span> <kbd>Bulder</kbd><span>. This helps to set the quantity of threads in a pool, the stack size, and the hooks that will be called after the start of a new thread and before it stops.</span></p>
+<p><kbd>CpuPool</kbd> is not the only way to use pools. Let's look at another example.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The blocking section</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>tokio-threadpool</kbd> crate contains a <kbd>blocking</kbd> function that's declared as follows:</p>
+<pre>pub fn blocking&lt;F, T&gt;(f: F) -&gt; Poll&lt;T, BlockingError&gt; where F: FnOnce() -&gt; T </pre>
+<p>This function expects any function that performs blocking operations and runs it in a separate thread, providing a <kbd>Poll</kbd> result that can be used by a reactor. It is a slightly low-level approach but it's actively used by <kbd>tokio</kbd> and other crates (to perform IO operations on files).</p>
+<p>The positive side of this approach is that we don't need to create a thread pool manually. We can use the simple <kbd>main</kbd> function, as we've done before:</p>
+<pre>fn main() {<br/>    let addr = ([127, 0, 0, 1], 8080).into();<br/>    let builder = Server::bind(&amp;addr);<br/>    let server = builder.serve(|| service_fn(|req| microservice_handler(req)));<br/>    let server = server.map_err(drop);<br/>    hyper::rt::run(server);<br/>}</pre>
+<p>To spawn a task that calls the <kbd>convert</kbd> function, we can use the following code:</p>
+<pre>let body = req.into_body()<br/>    .map_err(other)<br/>    .concat2()<br/>    .map(|chunk| chunk.to_vec())<br/>        .and_then(move |buffer| {<br/>            future::poll_fn(move || {<br/>                let buffer = &amp;buffer;<br/>                blocking(move || {<br/>                    convert(buffer, width, height).unwrap()<br/>                })<br/>            })<br/>            .map_err(other)<br/>        })<br/>        .map(|resp| Response::new(resp.into()));</pre>
+<p><span>The </span><kbd>blocking</kbd> <span>function call delegates the task execution to another thread and returns a </span><kbd>Poll</kbd> <span>for every call until the </span><span>result</span><span> of the </span><span>execution is ready. To call a raw function that returns a </span><kbd>Poll</kbd> <span>result, we can wrap that function with</span> a <kbd>future::poll_fn</kbd> <span>function call that converts any polling function to a</span> <kbd>Future</kbd> <span>instance. Looks simple, doesn't it? We didn't even create a thread pool manually.</span></p>
+<p>For example, the <kbd>tokio-fs</kbd> crate uses this method to implement IO operations on files:</p>
+<pre>impl Write for File {<br/>    fn write(&amp;mut self, buf: &amp;[u8]) -&gt; io::Result&lt;usize&gt; {<br/>        ::would_block(|| self.std().write(buf))<br/>    }<br/>    fn flush(&amp;mut self) -&gt; io::Result&lt;()&gt; {<br/>        ::would_block(|| self.std().flush())<br/>    }<br/>}</pre>
+<p><kbd>would_block</kbd> is a wrapper over the blocking function:</p>
+<pre>fn would_block&lt;F, T&gt;(f: F) -&gt; io::Result&lt;T&gt;<br/>where F: FnOnce() -&gt; io::Result&lt;T&gt;,<br/>{<br/>    match tokio_threadpool::blocking(f) {<br/>        Ok(Ready(Ok(v))) =&gt; Ok(v),<br/>        Ok(Ready(Err(err))) =&gt; {<br/>            debug_assert_ne!(err.kind(), WouldBlock);<br/>            Err(err)<br/>        }<br/>        Ok(NotReady) =&gt; Err(WouldBlock.into()),<br/>        Err(_) =&gt; Err(blocking_err()),<br/>    }<br/>}</pre>
+<p>You now know how any blocking operation can be joined with an asynchronous reactor. This approach is used not only to interact with filesystems, but also for databases and other crates that don't support the <kbd>futures</kbd> crate or that need massive calculations with CPU.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actors</h1>
+                </header>
+            
+            <article>
+                
+<p>Threads and thread pools are good ways to utilize more resources of a server, but it's a tedious programming style. You have to think about a lot of details: sending and receiving messages, load distribution, and respawning failed threads.</p>
+<p>There's another approach to run tasks concurrently: actors. The actors model is a computational model that uses computational primitives called <strong>actors</strong>. They work in parallel and interact with each other by passing messages. It's a more flexible approach than using threads or pools, because you delegate every complex task to a separate actor that receives messages and return results to any entity that sent a request to an actor. Your code becomes well structured and you can even reuse actors for different projects.</p>
+<p>We already studied <kbd>futures</kbd> and <kbd>tokio</kbd> crates, which are tricky to use directly, but they're a good foundation to build asynchronous computational frameworks, and especially it's good to implement actors model. The <kbd>actix</kbd> crate already did that: it's based on both crates to bring an actors model to Rust. Let's study how we can use actors to perform background tasks.</p>
+<p>We'll re-implement the resizing microservice, but add three actors: a resizing actor, a counting actor, which counts the amount of requests, and a logging actor, which will write the count values to <kbd>syslog</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Basics of the actix framework</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>actix</kbd> crate provides a well-organized actors model that's simple to use. There are main concepts you should remember. At first, the <kbd>actix</kbd> crate has the <kbd>System</kbd> type, which is the main type to maintain actors system. You have to create the <kbd>System</kbd> instance before you create and spawn any actor. Actually, <kbd>System</kbd> is an <kbd>Actor</kbd> that controls the whole process and can be used to stop an application.</p>
+<p><kbd>Actor</kbd> is the most-used trait of the framework. Every type that implements the <kbd>Actor</kbd> trait can be spawned. We'll implement this trait for our types later in this chapter. Also, the <kbd>actix</kbd> crate contains the <kbd>Arbiter</kbd> type, which is an event loop controller that have to be one per thread. There's <kbd>SyncArbiter</kbd> to run CPU-boud tasks, and this arbiter uses pools of threads to perform actors.</p>
+<p>Every <kbd>Actor</kbd> has to work in a <kbd>Context</kbd>, which is an environment to a runtime and can be used to spawn other tasks. Also, every <kbd>Actor</kbd> instance takes an <kbd>Address</kbd> and you can use it to send messages to actors and receive responses. We'll store in our example addresses of all necessary actors to a shared state to use them from different handlers in parallel.</p>
+<p><kbd>Address</kbd> provides a <kbd>send</kbd> method that expects a type that implements the <kbd>Message</kbd> trait. To implement message-handling for <kbd>Actor</kbd>, you have to implement the <kbd>Handler</kbd> trait for the actor's type.</p>
+<p>Let's create three actors for our resizing microservice.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Implementing actors</h1>
+                </header>
+            
+            <article>
+                
+<p>First, we have to import all necessary dependencies. We'll use the same common dependencies from previous examples in this chapter, but you also have to add the following dependencies to <kbd>Cargo.toml</kbd>:</p>
+<pre>actix = "0.7"<br/>failure = "0.1"<br/>syslog = "4.0"</pre>
+<p>We added the <kbd>actix</kbd> crate. It's the main crate for the current example. Also, we imported the <kbd>failure</kbd> crate, because we'll use the <kbd>Fail</kbd> trait to get access to the <kbd>compat</kbd> method, which converts any error type that implements the <kbd>Fail</kbd> trait into a <kbd>Compat</kbd> type that implements the <kbd>std::error::Error</kbd> trait.</p>
+<p>Also, we'll use <kbd>syslog</kbd> and we added the <kbd>syslog</kbd> crate to access the system API. <kbd>syslog</kbd> is a standard of system logging. We'll use it to demonstrate how actors can perform separate tasks of the whole process. Now we can add the <kbd>actors</kbd> module to our example and add three actors.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The count actor</h1>
+                </header>
+            
+            <article>
+                
+<p>The first actor we'll implement is a counter. It takes a message with a string and counts the number of the same strings. We will use it to count the amount of requests of specified paths.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Types</h1>
+                </header>
+            
+            <article>
+                
+<p>Create the <kbd>src/actors/count.rs</kbd> module and import the following types:</p>
+<pre>use actix::{Actor, Context, Handler, Message};<br/>use std::collections::HashMap;<br/><br/>type Value = u64;</pre>
+<p>We'll use the <kbd>Actor</kbd> trait to implement an actor's behavior, which works in a <kbd>Context</kbd> and receive a <kbd>Message</kbd> and handle it by the <kbd>Handler</kbd> trait implementation. Also, we need <kbd>HashMap</kbd> to store all counts. We also add the <kbd>Value</kbd> types alias and use it as a type for counting.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actor</h1>
+                </header>
+            
+            <article>
+                
+<p>Actor is a struct that implements the <kbd>Actor</kbd> trait. We'll use a struct with <kbd>HashMap</kbd> inside to count the number of incoming strings:</p>
+<pre>pub struct CountActor {<br/>    counter: HashMap&lt;String, Value&gt;,<br/>}<br/><br/>impl CountActor {<br/>    pub fn new() -&gt; Self {<br/>        Self {<br/>            counter: HashMap::new(),<br/>        }<br/>    }<br/>}</pre>
+<p>We added a new method to create an empty <kbd>CountActor</kbd> instance.</p>
+<p class="mce-root"/>
+<p>Now we can implement the <kbd>Actor</kbd> trait for our struct. The implementation is simple:</p>
+<pre>impl Actor for CountActor {<br/>    type Context = Context&lt;Self&gt;;<br/>}</pre>
+<p>We specify a context and set it to the <kbd>Context</kbd> type. The actor trait contains the default implementation of different methods that help you to react on lifetime events of your actor:</p>
+<ul>
+<li><kbd>started</kbd>: This is called when the <kbd>Actor</kbd> instance starts.</li>
+<li><kbd>stopping</kbd>: This is called when the <kbd>Actor</kbd> instance switches to the Stopping state (if <kbd>Context::stop</kbd> is called, for example).</li>
+<li><kbd>stopped</kbd>: This is called when the <kbd>Actor</kbd> instance stops.</li>
+</ul>
+<p>Now, let's add a message type that will be handled by the actor.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Message</h1>
+                </header>
+            
+            <article>
+                
+<p>The counting actor expects a message with a string, and we'll add the following struct:</p>
+<pre>pub struct Count(pub String);<br/><br/>impl Message for Count {<br/>    type Result = Value;<br/>}</pre>
+<p>The <kbd>Count</kbd> struct has a single filed with the String type and implements the <kbd>Message</kbd> trait of the Actix framework. This implementation allows us to send <kbd>Count</kbd> instances using the address of the actor.</p>
+<p>The Message trait needs type of associated type <kbd>Result</kbd>. This value will be returned after the message is processed. We'll return a counter value for the provided string.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handler</h1>
+                </header>
+            
+            <article>
+                
+<p>To add support for incoming message types, we have to implement the <kbd>Handler</kbd> trait for our actor. Let's implement <kbd>Handler</kbd> of <kbd>Count</kbd> messages for our <kbd>CountActor</kbd>:</p>
+<pre>impl Handler&lt;Count&gt; for CountActor {<br/>    type Result = Value;<br/><br/>    fn handle(&amp;mut self, Count(path): Count, _: &amp;mut Context&lt;Self&gt;) -&gt; Self::Result {<br/>        let value = self.counter.entry(path).or_default();<br/>        *value = *value + 1;<br/>        *value<br/>    }<br/>}</pre>
+<p>We also have to set the associated type with the same type of a result.</p>
+<p>Handling occurs in the body of the <kbd>handle</kbd> method of the <kbd>Handler</kbd> trait. We'll get entry for a provided String value with the <kbd>Count</kbd> message and extract the entry of <kbd>HashMap</kbd>. If no entry is found, we'll get a default value that equals 0 for <kbd>u64</kbd> type (<kbd>Value</kbd> alias) and add <kbd>1</kbd> to that <kbd>value</kbd>.</p>
+<p>Now <kbd>ConnActor</kbd> is ready to use. We can instantiate it and use the address of the actor to count the paths of HTTP requests. Let's add two more actors.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The log actor</h1>
+                </header>
+            
+            <article>
+                
+<p>The logging actor will add records to <kbd>syslog</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Types</h1>
+                </header>
+            
+            <article>
+                
+<p>We need basic types from the <kbd>actix</kbd> crate and import some types from the <kbd>syslog</kbd> crate:</p>
+<pre>use actix::{Actor, Context, Handler, Message};<br/>use syslog::{Facility, Formatter3164, Logger, LoggerBackend};</pre>
+<p>We don't need to study the <kbd>syslog</kbd> crate in detail, but let's discuss basic some types.</p>
+<div class="packt_tip">You can also use <kbd>use actix::prelude::*;</kbd> to import all most-used types from the <kbd>actix</kbd> crate.</div>
+<p><kbd>Logger</kbd> is a main struct that allows writing methods to add records to <kbd>syslog</kbd>. It includes logging the methods order by level from highest to lowest: <kbd>emerg</kbd>, <kbd>alert</kbd>, <kbd>crit</kbd>, <kbd>err</kbd>, <kbd>warning</kbd>, <kbd>notice</kbd>, <kbd>info</kbd>, <kbd>debug</kbd>. The <kbd>LoggerBackend</kbd> enum specifies the type of a connection to a logger. It can be a socket or UNIX socket. The <kbd>Facility</kbd> enum specifies the type of application which writes logs. <kbd>Formatter3164</kbd> specifies the format of logging.</p>
+<div class="packt_infobox">There are two <kbd>Syslog</kbd> protocols described in two RFCs: <kbd>3164</kbd> and <kbd>5424</kbd>. That's why formatters have such strange names.</div>
+<p>Now we can implement the logging actor.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actor</h1>
+                </header>
+            
+            <article>
+                
+<p>The main type is the <kbd>LogActor</kbd> struct, which contains a <kbd>Logger</kbd> instance in the <kbd>writer</kbd> field:</p>
+<pre>pub struct LogActor {<br/>    writer: Logger&lt;LoggerBackend, String, Formatter3164&gt;,<br/>}</pre>
+<p>We'll use this logger in the <kbd>Handler</kbd> trait implementation to write messages, but now we need a constructor for our struct, because we have to configure <kbd>Logger</kbd> on start:</p>
+<pre>impl LogActor {<br/>     pub fn new() -&gt; Self {<br/>         let formatter = Formatter3164 {<br/>             facility: Facility::LOG_USER,<br/>             hostname: None,<br/>             process: "rust-microservice".into(),<br/>             pid: 0,<br/>         };<br/>         let writer = syslog::unix(formatter).unwrap();<br/>         Self {<br/>             writer,<br/>         }<br/>     }<br/> }</pre>
+<p>We added new method that fills the <kbd>Formatter3164</kbd> struct with the <kbd>Facility</kbd> value and process name. Other fields are set to blank values. We create a <kbd>Logger</kbd> instance by calling the <kbd>syslog::unix</kbd> method and providing a formatter to it. We store the <kbd>Logger</kbd> in the writer field and return an instance of the <kbd>LogActor</kbd> struct.</p>
+<p>To add the actor's behavior, we'll implement the <kbd>Actor</kbd> trait for the <kbd>LogActor</kbd> struct:</p>
+<pre>impl Actor for LogActor {<br/>    type Context = Context&lt;Self&gt;;<br/>}</pre>
+<p>Since this actor will work in the same thread with a server instance and a counting actor, we'll use the basic <kbd>Context</kbd> type.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Message</h1>
+                </header>
+            
+            <article>
+                
+<p>We need a message to send messages for writing them to <kbd>syslog</kbd>. It's enough to have a simple struct with one public <kbd>String</kbd> filed:</p>
+<pre>pub struct Log(pub String);<br/> <br/>impl Message for Log {<br/>    type Result = ();<br/>}</pre>
+<p>We added the <kbd>Log</kbd> struct and implemented the <kbd>Message</kbd> trait for it. We don't need the return value for this message since logging will be a one-way process and all errors will be ignored, since they aren't critical for a microservice application. But if your microservice has to work with a strict security environment, you'll also have to inform an administrator about logging issues.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handler</h1>
+                </header>
+            
+            <article>
+                
+<p><kbd>Handler</kbd> of the <kbd>Log</kbd> messages is quite simple. We call the info method of <kbd>Logger</kbd> with a provided message and ignore errors with by converting a <kbd>Result</kbd> into an <kbd>Option</kbd>:</p>
+<pre>impl Handler&lt;Log&gt; for LogActor {<br/>     type Result = ();<br/> <br/>     fn handle(&amp;mut self, Log(mesg): Log, _: &amp;mut Context&lt;Self&gt;) -&gt; Self::Result {<br/>         self.writer.info(mesg).ok();<br/>     }<br/> }</pre>
+<p>The last actor we have to implement is the resizing actor.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The resize actor</h1>
+                </header>
+            
+            <article>
+                
+<p>The resizing actor resizes incoming messages and return resized messages to a client.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Types</h1>
+                </header>
+            
+            <article>
+                
+<p>We don't need any special types and will use basic types of the <kbd>actix</kbd> crate and import types from the <kbd>image</kbd> crate that we've used before:</p>
+<pre>use actix::{Actor, Handler, Message, SyncContext};<br/>use image::{ImageResult, FilterType};<br/><br/>type Buffer = Vec&lt;u8&gt;;</pre>
+<p>We'll convert the function body from previous examples in this chapter in handler implementation that's why we imported types from the <kbd>image</kbd> crate. We added the <kbd>Buffer</kbd> alias to the <kbd>Vec&lt;u8&gt;</kbd> type for convenience.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actor</h1>
+                </header>
+            
+            <article>
+                
+<p>We need a struct without any fields, because we'll use it with <kbd>SyncArbiter</kbd>, which runs multiple actors in multiple threads. Add the <kbd>ResizeActor</kbd> struct:</p>
+<pre>pub struct ResizeActor;<br/> <br/>impl Actor for ResizeActor {<br/>    type Context = SyncContext&lt;Self&gt;;<br/>}</pre>
+<p>We don't need a special constructor and we implemented the <kbd>Actor</kbd> trait with the <kbd>SyncContext</kbd> type for the associate  <kbd>Context</kbd> type. We'll use this context type to make this actor suitable for the synchronous environment of <kbd>SyncArbiter</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Message</h1>
+                </header>
+            
+            <article>
+                
+<p>We don't use the convert function in this example, but we need the same parameters and we'll take them from the <kbd>Resize</kbd> struct:</p>
+<pre>pub struct Resize {<br/>    pub buffer: Buffer,<br/>    pub width: u16,<br/>    pub height: u16,<br/>}<br/> <br/>impl Message for Resize {<br/>    type Result = ImageResult&lt;Buffer&gt;;<br/>}</pre>
+<p>We provide a <kbd>buffer</kbd> with the image data, and the desired <kbd>width</kbd> and <kbd>height</kbd>. In the <kbd>Message</kbd> trait implementation of the <kbd>Resize</kbd> struct, we use the <kbd>ImageResult&lt;Buffer&gt;</kbd> type. The same result type that the <kbd>convert</kbd> function returns. We'll get this value from the actor in the HTTP handler implementation later.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handler</h1>
+                </header>
+            
+            <article>
+                
+<p>We implement the <kbd>Handler</kbd> of the <kbd>Resize</kbd> message for <kbd>ResizeActor</kbd>, but use the body of the <kbd>convert</kbd> function with fields of the passed message:</p>
+<pre>impl Handler&lt;Resize&gt; for ResizeActor {<br/>     type Result = ImageResult&lt;Buffer&gt;;<br/> <br/>     fn handle(&amp;mut self, data: Resize, _: &amp;mut SyncContext&lt;Self&gt;) -&gt; Self::Result {<br/>         let format = image::guess_format(&amp;data.buffer)?;<br/>         let img = image::load_from_memory(&amp;data.buffer)?;<br/>         let scaled = img.resize(data.width as u32, data.height as u32, FilterType::Lanczos3);<br/>         let mut result = Vec::new();<br/>         scaled.write_to(&amp;mut result, format)?;<br/>         Ok(result)<br/>     }<br/> }</pre>
+<p>We also use <kbd>SyncContext</kbd> instead of <kbd>Context</kbd>, like we did for previous actors.</p>
+<p>All actors are ready and you need to add all modules to the <kbd>src/actors/mod.rs</kbd> file:</p>
+<pre>pub mod count;<br/>pub mod log;<br/>pub mod resize;</pre>
+<p>Now we can implement a server with actors that perform resizing and other tasks for every request.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using the server with actors</h1>
+                </header>
+            
+            <article>
+                
+<p>Import all necessary types for a server. It's worth noting only those with which you're unfamiliar:</p>
+<pre>use actix::{Actor, Addr};<br/>use actix::sync::SyncArbiter;</pre>
+<p><kbd>Addr</kbd> is an address of an actor. <kbd>SyncArbiter</kbd> is a synchronous event-loop controller that handles every message synchronously. We need it for resizing actors. Also, add the <kbd>actors</kbd> module and import all the types we declared in the submodules:</p>
+<pre>mod actors;<br/><br/>use self::actors::{<br/>    count::{Count, CountActor},<br/>    log::{Log, LogActor},<br/>    resize::{Resize, ResizeActor},<br/>};</pre>
+<p>We need a shared state to keep all the addresses of the actors that we'll use to handle requests:</p>
+<pre>#[derive(Clone)]<br/>struct State {<br/>    resize: Addr&lt;ResizeActor&gt;,<br/>    count: Addr&lt;CountActor&gt;,<br/>    log: Addr&lt;LogActor&gt;,<br/>}</pre>
+<p>The <kbd>Addr</kbd> type is cloneable and we can derive the <kbd>Clone</kbd> trait for our <kbd>State</kbd> struct, because we have to clone for every service function of <kbd>hyper</kbd>. Let's implement the <kbd>main</kbd> function with a new shared <kbd>State</kbd>:</p>
+<pre>fn main() {<br/>    actix::run(|| {<br/>        let resize = SyncArbiter::start(2, || ResizeActor);<br/>        let count = CountActor::new().start();<br/>        let log = LogActor::new().start();<br/><br/>        let state = State { resize, count, log };<br/><br/>        let addr = ([127, 0, 0, 1], 8080).into();<br/>        let builder = Server::bind(&amp;addr);<br/>        let server = builder.serve(move || {<br/>            let state = state.clone();<br/>            service_fn(move |req| microservice_handler(&amp;state, req))<br/>        });<br/>        server.map_err(drop)<br/>    });<br/>}</pre>
+<p>First, we have to start the event loop. This makes with <kbd>actix::run</kbd> method call. We pass a closure that prepares all actors and return a <kbd>Future</kbd> to run. We'll use the <kbd>Server</kbd> type of <strong><kbd>hyper</kbd></strong>.</p>
+<p>In closure, we start <kbd>SyncArbiter</kbd> with a function that produces a <kbd>ResizeActor</kbd> instance. With the first argument, we set the amount of thread that <kbd>SyncArbiter</kbd> will use to process requests. The <kbd>start</kbd> method returned an address of an arbiter that will route the message to both resizing actors.</p>
+<p>To start other actors, we can use the start method of the <kbd>Actor</kbd> trait, because the <kbd>actix::run</kbd> method creates a <kbd>System</kbd> instance and a default <kbd>Arbiter</kbd> for us. We created <kbd>CountActor</kbd> and <kbd>LogActor</kbd> this way. The <kbd>start</kbd> method of the <kbd>Actor</kbd> trait also returns the addresses of actors. We put them all into a new <kbd>State</kbd> struct.</p>
+<p>After, we create a <kbd>Server</kbd> instance, like we did in the previous example, but also pass a reference to the cloned <kbd>State</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Requests handler</h1>
+                </header>
+            
+            <article>
+                
+<p>Before we implement a handler of HTTP requests, let's add a function that uses <kbd>State</kbd> to send a message to <kbd>CountActor</kbd> and use the returned value to print it with <kbd>LogActor</kbd>. Look at the following function:</p>
+<pre>fn count_up(state: &amp;State, path: &amp;str) -&gt; impl Future&lt;Item=(), Error=Error&gt; {<br/>    let path = path.to_string();<br/>    let log = state.log.clone();<br/>    state.count.send(Count(path.clone()))<br/>        .and_then(move |value| {<br/>            let message = format!("total requests for '{}' is {}", path, value);<br/>            log.send(Log(message))<br/>        })<br/>        .map_err(|err| other(err.compat()))<br/>}</pre>
+<p>We converted the path into a <kbd>String</kbd>, because we need this type for the <kbd>Count</kbd> message, and to move it to a <kbd>Future</kbd> that sends a <kbd>Log</kbd> message to <kbd>LogActor</kbd>. Also, we have to clone <kbd>Addr</kbd> to <kbd>LogActor</kbd>, because we'll need it later in the closure after the counter value become available. Now let's create a <kbd>Future</kbd> that sends the <kbd>Count</kbd> message and the <kbd>Log</kbd> message in turn.</p>
+<p>The <kbd>Addr</kbd> struct has a <kbd>send</kbd> method that returns a <kbd>Request</kbd> instance that implements the <kbd>Future</kbd> trait. <kbd>Request</kbd> will return a counter value when it's available. We use the <kbd>and_then</kbd> method of <kbd>Future</kbd> to add extra <kbd>Future</kbd> to a chain. We need to prepare a message for <kbd>syslog</kbd> and <kbd>send</kbd> it to <kbd>LogActor</kbd> using the cloned <kbd>Addr</kbd>.</p>
+<p>We also convert error to <kbd>io::Error</kbd>, but the send method returns <kbd>MaiboxError</kbd> as an error type that implements the <kbd>Fail</kbd> trait, but not implement <kbd>Error</kbd> trait from standard library and we have to use the <kbd>compat</kbd> method to convert an error to the <kbd>Compat</kbd> type of the <kbd>failure</kbd> crate that implements the standard <kbd>Error</kbd> trait.</p>
+<p>We'll use the <kbd>count_up</kbd> method for both paths, <kbd>/</kbd> and <kbd>/resize</kbd>. Look at the <kbd>microservice_handler</kbd> implementation:</p>
+<pre>fn microservice_handler(state: &amp;State, req: Request&lt;Body&gt;)<br/>    -&gt; Box&lt;Future&lt;Item=Response&lt;Body&gt;, Error=Error&gt; + Send&gt;<br/>{<br/>    match (req.method(), req.uri().path().to_owned().as_ref()) {<br/>        (&amp;Method::GET, "/") =&gt; {<br/>            let fut = count_up(state, "/").map(|_| Response::new(INDEX.into()));<br/>            Box::new(fut)<br/>        },<br/>        (&amp;Method::POST, "/resize") =&gt; {<br/>            let (width, height) = {<br/>                let uri = req.uri().query().unwrap_or("");<br/>                let query = queryst::parse(uri).unwrap_or(Value::Null);<br/>                let w = to_number(&amp;query["width"], 180);<br/>                let h = to_number(&amp;query["height"], 180);<br/>                (w, h)<br/>            };<br/>            // Add an implementation here<br/>            Box::new(fut)<br/>        },<br/>        _ =&gt; {<br/>            response_with_code(StatusCode::NOT_FOUND)<br/>        },<br/>    }<br/>}</pre>
+<p>It remains the same in some parts, but now it takes a reference to <kbd>State</kbd> as a first argument. Since this handling function has to return a <kbd>Future</kbd> implementation, we can use the value returned by the <kbd>count_up</kbd> function call, but replace the value to <kbd>Response</kbd>. We already did it for the root path. Let's add a resizing functionality using <kbd>Addr</kbd> of  <kbd>ResizeActor</kbd>.</p>
+<p>To send an image buffer to an actor, we have to collect it from <kbd>Body</kbd> of <kbd>Request</kbd> using the <kbd>collect2</kbd> method, like we did before:</p>
+<pre>let resize = state.resize.clone();<br/>let body = req.into_body()<br/>    .map_err(other)<br/>    .concat2()<br/>    .map(|chunk| {<br/>        chunk.to_vec()<br/>    })<br/>    .and_then(move |buffer| {<br/>        let msg = Resize {<br/>            buffer,<br/>            width,<br/>            height,<br/>        };<br/>        resize.send(msg)<br/>            .map_err(|err| other(err.compat()))<br/>            .and_then(|x| x.map_err(other))<br/>    })<br/>    .map(|resp| {<br/>        Response::new(resp.into())<br/>    });<br/>let fut = count_up(state, "/resize").and_then(move |_| body);</pre>
+<p>After that, we create the <kbd>Resize</kbd> message and send it to <kbd>ResizeActor</kbd> using the cloned <kbd>Addr</kbd> of that actor. We convert all errors to <kbd>io::Error</kbd>. But wait, we haven't added requests counting and logging. Add the <kbd>count_up</kbd> function call at the end and put it before the <kbd>Future</kbd> that resizes images by creating a chain using the <kbd>and_then</kbd> method.</p>
+<p>That's all! Now every request send path to <kbd>CountActor</kbd> than send an informational message to <kbd>LogActor</kbd> and the resizing request also connect all data and send it for resizing to <kbd>ResizeActor</kbd>. It's time to test it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Building and running</h1>
+                </header>
+            
+            <article>
+                
+<p>Build and run the code using the <kbd>cargo run</kbd> subcommand. When the server starts use the <kbd>curl</kbd> command to send <kbd>POST</kbd> request with an image. You can find example of parameters for this preceding command.</p>
+<p>For example, I requested the root path five times with a browser and sent a resizing request once. It stored resized message to the <kbd>files</kbd> folder. Yeah, it works! Now we can check that the logging actor adds records to <kbd>syslog</kbd>. Use this command to print logs:</p>
+<pre><strong>journalctl</strong></pre>
+<p>You can find the following records:</p>
+<pre>Jan 11 19:48:53 localhost.localdomain rust-microservice[21466]: total requests for '/' = 1<br/>Jan 11 19:48:55 localhost.localdomain rust-microservice[21466]: total requests for '/' = 2<br/>Jan 11 19:48:55 localhost.localdomain rust-microservice[21466]: total requests for '/' = 3<br/>Jan 11 19:48:56 localhost.localdomain rust-microservice[21466]: total requests for '/' = 4<br/>Jan 11 19:48:56 localhost.localdomain rust-microservice[21466]: total requests for '/' = 5<br/>Jan 11 19:49:16 localhost.localdomain rust-microservice[21466]: total requests for '/resize' = 1</pre>
+<p>As you can see, we have five requests to the root path and one to the <kbd>/resize</kbd> path.</p>
+<div class="packt_tip">If you don't have the <kbd>jounrnalctl</kbd> command, you can try to print logs with the <kbd>less /var/log/syslog</kbd> command.</div>
+<p>This example used actors to run concurrent activities. Actually, only <kbd>ResizeActor</kbd> used a separate thread with <kbd>SyncArbiter</kbd>. <kbd>CountActor</kbd> and <kbd>LogActor</kbd> used the same thread with the <kbd>hyper</kbd> server. But it's OK, since neither actors don't load a lot of CPU.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we looked at how to use thread pools in microservices. We investigated three approaches: using plain threads, using the <kbd>futures-cpupool</kbd> crate, and using the <kbd>tokio-threadpool</kbd> crate. We used channels from the <kbd>futures</kbd> crate to interact with threads from asynchronous code. Special crates do all the interaction automatically; all you need to do is call a function that will be executed in a separate thread.</p>
+<p>Also, we got acquainted with the <kbd>actix</kbd> crate and the actors model, which helps to split and run tasks as separate units that are managed by a smart runtime.</p>
+<p>In<span> the next chapter, we'll learn how to interact with different databases using Rust, including PostgreSQL, MySQL, Redis, MongoDB, and DynamoDB.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

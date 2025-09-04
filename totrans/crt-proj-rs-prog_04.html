@@ -1,0 +1,557 @@
+<html><head></head><body>
+        <section>
+
+                            <header class="header-title chapter-title">
+                    Creating a Full Server-Side Web App
+                </header>
+            
+            <article>
+                
+<p>In the previous chapter, we saw how to build a REST web service using the Actix web framework. A REST web service must be used by a client app in order for it to be useful to us.</p>
+<p>In this chapter, we'll see how to build a very small but complete web app using the Actix web framework. We will use HTML code to be formatted in a web browser, JavaScript code to be executed in the same web browser, and the Tera crate to perform HTML templating. This is useful for embedding dynamic data inside HTML pages.</p>
+<p class="mce-root">The following topics will be covered in this chapter:</p>
+<ul>
+<li>Understanding what a classical web app is and what its HTML templates are</li>
+<li>Using the Tera template engine with Rust and Actix web</li>
+<li>Using A<span>ctix web to handle requests of web pages</span></li>
+<li>Handling authentication and authorization in web pages</li>
+</ul>
+<h1 id="uuid-e27811eb-7a71-41f9-a47b-8cad4117af18">Technical requirements</h1>
+<p>To best understand this chapter, you will need to have read the previous chapter. In addition, basic knowledge of HTML and JavaScript is assumed.</p>
+<p><span>The complete source code for this chapter can be found in the <kbd>Chapter04</kbd></span><span> </span><span>folder </span><span>of the repository at </span><a href="https://github.com/PacktPublishing/Rust-2018-Projects">https://github.com/PacktPublishing/Rust-2018-Projects</a><span>.</span></p>
+<h1 id="uuid-41dd401b-78f0-4613-be8b-0faf4ef1839e">Definition of a web app</h1>
+<p>Everyone knows what a web page or a website is, and everyone knows that some web pages are quite static, while others have more dynamic behavior. The definition of a web app, however, is more subtle and controversial.</p>
+<p class="mce-root">We will start with an operational definition of a web app; that is, looking at the appearance and behavior of w<span>eb apps</span>.</p>
+<p class="mce-root">For our purposes, a web app is a website that has the following behavior:</p>
+<ul>
+<li class="mce-root">It appears as one or more web pages in a web browser. On these pages, the user can interact with the page by pressing keys on a keyboard, clicking with a mouse, tapping on a touchscreen, or using another input device. For some user interactions, these web pages send requests to a server and receive data from that site as a response.</li>
+<li class="mce-root">In the case of a <em>static</em> web page, the data received is always the same for the same request; but for a web app, the data received depends on the current state of the server, which can change with time. Upon receipt of the data, the web page shows other HTML code, either as a new full page or as a portion of the current page.</li>
+<li class="mce-root">Classic web apps receive HTML code from the server only, so all the browser must do is display the HTML code when it arrives. Modern apps more often receive raw data from the server and use JavaScript code within the browser to create the HTML code that displays the data.</li>
+</ul>
+<p class="mce-root">Here, we are going to develop a rather classical web <span>app, as our app receives mainly HTML code from the server. Some JavaScript code will be used to improve the structure of the app.</span></p>
+<h1 id="uuid-9c29f1c2-de4f-4b16-89d3-3ffd8db8cb86">Understanding the behavior of a web app</h1>
+<p>When a user navigates to a website by using the address bar of the browser or by clicking on a link in a page, the browser sends an HTTP <kbd>GET</kbd> request, with the URI specified in the address field or in the link element, such as<span> </span><kbd>http://hostname.domainname:8080/dir/file?arg1=value1&amp;arg2=value2</kbd><span>.</span></p>
+<p><span>This address is commonly named <strong>Uniform Resource Locator</strong> (</span><strong><span>URL</span></strong><span>) or</span><span> </span><strong>Uniform Resource Identifier </strong><span>(</span><strong><span>URI</span></strong><span>). The difference between these two acronyms is that a URI is something that </span><span>uniquely</span><span> </span><span>identifies a resource without necessarily specifying</span> <em>where</em> <span>it can be found; a URL, however, specifies exactly </span><em>where</em><span> a resource can be found. In doing this, it also identifies the resource because there can be only one resource</span><span> </span><span>in a single place</span><span>.</span></p>
+<p><span>So, every URL is also a URI, but an address can be a URI without being a URL. For example, an address that specifies the pathname of a file is a URL (and also a URI) because it specifies the path to the file. However, an address specifying a filter condition on files is a URI, but not a URL because it does not </span><span>explicitly</span><span> </span><span>specify which file satisfies that condition. </span></p>
+<p><span>The first part of an address (such as <kbd>http://hostname.domainname:8080</kbd>), up to the (optional) port number, is needed to route the request to the server process that should handle it. This server must be running on the host computer and it must be waiting for incoming requests addressed at that port; or, as it is usually said, it must be listening on that port.</span></p>
+<p><span>The subsequent portion of the URI (such as <kbd>/dir/file</kbd>) is the so-called <strong>path</strong>, which always starts with a slash and ends at the first question mark character or at the end of the URI. The possible subsequent part (such as <kbd>?arg1=value1&amp;arg2=value2</kbd>) is the so-called <strong>query</strong>, which has one or more fields separated by an ampersand. Any field of the query has a name, followed by an equals sign, followed by a value.</span></p>
+<p><span>When a request is made, the server should reply by sending an HTTP response, which contains the HTML page to display in the browser as its body.</span></p>
+<p>After the display of the initial page, any further interaction usually happens when the user operates on the page by using the keyboard, the mouse, or other input devices.</p>
+<p class="mce-root">Notice that the effect of any user actions on a page can be classified in the following ways:</p>
+<ul>
+<li><strong>No code</strong>: Some user actions are handled only by the browser, with no <span>invoked </span>application code. For example, when hovering the mouse over a widget, the mouse cursor shape changes; when typing in a text widget, the text inside that widget changes; and when clicking on a checkbox, the box is selected or deselected. Usually, this behavior is not controlled by the application code.</li>
+<li><strong>Frontend only</strong>: Some user actions (such as the pressing of a key) trigger the execution of the client-side JavaScript code associated with these actions, but no client-server communication is performed and so no server-side code is invoked as a consequence of these user actions. Typically, any push button is associated (<span>using the </span><kbd>onclick</kbd><span> attribute of the button element)</span> to JavaScript code that is executed any time the user clicks that button. This code <span>could</span>, for example, enable or disable other widgets or copy data from a widget to another widget of the same page.</li>
+<li><strong>Backend only</strong>: Some user actions trigger client-server communication without using any JavaScript code. There are only two examples of these actions:
+<ul>
+<li>Clicking on a <kbd>submit</kbd> input element inside an HTML <kbd>form</kbd> element</li>
+<li>Clicking on an <kbd>a</kbd> HTML element, better known as a <strong>link</strong></li>
+</ul>
+</li>
+<li><strong>Full-stack</strong>: Some user actions trigger the execution of the client-side JavaScript code associated with that action. This JavaScript code sends one or more requests to the backend process and receives the responses sent as replies to these requests. The backend process receives the requests and responds properly to them. So, both the client-side application code and server-side <span>application </span>code is run.</li>
+</ul>
+<p class="mce-root">Now, let's examine the advantages and disadvantages of these four cases. The <em>no code </em>case is the default one. If the basic behavior of the browser is good enough, there is no need to customize it. Some behavior customization can be performed using HTML or CSS.</p>
+<p class="mce-root">The <em>frontend only</em> and the <em>full-stack</em> cases require JavaScript to be supported and enabled in the browser. This was once a problem because some people or platforms couldn't or wouldn't support it. Nowadays, something that wishes to be called a <strong>web app</strong>, and not simply a web page or website, cannot do so without the use of some kind of client-side processing.</p>
+<p class="mce-root">The f<span>rontend only </span>case does not interact with the server, and so it may be useful and is recommended for any processes that do not need to send data outside of the current computer or do not need to receive data from another computer. For example, a calculator can be implemented in JavaScript with no communication with a server. However, most web apps need this communication.</p>
+<p class="mce-root">The backend only case was the original type of web communication available before JavaScript was invented. It is quite limited, though.</p>
+<p class="mce-root">The concept of a link is useful for websites that are meant to be hypertext, not apps. Remember that <strong>HT </strong>in HTML and in HTTP stands for <strong>Hypertext</strong>. That was the original purpose of the web, but nowadays, web apps are meant to be general-purpose applications, not just hypertexts.</p>
+<p class="mce-root">The concept of a form containing a submit button also limits the interaction to a rigid protocol—some fields are filled in and a button is pressed to send all of the data to the server. The server processes the request and sends back a new page that replaces the current page. In many cases, this can be done, but it is not a very pleasant experience for the user.</p>
+<p>The fourth case is called full-stack because, for these apps, there are both application frontend code and <span>application </span>backend code. As the frontend code needs the backend code to work properly, it can be seen as stacked on it.</p>
+<div class="packt_infobox">Notice that <em>any</em> web interaction must have some machine code running on the frontend and some machine code running on the backend. On the frontend, there can be the web browser, the <kbd>curl</kbd> utility, or some other kind of HTTP client. On the backend, there can be a web server, such as <strong>Internet Information Services</strong> (<strong>IIS</strong>), Apache, or NGINX, or an application that acts as an HTTP server.<br/>
+<span>So, for any web app, there is client-server communication using the HTTP protocol.<br/>
+The term <em>full-stack</em> means that, in addition to system software, there is also some application software running on the frontend (acting as an HTTP client) and some</span><span> application software running on the backend (acting as an HTTP server).</span></div>
+<p class="mce-root">In a typical full-stack application running on a browser, there are no links or forms, just the typical widgets of a GUI. Usually, these widgets are fixed text, editable fields, drop-down lists, check buttons, and push buttons. When the user presses any push button, a request is sent to the server, possibly using the values contained in the widgets, and when the server sends back an HTML page, that page is used to replace the current page or a portion of it.</p>
+<h1 id="uuid-85bd40ac-e94d-4f5e-bf6c-cdd4b50f10d9">Project overview</h1>
+<p>The sample web app that we are going to build has the purpose of managing a list of people contained in a database. It is an extremely simple database as it only has one table with two columns—one for a numeric ID and one for a name. To keep the project simple, the database is actually a vector of struct objects <span>kept in memory; but of course, in a real-world application, it would be stored in a <strong>Database Management System</strong> (<strong>DBMS</strong>).</span></p>
+<p class="mce-root">The project will be built in steps<span>, creating </span>four projects that are progressively more complex, that can be downloaded from the GitHub repository l<span>inked in the <em>Technical requirements</em> section of this chapter</span>:</p>
+<ul>
+<li class="mce-root">The<span> </span><kbd>templ</kbd> project is a collection of code snippets that shows how to use the Tera template engine for the projects of this chapter.</li>
+<li class="mce-root">The <kbd>list</kbd> project is a simple list of records about people that can be filtered by name. These records are actually contained in the database code and cannot be changed by the user.</li>
+<li class="mce-root">The <kbd>crud</kbd> project contains the features to add, change, and delete people. They are the so-called <strong>Create<span>, </span>Retrieve<span>, </span>Update</strong><span><strong>, and</strong> </span><strong>Delete</strong> (<strong>CRUD</strong>) basic functions.</li>
+<li class="mce-root">The <kbd>auth</kbd> project adds a login page and ensures that only authorized users can read or change the database. The list of users and their privileges cannot be changed, however.</li>
+</ul>
+<p>The <kbd>templ</kbd> project, which does not use the Actix web framework, can be compiled in 1 to 3 minutes the first time, and in a few seconds after any changes to the code.</p>
+<p>Any of the other projects will take around 3 to 9 minutes to compile the first time, then 8 to 20 seconds after any changes.</p>
+<p>When you run any of the preceding projects (except the first one), all you will see is <kbd>Listening at address 127.0.0.1:8080</kbd><span> </span><span>printed on the console</span><span>. To view anything more, you will need a web browser.</span></p>
+<h1 id="uuid-1e15b35d-05f2-4a6a-899f-f4b0dab58cbf">Using the Tera template engine</h1>
+<p>Before starting to develop our web app, we will examine the concept of a <strong>template engine</strong>—in particular, the <span>Tera crate, one of the many </span>template engines available for Rust.</p>
+<p>Template engines can have several applications, but they are mostly used for web development.</p>
+<p>A typical problem in web development is knowing how to generate HTML code containing some constants parts written by hand and some dynamic <span>parts</span> generated by application code. In general, there are two ways to obtain this kind of effect:</p>
+<ul>
+<li>You have a programming language <span>source </span>file that contains a lot of statements that print strings to create the desired HTML page. These <kbd>print</kbd> statements mix string literals (that is, strings enclosed in quotation marks) and variables formatted as strings. This is what you'd do in Rust if you didn't have a template engine.</li>
+<li>You write an HTML file containing the desired constant HTML elements and the desired constant text, but it also contains some statements enclosed in specific markers. The <span>evaluation</span> of these statements generates the variable parts of the HTML file. This is what you'd do in PHP, JSP, ASP, and ASP.NET.</li>
+</ul>
+<p>However, there is also a compromise, which is to write both application code files and HTML code containing statements to evaluate. You can then choose the best tool for the job. This is the paradigm used by template engines.</p>
+<p>Imagine you have some Rust code files and some HTML files that must cooperate with one another. The tool to make the two worlds communicate is a template engine. The HTML files with embedded statements are named <strong>templates</strong> and the Rust application code calls the template engine functions to manipulate these templates.</p>
+<p>Now, let's see the code in the <kbd>templ</kbd> example project. The first statement creates an instance of the engine:</p>
+<pre> let mut tera_engine = tera::Tera::default();</pre>
+<p>The second statement loads <span>one simple template</span> into the engine by calling the <kbd>add_raw_template</kbd> function:</p>
+<pre> tera_engine.add_raw_template(<br/>     "id_template", "Identifier: {{id}}.").unwrap();</pre>
+<p><span>The first argument is the name that will be used to refer to this template and the second argument is the template itself. It is a normal reference to a string slice, but it contains the </span><kbd>{{id}}</kbd><span> </span><span>placeholder</span><span>. This symbol qualifies it as a <strong>Tera</strong></span> <strong>expression</strong><span>. In particular, this expression contains just a Tera variable, but it could contain a more complex expression.</span></p>
+<p><span>A constant expression is also allowed, such as </span><span><kbd>{{3+5}}</kbd>, even if there is no point in using constant expressions. A template can contain several expressions or none at all.</span></p>
+<p>Notice that the <kbd>add_raw_template</kbd> function is fallible, so <kbd>unwrap</kbd> is called on its result. This function, before adding the template received as an argument, analyzes it to see whether it is well-formed. For example, if it read <kbd>"Identifier: {{id}."</kbd> (with a missing brace), it would generate an error, and so the call to <kbd>unwrap</kbd> would panic.</p>
+<p>When you have a Tera template, you can <strong>render</strong> it; that is, generate a string that replaces the expressions with some specified strings, in a similar way to how a macro processor does.</p>
+<p>To evaluate an expression, the Tera engine has to first replace all of the variables used in it with their current value. To do that, a collection of Tera variables—each one associated with its current value—must be created. This collection is named a context. A context is created and populated by the following two statements:</p>
+<pre>let mut numeric_id = tera::Context::new();<br/>numeric_id.insert("id", &amp;7362);</pre>
+<p>The first one creates a mutable context and the second one inserts a key-value <span>association </span>into it. Here, the value is a reference to a number, but other types are also allowed as values.</p>
+<p>Of course, in a real-world example, the value would be a Rust variable, not a constant.</p>
+<p>Now, we can render it:</p>
+<pre>println!("id_template with numeric_id: [{}]",<br/>    tera_engine.render("id_template", &amp;numeric_id).unwrap());</pre>
+<p>The <kbd>render</kbd> method gets a template named <kbd>"id_template"</kbd> in the <kbd>tera_engine</kbd> object and applies the substitutions specified by the <kbd>numeric_id</kbd> context.</p>
+<p>This can fail if the specified template is not found, if variables in the template have not been substituted, or if an evaluation has failed for some other reason. If the result is okay, <kbd>unwrap</kbd> gets the string. Therefore, it should print the following:</p>
+<pre>id_template with numeric_id: [Identifier: 7362.]</pre>
+<p>The next three Rust statements in the example are as follows:</p>
+<pre>let mut textual_id = tera::Context::new();<br/>textual_id.insert("id", &amp;"ABCD");<br/>println!(<br/>    "id_template with textual_id: [{}]",<br/>    tera_engine.render("id_template", &amp;textual_id).unwrap()<br/>);</pre>
+<p>They do the same thing, but with a literal string, showing that the same template variable can be replaced with both a number and a string. The <span>printed </span>line should be as follows:</p>
+<pre>id_template with textual_id: [Identifier: ABCD.]</pre>
+<p>The next statement is as follows:</p>
+<pre>tera_engine<br/>    .add_raw_template("person_id_template", "Person id: {{person.id}}")<br/>    .unwrap();</pre>
+<p>It adds <span>a new template</span> to the engine containing the <kbd>{{person.id}}</kbd><span> </span><span>expression</span><span>. This Tera dot notation has the same function as the Rust dot notation—it allows us to access a field of a struct. Of course, it only works if the</span> <kbd>person</kbd> <span>variable is replaced by an object with an</span> <kbd>id</kbd> <span>field.</span></p>
+<p>So, a <kbd>Person</kbd> struct is defined in the following way:</p>
+<pre>#[derive(serde_derive::Serialize)]<br/>struct Person {<br/>    id: u32,<br/>    name: String,<br/>}</pre>
+<p>The struct has an <kbd>id</kbd> field but also derives the <kbd>Serialize</kbd> trait. This is a requirement for any object that must be passed to a Tera template.</p>
+<p>The statement to define the <kbd>person</kbd><span> </span><span>variable </span><span>in the context is as follows:</span></p>
+<pre>one_person.insert(<br/>    "person",<br/>    &amp;Person {<br/>        id: 534,<br/>        name: "Mary".to_string(),<br/>    },<br/>);</pre>
+<p>So, the printed string will be as follows:</p>
+<pre>person_id_template with one_person: [Person id: 534]</pre>
+<p>Now, there is a more complex template:</p>
+<pre>tera_engine<br/>    .add_raw_template(<br/>        "possible_person_id_template",<br/>        "{%if person%}Id: {{person.id}}\<br/>         {%else%}No person\<br/>         {%endif%}",<br/>    )<br/>    .unwrap();</pre>
+<p>The template is one-line long, but it has been split into three lines in Rust source code.</p>
+<p>In addition to the <kbd>{{person.id}}</kbd> expression, there are three markers of another kind; they are <strong>Tera statements</strong>. Tera statements differ from Tera expressions because they are enclosed by the <kbd>{%</kbd> and <kbd>%}</kbd> signs, instead of double braces. While Tera expressions are similar to <span>C preprocessor macros (that is, <kbd>#define</kbd>), Tera </span>statements are similar to the conditional compilation directives of the C preprocessor (that is, <kbd>#if</kbd>, <kbd>#else</kbd>, and <kbd>#endif</kbd>).</p>
+<p>The expression after the <kbd>if</kbd> statement is evaluated by the <kbd>render</kbd> function. If the expression is not defined or its value is either <kbd>false</kbd>, <kbd>0</kbd>, an empty string, or an empty collection, the expression is considered false. The text part—up to the <kbd>{%else%}</kbd> statement—is then discarded. Otherwise, the part after that statement, up to <span>the </span><kbd>{%endif%}</kbd><span> statement, </span>is discarded.</p>
+<p>This template is rendered with two different contexts—one in which the <kbd>person</kbd> variable is defined and the other in which no variable is defined. The two <span>printed</span><span> </span><span>lines are as follows:</span></p>
+<pre>possible_person_id_template with one_person: [Id: 534]<br/>possible_person_id_template with empty context: [No person]</pre>
+<p>In the first case, the <kbd>id</kbd> value of the person is printed; in the second case, the <kbd>No person</kbd> text is printed.</p>
+<p>Then, another complex template is created:</p>
+<pre>tera_engine<br/>    .add_raw_template(<br/>        "multiple_person_id_template",<br/>        "{%for p in persons%}\<br/>         Id: {{p.id}};\n\<br/>         {%endfor%}",<br/>    )<br/>    .unwrap();</pre>
+<p>Here, the template contains two other kinds of statements—<kbd>{%for p in persons%}</kbd> and <kbd>{%endfor%}</kbd>. They enclose a loop where the newly created <kbd>p</kbd> variable iterates over the <kbd>persons</kbd> collection, which must belong to the context used by <kbd>render</kbd>.</p>
+<p>Then, there is the following code:</p>
+<pre>let mut three_persons = tera::Context::new();<br/>three_persons.insert(<br/>    "persons",<br/>    &amp;vec![<br/>        Person {<br/>            id: 534,<br/>            name: "Mary".to_string(),<br/>        },<br/>        Person {<br/>            id: 298,<br/>            name: "Joe".to_string(),<br/>        },<br/>        Person {<br/>            id: 820,<br/>            name: "Ann".to_string(),<br/>        },<br/>    ],<br/>);</pre>
+<p>This adds<span> a Tera variable named </span><kbd>persons</kbd> to the <kbd>three_persons</kbd> Tera context. This variable is a vector containing three people.</p>
+<p>Because the <kbd>persons</kbd> variable can be iterated, it is possible to evaluate the template, thereby obtaining the following:</p>
+<pre>multiple_person_id_template with three_persons: [Id: 534;<br/>Id: 298;<br/>Id: 820;<br/>]</pre>
+<p>Notice that any <kbd>Id</kbd> object is in a distinct line because the template contains a new-line character (through the<span> </span><kbd>\n</kbd><span> </span><span>escape sequence</span><span>); otherwise, they would have been printed in a single line.</span></p>
+<p>So far, we have used templates in string literals. This becomes difficult for long templates, though. Therefore, templates are usually loaded from separate files. This is advisable because the <span><strong>Integrated Development Environment</strong> (</span><strong>IDE</strong>) can help the developer (if it knows which language it is processing) and so it is better to keep HTML code in files with a <kbd>.html</kbd> suffix, CSS code in files with a <kbd>.css</kbd> suffix, and so on.</p>
+<p>The next statement loads a Tera template from a file:</p>
+<pre>tera_engine<br/>    .add_template_file("templates/templ_id.txt", Some("id_file_template"))<br/>    .unwrap();</pre>
+<p>The first argument of the <kbd>add_template_file</kbd> function is the path of the template file, relative to the root of the project. It is good practice to put all the template files in a separate folder or in its subfolders.</p>
+<p>The second argument allows us to specify the name of the new template. If the value of that argument is <kbd>None</kbd>, the name of the new template is the first argument.</p>
+<p>So, the statement is as follows:</p>
+<pre>println!(<br/>    "id_file_template with numeric_id: [{}]",<br/>    tera_engine<br/>        .render("id_file_template", numeric_id.clone())<br/>        .unwrap()<br/>);</pre>
+<p>This will print the following:</p>
+<pre>id_file_template with numeric_id: [This file contains one id: 7362.]</pre>
+<p> The following code will have similar results:</p>
+<pre>tera_engine<br/>    .add_template_file("templates/templ_id.txt", None)<br/>    .unwrap();<br/><br/>println!(<br/>    "templates/templ_id.txt with numeric_id: [{}]",<br/>    tera_engine<br/>        .render("templates/templ_id.txt", numeric_id)<br/>        .unwrap()<br/>);</pre>
+<p>Lastly, let's talk about a convenient feature that can be used to load all of the templates with a single statement.</p>
+<p>Instead of loading the templates one at a time, where they are needed, it is possible to load all of the templates at once and store them in a global dictionary. This makes them available to the entire module. To do so, it is convenient to use the <kbd>lazy_static</kbd> macro, described in <a href="91f1fe5a-241f-48e3-b16d-5110dcccd597.xhtml">Chapter 1</a>, <em>Rust 2018 – Productivity!</em>, to write outside of any function:</p>
+<pre>lazy_static::lazy_static! {<br/>    pub static ref TERA: tera::Tera =<br/>        tera::Tera::new("templates/**/*").unwrap();<br/>}</pre>
+<p>This statement defines the <kbd>TERA</kbd><span> </span><span>static variable </span><span>as a global template engine. It will be initialized automatically when some Rust code of your app uses it first. This initialization will search all of the files in the specified subtree of folders and will load them, giving each of them the name of the file itself and omitting the name of </span><span>its folder</span><span>.</span></p>
+<p>The last feature of the Tera engine to be presented in this section is the <kbd>include</kbd> statement. The last line of the <kbd>templ_names.txt</kbd> file is the following one:</p>
+<pre>{% include "footer.txt" %}</pre>
+<p>It will load the contents of the specified file and will expand it inline, replacing the statement itself. It is similar to the <kbd>#include</kbd> directive of the C preprocessor.</p>
+<h1 id="uuid-69e731d7-3c0a-457e-bb57-6212dda35112">A simple list of persons</h1>
+<p>Now, we can examine the <kbd>list</kbd> project. If you run the server in a console and you access the <kbd>localhost:8080</kbd> address from a web browser, you will see<span> </span>the following page<span> </span><span>in the browser:</span></p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/25e04587-5149-4f67-8d6b-5c9b5ace7d9a.png" style="width:19.17em;height:10.50em;"/></div>
+<p>There is a heading, a label, a text field, a push button, and a table containing a list of three people.</p>
+<p>The only thing you can do on this page is type something into the text field and then click on the button to apply the typed text as a filter. For example, if you type <kbd>l</kbd> (that is, a lowercase <em>L</em>), only the <span class="packt_screen">Hamlet</span> and <span class="packt_screen">Othello</span> lines will appear as they are the only two people whose name contains this letter. If the filter is <kbd>x</kbd>, the result will be the <span class="packt_screen">No persons</span><span> </span><span>text</span><span> as none of the three people has a name containing this letter. The page will look as in the following screenshot:</span></p>
+<div class="CDPAlignCenter CDPAlign"><img style="font-size: 10pt;width:20.25em;height:8.00em;" src="assets/26f2dd2b-1014-4dc7-924a-76d853a01643.png"/></div>
+<p>Before explaining how it all works, let's see the dependencies of this project; that is, the external crates used by it. They are as follows:</p>
+<ul>
+<li><kbd>actix-web</kbd>: This is the web framework, also used in <a href="febceb22-18dd-437f-bd27-9895aef47384.xhtml">Chapter 3</a>, <em>Creating a REST Web Service</em>. </li>
+<li><span><kbd>tera</kbd>: This is the Tera template engine.</span></li>
+<li><kbd>serde</kbd> and <kbd>serde_derive</kbd>: These are the serialization crates used by the Tera engine to pass whole struct objects to a template context.</li>
+<li><kbd>lazy_static</kbd>: This contains the macro to initialize the Tera engine.</li>
+</ul>
+<p><span>Now, let's take a glimpse at the source code.</span> <span>For this project, the <kbd>src</kbd> folder contains the following files:</span></p>
+<ul>
+<li><kbd>main.rs</kbd>: This is the whole server-side application, excluding the database.</li>
+<li><kbd>db_access.rs</kbd>: This is the mock database with some mock data.</li>
+<li><kbd>favicon.ico</kbd>: This is the icon that any website should have as it is automatically downloaded by the browser to display it in the browser tab.</li>
+</ul>
+<p>There is also a <kbd>templates</kbd> folder, containing the following files:</p>
+<ul>
+<li><kbd>main.html</kbd>: This is the Tera/HTML<span> </span>template of the whole web page with an empty body.</li>
+<li><kbd>persons.html</kbd>: This is<span> </span><span>the Tera/HTML template of a </span>partial web page, containing only the body of our web app.</li>
+<li><kbd>main.js</kbd>: This is the JavaScript code to be included in the HTML page.</li>
+</ul>
+<p>Now, let's examine the mechanics of this web app.</p>
+<p>When the user navigates to the <kbd>http://localhost:8080/</kbd><span> </span><span>URI</span><span>, the browser sends </span><span>a <kbd>GET</kbd> HTTP request (that has only a slash as its path)</span><span> to our process, with no query and empty body, and it expects an HTML page to be displayed. As described in the previous chapter, the server—using the Actix web framework—can respond to the request if its </span><kbd>main</kbd> <span>function contains the following code:</span></p>
+<pre>let server_address = "127.0.0.1:8080";<br/>println!("Listening at address {}", server_address);<br/>let db_conn = web::Data::new(Mutex::new(AppState {<br/>    db: db_access::DbConnection::new(),<br/>}));<br/>HttpServer::new(move || {<br/>    App::new()<br/>        .register_data(db_conn.clone())<br/>        .service(<br/>            web::resource("/")<br/>                .route(web::get().to(get_main)),<br/>        )<br/>})<br/>.bind(server_address)?<br/>.run()</pre>
+<p>Here, we have a web app whose state is only a shared reference to a database connection (that is actually a mock database). This app accepts only one kind of request—those using the root path (<kbd>/</kbd>) and the <kbd>GET</kbd> method. These requests are routed to the <kbd>get_main</kbd> function. The function should return an HTTP response containing the initial HTML page to display.</p>
+<p>Here is the body of <span>the </span><kbd>get_main</kbd><span> function</span>:</p>
+<pre>let context = tera::Context::new();<br/>HttpResponse::Ok()<br/>    .content_type("text/html")<br/>    .body(TERA.render("main.html", context).unwrap())</pre>
+<p>This function does not use the request at all because it<span> always</span> returns the same result.</p>
+<p>To return a successful response (that is, with status code <kbd>200</kbd>), the <kbd>HttpResponse::Ok()</kbd> function is called. To specify that the body of the response is HTML code, the <kbd>content_type("text/html")</kbd> method is called on the response. To specify the content of the body of the response, the <kbd>body</kbd> method is called on the response.</p>
+<p>The argument of the <kbd>body</kbd> function must be a string containing the HTML code to display. It is possible to write <span>all of that code</span> here, as follows:</p>
+<pre>.body("<span class="tagcolor">&lt;</span><span>!DOCTYPE</span><span class="attributecolor"><span> </span>html</span><span class="tagcolor">&gt;</span>&lt;html&gt;&lt;body&gt;&lt;p&gt;Hello&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;")</pre>
+<p>However, for <span>more complex</span> pages, it is better to keep all the HTML code in a separate file, with the <kbd>.html</kbd> filename extension, and to load the contents of this file into a string to pass as an argument to the <kbd>body</kbd> function. This can be done using the following expression:</p>
+<div>
+<pre><span>.body(include_str!(</span><span>"main.html"</span><span>))</span></pre></div>
+<p>This would work well if the <kbd>main.html</kbd><span> </span><span>file </span><span>was static; that is, it wouldn't need to change at runtime. However, this solution would be too limiting for two reasons:</span></p>
+<ul>
+<li>We want our initial page to be a <em>dynamic</em> page. It should show the list of people that are in the database when the page is opened.</li>
+<li>We want our initial page, and also all of the other possible pages, to be composed of several parts: <span>metadata elements</span>, JavaScript routines, styles, a page header, a page central part, and a page footer. All of these parts, except for the central part, are to be shared by all of the pages to avoid repeating them in source code. So, we need to keep these parts in separate files and then splice them together before the HTML page is sent to the browser. In addition, we want to keep JavaScript code in separate files with the <kbd>.js</kbd> file extension and style code in separate files with the <kbd>.css</kbd> file extension so that our IDE recognizes their language.</li>
+</ul>
+<p><span>A solution to these problems is to use the Tera template engine, which we will see in the next section.</span></p>
+<h2 id="uuid-2598320f-54a2-4e4c-90fe-a0e806da93ff">The templates folder</h2>
+<p>It is best to put all deliverable application text files in the <kbd>templates</kbd> folder (or in some of its subfolders). So, this subtree should contain all the HTML, CSS, and JS files, even if, at the moment, they may contain no Tera statements or expressions.</p>
+<p>Instead, non-textual files (such as pictures, audio, video, and many others), user-uploaded files, documents that are to be downloaded explicitly, and databases should be kept elsewhere. </p>
+<p>The loading of all template files happens at runtime, but usually only once in the process life. The fact that the loading happens at runtime implies that the <kbd>templates</kbd> subtree must be deployed and that to deploy a new or changed version of one of those files, a rebuild of the program <span>is not required</span>. The fact that this<span> loading usually happens once in the process life implies that the template engine is quite fast at processing the templates after the first time.</span></p>
+<p>The preceding body statement has the following argument:</p>
+<pre>TERA.render("main.html", context).unwrap()</pre>
+<p>This expression renders the template contained in the <kbd>main.html</kbd> file using a Tera context contained in the <kbd>context</kbd> Rust variable. This kind of variable has been initialized by the <kbd>tera::Context::new()</kbd> expression and so it is an empty context.</p>
+<p>The HTML file is very small and it has two noteworthy snippets. The first one is as follows:</p>
+<pre> &lt;script&gt;<br/> {% include "main.js" %}<br/> &lt;/script&gt;</pre>
+<p>This <span>uses the </span><kbd>include</kbd><span> Tera statement to incorporate </span><span>the JavaScript code</span><span> into the HTML page. Having it incorporated into the server means that no further HTTP requests will be needed to load it. The second snippet is as follows:</span></p>
+<pre>&lt;body id="body" onload="getPage('/page/persons')"&gt;</pre>
+<p>This causes the invocation of the <kbd>getPage</kbd> JavaScript function as soon as the page is loaded. This function is defined in the <kbd>main.js</kbd> file and, as its name suggests, it causes the loading of the specified page.</p>
+<p>So, when the user navigates to the root of the website, the server prepares an HTML page containing all the required JavaScript code, but almost no HTML code, and sends it to the browser. As soon as the browser has loaded the empty page, it requests another page, which will become the body of the first page.</p>
+<p>This may sound complicated, but you can look at it as the page being split into two parts—the metadata, the scripts, the styles, and possibly the page header and footer are the common parts, which do not change during the session. The central part (which here is the <kbd>body</kbd> element, but may also be an inner element) is the variable part, which changes with any click from the user.</p>
+<p>By reloading only part of the page, the app has better performance and usability.</p>
+<p>Let's look at the contents of the <kbd>main.js</kbd> file:</p>
+<pre>function getPage(uri) {<br/>    var xhttp = new XMLHttpRequest();<br/>    xhttp.onreadystatechange = function() {<br/>        if (this.readyState == 4 &amp;&amp; this.status == 200) {<br/>            document.getElementById('body')<br/>                .innerHTML = xhttp.responseText;<br/>        }<br/>    };<br/>    xhttp.open('GET', uri, true);<br/>    xhttp.send();<br/>}</pre>
+<p>This code creates an <kbd>XMLHttpRequest</kbd> object that, in spite of its name, does not use XML, but it is actually used to send an HTTP request. This object is set to process the response when it arrives by assigning an anonymous function to the <kbd>onreadystatechange</kbd><span> </span><span>field</span><span>. Then, the specified URI is opened with a</span> <kbd>GET</kbd> <span>method.</span></p>
+<p>When a response arrives, the code checks whether the message is complete (<kbd>readystate == 4</kbd>) and valid (<kbd>state == 200</kbd>). In this case, the text of the response that is assumed to be valid HTML is assigned as the content of the element that has <kbd>body</kbd> as its unique ID.</p>
+<p>The last file in the <kbd>templates</kbd> folder is the <kbd>persons.html</kbd> file. It is a partial HTML file—that is, a file containing HTML elements, but without the <kbd>&lt;html&gt;</kbd> element itself—and so its purpose is to be included in another HTML page. This small app has only one page and so it only <span>has</span><span> </span><span>one partial HTML file.</span></p>
+<p>Let's look at some interesting parts of this file. The following is an element to let the user type in some text (a so-called <strong>edit box</strong>):</p>
+<pre> &lt;input id="name_portion" type="text" value="{{partial_name}}"/&gt;</pre>
+<p>Its initial value—that is, the text that is shown to the user when the page is opened—is a <strong>Tera variable</strong>. Rust code should assign a value to the variable.</p>
+<p>Then, there is the <kbd>Filter</kbd> push button:</p>
+<pre>&lt;button onclick="getPage('/page/persons?partial_name='<br/>    + getElementById('name_portion').value)"&gt;Filter&lt;/button&gt;</pre>
+<p>When the user clicks on it and the preceding edit box contains the word <kbd>Ham</kbd>, the <kbd>'/page/persons?partial_name=Ham'</kbd><span> </span><span>argument</span><span> is passed to </span><span>the JavaScript </span><kbd>getPage</kbd><span> functions. So, the function sends the <kbd>GET</kbd> request to the backend and replaces the body of the page with whatever is returned by the backend, so long as it is a complete and valid response.</span></p>
+<p>Then, there is the following Tera statement:</p>
+<pre>{% if persons %}<br/>...<br/>{% else %}<br/>    &lt;p&gt;No persons.&lt;/p&gt;<br/>{% endif %}</pre>
+<p>Here, the <kbd>persons</kbd> Tera variable is evaluated. According to the Rust program, the variable can only be a collection. If the variable is a non-empty collection, a table is inserted into the HTML page; if instead the variable is not defined or it is an empty collection, the <kbd>No persons.</kbd><span> </span><span>text</span><span> will be shown.</span></p>
+<p>Within the HTML code defining the table, there is the following:</p>
+<pre>{% for p in persons %}<br/>    &lt;tr&gt;<br/>        &lt;td&gt;{{p.id}}&lt;/td&gt;<br/>        &lt;td&gt;{{p.name}}&lt;/td&gt;<br/>    &lt;/tr&gt;<br/>{% endfor %}</pre>
+<p>This is an iteration over the items contained in <kbd>persons</kbd> (which we know is non-empty).</p>
+<p>In each iteration, the <kbd>p</kbd> variable will contain the data of a specific person. This variable is used in two expressions. The first one shows the value of the <kbd>id</kbd> field of the variable. <span>The second one shows the value of its </span><kbd>name</kbd><span> field.</span></p>
+<h2 id="uuid-93b35578-f748-484f-b068-d04c07d3643c">The other Rust handlers</h2>
+<p>We have <span>only </span><span>seen </span><span>the routing and handling of the root of the site—the</span> <kbd>/</kbd><span> path. This happens when the user opens the page.</span></p>
+<p>There are four other requests that can be sent by the browser to this app:</p>
+<ul>
+<li>When the root path is accessed, the page loaded by this request automatically sends—<span>using JavaScript code—</span>another request to load the body of the page.</li>
+<li>When the user presses the <span class="packt_screen">Filter</span> button, the frontend should send the <span>text contained in the edit box</span> to the backend, and then the <span>backend </span>should respond by sending back the list of the people satisfying this filter.</li>
+<li>The browser automatically requests the <kbd>favicon.ico</kbd> app icon.</li>
+<li>Any other requests should be treated as errors.</li>
+</ul>
+<p>Actually, the first and second of these requests can be handled in the same way, because the initial state can be generated by a filter where an empty string is specified. So, three different kinds of requests remain.</p>
+<p>To route these requests, the following code is inserted into the <kbd>main</kbd> function:</p>
+<pre>.service(<br/>    web::resource("/page/persons")<br/>        .route(web::get().to(get_page_persons)),<br/>)<br/>.service(<br/>    web::resource("/favicon.ico")<br/>        .route(web::get().to(get_favicon)),<br/>)<br/>.default_service(web::route().to(invalid_resource))</pre>
+<p>The first route redirects any <kbd>GET</kbd> requests to the <kbd>/page/persons</kbd> path to the <kbd>get_page_persons</kbd> function. These requests come when the user clicks on the <span class="packt_screen">Filter</span> button, but also indirectly when the <kbd>/</kbd> path is requested.</p>
+<p>The second route redirects any<span> </span><kbd>GET</kbd><span> </span>requests to the <kbd>/favicon.ico</kbd> path to the <kbd>get_favicon</kbd><span> </span>function. These requests come from the browser when it receives a complete HTML page, not a partial page.</p>
+<p>The call to<span> </span><kbd>default_resource</kbd><span> </span>redirects any other requests to the <kbd>invalid_resource</kbd><span> </span>function. These requests cannot come with proper use of the app, but may come under specific conditions or when the user types an unexpected path into the address bar of the browser. For example, this request occurs if you type in <kbd>http://127.0.0.1:8080/abc</kbd>.</p>
+<p>Now, let's look at the handler's functions.</p>
+<p>The<span> </span><kbd>get_page_persons</kbd><span> function has two arguments:</span></p>
+<ul>
+<li><kbd>web::Query&lt;Filter&gt;</kbd> is used to pass the optional filter condition.</li>
+<li><kbd>web::Data&lt;Mutex&lt;AppState&gt;&gt;</kbd> is used to pass the database connection.</li>
+</ul>
+<p>The parameter of the <kbd>Query</kbd> type is defined as follows:</p>
+<pre>#[derive(Deserialize)]<br/>pub struct Filter {<br/>    partial_name: Option&lt;String&gt;,<br/>}</pre>
+<p>This specifies the possible arguments of the <em>query</em>, which is the part of the URI following the question mark. Here, there is only one argument and it is optional as it is typical of HTTP queries. A possible query is <kbd>?partial_name=Jo</kbd>, but also an empty string is a valid query in this case.</p>
+<p>To<span> be able to receive the <kbd>Filter</kbd> structure from the request, it</span> <span>must implement the </span><kbd>Deserialize</kbd><span> trait.</span></p>
+<p>The body of the <kbd>get_page_persons</kbd> function is as follows:</p>
+<pre>let partial_name = &amp;query.partial_name.clone().unwrap_or_else(|| "".to_string());<br/>let db_conn = &amp;state.lock().unwrap().db;<br/>let person_list = db_conn.get_persons_by_partial_name(&amp;partial_name);<br/>let mut context = tera::Context::new();<br/>context.insert("partial_name", &amp;partial_name);<br/>context.insert("persons", &amp;person_list.collect::&lt;Vec&lt;_&gt;&gt;());<br/>HttpResponse::Ok()<br/>    .content_type("text/html")<br/>    .body(TERA.render("persons.html", context).unwrap())</pre>
+<p>The first statement gets the query from the request. If the <kbd>partial_name</kbd> <span>field </span>is defined, it is extracted; otherwise, an empty string is generated.</p>
+<p>The second statement extracts<span> </span><span>the connection to the database</span><span> </span><span>from the shared state</span><span>.</span></p>
+<p>The third statement uses this connection to get an iterator on the people satisfying the criteria. See the subsection, <em>Implementing the database</em> in the section <em>Building a stateful server</em> in the previous chapter. See the previous chapter to understand these two lines.</p>
+<p>Then, an <span>empty</span><span> Tera context is created and two Tera variables are added to it:</span></p>
+<ul>
+<li><kbd>partial_name</kbd> is used to keep the typed characters that otherwise would disappear when the page is reloaded in the edit box.</li>
+<li><kbd>persons</kbd> is the vector containing the people collected from the database. To make this possible, the <kbd>Person</kbd> type must implement the <kbd>Serialize</kbd> trait.</li>
+</ul>
+<p>Finally, the Tera engine can render the <kbd>persons.html</kbd> template using the <em>context</em>, because all the variables used in the template have been defined. The result of this rendering is passed as the body of the successful HTTP response. When the JavaScript code inside the browser receives that HTML code, it will use it to replace the contents of the body of the current page.</p>
+<p>Now, let's see the body of the <kbd>get_favicon</kbd> function:</p>
+<pre>HttpResponse::Ok()<br/>    .content_type("image/x-icon")<br/>    .body(include_bytes!("favicon.ico") as &amp;[u8])</pre>
+<p>This is simply a successful HTTP response whose content is of the <kbd>image</kbd><span> </span><span>HTTP type</span><span> and the </span><kbd>x-icon</kbd><span> </span><span>subtype</span><span>, and whose body is a slice of bytes containing the icon. This binary object is constructed at compile time from the bytes contained in the</span> <kbd>favicon.ico</kbd> <span>file. The content of this file</span><span> is embedded in the executable program, </span><span>so it is not required to deploy this file.</span></p>
+<p>Finally, let's look at the body of the <kbd>invalid_resource</kbd> function:</p>
+<pre>HttpResponse::NotFound()<br/>    .content_type("text/html")<br/>    .body("&lt;h2&gt;Invalid request.&lt;/h2&gt;")</pre>
+<p>This is a failing response (as <kbd>NotFound</kbd> generates the <kbd>404</kbd> status code), which should contain a complete HTML page. For simplicity, a straightforward message has been returned.</p>
+<p>We have now looked at a very simple web app. Many of the concepts seen in this section will be used in the following sections, where the database will be modified by user actions.</p>
+<h1 id="uuid-dff056a6-5f7a-4a6d-8115-613bb58d8176">A CRUD application</h1>
+<p>The web app shown in the previous section allowed us to view filtered data in a single page. If you now run the project in the <kbd>crud</kbd> folder, you will see a much more rich and useful web page:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/2174b90a-27d2-4afc-8af0-d4a17da515cf.png" style="width:19.92em;height:10.08em;"/></div>
+<p>The <span class="packt_screen">Id</span> edit box and the <span class="packt_screen">Find</span> button to its right are used to open a page that allows you to view or edit the data of a person with a specific ID.</p>
+<p>The <span class="packt_screen">Name portion</span> <span>edit box and the <span class="packt_screen">Filter</span> button to its right are for filtering the table below it, in a similar way as in the <kbd>list</kbd> project.</span></p>
+<p>Then, there are two buttons—one for deleting data and one for adding data.</p>
+<p>Lastly, there is the filtered table of the people. In this app, the initial state of the database is an empty list of people and so no HTML table is shown.</p>
+<p>Let's create some people.</p>
+<p>Click on the <span class="packt_screen">Add New Person</span> push button. You will see the following window:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/f38e5c37-ec8c-4ca4-82ef-a000de08ecf4.png" style="width:13.83em;height:8.25em;"/></div>
+<p>This is the page used to create a person and insert them into the database. The <span class="packt_screen">Id</span> field is disabled because its value will be generated automatically. To insert a person, type in a name for them—for example, <span class="packt_screen">Juliet</span>—and click on the <span class="packt_screen">Insert</span> button. The main page will appear again, but with a small table containing only <span class="packt_screen">Juliet</span>, preceded by <span class="packt_screen">1</span> as its ID.</p>
+<p>If you repeat these steps, inserting <span class="packt_screen">Romeo</span> and <span class="packt_screen">Julius</span>, you'll have the results shown in the following picture:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/67aef1c7-8686-4cb0-9e13-b4c569d27af0.png" style="width:21.50em;height:15.25em;"/></div>
+<p>The push buttons near any listed person allow us to open a page related to that person. For example, if the button near <span class="packt_screen">Julius</span> is clicked, the following page will appear:</p>
+<div class="packt_figref CDPAlignCenter CDPAlign"><img src="assets/9e7382e0-36d8-46e4-8dea-787cb4ee178b.png" style="width:14.17em;height:8.92em;"/></div>
+<p>This page is very similar to the page used to insert people, but with the following differences:</p>
+<ul>
+<li>The <span class="packt_screen">Id</span> field now contains a value.</li>
+<li>The <span class="packt_screen">Name</span> field now contains an initial value.</li>
+<li>Instead of the <span><span class="packt_screen">Insert</span> </span>button, now there is an <span class="packt_screen">Update</span> button.</li>
+</ul>
+<p>If you change the <span class="packt_screen">Julius</span><span> </span><span>value</span><span> to</span> <span class="packt_screen">Julius Caesar</span><span> and click on</span> <span class="packt_screen">Update</span><span>, you will see the updated list on the main page.</span></p>
+<p>Another way to open the page relating to a single person is to type <span>the ID of that person</span> into the <span class="packt_screen">Id</span> field and then click on the <span class="packt_screen">Find</span> button. If you click on this button when that field is empty or when it contains a value that no person has as its ID, a red error message appears on the page:</p>
+<div class="packt_figref CDPAlignCenter CDPAlign"><img src="assets/8f13d161-e9c9-4df8-a61e-6486c50bf70c.png" style="width:18.83em;height:14.75em;"/></div>
+<p>The final feature of this app allows us to delete records. To do that, click on the checkboxes to the left of the lines of the people you want to delete, and then click on the <span class="packt_screen">Delete Selected Persons</span> button. The list is immediately updated.</p>
+<p>Notice that the database is stored in the memory of the backend process. Y<span>ou will see the same list of people if y</span>ou close the browser and reopen it or if you open another browser. You can even open the page from another computer, as long as you insert the appropriate name or IP address of the computer where the backend process is running. However, if you terminate the backend process by pressing the <em>Ctrl</em> + <em>C</em> key combination (or in any other way) and then re-run it, all of the browsers will display no people when the page is reloaded.</p>
+<h2 id="uuid-8b2c68e0-bd4b-4f71-bbca-0a5f83dbfd68">The JavaScript code</h2>
+<p>We are now going to look at what makes this project different from the one described in the previous section.</p>
+<p>First of all, the <kbd>main.js</kbd> file is much larger because it contains three additional functions:</p>
+<ul>
+<li><kbd>sendCommand</kbd>: This is quite a generic routine used to send HTTP requests to a server and to process the received response asynchronously. It accepts five arguments:<br/>
+<ul>
+<li><kbd>method</kbd> is the HTTP command to use, such as <kbd>GET</kbd>,<span> </span><kbd>PUT</kbd>,<span> </span><kbd>POST</kbd>, or<span> </span><kbd>DELETE</kbd>.</li>
+<li><kbd>uri</kbd> is the path and possible query to send to the server.</li>
+<li><kbd>body</kbd> is the possible body of the request, used to send data larger than 2 KB.</li>
+<li><kbd>success</kbd> is a reference to a function that will be called after receiving a successful response (<kbd>status == 200</kbd>).</li>
+<li><kbd>failure</kbd> <span>is a reference to a function that will be called after receiving any failure response (<kbd>status != 200</kbd>).<br/></span></li>
+</ul>
+<span>This function is used to access a REST service as it allows any HTTP method, but it doesn't automatically change the current HTML page. Instead, the <kbd>getPage</kbd> function can only use the <kbd>GET</kbd> method, but it replaces the current HTML page with the HTML code received.</span></li>
+<li><kbd>delete_selected_persons</kbd>: This scans the items whose checkboxes are selected and sends a <kbd>DELETE</kbd> command to the server with the <kbd>/persons?id_list=</kbd> URI followed by a comma-separated list of the IDs of the selected items. The server should delete these records and return a successful state. If the deletion is successful, this JavaScript function reloads the main page with no filter; otherwise, an error message is shown in a message box and <span>the current page is </span>not changed. It should be called when the <span class="packt_screen">Delete Selected Persons</span> button is clicked.</li>
+<li><kbd>savePerson</kbd>: This receives an HTTP method, which can be <kbd>POST</kbd> (to insert) or <kbd>PUT</kbd> (to update). It sends a command to the server, using the method received as an argument, and a URI that depends on the method. For a <kbd>POST</kbd> request, the URI is <span><kbd>/one_person?name=NAME</kbd>, while for a <kbd>PUT</kbd> request, the URI is</span> <kbd>/one_person?id=ID&amp;name=NAME</kbd>, wherein <kbd>ID</kbd> and <kbd>NAME</kbd> are actually the values of the <kbd>id</kbd> and <kbd>name</kbd> fields of the record to create or update. This function should be called with a <kbd>POST</kbd> argument when <span>the <span class="packt_screen">Insert</span> button</span> is clicked and <span>with a <kbd>PUT</kbd> argument when the <span class="packt_screen">Update</span> button is clicked.</span></li>
+</ul>
+<p>Now, let's check the HTML code of the application.</p>
+<h2 id="uuid-34cc5ccc-a68c-4979-99cb-4eaa211356bf">The HTML code</h2>
+<p>Of course, many HTML elements have been added to the <kbd>persons.html</kbd> file to create the additional widgets.</p>
+<p>First, there is the <kbd>&lt;label class="error"&gt;{{id_error}}&lt;/label&gt;</kbd><span> </span><span>element</span><span>, used to display error messages caused by the</span> <span class="packt_screen">Find</span><span> button. To </span><span>correctly</span><span> </span><span>process this element,</span> <span>the</span> <kbd>id_error</kbd> <span>Tera variable needs to be defined in the current Tera context.</span></p>
+<p>Then, there is the following element:</p>
+<pre>&lt;div&gt;<br/>    &lt;label&gt;Id:&lt;/label&gt;<br/>    &lt;input id="person_id" type="number"&gt;<br/>    &lt;button onclick="getPage(<br/>        '/page/edit_person/' + getElementById('person_id').value)"<br/>        &gt;Find&lt;/button&gt;<br/>&lt;/div&gt;</pre>
+<p>When the <span class="packt_screen">Find</span> button is clicked, a page is requested at the <kbd>/page/edit_person/</kbd><span> </span><span>URI,</span><span> followed by the typed ID.</span></p>
+<p>Then, there are two push buttons:</p>
+<pre>&lt;div&gt;<br/>    &lt;button onclick="delete_selected_persons()"&gt;Delete Selected Persons&lt;/button&gt;<br/>    &lt;button onclick="getPage('/page/new_person')"&gt;Add New Person&lt;/button&gt;<br/>&lt;/div&gt;</pre>
+<p>The first one simply delegates all <span>the </span>work to the <kbd>delete_selected_persons</kbd><span> </span><span>function</span><span>, while the second one gets the page at the </span><kbd>/page/new_person</kbd><span> </span><span>URI</span><span>.</span></p>
+<p>Finally, two columns are added to the HTML table containing the list of people. They are found on the left side of the table:</p>
+<pre>&lt;td&gt;&lt;input name="selector" id="{{p.id}}" type="checkbox"/&gt;&lt;/td&gt;<br/>&lt;td&gt;&lt;button onclick="getPage('/page/edit_person/{{p.id}}')"&gt;Edit&lt;/button&gt;&lt;/td&gt;</pre>
+<p>The first column is the checkbox to select the record to delete and the second one is the <span class="packt_screen">Edit</span> button. The value of the HTML <kbd>id</kbd> attribute of the checkbox element is the <kbd>{{p.id}}</kbd><span> </span><span>Tera expression</span><span>, which will be replaced by the ID of the record of the current line. So, this attribute can be used to prepare the request to send it to the server to delete the selected items.</span></p>
+<p>The <span class="packt_screen">Edit</span> button will get the page at the <kbd>/page/edit_person/</kbd><span> </span><span>URI</span><span>, followed by the ID </span><span>of the current record.</span></p>
+<p>In addition, there is another HTML partial file, <kbd>one_person.html</kbd>. This is the page used both to insert a new person and to view/edit an existing person. Its first part is as follows:</p>
+<pre>&lt;h1&gt;Person data&lt;/h1&gt;<br/>&lt;div&gt;<br/>    &lt;label&gt;Id:&lt;/label&gt;<br/>    &lt;input id="person_id" type="number" value="{{ person_id }}" disabled&gt;<br/>&lt;/div&gt;<br/>&lt;div&gt;<br/>    &lt;label&gt;Name:&lt;/label&gt;<br/>    &lt;input id="person_name" type="text" value="{{ person_name }}"/&gt;<br/>&lt;/div&gt;</pre>
+<p><span>For both of the <kbd>input</kbd> elements, the <kbd>value</kbd> attribute is set to a Tera expression; for the first one, it is the <kbd>person_id</kbd> Tera variable and for the second, it is the <kbd>person_name</kbd> Tera variable. When inserting a person, these variables will be empty and when editing a person, these</span><span> variables will contain the current values of the database fields.</span></p>
+<p>The last part of the file is as follows:</p>
+<pre>{% if inserting %}<br/>    &lt;button onclick="savePerson('POST')"&gt;Insert&lt;/button&gt;<br/>{% else %}<br/>    &lt;button onclick="savePerson('PUT')"&gt;Update&lt;/button&gt;<br/>{% endif %}<br/>&lt;button onclick="getPage('/page/persons')"&gt;Cancel&lt;/button&gt;</pre>
+<p>This page must show the <span class="packt_screen">Insert</span> button when it has been opened for inserting a person, and the <span class="packt_screen">Update</span> button <span>when it has been opened for viewing or editing a person. So, the <kbd>inserting</kbd> Tera variable is used. Its value will be <kbd>true</kbd> when in</span> insert mode<span> and <kbd>false</kbd> when in</span> edit mode<span>.</span></p>
+<p>Finally, the <span class="packt_screen">Cancel</span> button opens the <kbd>/page/persons</kbd> page, with no filtering.</p>
+<p>That's all we need to know about the <kbd>templates</kbd> folder.</p>
+<h2 id="uuid-5acb7e81-7430-497a-a6c9-5191811fd494">The Rust code</h2>
+<p>In the <kbd>src</kbd> folder, both the <kbd>db_access.rs</kbd> and the <kbd>main.rs</kbd> files have many changes.</p>
+<h3 id="uuid-44b0689a-0241-418f-88af-48624b61c5db">The db_access.rs changes</h3>
+<p>The <kbd>persons</kbd> vector is initially empty because users can insert records into it.</p>
+<p>The following functions have been added:</p>
+<ul>
+<li><kbd>get_person_by_id</kbd>: This searches the vector for a person with a specified ID. It returns the person if found or <kbd>None</kbd>, otherwise.</li>
+<li><kbd>delete_by_id</kbd>: This s<span>earches the vector for a person with the specified ID; if found, it is removed from the vector and <kbd>true</kbd> is returned. O</span><span>therwise, <kbd>false</kbd> is returned.</span></li>
+<li><kbd>insert_person</kbd>: A <kbd>Person</kbd> object is received as an argument to insert into the database. However, before inserting it into the vector, its <kbd>id</kbd> field is overwritten by a unique ID value. This value is an integer larger than the largest ID present in the vector if the vector is not empty, or <kbd>1</kbd>, otherwise.</li>
+<li><kbd>update_person</kbd>: This <span>searches the vector for a person that has the specified ID; if found, this person is replaced by the specified person and <kbd>true</kbd> is returned. O</span><span>therwise, <kbd>false</kbd> is returned.</span></li>
+</ul>
+<p>Nothing web-specific is contained in these functions.</p>
+<h3 id="uuid-0ac1937b-21e6-488d-a806-460f2ecf2e51">The main.rs<span> </span>changes</h3>
+<p>For the <kbd>main</kbd> function, there are many kinds of requests to the route. The new <span>routes</span> are as follows:</p>
+<pre>.service(<br/>    web::resource("/persons")<br/>        .route(web::delete().to(delete_persons)),<br/>)<br/>.service(<br/>    web::resource("/page/new_person")<br/>        .route(web::get().to(get_page_new_person)),<br/>)<br/>.service(<br/>    web::resource("/page/edit_person/{id}")<br/>        .route(web::get().to(get_page_edit_person)),<br/>)<br/>.service(<br/>    web::resource("/one_person")<br/>        .route(web::post().to(insert_person))<br/>        .route(web::put().to(update_person)),<br/>)</pre>
+<p>The first route is used to delete the selected people.</p>
+<p>The second <span>route</span> is used to get the page to allow the user to insert a new person—that is, the <kbd>one_person.html</kbd> page—in insert mode.</p>
+<p>The third <span>route</span> is used to get the page to allow the user to view or edit a new person—that is, the<span> </span><kbd>one_person<span>.html</span></kbd><span> </span>page—in edit mode.</p>
+<p>For the fourth <span>resource, there are two possible routes. Actually, this resource can be accessed using the <kbd>POST</kbd> method or the <kbd>PUT</kbd> method. The first method is used to insert a new record into the database. The second method is used to update the specified record using the specified data.</span></p>
+<p>Now, let's see the handlers. With respect to the previous project, some of them are new, some are old but have been changed, and some are unmodified.</p>
+<p>The new handlers are as follows:</p>
+<ul>
+<li><kbd>delete_persons</kbd> is used to delete the selected people.</li>
+<li><kbd>get_page_new_person</kbd> is used to get the page to create a new person.</li>
+<li><kbd>get_page_edit_person</kbd> is used to get the page to edit an existing person.</li>
+<li><kbd>insert_person</kbd> is used to insert a new person into the database.</li>
+<li><kbd>update_person</kbd> is used to update an existing person in the database.</li>
+</ul>
+<p>The changed handlers are <kbd>get_page_persons</kbd> and <kbd>invalid_resource</kbd>. The unmodified handlers are <kbd>get_main</kbd> and <kbd>get_favicon</kbd>.</p>
+<p>These handlers can be grouped into three logical kinds:</p>
+<ul>
+<li>The ones whose job it is to generate HTML code to replace part of a web page</li>
+<li>The ones whose job it is to return <span>non-HTML </span>data</li>
+<li>The ones that do some work and then return status information regarding the job that has been done</li>
+</ul>
+<p>The <span>HTML-returning </span>functions are <kbd>get_main</kbd>, <kbd>get_page_persons</kbd>, <kbd>get_page_new_person</kbd>, <kbd>get_page_edit_person</kbd>, and <kbd>invalid_resource</kbd>. <kbd><span>get_favicon</span></kbd> is the only data-returning <span>function;</span> the other three are data-manipulating functions.</p>
+<p>It is logically possible to have a single handler that first does some work and then returns the HTML page to be shown. However, it is better to separate these logically different features into two distinct functions—first, <span>the function that manipulates data</span> is executed, and then the function that returns the HTML code is run. This separation can happen on the backend or on the frontend.</p>
+<p>In this project, it is the frontend that does the separation. First, JavaScript code sends a request to manipulate data (for example, to insert a record in the database) and then, if the operation was successful, some other JavaScript code requests the HTML code to show up next in the browser.</p>
+<p>An alternative architecture is to have the following sequence of calls:</p>
+<ol>
+<li>The user performs an action on the web page.</li>
+<li>That action causes a JavaScript routine to be executed.</li>
+<li>That routine sends a request from the browser to the server.</li>
+<li>The server routes that request to a backend handler function.</li>
+</ol>
+<ol start="5">
+<li>The backend handler first calls a routine to manipulate data and then waits for its completion.</li>
+<li>If the backend routine is successful, the backend calls another routine to generate and return the next HTML page to the browser. If the backend routine fails, the backend generates and returns another HTML page to the browser, describing the failure.</li>
+<li>The JavaScript routine receives the HTML page and displays it to the user.</li>
+</ol>
+<p>Now, let's look at <span>the body of the </span><kbd>get_page_edit_person</kbd><span> function one </span>piece at a time. </p>
+<p>Remember that the purpose of this routine is to generate the HTML code of a web page to edit the name of a person. The current name of the person to edit is to be found in the database and the constant HTML code is to be found in the <kbd>one_person.html</kbd> template.</p>
+<p>The first five statements define and initialize as many local variables:</p>
+<pre>let id = &amp;path.0;<br/>let db_conn = &amp;state.lock().unwrap().db;<br/>let mut context = tera::Context::new();<br/>if let Ok(id_n) = id.parse::&lt;u32&gt;() {<br/>    if let Some(person) = db_conn.get_person_by_id(id_n) {</pre>
+<p>The first statement gets the <kbd>id</kbd> variable from the path as a string. <span>For this function, the routing was </span><kbd>/page/edit_person/{id}</kbd><span>, and so the <kbd>id</kbd> variable is available to be extracted.</span></p>
+<p>The <span>second</span> statement gets and locks the database connection.</p>
+<p>The <span>third</span> <span>statement </span>creates an empty Tera context.</p>
+<p>The <span>fourth</span> statement tries to parse the <kbd>id</kbd> Rust variable into an integer. If the conversion is successful, the condition of the <kbd>if</kbd> statement is satisfied and so the next statement is executed.</p>
+<p>The <span>fifth</span> statement searches the <span>database</span> for <span>a person identified by this ID </span>by calling the <kbd>get_person_by_id</kbd><span> </span><span>method</span><span>.</span></p>
+<p>Now that the required information is available, the Tera context can be filled in:</p>
+<pre>context.insert("person_id", &amp;id);<br/>context.insert("person_name", &amp;person.name);<br/>context.insert("inserting", &amp;false);</pre>
+<p>Let's see what the purpose of these variables is:</p>
+<ul>
+<li>The <kbd>person_id</kbd> Tera variable allows us to show the current (disabled) ID of the person on the page.</li>
+<li>The <kbd>person_name</kbd> <span>Tera variable</span> allows us to show<span> the current (editable) name of the person </span><span>on the page</span>.</li>
+<li>The <kbd>inserting</kbd> <span>Tera variable</span> allows us (through a conditional Tera statement) to set the page as an edit page, instead of as an insert page.</li>
+</ul>
+<p>Then, we can call the <kbd>render</kbd> Tera method <span>with this context </span>to get the HTML page and send the resulting page as the HTML body of the response:</p>
+<pre>return HttpResponse::Ok()<br/>    .content_type("text/html")<br/>    .body(TERA.render("one_person.html", context).unwrap());</pre>
+<p>Here, we have considered the cases where every statement was successful. In cases where the typed ID is not a number or it does not exist in the database, the function carries out the following code. This happens when the user types a wrong number in the <span class="packt_screen">Id</span> field of the main page and then clicks on <span class="packt_screen">Find</span>:</p>
+<pre>context.insert("id_error", &amp;"Person id not found");<br/>context.insert("partial_name", &amp;"");<br/>let person_list = db_conn.get_persons_by_partial_name(&amp;"");<br/>context.insert("persons", &amp;person_list.collect::&lt;Vec&lt;_&gt;&gt;());<br/>HttpResponse::Ok()<br/>    .content_type("text/html")<br/>    .body(TERA.render("persons.html", context).unwrap())</pre>
+<p>The last line shows that the template we will use is <kbd>persons.html</kbd>, so we are going to the main page. The Tera variables of that template are <kbd>id_error</kbd>, <kbd>partial_name</kbd>, and <kbd>persons</kbd>. We want a specific error message in the first variable, nothing as the <kbd>filter</kbd> condition, and a list of all the people. This can be obtained by filtering all the people whose name contains an empty string.</p>
+<p>When the user presses the <span class="packt_screen">Update</span> button, the<span> </span><kbd>update_person</kbd><span> function is called.</span></p>
+<p>This function has the following arguments:</p>
+<pre> state: web::Data&lt;Mutex&lt;AppState&gt;&gt;,<br/> query: web::Query&lt;ToUpdate&gt;,</pre>
+<p>The second is a query using a type defined by the following structure:</p>
+<pre>#[derive(Deserialize)]<br/>struct ToUpdate {<br/>    id: Option&lt;u32&gt;,<br/>    name: Option&lt;String&gt;,<br/>}</pre>
+<p>So, this query allows two optional keywords: <kbd>id</kbd> and <kbd>name</kbd>. The first keyword must be an integer number. Here are some valid queries:</p>
+<ul>
+<li><kbd>?id=35&amp;name=Jo</kbd></li>
+<li><kbd>?id=-2</kbd></li>
+<li><kbd>?name=Jo</kbd></li>
+<li>No query</li>
+</ul>
+<p>The following are invalid queries for that structure:</p>
+<ul>
+<li><kbd>?id=x&amp;name=Jo</kbd></li>
+<li><kbd>?id=2.4</kbd></li>
+</ul>
+<p><span>Here is the first part of the body of the function:</span></p>
+<pre>let db_conn = &amp;mut state.lock().unwrap().db;<br/>let mut updated_count = 0;<br/>let id = query.id.unwrap_or(0);</pre>
+<p>The first statement gets and locks the database connection.</p>
+<p>A count of the records to update is defined by the second statement. This routine can update only one record, and so this count will be <kbd>0</kbd> or <kbd>1</kbd> only.</p>
+<p>Then, the <kbd>id</kbd> variable is extracted from the query, if present and valid, or otherwise, <kbd>0</kbd> is considered as a substitute.</p>
+<p>Notice that because the type of the query variable defines which fields are defined (whether they are optional or required and what is their type), the Actix web framework can perform a strict parsing of the URI query. If the URI query is not valid, the handler is not invoked and the <kbd>default_service</kbd> routine will be chosen. On the other side, in the handler, we can be sure that the query is valid.</p>
+<p>The last part of the body of the function is as follows:</p>
+<pre>let name = query.name.clone().unwrap_or_else(|| "".to_string()).clone();<br/>updated_count += if db_conn.update_person(Person { id, name }) {<br/>    1<br/>} else {<br/>    0<br/>};<br/>updated_count.to_string()</pre>
+<p>First, <span>the </span><kbd>name</kbd><span> variable is extracted from the query, or an empty string is considered if that variable is not contained in the query</span>. This name is cloned as the database operations take ownership of their arguments and we cannot yield the ownership of a field of the query.</p>
+<p>Then, the <kbd>update_person</kbd> method of the database connection is called. This method receives a new <kbd>Person</kbd> object constructed with the <kbd>id</kbd> and <kbd>name</kbd> values that were just extracted. If this method returns <kbd>true</kbd>, the count of the <span>processed </span>record is set to <kbd>1</kbd>.</p>
+<p>Finally, the <span>count of the </span><span>processed </span><span>record is returned as a response.</span></p>
+<p>The other routines are conceptually similar to the one described here.</p>
+<h1 id="uuid-81c8851d-2b07-42a9-921f-00060ba40d8e">Handling an application with <span>authentication</span></h1>
+<p>All of the features of the previous apps were accessible to everyone that could create an HTTP connection with our server. Usually, a web app should behave differently depending on who is currently using it. Typically, some users are authorized to carry out some important operations, such as adding or updating records, while other users are <span>authorized only to read these records. </span>Sometimes, user-specific data must be recorded.</p>
+<p>This opens up the vast world of authentication, authorization, and security.</p>
+<p>Let's imagine a simplified scenario. There are two users whose profiles are wired-in to the <span>mock </span>database:</p>
+<ul>
+<li><kbd>joe</kbd>, whose password is <kbd>xjoe</kbd>, can <em>only read</em> the database of people.</li>
+<li><kbd>susan</kbd>, whose password is <kbd>xsusan</kbd>, <span>can <em>read and write</em> </span><span>the database of people—that is, she can do what the app in the previous section allowed.</span></li>
+</ul>
+<p>The application starts with a login page. If the user does not insert an existing username and its matching password, they cannot access the other pages. Even if <span>the username and password are valid, the widgets that the user is not authorized for are disabled.</span></p>
+<p>For these situations, some applications create a server-side user session. This may be appropriate to use when there are a limited number of users, but it may overload the server if there are many users. Here, we'll show a solution without <span>server-side sessions</span><span>.</span></p>
+<p>If you run the <kbd>auth</kbd> project and access the site from a browser, you will see the following page:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/6a209eca-a7bc-4860-a7bf-5cf1efe3bb59.png" style="width:16.75em;height:10.50em;"/></p>
+<p>It shows that there is no current users and two fields allow us to type in a username and password. If you type <kbd>foo</kbd> into the <span class="packt_screen">User name</span> field and then click on <span class="packt_screen">Log in</span>, the red <span class="packt_screen">User "foo" not found.</span><span> </span><span>message</span><span> will appear. If you type in </span><kbd>susan</kbd><span> and then click on</span> <span class="packt_screen">Log in</span><span>, the message will be </span><span class="packt_screen">Invalid password for user "susan"</span><span>.</span></p>
+<p>Instead, if you type in the correct password for that user, <kbd>xsusan</kbd>, the following page will appear:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/73a1f6eb-efe0-4ed7-b2d7-ba40187e9a47.png" style="width:20.92em;height:13.33em;"/></p>
+<p>This is the same main page as the <kbd>crud</kbd> project, with an added line of widgets: the name of the <span>current user shown in </span>blue and a button to change it. If you click on the <span class="packt_screen">Change User</span> button, you go back to the login page. Also, the page to view, edit, or insert a person has the same widgets just under the page heading.</p>
+<p>If on the login page you insert <kbd>joe</kbd> as the username and <kbd>xjoe</kbd> as the password, the following page will appear:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/8d2829e0-7823-4a0f-835c-7353bddc0ce2.png" style="width:19.50em;height:12.67em;"/></p>
+<p>This has the same widgets that appeared for <kbd>susan</kbd>, but the <span class="packt_screen">Delete Selected Persons</span> button and the <span class="packt_screen">Add New Person</span> button now are disabled.</p>
+<p>To see how <kbd>joe</kbd> sees the people, first, you need to log in as <kbd>susan</kbd>, insert some people, and then change the user to <kbd>joe</kbd>, because <kbd>joe</kbd> cannot insert people. If you do this and then you click on the <span class="packt_screen">Edit</span> button of a person, you will see the following page, where the <span class="packt_screen">Name</span> field is read-only and the <span class="packt_screen">Update</span> button is disabled:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/579cb170-8a21-4c31-8c0e-b5a68968c7ac.png" style="width:15.25em;height:11.08em;"/></p>
+<p>Let's start with understanding the nitty-gritty of the application we just did.</p>
+<h2 id="uuid-343d4fe9-eb09-43a7-ad71-d28e20751b13">The implementation</h2>
+<p>This project adds some code with respect to the <kbd>crud</kbd> project.</p>
+<p>The first difference is in the <kbd>Cargo.toml</kbd> file, where the <kbd>actix-web-httpauth = "0.1"</kbd> dependency has been added. This crate handles the encoding of the username and password in the HTTP request.</p>
+<h2 id="uuid-c22030c0-0235-40fa-ac9e-f43f8f05f99b">The HTML code</h2>
+<p>The<span> </span><kbd>main.html</kbd><span> </span>page, instead of opening the<span> </span><kbd>/page/persons</kbd><span> </span>URI, opens <kbd>/page/login</kbd> to show the login page,<span> </span><span>initially</span>. So, this project adds a new TERA template for the login page. This is the<span> </span><kbd>login.html</kbd><span> </span><span>partial HTML page</span><span>, shown as follows: </span></p>
+<pre><br/>&lt;h1&gt;Login to Persons&lt;/h1&gt;<br/>&lt;div&gt;<br/>    &lt;span&gt;Current user:&lt;/span&gt;<br/>    &lt;span <span class="underline">id="current_user"</span> class="current-user"&gt;&lt;/span&gt;<br/>&lt;/div&gt;<br/>&lt;hr/&gt;<br/>&lt;label class="error"&gt;<span class="underline">{{error_message}}</span>&lt;/label&gt;<br/>&lt;div&gt;<br/>    &lt;label&gt;User name:&lt;/label&gt;<br/>    &lt;input <span class="underline">id="username"</span> type="text"&gt;<br/>&lt;/div&gt;<br/>&lt;div&gt;<br/>    &lt;label&gt;Password:&lt;/label&gt;<br/>    &lt;input <span class="underline">id="password"</span> type="password"&gt;<br/>&lt;/div&gt;<br/>&lt;button <span class="underline">onclick="login()"</span>&gt;Log in&lt;/button&gt;</pre>
+<p>Its noteworthy points are underlined: the <kbd>{{error_message}}</kbd> <span>Tera variable,</span> the call to <kbd>login()</kbd><span> </span>when the <span class="packt_screen">Log in</span> button is clicked, and three elements whose IDs are <kbd>current_user</kbd>, <kbd>username</kbd>, and <kbd>password</kbd>.</p>
+<p><span>Both the</span> <kbd>persons.html</kbd> <span>and</span> <kbd>one_person.html</kbd> <span>templates have the following section just below the heading:</span></p>
+<pre>&lt;div&gt;<br/>    &lt;span&gt;Current user: &lt;/span&gt;<br/>    &lt;span id="current_user" class="current-user"&gt;&lt;/span&gt;<br/>    &lt;button onclick="getPage('/page/login')"&gt;Change User&lt;/button&gt;<br/>&lt;/div&gt;<br/>&lt;hr/&gt;</pre>
+<p>This will show the current user, or <kbd>---</kbd>, followed by the <span class="packt_screen">Change User</span> button. Clicking on this will load the <kbd>/page/login</kbd> page.</p>
+<p>The app contains four buttons that must be disabled for unauthorized users—two in the <kbd>persons.html</kbd> template and two in the <kbd>one_person.html</kbd> template. They now contain the following attribute:</p>
+<pre>{% if not can_write %}disabled{% endif %}</pre>
+<p>It assumes that the <kbd>can_write</kbd> Tera variable is defined as <kbd>true</kbd>, or any non-null value, if—and only if—the current user has the authorization to modify the content of the database.</p>
+<p>There is also an edit box element in the <kbd>one_person.html</kbd> template that must be made read-only for users that are not authorized to change that data; so, it contains the following attribute:</p>
+<pre><span>{% if not can_write %}readonly{% endif %}</span></pre>
+<p>You should be aware that these checks are not an ultimate security guard. The checks of authorization in frontend software can always be bypassed, and so the ultimate security guards are those performed by the DBMS.</p>
+<p>However, it is good to always carry out an early check to make that the user experience is more intuitive and the error messages are helpful.</p>
+<p>For example, if an attribute of an entity shouldn't be modifiable by the current user, this constraint can be specified in a solid way <span>using the DBMS</span>.</p>
+<p>However, if the user interface allows this kind of change, the user could try to change this value and they will be disappointed when they find out that this change is not allowed.</p>
+<p>In addition, when a forbidden change is attempted, an error message is issued by the DBMS. The message is probably not internationalized and makes reference to DBMS concepts such as tables, columns, rows, and the names of objects that are unfamiliar to the user. So, this message can be obscure for the user.</p>
+<h2 id="uuid-788606da-693b-4c68-ab6a-d9cd8c359fc6">The JavaScript code</h2>
+<p>The <kbd>main.js</kbd> file has the following additions with respect to the <kbd>crud</kbd> project.</p>
+<p>The <kbd>username</kbd> and <kbd>password</kbd><span> </span><span>global variables</span><span> have been added and initialized as empty strings.</span></p>
+<p>The following statement has been added to b<span>oth the</span><span> </span><kbd>sendCommand</kbd><span> </span><span>function and the</span><span> </span><kbd>getPage</kbd><span> </span><span>function:</span><span> </span></p>
+<pre>xhttp.setRequestHeader("Authorization",<br/>    "Basic " + btoa(username + ":" + password));</pre>
+<p>This sets the <kbd>Authorization</kbd><span> header for</span><span> the HTTP request that is about to be sent. The format of that header is standard HTTP.</span></p>
+<p>In the <kbd>getPage</kbd> function, after the statement that assigns<span> </span><span>the HTML code that is received</span><span> </span><span>to the current body</span><span>, the following three lines are inserted:</span></p>
+<pre>var cur_user = document.getElementById('current_user');<br/>if (cur_user)<br/>    cur_user.innerHTML = username ? username : '---';</pre>
+<p>They set the content of the element whose <kbd>id</kbd> attribute has <kbd>current_user</kbd> as its value if the current page contains such an element. This content is the value of the <kbd>username</kbd><span> </span><span>global JavaScript variable</span><span> if it is defined and not empty, or</span> <kbd>---</kbd><span>, otherwise.</span></p>
+<p>Another addition is the definition of the new <kbd>login</kbd> function. Its body is as follows:</p>
+<pre>username = document.getElementById('username').value;<br/>password = document.getElementById('password').value;<br/>getPage('/page/persons');</pre>
+<p>This gets the values of the <kbd>username</kbd> and <kbd>password</kbd> elements of the page and saves them to the global variables with the same names, and then opens the main page. Of course, this should<span> </span><span>only</span><span> be called in the</span> <kbd>login.html</kbd> <span>page as other pages are not likely to have a</span> <kbd>password</kbd> <span>element.</span></p>
+<h2 id="uuid-0a5013d1-58c6-4531-a528-7e6fd51da3ef">The mock database code</h2>
+<p>The mock database has one more table: <kbd>users</kbd>. So, the type of its elements <span>must be defined</span>:</p>
+<pre>#[derive(Serialize, Clone, Debug)]<br/>pub struct User {<br/>    pub username: String,<br/>    pub password: String,<br/>    pub privileges: Vec&lt;DbPrivilege&gt;,<br/>}</pre>
+<p><span>Any user has a username, a password, and a set of privileges. A <strong>privilege</strong> has a custom type, which is defined in the same file:</span></p>
+<pre>#[derive(Serialize, Clone, Copy, PartialEq, Debug)]<br/>pub enum DbPrivilege { CanRead, CanWrite }</pre>
+<p>Here, there are only two possible privileges: to be able to read the database or to be able to write the database. A real-world system would have more granularity.</p>
+<p>The <kbd>DbConnection</kbd> struct now <span>also</span><span> </span><span>contains the </span><span><kbd>users</kbd> </span><span>field, which is a vector of</span> <kbd>Users</kbd><span>. Its content (the records about <kbd>joe</kbd> and <kbd>susan</kbd>) is specified inline.</span></p>
+<p>The following function has been added:</p>
+<pre>pub fn get_user_by_username(&amp;self, username: &amp;str) -&gt; Option&lt;&amp;User&gt; {<br/>    if let Some(u) = self.users.iter().find(|u| u.username == username) {<br/>        Some(u)<br/>    }<br/>    else { None }<br/>}</pre>
+<p>This searches the <kbd>users</kbd> vector for a user with the specified username. If it is found, it is returned; otherwise, <kbd>None</kbd> is returned.</p>
+<h2 id="uuid-c76c1b39-db9e-4d55-afe3-1d0774f4f94c">The main function</h2>
+<p>The <kbd>main</kbd> function has just two small changes. The first change is to call <span><kbd>data(Config::default().realm("PersonsApp"))</kbd> on the <kbd>App</kbd> object. This invocation is required to get the authentication context from the HTTP requests. It specifies the context using the <kbd>realm</kbd> call.</span></p>
+<p>The second change is the addition of the following <span>routing rule</span>:</p>
+<pre>.service(<br/>    web::resource("/page/login")<br/>        .route(web::get().to(get_page_login)),<br/>)<br/><br/><br/></pre>
+<p>This path is used to open the login page. It is used by the main page as the entry point of the app and by the two <span class="packt_screen">Change User</span> buttons.</p>
+<p>The <kbd>get_page_login</kbd> function is the only new handler. It just calls the <span><kbd>get_page_login_with_message</kbd> function, </span><span>which has a string argument, to be shown as an error message. When this function is called by</span><span> <kbd>get_page_login</kbd>, an empty string is specified as</span> an <span>argument because no error has happened </span><span>yet</span><span> </span><span>on this page. However, this function is called in six </span><span>other</span><span> </span><span>places, where various error messages are specified. The purpose of this function is to go to the login page and display the message received as an argument</span><span> </span><span>in red</span><span>.</span></p>
+<p><span>The login page is obviously accessible to every user, as the favicon resource is, but a</span>ll of the other handlers have been modified to ensure that only authorized users can access those resources. The bodies of the handlers that manipulate data have the following structure:</p>
+<pre>match check_credentials(auth, &amp;state, DbPrivilege::CanWrite) {<br/>    Ok(_) =&gt; {<br/>        ... manipulate data ...<br/>        HttpResponse::Ok()<br/>            .content_type("text/plain")<br/>            .body(result)<br/>        },<br/>    Err(msg) =&gt; get_page_login_with_message(&amp;msg)<br/>}</pre>
+<p>First, the <kbd>check_credentials</kbd><span> </span><span>function </span><span>checks whether the credentials specified by the</span> <kbd>auth</kbd> <span>argument identify a user that has the </span><kbd>CanWrite</kbd><span> </span><span>privilege</span><span>. Only users allowed to write should manipulate the data. For them, the function returns as </span><kbd>Ok</kbd><span> and so they can change the database and return the result of these changes in a plaintext format.</span></p>
+<p>Users that are not allowed to write are redirected to the login page, which shows the error message returned by <kbd>check_credentials</kbd>.</p>
+<p>Instead, the <span>bodies of the handlers that get HTML pages have the following structure:</span></p>
+<pre>match check_credentials(auth, &amp;state, DbPrivilege::CanRead) {<br/>    Ok(privileges) =&gt; {<br/>        ... get path arguments, query arguments, body ...<br/>        ... get data from the database ...<br/>        let mut context = tera::Context::new();<br/>        context.insert("can_write",<br/>            &amp;privileges.contains(&amp;DbPrivilege::CanWrite));<br/>        ... insert some other variables in the context ...<br/>        return HttpResponse::Ok()<br/>            .content_type("text/html")<br/>            .body(TERA.render("&lt;template_name&gt;.html", context).unwrap());<br/>    },<br/>    Err(msg) =&gt; get_page_login_with_message(&amp;msg)<br/>}</pre>
+<p>Here, as is typical, any user that can read the data can also access the web page. In this case, the <kbd>check_credentials</kbd> function is successful and it returns the complete set of privileges of that user. Matching these results with the <kbd>Ok(privileges)</kbd><span> </span><span>pattern</span><span> causes the privileges of that user to be used to initialize the </span><kbd>privileges</kbd><span> Rust variable.</span></p>
+<p>If the user has the <kbd>CanWrite</kbd> privilege, that information is passed to the <kbd>can_write</kbd> Tera variable as a <kbd>true</kbd> value and to <kbd>false</kbd>, otherwise. In this way, the page can enable or disable the HTML widgets in accordance with the user's privileges.</p>
+<p>Finally, let's look at <span>the </span><kbd>check_credentials</kbd><span> function.</span></p>
+<p>Among its arguments, there is <kbd>auth: BasicAuth</kbd>. Thanks to <span>the </span><kbd>actix_web_httpauth</kbd><span> crate and to the call to <kbd>data</kbd> in the main function, this argument allows access to the authorization HTTP header for basic authentication. The objects of the <kbd>BasicAuth</kbd> type have the <kbd>user_id</kbd> and <kbd>password</kbd> methods, which return the optional credential specified by the HTTP client.</span></p>
+<p>These methods are invoked with the following snippet:</p>
+<pre>if let Some(user) = db_conn.get_user_by_username(auth.user_id()) {<br/>    if auth.password().is_some() &amp;&amp; &amp;user.password == auth.password().unwrap() {</pre>
+<p>This code gets the user from the database through their username and checks that the stored password matches the password coming from the browser<span>.</span></p>
+<p><span>This is quite basic. A real-world system would store an encrypted password; it would encrypt the specified password using the same one-way encryption and it would compare the encrypted strings.</span></p>
+<p>Then, the routine discriminates between the different kinds of errors:</p>
+<ul>
+<li>The HTTP request does not contain credentials, or the credentials exist but the specified user does not exist in the user's table.</li>
+<li>The user exists, but the stored password is different from that specified in the received credentials.</li>
+<li>The credentials are valid, but that user hasn't got the required privileges (for example, they only have the <kbd>CanRead</kbd> access but <kbd>CanWrite</kbd> is required).</li>
+</ul>
+<p>So, we have now covered a simple authenticated web app.</p>
+<h1 id="uuid-34435406-2163-47fb-9dad-1c9b50c86530">Summary</h1>
+<p>In this chapter, we have seen how to use the Tera template engine to create text strings or files (not just in HTML format) containing variable parts, conditional sections, repeated sections, and sections included from another file.</p>
+<p>Then, we saw how Actix web—together with HTML code, JavaScript code, CSS styles, and the Tera template engine—can be used to create a complete web app with CRUD capabilities, authentication (to prove who is the current user), and authorization (to forbid some operations to the current user).</p>
+<p>This project showed us how to create a single application that performs both client-side code and server-side code.</p>
+<p>In the next chapter, we will see how to create a client-side web app using <span>Web</span>Assembly technology and the Yew framework.</p>
+<h1 id="uuid-68d2f439-a684-48b7-a0cb-5dbefa0172e1">Questions</h1>
+<ol>
+<li>What are the possible strategies for creating HTML code containing variable parts?</li>
+<li>What is the syntax to embed a Tera expression into a text file?</li>
+<li>What is the syntax to embed a Tera statement into a text file?</li>
+<li>How are the values of variables in a Tera rendering operation specified?</li>
+<li>How can the requests to a web server <span>be classified</span>?</li>
+<li>Why may it be useful to split a web page into parts?</li>
+<li>Should HTML templates and JavaScript files be deployed separately or are they linked into the executable program?</li>
+<li>Which JavaScript object can be used to send HTTP requests?</li>
+<li>Where <span>should the current username be stored </span>when the server does not store user sessions?</li>
+<li>How are credentials <span>extracted </span>from an HTTP request?</li>
+</ol>
+<h1 id="uuid-966bd913-6390-40ae-8a26-8ba42e04c6ef">Further reading</h1>
+<ul>
+<li>Additional information regarding Tera can be found at <a href="https://tera.netlify.app/">https://tera.netlify.app/</a>.<a href="https://tera.netlify.com/docs/installation/"/></li>
+<li>Additional information regarding Actix web can be found at <a href="https://actix.rs/docs/">https://actix.rs/docs/</a>.</li>
+<li>The status of web development libraries and frameworks can be found at <a href="https://www.arewewebyet.org/">https://www.arewewebyet.org/</a>.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

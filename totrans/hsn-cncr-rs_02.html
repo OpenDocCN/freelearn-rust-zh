@@ -1,0 +1,1356 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Sequential Rust Performance and Testing</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_quote">"Make it work, then make it beautiful, then if you really, really have to, make it fast."</div>
+<div class="packt_quote">                                                                                                         - <em>Joe Armstrong</em></div>
+<p>In the previous chapter, we discussed the basics of modern computer architectures—the CPU and its function, memory hierarchies, and their interplay. We left off with a brief introduction to debugging and performance analysis of Rust programs. In this chapter, we'll continue that discussion, digging into the performance characteristics of sequential Rust programs, deferring, for now, considerations of concurrent performance. We'll also be discussing testing techniques for demonstrating the fitness for purpose of a Rust program. Why, in a book about parallel programming, would we wish to devote an entire chapter to just sequential programs? The techniques we'll discuss in this sequential setting are applicable and vital to a parallel setting. What we gain here is the meat of the concern—being fast <em>and</em> correct—without the complication that parallel programming brings, however, we'll come to that in good time. It is also important to understand that the production of fast parallel code comes part and parcel with the production of fast sequential code. That's on account of there being a cold, hard mathematical reality that we'll deal with throughout the book.</p>
+<p>By the close of the chapter, we will: </p>
+<ul>
+<li>Have learned about <span>Amdahl's and Gustafson's laws</span></li>
+<li>Have investigated the internals of the Rust standard library <kbd>HashMap</kbd></li>
+<li>Be able to use QuickCheck to perform randomized validating of an alternative HashMap implementation</li>
+<li>Be able to use American Fuzzy Lop to demonstrate the lack of crashes in the same</li>
+<li>Have used Valgrind and Linux Perf to examine the performance of Rust software</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">This chapter requires a working Rust installation. The details of verifying your installation are covered in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries<span> </span>– Machine Architecture and Getting Started with Rust</em>. The Valgrind suite of tools will be used here. Many operating systems bundle valgrind packages but you can find further installation instructions for your system at <a href="http://valgrind.org/">valgrind.org</a>. Linux Perf is used and is bundled by many Linux distributions. Any other software required for this chapter is installed as a part of the text.</p>
+<p class="mce-root">You can find the source code for this book's projects on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust">https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust</a>. The source code for this chapter is under <kbd>Chapter02</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Diminishing returns</h1>
+                </header>
+            
+            <article>
+                
+<p>The hard truth is that there's a diminishing return when applying more and more concurrent computational resources to a problem. Performing parallel computations implies some coordination overhead—spawning new threads, chunking data, and memory bus issues in the presence of barriers or fences, depending on your CPU. Parallel computing is not free. Consider this <kbd>Hello, world!</kbd> program:</p>
+<pre style="padding-left: 30px">fn main() {
+    println!("GREETINGS, HUMANS");
+}</pre>
+<p>Straightforward enough, yeah? Compile and run it 100 times:</p>
+<pre><strong>hello_worlds &gt; rustc -C opt-level=3 sequential_hello_world.rs
+hello_worlds &gt; time for i in {1..100}; do ./sequential_hello_world &gt; /dev/null; done
+
+real    0m0.091s
+user    0m0.004s
+sys     0m0.012s</strong></pre>
+<p>Now, consider basically the same program but involving the overhead of spawning a thread:</p>
+<pre style="padding-left: 30px">use std::thread;
+
+fn main() {
+    thread::spawn(|| println!("GREETINGS, HUMANS"))
+        .join()
+        .unwrap();
+}</pre>
+<p>Compile and run it 100 times:</p>
+<pre><strong>hello_worlds &gt; rustc -C opt-level=3 parallel_hello_world.rs
+hello_worlds &gt; time for i in {1..100}; do ./parallel_hello_world &gt; /dev/null; done
+
+real    0m0.115s
+user    0m0.004s
+sys     0m0.012s</strong></pre>
+<p>This implies a thread-spawn time on my test system of 0.24 milliseconds. That is, of course, without any synchronization. The point is, it's not free. It's also not magic. Say you have a program that runs on a single processor in 24 hours and there are parts of the program that will have to be done sequentially and which, added together, consume 1 hour of the total runtime. The remaining 23 hours represent computations that can be run in parallel. If this computation is important and needs to be done in a hurry, the temptation is going to be to chuck in as much hardware as possible. How much of an improvement should you expect?</p>
+<p>One well-known answer to this question is Amdahl's law. It states that the speedup of a computation is proportional to the inverse of the percentage of time taken by the sequential bit plus the percentage of the parallel time divided by the total new computation units, <em>1/(s + p / N)</em>. As <em>N</em> tends toward infinity, <em>1/s == 1/(1-p),</em> in our example, <em>1/(1 - (23/24)) = 24</em>. That is, the maximum factor speedup you can ever hope to see is 24 times, with infinite additional capacity. Ouch.</p>
+<p>Amdahl's law is a touch pessimistic, as noted by John Gustafson in his 1988 Reevaluating Amdahl's Law:</p>
+<div class="packt_quote">
+<p>"At Sandia National Laboratories, we are currently engaged in research involving massively-parallel processing. There is considerable skepticism regarding the viability of massive parallelism; the skepticism centers around Amdahl's law, an argument put forth by Gene Amdahl in 1967 that even when the fraction of serial work in a given problem is small, say s, the maximum speedup obtainable from even an infinite number of parallel processors is only 1/s. We now have timing results for a 1024-processor system that demonstrate that the assumptions underlying Amdahl's 1967 argument are inappropriate for the current approach to massive ensemble parallelism."</p>
+</div>
+<p>Gustafson argues that real workloads will take the time factor of a computation as fixed and vary the input work accordingly. In some hypothetical, very important computations we'd see 24 hours as acceptable and, on increasing the total number of processors available, then rush to figure out how to add in more computation so as to get the time back up to one day. As we increase the total workload, the serial portion of the computation tends towards zero. This is, itself, maybe somewhat optimistic and is certainly not applicable to problems where there's no more datasets available. Communication overhead is not included in either analysis.</p>
+<p>Ultimately, what has to be internalized is this—performing computations in parallel is subject to diminishing returns. Exactly how that take shape depends strongly on your problem, the machine, and so on, but it's there. What the programmer must do to bend that curve is shrink the percentage of time spent in serial computation, either by increasing the relative portion of parallel computation per Gustafson with a larger dataset or by optimizing the serial computation's runtime. The remainder of this chapter will be focused on the latter approach—improving the runtime of serial computations.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Performance</h1>
+                </header>
+            
+            <article>
+                
+<p>In this section, we'll focus on the serial performance of a common data structure—associative arrays. We'll apply the tools we learned about in the previous chapter to probe different implementations. We'll focus on the associative array because it is fairly well-trod territory, studied in introductory computer science courses, and is available in most higher-level languages by default, Rust being no exception save the higher-level bit. We'll look at Rust's associative array first, which is called <kbd>std::collections::HashMap</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Standard library HashMap</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's poke around in <kbd>HashMap</kbd>'s internals. A good starting place, I find, for inspecting unfamiliar Rust data structures is jumping into the source to the struct definition itself. Especially in the Rust codebase, there will be public <kbd>rustdoc</kbd> comments and private comments explaining implementation ambitions. The reader is warmly encouraged to inspect the <kbd>HashMap</kbd> comments for themselves. In this book, we're inspecting Rust at SHA <kbd>da569fa9ddf8369a9809184d43c600dc06bd4b4d</kbd>. The comments of <kbd>src/libstd/collections/hash/map.rs</kbd> explain that the <kbd>HashMap</kbd> is implemented with linear probing Robin Hood bucket stealing. Linear probing implies that we'll find <kbd>HashMap</kbd> implemented in terms of a cell storage—probably a contiguous memory structure for reasons we'll discuss shortly—and should be able to understand the implementation pretty directly, linear probing being a common method of implementing associative arrays. Robin Hood bucket stealing is maybe less common, but the private comments describe it as <em>the main performance trick in this hashmap</em> and then goes on to quote Pedro Celis' 1986 <em>Robin Hood Hashing:</em></p>
+<div class="packt_quote">
+<p>"If an insertion collides with an existing element, and that element's "probe distance" (how far away the element is from its ideal location) is higher than how far we've already probed, swap the elements."</p>
+</div>
+<p>If you pull the thesis yourself, you'll further find:</p>
+<div class="packt_quote">
+<p>"(Robin Hood Hashing) leads to a new search algorithm which requires less than 2.6 probes on average to perform a successful search even when the table is nearly full. Unsuccessful searches require only O(ln n) probes."</p>
+</div>
+<p>Not bad. Here's <kbd>HashMap</kbd>:</p>
+<pre>pub struct HashMap&lt;K, V, S = RandomState&gt; {
+    // All hashes are keyed on these values, to prevent <br/>    // hash collision attacks.
+    hash_builder: S,
+
+    table: RawTable&lt;K, V&gt;,
+
+    resize_policy: DefaultResizePolicy,
+}</pre>
+<p>Okay, so, it interacts with <kbd>RawTable&lt;K, V&gt;</kbd> and we can jump to that definition:</p>
+<pre>pub struct RawTable&lt;K, V&gt; {
+    capacity_mask: usize,
+    size: usize,
+    hashes: TaggedHashUintPtr,
+
+    // Because K/V do not appear directly in any of the<br/>    // types in the struct, inform rustc that in fact <br/>    // instances of K and V are reachable from here.
+    marker: marker::PhantomData&lt;(K, V)&gt;,
+}</pre>
+<p>But it's maybe not the most illuminating struct definition either. Common operations on a collection are often a good place to dig in, so let's look at <kbd>HashMap::insert</kbd>:</p>
+<pre>    pub fn insert(&amp;mut self, k: K, v: V) -&gt; Option&lt;V&gt; {
+        let hash = self.make_hash(&amp;k);
+        self.reserve(1);
+        self.insert_hashed_nocheck(hash, k, v)
+    }</pre>
+<p>And then on into <kbd>HashMap::reserve</kbd>:</p>
+<pre>    pub fn reserve(&amp;mut self, additional: usize) {
+        let remaining = self.capacity() - self.len(); // this can't <br/>        overflow
+        if remaining &lt; additional {
+            let min_cap = <br/>            self.len().checked_add(additional)<br/>                      .expect("reserve overflow");
+            let raw_cap = self.resize_policy.raw_capacity(min_cap);
+            self.resize(raw_cap);
+        } else if self.table.tag() &amp;&amp; remaining &lt;= self.len() {
+            // Probe sequence is too long and table is half full,
+            // resize early to reduce probing length.
+            let new_capacity = self.table.capacity() * 2;
+            self.resize(new_capacity);
+        }
+    }</pre>
+<p>Whether <kbd>reserve</kbd> expands the underlying storage capacity because we've got near the current total capacity of that storage or to reduce probe lengths, <kbd>HashMap::resize</kbd> is called. That's:</p>
+<pre>    #[inline(never)]
+    #[cold]
+    fn resize(&amp;mut self, new_raw_cap: usize) {
+        assert!(self.table.size() &lt;= new_raw_cap);
+        assert!(new_raw_cap.is_power_of_two() || new_raw_cap == 0);
+
+        let mut old_table = replace(&amp;mut self.table, <br/>        RawTable::new(new_raw_cap));
+        let old_size = old_table.size();
+
+        if old_table.size() == 0 {
+            return;
+        }
+
+        let mut bucket = Bucket::head_bucket(&amp;mut old_table);
+
+        // This is how the buckets might be laid out in memory:
+        // ($ marks an initialized bucket)
+        //  ________________
+        // |$$$_$$$$$$_$$$$$|
+        //
+        // But we've skipped the entire initial cluster of buckets
+        // and will continue iteration in this order:
+        //  ________________
+        //     |$$$$$$_$$$$$
+        //                  ^ wrap around once end is reached
+        //  ________________
+        //  $$$_____________|
+        //    ^ exit once table.size == 0
+        loop {
+            bucket = match bucket.peek() {
+                Full(bucket) =&gt; {
+                    let h = bucket.hash();
+                    let (b, k, v) = bucket.take();
+                    self.insert_hashed_ordered(h, k, v);
+                    if b.table().size() == 0 {
+                        break;
+                    }
+                    b.into_bucket()
+                }
+                Empty(b) =&gt; b.into_bucket(),
+            };
+            bucket.next();
+        }
+
+        assert_eq!(self.table.size(), old_size);
+    }</pre>
+<p>We're back at <kbd>RawTable</kbd> and have a lead on a structure called <kbd>Bucket</kbd>:</p>
+<pre>pub struct Bucket&lt;K, V, M&gt; {
+    raw: RawBucket&lt;K, V&gt;,
+    table: M,
+}</pre>
+<p>Okay, we're going in some circles here. The bucket parameterizes the table on <kbd>M</kbd> rather than the table holding some collection of buckets. The <kbd>RawBucket</kbd> is described as an unsafe view of a <kbd>RawTable</kbd> bucket of which there are two variants—<kbd>EmptyBucket</kbd> and <kbd>FullBucket</kbd>. These variants are used to populate a <kbd>BucketState</kbd> enumeration:</p>
+<pre style="padding-left: 30px">pub enum BucketState&lt;K, V, M&gt; {
+    Empty(EmptyBucket&lt;K, V, M&gt;),
+    Full(FullBucket&lt;K, V, M&gt;),
+}</pre>
+<p>Here, we can see it being used back in <kbd>HashMap::insert_hashed_ordered</kbd>:</p>
+<pre>    fn insert_hashed_ordered(&amp;mut self, hash: SafeHash, k: K, v: V) {
+        let mut buckets = Bucket::new(&amp;mut self.table, hash);
+        let start_index = buckets.index();
+
+        loop {
+            // We don't need to compare hashes for value swap.
+            // Not even DIBs for Robin Hood.
+            buckets = match buckets.peek() {
+                Empty(empty) =&gt; {
+                    empty.put(hash, k, v);
+                    return;
+                }
+                Full(b) =&gt; b.into_bucket(),
+            };
+            buckets.next();
+            debug_assert!(buckets.index() != start_index);
+        }
+    }</pre>
+<p>If we explore down into <kbd>empty.push(hash, k, v)</kbd>, we find ourselves at the following:</p>
+<pre>    pub fn put(mut self, hash: SafeHash, key: K, value: V) <br/>        -&gt; FullBucket&lt;K, V, M&gt; <br/>    {
+        unsafe {
+            *self.raw.hash() = hash.inspect();
+            ptr::write(self.raw.pair(), (key, value));
+
+            self.table.borrow_table_mut().size += 1;
+        }
+
+        FullBucket {
+            raw: self.raw,
+            table: self.table,
+        }
+    }</pre>
+<p>Tidy. <kbd>ptr::write(self.raw.pair(), (key, value))</kbd> demonstrates that we're working with a structure built out of raw memory pointer manipulation, befitting a structure that will see a lot of use in critical <kbd>paths</kbd>. <kbd>self.raw.pair()</kbd>, which returns the appropriate offset to move <kbd>(key, value)</kbd> into, matching the <kbd>HashMap::insert</kbd> move semantics we're already familiar with. Take a look at the definition of <kbd>RawBucket</kbd>:</p>
+<pre style="padding-left: 30px">pub struct RawBucket&lt;K, V&gt; {
+    hash_start: *mut HashUint,
+    // We use *const to ensure covariance with respect to K and V
+    pair_start: *const (K, V),
+    idx: usize,
+    _marker: marker::PhantomData&lt;(K, V)&gt;,
+}</pre>
+<p>Here, we've got two raw pointers:  <kbd>hash_start</kbd> and <kbd>pair_start</kbd>. The former is the first location in memory of our stored pairs' hashes, the latter is the first location in the memory of the pairs. What this ends up being is contiguous storage in memory of two sets of data, which is about what you'd expect. The table module documentation refers to this approach as <em>unzipped</em> arrays. <kbd>RawTable</kbd> holds the capacity and the data, kind of. In reality, the data held by <kbd>RawTable</kbd> is carefully placed in memory, as we've seen, but there's no <em>owner</em> as the Rust type system understands it. That's where <kbd>marker: marker::PhantomData&lt;(K, V)&gt;</kbd> comes in. <kbd>PhantomData</kbd> instructs the compiler to behave as if <kbd>RawTable&lt;K, V&gt;</kbd> owns pairs of <kbd>(K, V)</kbd>, even though with all the unsafe pointer manipulation we're doing that can't actually be proven by Rust. We human observers can determine by inspection that <kbd>RawTable</kbd> owns its data via <kbd>RawTable::raw_bucket_at</kbd> as it computes where in memory the data exists:</p>
+<pre>    fn raw_bucket_at(&amp;self, index: usize) -&gt; RawBucket&lt;K, V&gt; {
+        let hashes_size = self.capacity() * size_of::&lt;HashUint&gt;();
+        let pairs_size = self.capacity() * size_of::&lt;(K, V)&gt;();
+
+        let (pairs_offset, _, oflo) =
+            calculate_offsets(hashes_size, pairs_size, <br/>                              align_of::&lt;(K, V)&gt;());
+        debug_assert!(!oflo, "capacity overflow");
+
+        let buffer = self.hashes.ptr() as *mut u8;
+        unsafe {
+            RawBucket {
+                hash_start: buffer as *mut HashUint,
+                pair_start: buffer.offset(pairs_offset as isize) <br/>                              as *const (K, V),
+                idx: index,
+                _marker: marker::PhantomData,
+            }
+        }
+    }</pre>
+<p>Well, by inspection and testing, as you can see at the bottom of the module.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Naive HashMap</h1>
+                </header>
+            
+            <article>
+                
+<p>How else could we implement an associative array in Rust and how would it compare to standard library's <kbd>HashMap</kbd>? The standard library <kbd>HashMap</kbd> is clever, clearly, storing just enough information to reduce the total probes from ideal offsets by sharing information between modifications to the underlying table. In fact, the comments in the table module assert that the design we've just worked through is <em>a lot faster</em> than a table structured as <kbd>Vec&lt;Option&lt;(u64, K, V)&gt;&gt;</kbd>—where <kbd>u64</kbd> is the key hash, but presumably still using Robin Hood hashing and linear probing. What if we went even simpler? We'll support only two operations—<kbd>insert</kbd> and <kbd>lookup</kbd>—to keep things straightforward for ourselves. We'll also keep more or less the same type constraints as <kbd>HashMap</kbd> so we compare similar things.</p>
+<p>Start a new Rust project called <kbd>naive_hashmap</kbd>:</p>
+<pre><strong>&gt; cargo new naive_hashmap
+     Created library `naive_hashmap` project</strong></pre>
+<p>Edit <kbd>naive_hashmap/Cargo.toml</kbd> to look like so:</p>
+<pre>[package]
+name = "naive_hashmap"
+version = "0.1.0"
+
+[dependencies]
+rand = "0.4.2"
+
+[dev-dependencies]
+quickcheck = "0.6"
+criterion = "0.1"
+
+[[bench]]
+name = "naive"
+harness = false
+
+[[bin]]
+name = "naive_interpreter"
+doc = false
+
+[[bin]]
+name = "standard"
+doc = false
+
+[[bin]]
+name = "naive"
+doc = false
+
+[[bench]]
+name = "specialized"
+harness = false
+
+[[bin]]
+name = "specialized_interpreter"
+doc = false
+
+[[bin]]
+name = "specialized"
+doc = false</pre>
+<p>Don't worry too much right now about some of the development dependencies, they'll be explained in due course. Please note that in the following discussion we will run compilation commands against the project before all the code has been discussed. If you are following along with the book's pre-written source code open already, you should have no issues. If you are writing the source out as the book goes along, you will need to comment targets out. Now, open <kbd>naive_hashmap/src/lib.rs</kbd> and add the following preamble:</p>
+<pre style="padding-left: 30px">#[cfg(test)]
+extern crate quickcheck;
+
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::borrow::Borrow;
+use std::collections::hash_map::RandomState;
+use std::{cmp, mem, ptr};</pre>
+<p>Most crate roots begin with a fairly long preamble, and <kbd>naive_hashmap</kbd> is no exception. Next up, our <kbd>HashMap</kbd> struct:</p>
+<pre style="padding-left: 30px">#[derive(Default)]
+pub struct HashMap&lt;K, V, S = RandomState&gt;
+where
+    K: Eq,
+    V: ::std::fmt::Debug,
+{
+    hash_builder: S,
+    data: Vec&lt;(u64, K, V)&gt;,
+}</pre>
+<p>How does our naive <kbd>HashMap</kbd> differ from the standard library's <kbd>HashMap</kbd> we've seen so far? The naive implementation maintains the parameterized hasher and type constraints, plus a constraint on <kbd>V</kbd> to implement the <kbd>Debug</kbd> trait for ease of fiddling. The primary difference, in terms of underlying structure, is the use of a <kbd>Vec</kbd>—as called out in the comments of the standard library <kbd>HashMap</kbd>—but without an <kbd>Option</kbd> wrapper. We're not implementing a delete operation so there's no reason to have an <kbd>Option</kbd> but, even if we were, the plan for this implementation would be to rely solely on <kbd>Vec::remove</kbd>. The fact that it is less than ideal that <kbd>Vec::remove</kbd> shifts all elements from the right of the removal index to the left should be well understood. Folks, this won't be a fast implementation. Now:</p>
+<pre style="padding-left: 30px">impl&lt;K: Eq, V&gt; HashMap&lt;K, V, RandomState&gt;
+where
+    K: Eq + Hash,
+    V: ::std::fmt::Debug,
+{
+    pub fn new() -&gt; HashMap&lt;K, V&gt; {
+        HashMap {
+            hash_builder: RandomState::new(),
+            data: Vec::new(),
+        }
+    }
+}
+
+fn make_hash&lt;T: ?Sized, S&gt;(hash_builder: &amp;S, t: &amp;T) -&gt; u64
+where
+    T: Hash,
+    S: BuildHasher,
+{
+    let mut state = hash_builder.build_hasher();
+    t.hash(&amp;mut state);
+    state.finish()
+}
+
+impl&lt;K, V, S&gt; HashMap&lt;K, V, S&gt;
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+    V: ::std::fmt::Debug,
+{
+    pub fn with_hasher(hash_builder: S) -&gt; HashMap&lt;K, V, S&gt; {
+        HashMap {
+            hash_builder: hash_builder,
+            data: Vec::new(),
+        }
+    }</pre>
+<p class="mce-root">Our naive implementation is following along with the standard library here, implementing a <kbd>HashMap</kbd> that is parameterized on <kbd>RandomState</kbd>—so users don't have to think about the underlying hasher—and in which the hasher is swappable, via <kbd>HashMap::with_hasher</kbd>. The Rust team chose to implement <kbd>RandomState</kbd> in terms of a verified cryptographically secure hash algorithm, befitting a language that is intended for use on the public internet. Some users won't desire this property—opting instead for a much faster, potentially vulnerable hash—and will swap <kbd>RandomState</kbd> out for something else. Our naive <kbd>HashMap</kbd> retains this ability.</p>
+<p>Let's examine insertion into our naive <kbd>HashMap</kbd>:</p>
+<pre>    pub fn insert(&amp;mut self, k: K, v: V) -&gt; Option&lt;V&gt; {
+        let hash = make_hash(&amp;self.hash_builder, &amp;k);
+
+        let end = self.data.len();
+        for idx in 0..end {
+            match self.data[idx].0.cmp(&amp;hash) {
+                cmp::Ordering::Greater =&gt; {
+                    self.data.insert(idx, (hash, k, v));
+                    return None;
+                }
+                cmp::Ordering::Less =&gt; continue,
+                cmp::Ordering::Equal =&gt; {
+                    let old = mem::replace(&amp;mut self.data[idx].2, v);
+                    return Some(old);
+                }
+            }
+        }
+        self.data.push((hash, k, v));
+        None
+    }</pre>
+<p>Our naive implementation maintains the API of the standard library <kbd>HashMap</kbd> but that's about it. The key is hashed and then a linear search is done through the entire data store to find an index in that store where one of two conditions hold:</p>
+<ul>
+<li>Our new hash is greater than some hash in the store, in which case we can insert our key/value pair</li>
+<li>Our new hash is equal to some hash in the store, in which case we can replace the existing value</li>
+</ul>
+<p>Key/value pairs are stored in terms of their ordered hashes. The expense of an insert includes:</p>
+<ul>
+<li>Hashing the key</li>
+<li>Searching for the insert index, a linear operation to the number of stored key/value pairs</li>
+<li>Potentially shifting key/value pairs in memory to accommodate a new key to the store</li>
+</ul>
+<p>Lookup follows a similar scheme:</p>
+<pre>    pub fn get&lt;Q: ?Sized&gt;(&amp;mut self, k: &amp;Q) -&gt; Option&lt;&amp;V&gt;
+    where
+        K: Borrow&lt;Q&gt; + ::std::fmt::Debug,
+        Q: Hash + Eq + ::std::fmt::Debug,
+    {
+        let hash = make_hash(&amp;self.hash_builder, k);
+
+        for &amp;(bucket_hash, _, ref v) in &amp;self.data {
+            if hash == bucket_hash {
+                return Some(v);
+            }
+        }
+        None
+    }</pre>
+<p>The key is hashed and a linear search is done for that exact hash in storage. Here, we only pay the cost for:</p>
+<ul>
+<li>Hashing the key</li>
+<li>Searching for the retrieval offset, if one exists</li>
+</ul>
+<p>Let's take a moment and consider this before asking ourselves if our program is <em>fast</em> if it is <em>correct</em>. The usual way of demonstrating fitness for purpose of software is through unit testing, a minimal setup for which is built right into the Rust language. Unit testing is two processes wrapped into a single method. When writing unit tests, a programmer will:</p>
+<ul>
+<li>Produce <em>example data</em> that exercises some code path in the software</li>
+<li>Write further code to demonstrate that when the example data is applied to the system under test, a desirable property/properties holds</li>
+</ul>
+<p>This is a good testing methodology for demonstrating that the happy path of a system under test works as expected. The weak point of unit testing comes in the first process, where the programmer must think very hard and produce an example dataset that exercises the correct code paths, demonstrates the lack of edge cases, and so on. Human beings are poor at this task, owing to it being tedious, biased toward demonstrating the functioning of a thing made by one's own hands, chronic blind spots, or otherwise. What we <em>are</em> pretty good at doing is cooking up high-level properties for our systems that must always hold or hold in particular situations. Fortunately for us programmers, <em>computers</em> are exceptionally good at doing tedious, repetitive tasks and the generation of example data for tests is such a thing.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Testing with QuickCheck</h1>
+                </header>
+            
+            <article>
+                
+<p>With that in mind, in this book, we'll make extensive use of <em>property-based</em> testing, also called <em>generative</em> testing by some literature. Property-based testing has a slightly different, if similar, workflow to unit testing. When writing property tests, the programmer will:</p>
+<ul>
+<li>Produce a method for generating valid inputs to a system under test</li>
+<li>Write further code to demonstrate that for all valid inputs that a desirable property or property of the system holds</li>
+</ul>
+<p>Property-based testing is exceptionally good at finding corner cases in software, wacky inputs that the programmer might not have dreamed up, or, as happens from time to time, even understand as potentially problematic. We'll use Andrew Gallant's QuickCheck, a tool that is patterned from Haskell QuickCheck, introduced by Koen Claessen and John Hughes in their 2000 <em>QuickCheck: A Lightweight Tool for Random Testing of Haskell Programs</em>. First, a little preamble to get us into the testing module:</p>
+<pre>#[cfg(test)]
+mod test {
+    extern crate quickcheck;
+
+    use super::*;
+    use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};</pre>
+<p>If we were to unit test our naive <kbd>HashMap</kbd>, we'd probably write a test where a particular arbitrary key/value pair would be inserted and then we'd assert the ability to retrieve the same value with that same key. How does this map to property-based testing? The property is that if we perform an insertion on an empty <kbd>HashMap</kbd> with a key <kbd>k</kbd> of value <kbd>v</kbd> and immediately perform a retrieval of <kbd>k</kbd>, we'll receive <kbd>v</kbd> back out. Here it is:</p>
+<pre>    #[test]
+    fn get_what_you_give() {
+        fn property(k: u16, v: u16) -&gt; TestResult {
+            let mut system_under_test = HashMap::new();
+
+            assert_eq!(None, system_under_test.insert(k, v));
+            assert_eq!(Some(&amp;v), system_under_test.get(&amp;k));
+
+            TestResult::passed()
+        }
+        QuickCheck::new().quickcheck(property as fn(u16, u16) -&gt; <br/>                                     TestResult);
+    }</pre>
+<p>The test is named <kbd>get_what_you_give</kbd> and is annotated <kbd>#[test]</kbd> as per usual Rust tests. What's different is this test has a property <kbd>inner</kbd> function that encodes the property we elaborated on earlier and a call out to QuickCheck for actually running the property test, by default 100 times, with different inputs. Exactly how QuickCheck manages this is pretty swell. Per the Claessen and Hughes paper, QuickCheck implements the <kbd>Arbitrary</kbd> trait for many of the types available in the standard library. QuickCheck defines <kbd>Arbitrary</kbd> like so, in <kbd>quickcheck/src/arbitrary.rs</kbd> :</p>
+<pre style="padding-left: 30px">pub trait Arbitrary : Clone + Send + 'static {
+    fn arbitrary&lt;G: Gen&gt;(g: &amp;mut G) -&gt; Self;
+
+    fn shrink(&amp;self) -&gt; Box&lt;Iterator&lt;Item=Self&gt;&gt; {
+        empty_shrinker()
+    }
+}</pre>
+<p>The <kbd>Gen</kbd> parameter is a wrapper around <kbd>rand:Rng</kbd> with some extra machinery for controlling distributions. The two functions are <kbd>arbitrary</kbd> and <kbd>shrink</kbd>. The purpose of <kbd>arbitrary</kbd> is easy to explain: it generates new, random instances of a type that is <kbd>Arbitrary</kbd>. The <kbd>shrink</kbd> function is a little more complicated to get across. Let's say we've produced a function that takes a vector of <kbd>u16</kbd> but just so happens to have a bug and will crash if a member of the vector is <kbd>0</kbd>. A QuickCheck test will likely find this but the first arbitrary vector it generates may have a thousand members and a bunch of <kbd>0</kbd> entries. This is not a very useful failure case to begin diagnosis with. After a failing case is found by QuickCheck the case is shrunk, per the definition of <kbd>Arbitrary::shrink</kbd>. Our hypothetical vector will be cut in half and if that new case is also a failure then it'll be shrunk by half again and so on until it no longer fails, at which point—hopefully—our failing case is a much more viable diagnosis tool.</p>
+<p>The implementation of <kbd>Arbitrary</kbd> for <kbd>u16</kbd> is a touch complicated due to macro use, but if you squint some, it'll become clear:</p>
+<pre style="padding-left: 30px">macro_rules! unsigned_arbitrary {
+    ($($ty:tt),*) =&gt; {
+        $(
+            impl Arbitrary for $ty {
+                fn arbitrary&lt;G: Gen&gt;(g: &amp;mut G) -&gt; $ty {
+                    #![allow(trivial_numeric_casts)]
+                    let s = g.size() as $ty;
+                    use std::cmp::{min, max};
+                    g.gen_range(0, max(1, min(s, $ty::max_value())))
+                }
+                fn shrink(&amp;self) -&gt; Box&lt;Iterator&lt;Item=$ty&gt;&gt; {
+                    unsigned_shrinker!($ty);
+                    shrinker::UnsignedShrinker::new(*self)
+                }
+            }
+        )*
+    }
+}
+
+unsigned_arbitrary! {
+    usize, u8, u16, u32, u64
+}</pre>
+<p>Arbitrary instances are generated by <kbd>unsigned_arbitrary!</kbd>, each of which in turn generates a shrinker via <kbd>unsigned_shrinker!</kbd>. This macro is too long to reprint here but the basic idea is to remove half of the unsigned integer on every shrink again, until zero is hit, at which point give up shrinking.</p>
+<p>Fifteen years after the original QuickCheck paper, John Hughes summarized his experience in the intervening 15 years with his 2016 <em>Experiences with QuickCheck: Testing the Hard Stuff and Staying Sane</em>. Hughes noted that many property-based tests in the wild don't generate primitive types. The domain of applications in which primitive types are sufficient tends to be those rare, blessed pure functions in a code base. Instead, as many functions in a program are inherently stateful, property-based tests tend to generate arbitrary <em>actions</em> against a stateful system, <em>modeling</em> the expected behavior and validating that the system under test behaves according to its model.</p>
+<p>How does that apply to our naive <kbd>HashMap</kbd>? The system under test is the naive HashMap, that's clear enough. Our actions are:</p>
+<ul>
+<li><kbd>INSERT</kbd> key value</li>
+<li><kbd>LOOKUP</kbd> key</li>
+</ul>
+<p>Hopefully, that's straightforward. What about a model? In this particular instance, we're in luck. Our model is written for us: the standard library's <kbd>HashMap</kbd>. We need only confirm that if the same actions are applied to both our naive <kbd>HashMap</kbd> and the standard <kbd>HashMap</kbd> in the same order then we'll get the same returns from both the model and system under test. How does that look? First, we need actions:</p>
+<pre>    #[derive(Clone, Debug)]
+    enum Action&lt;T&gt;
+    where
+        T: Arbitrary,
+    {
+        Insert(T, u16),
+        Lookup(T),
+    }</pre>
+<p>Our <kbd>Action&lt;T&gt;</kbd> is parameterized on a <kbd>T: Arbitrary</kbd> and all values via the Insert are pegged as <kbd>u16</kbd>s. This is done primarily for convenience's sake. Both key and value could be arbitrary or concrete types, depending on the preference of the tester. Our <kbd>Arbitrary</kbd> definition is as follows:</p>
+<pre>    impl&lt;T&gt; Arbitrary for Action&lt;T&gt;
+    where
+        T: Arbitrary,
+    {
+        fn arbitrary&lt;G&gt;(g: &amp;mut G) -&gt; Action&lt;T&gt;
+        where
+            G: Gen,
+        {
+            let i: usize = g.gen_range(0, 100);
+            match i {
+                0...50 =&gt; Action::Insert(Arbitrary::arbitrary(g), <br/>                                         u16::arbitrary(g)),
+                _ =&gt; Action::Lookup(Arbitrary::arbitrary(g)),
+            }
+        }
+    }</pre>
+<p>Either action is equally likely to happen and any instance of <kbd>T</kbd> or <kbd>u16</kbd> is valid for use. The validation of our naive <kbd>HashMap</kbd> against the standard library's <kbd>HashMap</kbd>:</p>
+<pre>    #[test]
+    fn sut_vs_genuine_article() {
+        fn property&lt;T&gt;(actions: Vec&lt;Action&lt;T&gt;&gt;) -&gt; TestResult
+        where
+            T: Arbitrary + Eq + Hash + ::std::fmt::Debug,
+        {
+            let mut model = ::std::collections::HashMap::new();
+            let mut system_under_test = HashMap::new();
+
+            for action in actions.into_iter() {
+                match action {
+                    Action::Insert(k, v) =&gt; {
+                        assert_eq!(model.insert(k.clone(), v), <br/>                        system_under_test.insert(k, v));
+                    }
+                    Action::Lookup(k) =&gt; {
+                        assert_eq!(model.get(&amp;k), <br/>                        system_under_test.get(&amp;k));
+                    }
+                }
+            }
+            TestResult::passed()
+        }
+        QuickCheck::new().quickcheck(property as fn(Vec&lt;Action&lt;u8&gt;&gt;) -&gt; <br/>                                     TestResult);
+    }<br/>}</pre>
+<p>Hopefully, this looks familiar to our previous QuickCheck test. Again, we have an inner property function that does the actual work and we request that QuickCheck run this property test over arbitrary vectors of <kbd>Action&lt;u8&gt;</kbd>. For every action present in the vector we apply them to both the model and the system under test, validating that the results are the same. The <kbd>u8</kbd> type was intentionally chosen here compared to a large domain type such as <kbd>u64.</kbd> One of the key challenges of writing QuickCheck tests is probing for extremely unlikely events. QuickCheck is blind in the sense that it's possible for the same path to be chosen through the program for each run if that path is the most likely path to be chosen. While millions of QuickCheck tests can give high confidence in fitness for purpose the blind nature of the runs means that QuickCheck should also be paired with tools known as fuzzers. These do not check the correct function of a program against a model. Instead, their sole purpose is to validate the absence of program crashes.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Testing with American Fuzzy Lop</h1>
+                </header>
+            
+            <article>
+                
+<p>In this book, we'll make use of American Fuzzy Lop, a best-of-breed fuzzer commonly used in other systems languages. AFL is an external tool that takes a corpus of inputs, an executable that reads inputs from <kbd>STDIN</kbd>, and mutates the corpus with a variety of heuristics to find crashing inputs. Our aim is to seek out crash bugs in naive <kbd>HashMap</kbd>, this implies that we're going to need some kind of program to run our <kbd>HashMap</kbd> in. In fact, if you'll recall back to the project's <kbd>Cargo.toml</kbd>, we already had the infrastructure for such in place:</p>
+<pre style="padding-left: 30px">[[bin]]
+name = "naive_interpreter"
+doc = false</pre>
+<p>The source for <kbd>naive_interpreter</kbd> is a little goofy looking but otherwise uneventful:</p>
+<pre style="padding-left: 30px">extern crate naive_hashmap;
+
+use std::io;
+use std::io::prelude::*;
+
+fn main() {
+    let mut hash_map = naive_hashmap::HashMap::new();
+
+    let n = io::stdin();
+    for line in n.lock().lines() {
+        if let Ok(line) = line {
+            let mut cmd = line.split(" ");
+            match cmd.next() {
+                Some("LOOKUP") =&gt; {
+                    if let Some(key) = cmd.next() {
+                        let _ = hash_map.get(key);
+                    } else {
+                        continue;
+                    }
+                }
+                Some("INSERT") =&gt; {
+                    if let Some(key) = cmd.next() {
+                        if let Some(val) = cmd.next() {
+                            let _ = hash_map.insert(key.to_string(), <br/>                            val.to_string());
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                _ =&gt; continue,
+            }
+        } else {
+            break;
+        }
+    }
+}</pre>
+<p>Lines are read from <kbd>stdin</kbd>, and these lines are split along spaces and interpreted as commands, either <kbd>LOOKUP</kbd> or <kbd>INSERT</kbd> and these are interpreted into actions on the naive <kbd>HashMap</kbd>. The corpus for an AFL run can live pretty much anywhere. By convention, in this book we'll store the corpus in-project in a top-level resources/directory. Here's <kbd>resources/in/mixed_gets_puts</kbd>:</p>
+<pre>LOOKUP 10
+INSERT abs 10
+LOOKUP abs</pre>
+<p>The larger your input corpus, the more material AFL has to mutate and the faster—maybe—you'll find crashing bugs. Even in a case such as naive <kbd>HashMap</kbd> where we can be reasonably certain that there will be no crashing bugs—owing to the lack of pointer manipulation and potentially fatal integer operations—it's worthwhile building up a good corpus to support future efforts. After building a release of the project, getting an AFL run going is a cargo command away:</p>
+<pre><strong>&gt; cargo afl build --release
+&gt; cargo afl fuzz -i resources/in/ -o resources/out/ target/release/naive_interpreter</strong></pre>
+<p>This says to execute <kbd>target/release/naive_interpreter</kbd> under AFL with input corpus at <kbd>resources/in</kbd> and to output any failing cases under <kbd>resources/out</kbd>. Such crashes often make excellent unit tests. Now, the trick with fuzzing tools in general is they're not part of any kind of quick-cycle test-driven development loop. These tool runs are long and often get run on dedicated hardware overnight or over many days. Here, for example, is the AFL run I had going while writing this chapter:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/8b4a6366-3c4e-4fa5-80fc-182300d5a773.png" style="width:37.08em;height:29.67em;" width="572" height="457"/></div>
+<p>There's a fair bit of information here but consider that the AFL runtime indicator is measured in days. One key advantage to the use of AFL compared to other fuzzers is the prominence of AFL in the security community. There are a good many papers describing its implementation and the interpretation of its, uh, <em>comprehensive</em> interface. You are warmly encouraged to scan the <em>Further reading</em> section of this chapter for more information.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Performance testing with Criterion</h1>
+                </header>
+            
+            <article>
+                
+<p>We can now be fairly confident that our naive <kbd>HashMap</kbd> has the same behavior as the standard library for the properties we've checked. But how does the runtime performance of naive <kbd>HashMap</kbd> stack up? To answer this, we'll write a benchmark, but not a benchmark using the unstable Bencher subsystem that's available in the nightly channel. Instead, we'll use Jorge Aparicio's criterion—inspired by the Haskell tool of the same name by Bryan O'Sullivan—which is available on stable and does statistically valid sampling of runs. All Rust benchmark code lives under the top-level <kbd>benches/</kbd> directory and criterion benchmarks are no different. Open <kbd>benches/naive.rs</kbd> and give it this preamble:</p>
+<pre>#[macro_use]
+extern crate criterion;
+extern crate naive_hashmap;
+extern crate rand;
+
+use criterion::{Criterion, Fun};
+use rand::{Rng, SeedableRng, XorShiftRng};</pre>
+<p>This benchmark incorporates pseudorandomness to produce an interesting run. Much like unit tests, handcrafted datasets in benchmarks will trend towards some implicit bias of the author, harming the benchmark. Unless, of course, a handcrafted dataset is exactly what's called for. Benchmarking programs well is a non-trivial amount of labor. The <kbd>Rng</kbd> we use is <kbd>XorShift</kbd>, a pseudo-random generator known for its speed and less cryptographic security. That suits our purposes here:</p>
+<pre style="padding-left: 30px">fn insert_and_lookup_naive(mut n: u64) {
+    let mut rng: XorShiftRng = SeedableRng::from_seed([1981, 1986,<br/>                                                       2003, 2011]);
+    let mut hash_map = naive_hashmap::HashMap::new();
+
+    while n != 0 {
+        let key = rng.gen::&lt;u8&gt;();
+        if rng.gen::&lt;bool&gt;() {
+            let value = rng.gen::&lt;u32&gt;();
+            hash_map.insert(key, value);
+        } else {
+            hash_map.get(&amp;key);
+        }
+        n -= 1;
+    }
+}</pre>
+<p>The first benchmark, named <kbd>insert_and_lookup_native</kbd>, performs pseudo-random insertions and lookups against the naive <kbd>HashMap.</kbd> The careful reader will note that <kbd>XorShiftRng</kbd> is given the same seed every benchmark. This is important. While we want to avoid handcrafting a benchmark dataset, we do want it to be the same every run, else the benchmark comparisons have no basis. That noted, the rest of the benchmark shouldn't be much of a surprise. Generate random actions, apply them, and so forth. As we're interested in the times for standard library <kbd>HashMap</kbd> we have a benchmark for that, too:</p>
+<pre style="padding-left: 30px">fn insert_and_lookup_standard(mut n: u64) {
+    let mut rng: XorShiftRng = SeedableRng::from_seed([1981, 1986, <br/>                                                       2003, 2011]);
+    let mut hash_map = ::std::collections::HashMap::new();
+
+    while n != 0 {
+        let key = rng.gen::&lt;u8&gt;();
+        if rng.gen::&lt;bool&gt;() {
+            let value = rng.gen::&lt;u32&gt;();
+            hash_map.insert(key, value);
+        } else {
+            hash_map.get(&amp;key);
+        }
+        n -= 1;
+    }
+}</pre>
+<p>Criterion offers, as of writing this book, a method for comparing two functions <em>or</em> comparing a function run over parameterized inputs but not both. That's an issue for us here, as we'd like to compare two functions over many inputs. To that end, this benchmark relies on a small macro called <kbd>insert_lookup!</kbd>:</p>
+<pre style="padding-left: 30px">macro_rules! insert_lookup {
+    ($fn:ident, $s:expr) =&gt; {
+        fn $fn(c: &amp;mut Criterion) {
+            let naive = Fun::new("naive", |b, i| b.iter(||                   <br/>                                   insert_and_lookup_naive(*i))<br/>            );
+            let standard = Fun::new("standard", |b, i| b.iter(|| <br/>                                      insert_and_lookup_standard(*i))<br/>            );
+
+            let functions = vec![naive, standard];
+
+            c.bench_functions(&amp;format!("HashMap/{}", $s),<br/>                              functions, &amp;$s);
+        }
+    }
+}
+
+insert_lookup!(insert_lookup_100000, 100_000);
+insert_lookup!(insert_lookup_10000, 10_000);
+insert_lookup!(insert_lookup_1000, 1_000);
+insert_lookup!(insert_lookup_100, 100);
+insert_lookup!(insert_lookup_10, 10);
+insert_lookup!(insert_lookup_1, 1);</pre>
+<p>The meat here is we create two <kbd>Fun</kbd> for comparison called <kbd>naive</kbd> and <kbd>standard,</kbd> then use <kbd>Criterion::bench_functions</kbd> to run a comparison between the two. In the invocation of the macro, we evaluate <kbd>insert_and_lookup_*</kbd> from <kbd>1</kbd> to <kbd>100_000</kbd>, with it being the total number of insertions to be performed against the standard and naive <kbd>HashMap</kbd>s. Finally, we need the criterion group and main function in place:</p>
+<pre style="padding-left: 30px">criterion_group!{
+    name = benches;
+    config = Criterion::default();
+    targets = insert_lookup_100000, insert_lookup_10000, <br/>              insert_lookup_1000, insert_lookup_100, <br/>              insert_lookup_10, insert_lookup_1
+}
+criterion_main!(benches);</pre>
+<p>Running criterion benchmarks is no different to executing Rust built-in benchmarks:</p>
+<pre><strong>&gt; cargo bench
+   Compiling naive_hashmap v0.1.0 (file:///home/blt/projects/us/troutwine/concurrency_in_rust/external_projects/naive_hashmap)
+    Finished release [optimized] target(s) in 5.26 secs
+     Running target/release/deps/naive_hashmap-fe6fcaf7cf309bb8
+
+running 2 tests
+test test::get_what_you_give ... ignored
+test test::sut_vs_genuine_article ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out
+
+     Running target/release/deps/naive_interpreter-26c60c76389fd26d
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+     Running target/release/deps/naive-96230b57fe0068b7
+HashMap/100000/naive    time:   [15.807 ms 15.840 ms 15.879 ms]
+Found 13 outliers among 100 measurements (13.00%)
+  2 (2.00%) low mild
+  1 (1.00%) high mild
+  10 (10.00%) high severe
+HashMap/100000/standard time:   [2.9067 ms 2.9102 ms 2.9135 ms]
+Found 7 outliers among 100 measurements (7.00%)
+  1 (1.00%) low severe
+  5 (5.00%) low mild
+  1 (1.00%) high mild
+
+HashMap/10000/naive     time:   [1.5475 ms 1.5481 ms 1.5486 ms]
+Found 9 outliers among 100 measurements (9.00%)
+  1 (1.00%) low severe
+  2 (2.00%) high mild
+  6 (6.00%) high severe
+HashMap/10000/standard  time:   [310.60 us 310.81 us 311.03 us]
+Found 11 outliers among 100 measurements (11.00%)
+  1 (1.00%) low severe
+  2 (2.00%) low mild
+  3 (3.00%) high mild
+  5 (5.00%) high severe</strong></pre>
+<p>And so forth. Criterion also helpfully produces gnuplot graphs of your runtimes, if gnuplot is installed on your benchmark system. This is highly recommended.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Inspecting with the Valgrind Suite</h1>
+                </header>
+            
+            <article>
+                
+<p>Your specific benchmarking output will likely vary but it's pretty clear that the naive implementation is, well, not very fast. What tools do we have available to us to diagnose the issues with our code, guide us toward hot spots for optimization, or help convince us of the need for better algorithms? We'll now leave the realm of Rust-specific tools and dip into tools familiar to systems programmers at large. If you're not familiar with them personally that's a-okay—we'll describe their use and there are plenty of external materials available for the motivated reader. Okay, first, we're going to need some programs that exercise our naive <kbd>HashMap</kbd> and the standard <kbd>HashMap</kbd>. <kbd>naive_interpreter</kbd> would work, but it's doing a lot of extra things that'll muddy the water some. To that end, for examination purposes, we'll need two programs, one to establish a baseline and one for our implementation. Our baseline, called <kbd>bin/standard.rs</kbd>:</p>
+<pre style="padding-left: 30px">extern crate naive_hashmap;
+extern crate rand;
+
+use std::collections::HashMap;
+use rand::{Rng, SeedableRng, XorShiftRng};
+
+fn main() {
+    let mut rng: XorShiftRng = SeedableRng::from_seed([1981, 1986, <br/>                                                       2003, 2011]);
+    let mut hash_map = HashMap::new();
+
+    let mut insert_empty = 0;
+    let mut insert_present = 0;
+    let mut get_fail = 0;
+    let mut get_success = 0;
+
+    for _ in 0..100_000 {
+        let key = rng.gen::&lt;u16&gt;();
+        if rng.gen::&lt;bool&gt;() {
+            let value = rng.gen::&lt;u32&gt;();
+            if hash_map.insert(key, value).is_none() {
+                insert_empty += 1;
+            } else {
+                insert_present += 1;
+            }
+        } else {
+            if hash_map.get(&amp;key).is_none() {
+                get_fail += 1;
+            } else {
+                get_success += 1;
+            }
+        }
+    }
+
+    println!("INSERT");
+    println!("  empty:   {}", insert_empty);
+    println!("  present: {}", insert_present);
+    println!("LOOKUP");
+    println!("  fail:    {}", get_fail);
+    println!("  success: {}", get_success);
+}</pre>
+<p>Our test article program is exactly the same, save the preamble is a bit different:</p>
+<pre style="padding-left: 30px">extern crate naive_hashmap;
+extern crate rand;
+
+use naive_hashmap::HashMap;
+use rand::{Rng, SeedableRng, XorShiftRng};
+
+fn main() {
+    let mut rng: XorShiftRng = SeedableRng::from_seed([1981, 1986, <br/>                                                       2003, 2011]);
+    let mut hash_map = HashMap::new();
+
+    let mut insert_empty = 0;
+    let mut insert_present = 0;
+    let mut get_fail = 0;
+    let mut get_success = 0;
+
+    for _ in 0..100_000 {
+        let key = rng.gen::&lt;u16&gt;();
+        if rng.gen::&lt;bool&gt;() {
+            let value = rng.gen::&lt;u32&gt;();
+            if hash_map.insert(key, value).is_none() {
+                insert_empty += 1;
+            } else {
+                insert_present += 1;
+            }
+        } else {
+            if hash_map.get(&amp;key).is_none() {
+                get_fail += 1;
+            } else {
+                get_success += 1;
+            }
+        }
+    }
+
+    println!("INSERT");
+    println!("  empty:   {}", insert_empty);
+    println!("  present: {}", insert_present);
+    println!("LOOKUP");
+    println!("  fail:    {}", get_fail);
+    println!("  success: {}", get_success);
+}</pre>
+<p>Easy enough and similar in spirit to the benchmark code explored earlier. Now, let's set our baselines. First up, memory allocations:</p>
+<pre><strong>naive_hashmap &gt; valgrind --tool=memcheck target/release/standard
+==13285== Memcheck, a memory error detector
+==13285== Copyright (C) 2002-2015, and GNU GPL'd, by Julian Seward et al.
+==13285== Using Valgrind-3.12.0.SVN and LibVEX; rerun with -h for copyright info
+==13285== Command: target/release/standard
+==13285==
+INSERT
+  empty:   35217
+  present: 15071
+LOOKUP
+  fail:    34551
+  success: 15161
+==13285==
+==13285== HEAP SUMMARY:
+==13285==     in use at exit: 0 bytes in 0 blocks
+==13285==   total heap usage: 7 allocs, 7 frees, 2,032 bytes allocated
+==13285==
+==13285== All heap blocks were freed -- no leaks are possible
+==13285==
+==13285== For counts of detected and suppressed errors, rerun with: -v
+==13285== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)</strong></pre>
+<p>Seven total allocations, seven total frees, and a grand total of 2,032 bytes allocated. Running memcheck against naive has the same result:</p>
+<pre><strong>==13307== HEAP SUMMARY:
+==13307==     in use at exit: 0 bytes in 0 blocks
+==13307==   total heap usage: 7 allocs, 7 frees, 2,032 bytes allocated</strong></pre>
+<p>The naive run is noticeably slower, so it's not allocating memory that kills us. As so little memory gets allocated by these programs we'll skip Valgrind massif—it's unlikely to turn up anything useful. Valgrind cachegrind should be interesting though. Here's baseline:</p>
+<pre><strong>naive_hashmap &gt; valgrind --tool=cachegrind --branch-sim=yes target/release/standard
+==13372== Cachegrind, a cache and branch-prediction profiler
+==13372== Copyright (C) 2002-2015, and GNU GPL'd, by Nicholas Nethercote et al.
+==13372== Using Valgrind-3.12.0.SVN and LibVEX; rerun with -h for copyright info
+==13372== Command: target/release/standard
+==13372==
+--13372-- warning: L3 cache found, using its data for the LL simulation.
+INSERT
+  empty:   35217
+  present: 15071
+LOOKUP
+  fail:    34551
+  success: 15161
+==13372==
+==13372== I   refs:      25,733,614
+==13372== I1  misses:         2,454
+==13372== LLi misses:         2,158
+==13372== I1  miss rate:       0.01%
+==13372== LLi miss rate:       0.01%
+==13372==
+==13372== D   refs:       5,400,581  (2,774,345 rd   + 2,626,236 wr)
+==13372== D1  misses:       273,218  (  219,462 rd   +    53,756 wr)
+==13372== LLd misses:        36,267  (    2,162 rd   +    34,105 wr)
+==13372== D1  miss rate:        5.1% (      7.9%     +       2.0%  )
+==13372== LLd miss rate:        0.7% (      0.1%     +       1.3%  )
+==13372==
+==13372== LL refs:          275,672  (  221,916 rd   +    53,756 wr)
+==13372== LL misses:         38,425  (    4,320 rd   +    34,105 wr)
+==13372== LL miss rate:         0.1% (      0.0%     +       1.3%  )
+==13372==
+==13372== Branches:       3,008,198  (3,006,105 cond +     2,093 ind)
+==13372== Mispredicts:      315,772  (  315,198 cond +       574 ind)
+==13372== Mispred rate:        10.5% (     10.5%     +      27.4%   )</strong></pre>
+<p>Let's break this up some: </p>
+<pre><strong>==13372== I   refs:      25,733,614
+==13372== I1  misses:         2,454
+==13372== LLi misses:         2,158
+==13372== I1  miss rate:       0.01%
+==13372== LLi miss rate:       0.01%</strong></pre>
+<p>The first section details our instruction cache behavior. <kbd>I refs: 25,733,614</kbd> tells us that the standard program executed 25,733,614 instructions in all. This is often a useful comparison between closely related implementations, as we'll see here in a bit. Recall that cachegrind simulates a machine with two levels of instruction and data caching, the first level of caching being referred to as <kbd>I1</kbd> or <kbd>D1</kbd> for instruction or data caches and the last level cache being prefixed with <kbd>LL</kbd>. Here, we see the first and last level instruction caches each missed around 2,500 times during our 25 million instruction run. That squares with how tiny our program is. The second section is as follows:</p>
+<pre><strong>==13372== D   refs:       5,400,581  (2,774,345 rd   + 2,626,236 wr)
+==13372== D1  misses:       273,218  (  219,462 rd   +    53,756 wr)
+==13372== LLd misses:        36,267  (    2,162 rd   +    34,105 wr)
+==13372== D1  miss rate:        5.1% (      7.9%     +       2.0%  )
+==13372== LLd miss rate:        0.7% (      0.1%     +       1.3%  )</strong></pre>
+<p>This is the data cache behavior, split into the two cache layers previously discussed and further divided into read and writes. The first line tells us that 5,400,581 total reads and writes were made to the caches, 2,774,345 reads and 2,626,236 writes. These totals are then further divided by first level and last level caches. Here it turns out that the standard library <kbd>HashMap</kbd> does real well, a <kbd>D1</kbd> miss rate of 5.1% and a <kbd>LLd</kbd> miss rate of 0.7%. That last percentage is key: the higher it is, the more our program is accessing main memory. Doing so, as you'll recall from <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries<span> </span>– Machine Architecture and Getting Started with Rust</em>, is painfully slow. The third section is as follows:</p>
+<pre><strong>==13372== LL refs:          275,672  (  221,916 rd   +    53,756 wr)
+==13372== LL misses:         38,425  (    4,320 rd   +    34,105 wr)
+==13372== LL miss rate:         0.1% (      0.0%     +       1.3%  )</strong></pre>
+<p>This focuses on the combined behavior of data and instruction cache accesses to the LL cache. Personally, I don't often find this section illuminating compared to the previously discussed sections. Your mileage may vary. The final section is as follows:</p>
+<pre><strong>==13372== Branches:       3,008,198  (3,006,105 cond +     2,093 ind)
+==13372== Mispredicts:      315,772  (  315,198 cond +       574 ind)
+==13372== Mispred rate:        10.5% (     10.5%     +      27.4%   )</strong></pre>
+<p>This details the branch misprediction behavior of our program. We're drowning out the standard library's <kbd>HashMap</kbd> by branching so extensively in the runner program but it will still serve to establish some kind of baseline. The first line informs us that 3,008,198 total branches were taken during execution. The majority—3,006,105—were conditional branches, branches that jump to a location based on some condition. This squares with the number of conditional statements we have in the runner. The small majority of branches were indirect, meaning they jumped to offsets in memory based on the results of previous instructions. Overall, our branch misprediction rate is 10.5%.</p>
+<p>Alright, how does the naive <kbd>HashMap</kbd> implementation stack up?</p>
+<pre><strong>naive_hashmap &gt; valgrind --tool=cachegrind --branch-sim=yes target/release/naive
+==13439== Cachegrind, a cache and branch-prediction profiler
+==13439== Copyright (C) 2002-2015, and GNU GPL'd, by Nicholas Nethercote et al.
+==13439== Using Valgrind-3.12.0.SVN and LibVEX; rerun with -h for copyright info
+==13439== Command: target/release/naive
+==13439==
+--13439-- warning: L3 cache found, using its data for the LL simulation.
+INSERT
+  empty:   35217
+  present: 15071
+LOOKUP
+  fail:    34551
+  success: 15161
+==13439==
+==13439== I   refs:      15,385,395,657
+==13439== I1  misses:             2,376
+==13439== LLi misses:             2,157
+==13439== I1  miss rate:           0.00%
+==13439== LLi miss rate:           0.00%
+==13439==
+==13439== D   refs:       1,609,901,359  (1,453,944,896 rd   + 155,956,463 wr)
+==13439== D1  misses:       398,465,518  (  398,334,276 rd   +     131,242 wr)
+==13439== LLd misses:            12,647  (        2,153 rd   +      10,494 wr)
+==13439== D1  miss rate:           24.8% (         27.4%     +         0.1%  )
+==13439== LLd miss rate:            0.0% (          0.0%     +         0.0%  )
+==13439==
+==13439== LL refs:          398,467,894  (  398,336,652 rd   +     131,242 wr)
+==13439== LL misses:             14,804  (        4,310 rd   +      10,494 wr)
+==13439== LL miss rate:             0.0% (          0.0%     +         0.0%  )
+==13439==
+==13439== Branches:       4,430,578,248  (4,430,540,970 cond +      37,278 ind)
+==13439== Mispredicts:          193,192  (      192,618 cond +         574 ind)
+==13439== Mispred rate:             0.0% (          0.0%     +         1.5%   )</strong></pre>
+<p>Already there are some standouts. Firstly, naive executed 15,385,395,657 instructions compared to the 25,733,614 of baseline. The naive implementation is simply doing much, much more work than that standard library is. At this point, without looking at any further data, it's reasonable to conclude that the program under inspection is fundamentally flawed: a rethink of the algorithm is in order. No amount of micro-optimization will fix this. But, that was understood; it's why the program is called <em>naive</em> to start with. The second major area of concern is that the <kbd>D1</kbd> cache miss rate is just shy of 20% higher than baseline, not to ignore that there are simply just more reads and writes to the first level cache than at baseline. Curiously, the naive implementation suffers fewer <kbd>LLd</kbd> cache misses compared to baseline—10,494 to 34,105. No hypothesis there. Skipping on ahead to the branch misprediction section, we find that naive stays on-theme and performs drastically more branches than standard but with a lower total number of mispredictions. This squares with an algorithm dominated by linear seek and compares, as naive is.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Inspecting with Linux perf</h1>
+                </header>
+            
+            <article>
+                
+<p>It's worth keeping in mind that Valgrind's cachegrind is a simulation. If you have access to a Linux system you can make use of the perf tool to get real, honest numbers about your program's cache performance and more. This is highly recommended and something we'll do throughout this book. Like git, perf is many tools arranged under a banner—perf—with its own subcommands that have their own options.</p>
+<p>It is a tool well worth reading the documentation for. Anyhow, what does the standard look like under perf?</p>
+<pre><strong>naive_hashmap &gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache-references,cache-misses target/release/standard &gt; /dev/null
+
+ Performance counter stats for 'target/release/standard':
+
+      6.923765      task-clock (msec)         #    0.948 CPUs utilized
+             0      context-switches          #    0.000 K/sec
+           633      page-faults               #    0.091 M/sec
+    19,703,427      cycles                    #    2.846 GHz
+    26,234,708      instructions              #    1.33  insn per cycle
+     2,802,334      branches                  #  404.741 M/sec
+      290,475      branch-misses             #   10.37% of all branches
+       635,526      cache-references          #   91.789 M/sec
+     67,304      cache-misses              # 10.590 % of all cache refs
+
+       0.007301775 seconds time elapsed</strong></pre>
+<p>How does the naive implementation stand up?</p>
+<pre><strong>naive_hashmap &gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache-references,cache-misses target/release/naive &gt; /dev/null
+
+ Performance counter stats for 'target/release/naive':
+
+    1323.724713      task-clock (msec)         #    1.000 CPUs utilized
+              1      context-switches          #    0.001 K/sec
+            254      page-faults               #    0.192 K/sec
+  3,953,955,131      cycles                    #    2.987 GHz 15,390,499,356      instructions               #  3.89  insn per cycle    4,428,637,974      branches                    # 3345.588 M/sec
+      204,132      branch-misses               #  0.00% of all branches
+    455,719,875      cache-references          #  344.271 M/sec
+   21,311      cache-misses                 # 0.005 % of all cache refs
+
+       1.324163884 seconds time elapsed</strong></pre>
+<p>This squares pretty well with the Valgrind simulation and leads to the same conclusion: too much work is being done to insert. Too many branches, too many instructions, the well-studied reader will have seen this coming a mile off, it's just worthwhile to be able to put a thing you know to numbers.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">A better naive HashMap</h1>
+                </header>
+            
+            <article>
+                
+<p>How can we do better than our naive implementation? Obviously, there's scope for algorithmic improvement—we could implement any kind of probing—but if we're trying to compete with standard library's HashMap it's likely that we have a specialized reason for doing so. A specialized reason implies we know something unique about our data, or are willing to make a trade-off that a general data structure cannot. Speaking broadly, the main goals one should have when building software at the limit of machine performance are as follows:</p>
+<ol type="1">
+<li>Improve the underlying algorithm, reducing total work done.</li>
+<li>Improve cache locality of data accesses. This may mean:
+<ol type="a">
+<li>Keeping your working-set in L1 cache</li>
+<li>Compressing your data to fit better into cache.</li>
+</ol>
+</li>
+<li>Avoid branch mispredictions. This may mean:
+<ol type="a">
+<li>Shaving off branches entirely when possible</li>
+<li>Constraining the probability distribution of your branches.</li>
+</ol>
+</li>
+</ol>
+<p>How does that apply here? Well, say we knew that for our application <kbd>K == u8</kbd> but we still have an unconstrained <kbd>V</kbd>. <kbd>u8</kbd> is a key with low cardinality and we ought to be able to trade a little memory to build a faster structure for <kbd>u8</kbd> keys. Unfortunately, Rust does not yet have type specialization in a stable channel. Type specialization is <em>very important</em> for producing high-performance software without breaking abstractions. It allows the programmer to define an abstract interface and implementation for such and then, at a later date, specialize some of the parameterized types into concrete form with a special purpose implementation. Rust RFC 1210 (<a href="https://github.com/rust-lang/rfcs/pull/1210/files#diff-b652f1feca90247198ee29514ac22cf3">https://github.com/rust-lang/rfcs/pull/1210/files#diff-b652f1feca90247198ee29514ac22cf3</a>) details how specialization in Rust will work and Rust PR 31844 (<a href="https://github.com/rust-lang/rust/issues/31844">https://github.com/rust-lang/rust/issues/31844</a>) tracks the ongoing implementation, which is to say, all of this is only exposed in nightly. This chapter sticks to stable and so, unfortunately, we'll need to create a new HashMap rather than specializing. The reader is encouraged to try out specialization for themselves. It's quite nice.</p>
+<p>We'll park our <kbd>HashMapU8</kbd> implementation in <kbd>naive_hashmap/src/lib.rs</kbd>. The implementation is quite small:</p>
+<pre style="padding-left: 30px">pub struct HashMapU8&lt;V&gt;
+where
+    V: ::std::fmt::Debug,
+{
+    data: [Option&lt;V&gt;; 256],
+}
+
+impl&lt;V&gt; HashMapU8&lt;V&gt;
+where
+    V: ::std::fmt::Debug,
+{
+    pub fn new() -&gt; HashMapU8&lt;V&gt; {
+        let data = unsafe {
+            let mut data: [Option&lt;V&gt;; 256] = mem::uninitialized();
+            for element in data.iter_mut() {
+                ptr::write(element, None)
+            }
+            data
+        };
+        HashMapU8 { data: data }
+    }
+
+    pub fn insert(&amp;mut self, k: u8, v: V) -&gt; Option&lt;V&gt; {
+        mem::replace(&amp;mut self.data[(k as usize)], Some(v))
+    }
+
+    pub fn get(&amp;mut self, k: &amp;u8) -&gt; Option&lt;&amp;V&gt; {
+        let val = unsafe { self.data.get_unchecked((*k as usize)) };
+        val.as_ref()
+    }
+}</pre>
+<p>The idea here is simple—<kbd>u8</kbd> is a type with such cardinality that we can rework every possible key into an array offset. The value for each key is an <kbd>Option&lt;V&gt;</kbd>, <kbd>None</kbd> if no value has ever been set for the key, and <kbd>Some</kbd> otherwise. No hashing needs to be done and, absent specialization, we drop the type requirements for that. Every <kbd>HashMapU8</kbd> will reserve <kbd>256 * ::core::mem::size_of::&lt;Option&lt;V&gt;&gt;()</kbd> bytes. Being that there's unsafe code in this implementation, it's worthwhile doing an AFL run to search for crashes. The interpreter for the specialized map is similar to the naive interpreter, except that we now take care to parse for <kbd>u8</kbd> keys:</p>
+<pre style="padding-left: 30px">extern crate naive_hashmap;
+
+use std::io;
+use std::io::prelude::*;
+use std::str::FromStr;
+
+fn main() {
+    let mut hash_map = naive_hashmap::HashMapU8::new();
+
+    let n = io::stdin();
+    for line in n.lock().lines() {
+        if let Ok(line) = line {
+            let mut cmd = line.split(" ");
+            match cmd.next() {
+                Some("LOOKUP") =&gt; {
+                    if let Some(key) = cmd.next() {
+                        if let Ok(key) = u8::from_str(key) {
+                            let _ = hash_map.get(&amp;key);
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                Some("INSERT") =&gt; {
+                    if let Some(key) = cmd.next() {
+                        if let Ok(key) = u8::from_str(key) {
+                            if let Some(val) = cmd.next() {
+                          let _ = hash_map.insert(key, <br/>                           val.to_string());
+                            } else {
+                                continue;
+                            }
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                _ =&gt; continue,
+            }
+        } else {
+            break;
+        }
+    }
+}</pre>
+<p>I'll spare you the AFL output but, as a reminder, here's how you run the specialized interpreter through:</p>
+<pre><strong>&gt; cargo afl build --release
+&gt; cargo afl fuzz -i resources/in/ -o resources/out/ target/release/specialized_interpreter</strong></pre>
+<p>Producing a criterion benchmark will be very similar to the approach taken for the naive implementation, save that we'll swap out a few names here and there. We'll skip listing the code with the hopes that you'll be able to reproduce it as desired. The results, however, are promising:</p>
+<pre style="padding-left: 30px"><strong>HashMap/100000/speciali time:   [662.01 us 665.28 us 668.44 us]
+HashMap/100000/standard time:   [2.3471 ms 2.3521 ms 2.3583 ms]
+
+HashMap/10000/specializ time:   [64.294 us 64.440 us 64.576 us]
+HashMap/10000/standard  time:   [253.14 us 253.31 us 253.49 us]</strong></pre>
+<p>In a like manner to <kbd>naive.rs</kbd> and <kbd>standard.rs</kbd> from previously, we've also got a <kbd>specialized.rs</kbd> runner which, to avoid duplication, we'll avoid listing here. Let's run specialized through Valgrind cachegrind:</p>
+<pre><strong>naive_hashmap &gt; valgrind --tool=cachegrind --branch-sim=yes target/release/specialized
+==24235== Cachegrind, a cache and branch-prediction profiler
+==24235== Copyright (C) 2002-2015, and GNU GPL'd, by Nicholas Nethercote et al.
+==24235== Using Valgrind-3.12.0.SVN and LibVEX; rerun with -h for copyright info
+==24235== Command: target/release/specialized
+==24235==
+--24235-- warning: L3 cache found, using its data for the LL simulation.
+INSERT
+  empty:   256
+  present: 50032
+LOOKUP
+  fail:    199
+  success: 49513
+==24235==
+==24235== I   refs:      5,200,051
+==24235== I1  misses:        2,248
+==24235== LLi misses:        2,068
+==24235== I1  miss rate:      0.04%
+==24235== LLi miss rate:      0.04%
+==24235==
+==24235== D   refs:        443,562  (233,633 rd   + 209,929 wr)
+==24235== D1  misses:        4,736  (  3,249 rd   +   1,487 wr)
+==24235== LLd misses:        3,512  (  2,112 rd   +   1,400 wr)
+==24235== D1  miss rate:       1.1% (    1.4%     +     0.7%  )
+==24235== LLd miss rate:       0.8% (    0.9%     +     0.7%  )
+==24235==
+==24235== LL refs:           6,984  (  5,497 rd   +   1,487 wr)
+==24235== LL misses:         5,580  (  4,180 rd   +   1,400 wr)
+==24235== LL miss rate:        0.1% (    0.1%     +     0.7%  )
+==24235==
+==24235== Branches:        393,599  (391,453 cond +   2,146 ind)
+==24235== Mispredicts:      57,380  ( 56,657 cond +     723 ind)
+==24235== Mispred rate:       14.6% (   14.5%     +    33.7%   )</strong></pre>
+<p>Compared to the standard <kbd>valgrind</kbd> run, we're doing around 1/5 the total number of instructions and with substantially fewer <kbd>D1</kbd> and <kbd>LLd</kbd> misses. No surprise here. Our <em>hash</em> for <kbd>HashMapU8</kbd> is an exceedingly cheap pointer offset and the size of the storage is going to fit comfortably into the cache. Linux perf tells a similar story:</p>
+<pre><strong>naive_hashmap &gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache-references,cache-misses target/release/specialized &gt; /dev/null
+
+ Performance counter stats for 'target/release/specialized':
+
+     1.433884      task-clock (msec)         #    0.788 CPUs utilized
+            0      context-switches          #    0.000 K/sec
+          104      page-faults               #    0.073 M/sec
+    4,138,436      cycles                    #    2.886 GHz
+    6,141,529      instructions              #    1.48  insn per cycle
+      749,155      branches                  #  522.466 M/sec
+       59,914      branch-misses             #    8.00% of all branches
+       74,760      cache-references          #   52.138 M/sec
+
+       0.001818537 seconds time elapsed</strong></pre>
+<p>Phew! Let's summarize our efforts:</p>
+<p class="mce-root"/>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<thead>
+<tr class="header">
+<th>name</th>
+<th>Task Clock (ms)</th>
+<th>Instructions</th>
+<th>Branches</th>
+<th>Branch Misses</th>
+<th>Cache References</th>
+<th>Cache Misses</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>specialized</td>
+<td>1.433884</td>
+<td>6,141,529</td>
+<td>749,155</td>
+<td>59,914</td>
+<td>74,760</td>
+<td>n/a</td>
+</tr>
+<tr class="even">
+<td>standard</td>
+<td>6.923765</td>
+<td>26,234,708</td>
+<td>2,802,334</td>
+<td>290,475</td>
+<td>635,526</td>
+<td>67,304</td>
+</tr>
+<tr class="odd">
+<td>naive</td>
+<td>1323.724713</td>
+<td>15,390,499,356</td>
+<td>4,428,637,974</td>
+<td>204,132</td>
+<td>455,719,875</td>
+<td>21,311</td>
+</tr>
+</tbody>
+</table>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>What should we understand from all of this? To produce software that operates at the edge of the machine's ability, you must understand some important things. Firstly, if you aren't measuring your program, you're only guessing. Measuring runtime, as criterion does, is important but a coarse insight. <em>Where is my program spending its time?</em> is a question the Valgrind suite and perf can answer, but you've got to have benchmarks in place to contextualize your questions. Measuring and then validating behavior is also an important chunk of this work, which is why we spent so much time on QuickCheck and AFL. Secondly, have a goal in mind. In this chapter, we've made the speed of standard library <kbd>HashMap</kbd> our goal but, in an actual code base, there's always going to be places to polish and improve. What matters is knowing what needs to happen to solve the problem at hand, which will tell you where your time needs to be spent. Thirdly, understand your machine. Modern superscalar, parallel machines are odd beasts to program and, without giving a thought to their behaviors, it's going to be tough understanding why your program behaves the way it does. Finally, algorithms matter above all else. Our naive <kbd>HashMap</kbd> failed to perform well because it was a screwy idea to perform an average O(n/2) operations for every insertion, which we proved out in practice. Standard library's <kbd>HashMap</kbd> is a good, general-purpose structure based on linear probing and clearly, a lot of thought went into making it function well for a variety of cases. When your program is too slow, rather than micro-optimizing, take a step back and consider the problem space. Are there better algorithms available, is there some insight into the data that can be exploited to shift the algorithm to some other direction entirely?</p>
+<p>That's performance work in a nutshell. Pretty satisfying, in my opinion.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we covered measuring and improving the performance of a serial Rust program while demonstrating the program's fitness for purpose. This is a huge area of work and there's a deep well of literature to pull from.</p>
+<ul>
+<li><em>Rust's std::collections is absolutely horrible</em>, available at <a href="https://www.reddit.com/r/rust/comments/52grcl/rusts_stdcollections_is_absolutely_horrible/">https://www.reddit.com/r/rust/comments/52grcl/rusts_stdcollections_is_absolutely_horrible/</a>. The original poster admitted the title is a bit on the click-baity side but the discussion on Reddit is well worth reading. The original author of standard library's <kbd>HashMap</kbd> weighs in on the design decisions in the implementation.</li>
+</ul>
+<ul>
+<li><em>Robin Hood Hashing</em>, 1985, Pedro Celis. This thesis introduced the Robin Hood hashing strategy for constructing associative arrays and is the foundation for the implementation you'll find in Rust. The paper also goes into further search strategies that didn't find their way into Rust's implementation but should be of interest to readers with ambitions toward building hashing search structures.</li>
+<li><em>Robin Hood hashing</em>, Emmanuel Goossaert, available at <a href="http://codecapsule.com/2013/11/11/robin-hood-hashing/">http://codecapsule.com/2013/11/11/robin-hood-hashing/</a>. The Rust standard library HashMap makes continued reference to this blog post and its follow-on, linked in the text. The description here is of a higher-level than that of Celis' thesis and potentially easier to understand as a result.</li>
+<li><em>Denial of Service via Algorithmic Complexity Attacks</em>, 2003, Scott Crosby and Dan Wallach. This paper outlines a denial of service attack on network services by exploiting algorithmic blow-ups in their implementations. The consequence of this paper influenced Rust's decision to ship a safe-by-default HashMap.</li>
+<li><em>QuickCheck: Lightweight Tool for Random Testing of Haskell Programs</em>, 2000, Koen Claessen and John Hughes. This paper introduces the QuickCheck tool for Haskell and introduces property-based testing to the world. The research here builds on previous work into randomized testing but is novel for realizing that computers had got fast enough to support type-directed generation as well as shipping with the implementation in a single page appendix. Many, many subsequent papers have built on this one to improve the probing ability of property testers.</li>
+<li><em>An Evaluation of Random Testing</em>, 1984, Joe Duran and Simeon Ntafos. The 1970s and 1980s were an interesting time for software testing. Formal methods were seen as being just around the corner and the preferred testing methods relied on intimate knowledge of the program's structure. Duran and Ntafos evaluated the ideal techniques of the day against random generation of data and found that randomness compared favorably with significantly less programmer effort. This paper put random testing on the map.</li>
+<li><em>Experiences with QuickCheck: Testing the Hard Stuff and Staying Sane</em>, 2016, John Hughes. This paper is a follow-on to the original QuickCheck paper by Claessen and Hughes in which Hughes describes his subsequent fifteen years of experience doing property testing. The techniques laid out in this paper are a significant evolution of those presented in the 2000 paper and well-worth studying by anyone doing property tests as a part of their work. That ought to be most people, is my take.</li>
+</ul>
+<ul>
+<li><em>American Fuzzy Lop website</em>, available at <a href="http://lcamtuf.coredump.cx/afl/">http://lcamtuf.coredump.cx/afl</a>. AFL is the product of a long tail of research into efficiently mutating inputs for the purpose of triggering bugs. As of writing this book, it is best of breed and has a long trophy list to show for it. The website has links to AFL's documentation and relevant research to understand its function in deeper detail.</li>
+<li><em>Compact Data Structures: A Practical Approach</em>, 2016, Gonzalo Navarro. One of the major techniques of exploiting cache locality is to shrink the individual elements of a working set, implying more elements are available in the working set. Compact data structures, those that can be operated on, at, or near their information theory minimal representation, is an ongoing and exciting area. Navarro's book is excellent and well-worth studying for anyone who is interested in exploring this avenue of optimization.</li>
+<li><em>vec_map</em>, various authors. <kbd>vec_map</kbd> is a Rust crate that exploits the same ideas as this chapter's <kbd>HashMapU8</kbd> but in a generic implementation, with full compatibility to the standard library HashMap. The source code is quite interesting and warmly recommended.</li>
+<li><em>Reevaluating Amdahl's Law</em>, 1988, John Gustafson. This is an exceptionally short paper and clearly explains Amdahl's formulation as well as Gustafson's objection to its underlying assumptions. That the paper is describing an interpretation in which the serial portion is shrunk is clear only after a few readings, or once some kind soul explains this to you.</li>
+<li><em>Tracking issue for specialization (RFC 1210)</em>, available at <a href="https://github.com/rust-lang/rust/issues/31844">https://github.com/rust-lang/rust/issues/31844</a>.This issue is a pretty good insight into the way the Rust community goes about stabilizing a major feature. The original RFC is from 2016. Pretty much ever since the point it was accepted that there's been a feature flag in nightly for experimentation and a debate on the consequences of making the work stable.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  </body></html>

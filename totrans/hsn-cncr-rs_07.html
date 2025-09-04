@@ -1,0 +1,1582 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Atomics – Safely Reclaiming Memory</h1>
+                </header>
+            
+            <article>
+                
+<p>In the previous chapter, we discussed the atomic primitives available to the Rust programmer, implementing higher-level synchronization primitives and some data structures built entirely of atomics. A key challenge with atomic-only programming, compared to using higher-level synchronization primitives, is memory reclamation. It is only safe to free memory once. When we build concurrent algorithms only from atomic primitives, it's very challenging to do something only once and keep performance up. That is, safely reclaiming memory requires some form of synchronization. But, as the total number of concurrent actors rise, the cost of synchronization dwarfs the latency or throughput benefits of atomic programming.</p>
+<p>In this chapter, we will discuss three techniques to resolve the memory reclamation issue of atomic programming—r<span>eference counting, h</span><span>azard pointers, and e</span><span>poch-based reclamation. </span><span>These methods will be familiar to you from previous chapters, but here we will do a deep-dive on them, investigating their trade-offs. We will introduce two new libraries, <kbd>conc</kbd> and crossbeam, which implement hazard pointers and epoch-based reclamation, respectively. By the close of this chapter, you should have a good handle on the three approaches presented and be in a good place to start laying down production-quality code.</span></p>
+<p>By the end of this chapter, we will have:</p>
+<ul>
+<li>Discussed reference counting and its associated tradeoffs</li>
+<li>Discussed the hazard pointer approach to memory reclamation</li>
+<li>Investigated a Treiber stack using the hazard pointer approach via the <kbd>conc</kbd> crate</li>
+<li>Discussed the epoch-based reclamation strategy</li>
+<li>Done a deep investigation of the <kbd>crossbeam_epoch</kbd> crate</li>
+<li>Investigated a Treiber stack using the epoch-based reclamation approach</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>This chapter requires a working Rust installation. The details of verifying your installation are covered in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust</em>. No additional software tools are required.<br/>
+<br/>
+You can find the source code for this book's projects on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust">https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust</a>. The source code for this chapter is under <kbd>Chapter07</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Approaches to memory reclamation</h1>
+                </header>
+            
+            <article>
+                
+<p>In the discussion that follows, the three techniques are laid out roughly in order of their speed, slowest to fastest, as well as their difficulty, easiest to hardest. You should not be discouraged—you are now at one of the forefronts of the software engineering world. Welcome. Go boldly.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Reference counting</h1>
+                </header>
+            
+            <article>
+                
+<p>Reference-counting memory reclamation associates a piece of protected data with an atomic counter. Every thread reading or writing to that protected data increases the counter on acquisition and decreases the counter on de-acquisition. The thread to decrease the counter and find it as zero is the last to hold the data and may either mark the data as available for reclamation or deallocate it immediately. This should, hopefully, sound familiar. The Rust standard library ships with <kbd>std::sync::Arc</kbd>—discussed in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send<span> </span>–<span> </span>the Foundation of Rust Concurrency</em>, and <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank"><span>Chapter 5</span></a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>, especially—to fulfill this exact need. While we discussed the usage of <kbd>Arc</kbd>, we did not discuss its internals previously, owing to our need to reach <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics<span> </span>–<span> </span>the Primitives of Synchronization</em>, before we had the necessary background. Let's dig into <kbd>Arc</kbd> now.</p>
+<p>The Rust compiler's code for <kbd>Arc</kbd> is <kbd>src/liballoc/arc.rs</kbd>. The structure definition is compact enough:</p>
+<pre style="padding-left: 30px">pub struct Arc&lt;T: ?Sized&gt; {
+    ptr: Shared&lt;ArcInner&lt;T&gt;&gt;,
+    phantom: PhantomData&lt;T&gt;,
+}</pre>
+<p>We encountered <kbd>Shared&lt;T&gt;</kbd> in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a><span>, </span> <span><em>The Rust Memory Model – Ownership, References and Manipulation</em></span>, with it being a pointer with the same characteristics as <kbd>*mut X</kbd> except that it is non-null. There are two functions for creating a new <kbd>Shared&lt;T&gt;</kbd>, which are <kbd>const unsafe fn new_unchecked(ptr: *mut X) -&gt; Self</kbd> and <kbd>fn new(ptr: *mut X) -&gt; Option&lt;Self&gt;</kbd>. In the first variant, the caller is responsible for ensuring that the pointer is non-null, in the second, the nulled nature of the pointer is checked. Please refer back to <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>,  <span><em>The Rust Memory Model – Ownership, References and Manipulation</em></span><span class="cdp-chapters-widget-post-title">,</span> <span class="underline"><em>Rc</em></span> section for a deep-dive. We know, then, that <kbd>ptr</kbd> in <kbd>Arc&lt;T&gt;</kbd> is non-null and, owing to the phantom data field, that the store of <kbd>T</kbd> is not held in <kbd>Arc&lt;T&gt;</kbd>. That'd be in <kbd>ArcInner&lt;T&gt;</kbd>:</p>
+<pre style="padding-left: 30px">struct ArcInner&lt;T: ?Sized&gt; {
+    strong: atomic::AtomicUsize,
+
+    // the value usize::MAX acts as a sentinel for temporarily <br/>    // "locking" the ability to upgrade weak pointers or <br/>    // downgrade strong ones; this is used to avoid races<br/>    // in `make_mut` and `get_mut`.
+    weak: atomic::AtomicUsize,
+
+    data: T,
+}</pre>
+<p>We see two inner <kbd>AtomicUsize</kbd> fields: <kbd>strong</kbd> and <kbd>weak</kbd>. Like <kbd>Rc</kbd>, <kbd>Arc&lt;T&gt;</kbd> allows two kinds of strength references to the interior data. A weak reference does not own the interior data, allowing for <kbd>Arc&lt;T&gt;</kbd> to be arranged in a cycle without causing an impossible memory-reclamation situation. A strong reference owns the interior data. Here, we see the creation of a new strong reference via <kbd>Arc&lt;T&gt;::clone() -&gt; Arc&lt;T&gt;</kbd>:</p>
+<pre>    fn clone(&amp;self) -&gt; Arc&lt;T&gt; {
+        let old_size = self.inner().strong.fetch_add(1, Relaxed);
+
+        if old_size &gt; MAX_REFCOUNT {
+            unsafe {
+                abort();
+            }
+        }
+
+        Arc { ptr: self.ptr, phantom: PhantomData }
+    }</pre>
+<p>Here, we can see that on every clone, the <kbd>strong</kbd> of <kbd>ArcInner&lt;T&gt;</kbd> is increased by one  when you use relaxed ordering. The code comment to this block—dropped for brevity in this text—asserts that relaxed ordering is sufficient owing to the circumstance of the use of <kbd>Arc</kbd><em>.</em> Using a relaxed ordering is alright here, as knowledge of the original reference prevents other threads from erroneously deleting the object. This is an important consideration. Why does clone not require a more strict ordering? Consider a thread, <kbd>A</kbd>, that clones some <kbd>Arc&lt;T&gt;</kbd> and passes it to another thread, <kbd>B</kbd>, and then, having passed to <kbd>B</kbd>, immediately drops its own copy of <kbd>Arc</kbd>. We can determine from the inspection of <kbd>Arc&lt;T&gt;::new() -&gt; Arc&lt;T&gt;</kbd> that, at creation time, <kbd>Arc</kbd> always has one strong and one weak reference:</p>
+<pre>    pub fn new(data: T) -&gt; Arc&lt;T&gt; {
+        // Start the weak pointer count as 1 which is the weak <br/>        // pointer that's held by all the strong pointers <br/>        // (kinda), see std/rc.rs for more info
+        let x: Box&lt;_&gt; = box ArcInner {
+            strong: atomic::AtomicUsize::new(1),
+            weak: atomic::AtomicUsize::new(1),
+            data,
+        };
+        Arc { ptr: Shared::from(Box::into_unique(x)), <br/>              phantom: PhantomData }
+    }</pre>
+<p>From the perspective of thread <kbd>A</kbd>, the cloning of <kbd>Arc</kbd> is composed of the following operations:</p>
+<pre style="padding-left: 30px">clone Arc
+    INCR strong, Relaxed
+    guard against strong wrap-around
+    allocate New Arc
+move New Arc into B
+drop Arc</pre>
+<p>We know from discussion in the previous chapter, that <kbd>Release</kbd> ordering does not offer a causality relationship. It's entirely possible that a hostile CPU could reorder the increment of <kbd>strong</kbd> to after the movement of  <kbd>New Arc</kbd> into <kbd>B</kbd>. Would we be in trouble if <kbd>B</kbd> then immediately dropped <kbd>Arc</kbd>? We need to inspect <kbd>Arc&lt;T&gt;::drop()</kbd>:</p>
+<pre>    fn drop(&amp;mut self) {
+        if self.inner().strong.fetch_sub(1, Release) != 1 {
+            return;
+        }
+
+        atomic::fence(Acquire);
+
+        unsafe {
+            let ptr = self.ptr.as_ptr();
+
+            ptr::drop_in_place(&amp;mut self.ptr.as_mut().data);
+
+            if self.inner().weak.fetch_sub(1, Release) == 1 {
+                atomic::fence(Acquire);
+                Heap.dealloc(ptr as *mut u8, Layout::for_value(&amp;*ptr))
+            }
+        }
+    }</pre>
+<p>Here we go. <kbd>atomic::fence(Acquire)</kbd> is new to us. <kbd>std::sync::atomic::fence</kbd> prevents memory migration around itself, according to the causality relationship established by the provided memory ordering. The fence applies to same-thread and other-thread memory operations. Recall that <kbd>Release</kbd> ordering disallows loads and stores from migrating downward in the source-code order. Here, we see, that the load and store of strong will disallow migrations downward but will not be reordered after the <kbd>Acquire</kbd> fence. Therefore, the deallocation of the <kbd>T</kbd> interior to <kbd>Arc</kbd> will not happen until both the <kbd>A</kbd> and <kbd>B</kbd> threads have synchronized and removed all strong references. An additional thread, <kbd>C</kbd>, cannot come through and increase the strong references to the interior <kbd>T</kbd> while this is ongoing, owing to the causality relationship established—neither <kbd>A</kbd> nor <kbd>B</kbd> can give <kbd>C</kbd> a strong reference without increasing the strong counter, causing the drops of <kbd>A</kbd> or <kbd>B</kbd> to bail out early. A similar analysis holds for weak references.</p>
+<p>Doing an immutable dereference of <kbd>Arc</kbd> does not increase the strong or weak counts:</p>
+<pre style="padding-left: 30px">impl&lt;T: ?Sized&gt; Deref for Arc&lt;T&gt; {
+    type Target = T;
+
+    #[inline]
+    fn deref(&amp;self) -&gt; &amp;T {
+        &amp;self.inner().data
+    }
+}</pre>
+<p>Because drop requires a mutable self, it is impossible to free <kbd>Arc&lt;T&gt;</kbd> while there is a valid <kbd>&amp;T</kbd>. Getting <kbd>&amp;mut T</kbd> is more involved, which is done via <kbd>Arc&lt;T&gt;::get_mut(&amp;mut Self) -&gt; Option&lt;&amp;mut T&gt;</kbd>. Note that the return is an <kbd>Option</kbd>. If there are other strong or weak references to the interior <kbd>T</kbd>, then it's not safe to consume <kbd>Arc</kbd>. The implementation of <kbd>get_mut</kbd> is as follows:</p>
+<pre>    pub fn get_mut(this: &amp;mut Self) -&gt; Option&lt;&amp;mut T&gt; {
+        if this.is_unique() {
+            // This unsafety is ok because we're guaranteed that the<br/>            // pointer returned is the *only* pointer that will ever<br/>            // be returned to T. Our reference count is guaranteed<br/>            // to be 1 at this point, and we required the Arc itself<br/>            // to be `mut`, so we're returning the only possible <br/>            // reference to the inner data.
+            unsafe {
+                Some(&amp;mut this.ptr.as_mut().data)
+            }
+        } else {
+            None
+        }
+    }</pre>
+<p>Where <kbd>is_unique</kbd> is:</p>
+<pre>    fn is_unique(&amp;mut self) -&gt; bool {
+        if self.inner().weak.compare_exchange(1, usize::MAX, <br/>                                              Acquire, Relaxed).is_ok() {
+            let unique = self.inner().strong.load(Relaxed) == 1;
+            self.inner().weak.store(1, Release);
+            unique
+        } else {
+            false
+        }
+    }</pre>
+<p>The compare and exchange operation on weak ensures that there is only one weak reference outstanding—implying uniqueness—and does so on success with <kbd>Acquire</kbd> ordering. This ordering will force the subsequent check of the strong references to occur after the check of weak references in the code order and above the release store to the same. This exact technique will be familiar from our discussion on mutual exclusion in the previous chapter.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Tradeoffs</h1>
+                </header>
+            
+            <article>
+                
+<p>Reference counting has much to recommend it as an approach for atomic memory reclamation. The programming model of reference counting is straightforward to understand and memory is reclaimed as soon as it's possible to be safely reclaimed. Programming reference-counted implementations without the use of <kbd>Arc&lt;T&gt;</kbd> remains difficult, owing to the lack of double-word compare and swap in Rust. Consider a Treiber stack in which the reference counter is internal to stack nodes. The head of the stack might be snapshotted, then freed by some other thread, and the subsequent read to the reference counter will be forced through an invalid pointer.</p>
+<p>The following reference-counted Treiber stack is flawed:</p>
+<pre style="padding-left: 30px">use std::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
+use std::{mem, ptr};
+
+unsafe impl&lt;T: Send&gt; Send for Stack&lt;T&gt; {}
+unsafe impl&lt;T: Send&gt; Sync for Stack&lt;T&gt; {}
+
+struct Node&lt;T&gt; {
+    references: AtomicUsize,
+    next: *mut Node&lt;T&gt;,
+    data: Option&lt;T&gt;,
+}
+
+impl&lt;T&gt; Node&lt;T&gt; {
+    fn new(t: T) -&gt; Self {
+        Node {
+            references: AtomicUsize::new(1),
+            next: ptr::null_mut(),
+            data: Some(t),
+        }
+    }
+}
+
+pub struct Stack&lt;T&gt; {
+    head: AtomicPtr&lt;Node&lt;T&gt;&gt;,
+}
+
+impl&lt;T&gt; Stack&lt;T&gt; {
+    pub fn new() -&gt; Self {
+        Stack {
+            head: AtomicPtr::default(),
+        }
+    }
+
+    pub fn pop(&amp;self) -&gt; Option&lt;T&gt; {
+        loop {
+            let head: *mut Node&lt;T&gt; = self.head.load(Ordering::Relaxed);
+
+            if head.is_null() {
+                return None;
+            }
+            let next: *mut Node&lt;T&gt; = unsafe { (*head).next };
+
+            if self.head.compare_and_swap(head, next, <br/>            Ordering::Relaxed) == head {
+                let mut head: Box&lt;Node&lt;T&gt;&gt; = unsafe {<br/>                    Box::from_raw(head) <br/>                };
+                let data: Option&lt;T&gt; = mem::replace(&amp;mut (*head).data, <br/>                                                   None);
+                unsafe {
+                    assert_eq!(
+                        (*(*head).next).references.fetch_sub(1, <br/>                             Ordering::Release),
+                        2
+                    );
+                }
+                drop(head);
+                return data;
+            }
+        }
+    }
+
+    pub fn push(&amp;self, t: T) -&gt; () {
+        let node: *mut Node&lt;T&gt; = Box::into_raw(Box::new(Node::new(t)));
+        loop {
+            let head = self.head.load(Ordering::Relaxed);
+            unsafe {
+                (*node).next = head;
+            }
+
+            fence(Ordering::Acquire);
+            if self.head.compare_and_swap(head, node, <br/>            Ordering::Release) == head {
+                // node is now self.head
+                // head is now self.head.next
+                if !head.is_null() {
+                    unsafe {
+                        assert_eq!(1, <br/>                                   (*head).references.fetch_add(1, <br/>                                       Ordering::Release)<br/>                        );
+                    }
+                }
+                break;
+            }
+        }
+    }
+}</pre>
+<p>This is one of the few (intentionally) flawed examples in this book. You are encouraged to apply the techniques discussed earlier in this book to identify and correct the flaws with this implementation. It should be interesting. J.D. Valois' 1995 paper, <em>Lock-Free Linked Lists Using Compare-and-Swap</em>, will be of use. You are further warmly encouraged to attempt a Treiber stack using only <kbd>Arc</kbd>.</p>
+<p>Ultimately, where reference counting struggles is contention, as the number of threads operating on the same reference-counted data increase., those acquire/release pairs don't come cheaply. Reference counting is a good model when you expect the number of threads to be relatively low or where absolute performance is not a key consideration. Otherwise, you'll need to investigate the following methods, which have tradeoffs of their own.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Hazard pointers</h1>
+                </header>
+            
+            <article>
+                
+<p>We touched on hazard pointers as a method for safe memory reclamation in the previous chapter. We'll now examine the concept in-depth and in the context of a more or less ready-to-use implementation via the Redox project (<a href="https://crates.io/crates/conc">https://crates.io/crates/conc</a>). We'll be inspecting <kbd>conc</kbd> as a part of its parent project, tfs (<a href="https://github.com/redox-os/tfs">https://github.com/redox-os/tfs</a>), at SHA <kbd>3e7dcdb0c586d0d8bb3f25bfd948d2f418a4ab10</kbd>. Incidentally, if you're unfamiliar with this, Redox is a Rust microkernel-based operating system. The allocator, coreutils, and netutils are all encouraged reading.</p>
+<div class="packt_infobox"><span>The conc crate is not listed in its entirety. You can find the full listing in this book's source repository. </span></div>
+<p>Hazard pointers were introduced by Maged Michael—of Michael and Scott Queue fame—in his 2004 book, <em>Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects</em>. A <em>hazard</em>, in this context, is any pointer that is subject to races or ABA issues in the rendezvous of multiple treads participating in some shared data structure. In the previous section's Treiber stack, the hazard is the head pointer inside of the Stack struct, and in the Michael and Scott queue, it is the head and tail pointers. A hazard pointer associates these hazards with <em>single-writer multireader shared pointers</em>, owned by a single writer thread and read by any other threads participating in the data structure.</p>
+<p>Every participating thread maintains a reference to its own hazard pointers and all other participating threads in addition to private, thread-local lists for the coordination of deallocation. The algorithm description in section 3 of Michael's paper is done at a high level and is difficult to follow with an eye towards producing a concrete implementation. Rather than repeat that here, we will instead examine a specific implementation, <kbd>conc</kbd>. The reader is encouraged to read Michael's paper ahead of the discussion of <kbd>conc</kbd>, but this is not mandatory.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">A hazard-pointer Treiber stack</h1>
+                </header>
+            
+            <article>
+                
+<p>The introduction of the Treiber stack in the previous section on reference counting was not an idle introduction. We'll examine hazard pointers and epoch-based reclamation here, through the lens of an effectively reclaimed Treiber stack. It so happens that <kbd>conc</kbd> ships with a Treiber stack, in <kbd>tfs/conc/src/sync/treiber.rs</kbd>. The preamble is mostly familiar:</p>
+<pre style="padding-left: 30px">use std::sync::atomic::{self, AtomicPtr};
+use std::marker::PhantomData;
+use std::ptr;
+use {Guard, add_garbage_box};</pre>
+<p>Both <kbd>Guard</kbd> and <kbd>add_garbage_box</kbd> are new, but we'll get to them directly. The <kbd>Treiber</kbd> struct is as you might have imaged it:</p>
+<pre style="padding-left: 30px">pub struct Treiber&lt;T&gt; {
+    /// The head node.
+    head: AtomicPtr&lt;Node&lt;T&gt;&gt;,
+    /// Make the `Sync` and `Send` (and other OIBITs) transitive.
+    _marker: PhantomData&lt;T&gt;,
+}</pre>
+<p>As is the node:</p>
+<pre style="padding-left: 30px">struct Node&lt;T&gt; {
+    /// The data this node holds.
+    item: T,
+    /// The next node.
+    next: *mut Node&lt;T&gt;,
+}</pre>
+<p>This is where we need to understand <kbd>conc::Guard</kbd>. Much like <kbd>MutexGuard</kbd> in the standard library, <kbd>Guard</kbd> exists here to protect the contained data from being multiply mutated. <kbd>Guard</kbd> is the hazard pointer interface for <kbd>conc</kbd>. Let's examine <kbd>Guard</kbd> in detail and get to the hazard pointer algorithm. <kbd>Guard</kbd> is defined in <kbd>tfs/conc/src/guard.rs</kbd>:</p>
+<pre style="padding-left: 30px">pub struct Guard&lt;T: 'static + ?Sized&gt; {
+    /// The inner hazard.
+    hazard: hazard::Writer,
+    /// The pointer to the protected object.
+    pointer: &amp;'static T,
+}</pre>
+<p>As of writing this book, all <kbd>T</kbd> protected by <kbd>Guard</kbd> have to be static, but we'll ignore that as the codebase has references to a desire to relax that restriction. Just be aware of it should you wish to make immediate use of <kbd>conc</kbd> in your project. Like <kbd>MutexGuard</kbd>, <kbd>Guard</kbd> does not own the underlying data but merely protects a reference to it, and we can see that our <kbd>Guard</kbd> is the writer-end of the hazard. What is <kbd>hazard::Writer</kbd>? It's defined in <kbd>tfs/conc/src/hazard.rs</kbd>:</p>
+<pre style="padding-left: 30px">pub struct Writer {
+    /// The pointer to the heap-allocated hazard.
+    ptr: &amp;'static AtomicPtr&lt;u8&gt;,
+}</pre>
+<p>Pointer to the heap-allocated hazard? Okay, let's back out a bit. We know from the algorithm description that there has to be thread-local storage happening in coordination with, apparently, heap storage. We also know that <kbd>Guard</kbd> is our primary interface to the hazard pointers. There are three functions to create new instances of <kbd>Guard</kbd>:</p>
+<ul>
+<li><kbd>Guard&lt;T&gt;::new&lt;F: FnOnce() -&gt; &amp;'static T&gt;(ptr: F) -&gt; Guard&lt;T&gt;</kbd></li>
+<li><kbd>Guard&lt;T&gt;::maybe_new&lt;F: FnOnce() -&gt; Option&lt;&amp;'static T&gt;&gt;(ptr: F) -&gt; Option&lt;Guard&lt;T&gt;&gt;</kbd></li>
+<li><kbd>Guard&lt;T&gt;::try_new&lt;F: FnOnce() -&gt; Result&lt;&amp;'static T, E&gt;&gt;(ptr: F) -&gt; Result&lt;Guard&lt;T&gt;, E&gt;</kbd></li>
+</ul>
+<p>The first two are defined in terms of <kbd>try_new</kbd>. Let's dissect <kbd>try_new</kbd>:</p>
+<pre>    pub fn try_new&lt;F, E&gt;(ptr: F) -&gt; Result&lt;Guard&lt;T&gt;, E&gt;
+    where F: FnOnce() -&gt; Result&lt;&amp;'static T, E&gt; {
+        // Increment the number of guards currently being created.
+        #[cfg(debug_assertions)]
+        CURRENT_CREATING.with(|x| x.set(x.get() + 1));</pre>
+<p>The function takes <kbd>FnOnce</kbd> whose responsibility is to kick out a reference to <kbd>T</kbd> or fail. The first call in <kbd>try_new</kbd> is an increment of <kbd>CURRENT_CREATING</kbd>, which is <kbd>thread-local Cell&lt;usize&gt;</kbd>:</p>
+<pre style="padding-left: 30px">thread_local! {
+    /// Number of guards the current thread is creating.
+    static CURRENT_CREATING: Cell&lt;usize&gt; = Cell::new(0);
+}</pre>
+<p>We've seen <kbd>Cell</kbd> in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a><span>, </span> <span><em>The Rust Memory Model – Ownership, References and Manipulation</em></span>, but <kbd>thread_local!</kbd> is new. This macro wraps one or more static values into <kbd>std::thread::LocalKey</kbd>, Rust's take on thread-local stores. The exact implementation varies from platform to platform but the basic idea holds: the value will act as a static global but will be confined to a single thread. In this way, we can program as if the value were global but without having to manage coordination between threads. Once <kbd>CURRENT_CREATING</kbd> is incremented:</p>
+<pre>        // Get a hazard in blocked state.
+        let hazard = local::get_hazard();</pre>
+<p>The <kbd>local::get_hazard</kbd> function is defined in <kbd>tfs/conc/src/local.rs</kbd>:</p>
+<pre style="padding-left: 30px">pub fn get_hazard() -&gt; hazard::Writer {
+    if STATE.state() == thread::LocalKeyState::Destroyed {
+        // The state was deinitialized, so we must rely on the<br/>        // global state for creating new hazards.
+        global::create_hazard()
+    } else {
+        STATE.with(|s| s.borrow_mut().get_hazard())
+    }
+}</pre>
+<p>The <kbd>STATE</kbd> referenced in this function is:</p>
+<pre style="padding-left: 30px">thread_local! {
+    /// The state of this thread.
+    static STATE: RefCell&lt;State&gt; = RefCell::new(State::default());
+}</pre>
+<p>The <kbd>State</kbd> is type defined like so:</p>
+<pre style="padding-left: 30px">#[derive(Default)]
+struct State {
+    garbage: Vec&lt;Garbage&gt;,
+    available_hazards: Vec&lt;hazard::Writer&gt;,
+    available_hazards_free_before: usize,
+}</pre>
+<p>The field garbage maintains a list of <kbd>Garbage</kbd> that has yet to be moved to the global state—more on that in a minute—for reclamation. <kbd>Garbage</kbd> is a pointer to bytes and a function pointer to bytes called <kbd>dtor</kbd>, for destructor. Memory reclamation schemes must be able to deallocate, regardless of the underlying type. The common approach, and the approach taken by <kbd>Garbage</kbd>, is to build a monomorphized destructor function when the type information is available, but otherwise work on byte buffers. You are encouraged to thumb through the implementation of <kbd>Garbage</kbd> yourself, but the primary trick is <kbd>Box::from_raw(ptr as *mut u8 as *mut T)</kbd>, which we've seen repeatedly throughout this book.</p>
+<p>The <kbd>available_hazards</kbd> field stores the previously allocated hazard writers that aren't currently being used. The implementation keeps this as a cache to avoid allocator thrash. We can see this in action in <kbd>local::State::get_hazard</kbd>:</p>
+<pre>    fn get_hazard(&amp;mut self) -&gt; hazard::Writer {
+        // Check if there is hazards in the cache.
+        if let Some(hazard) = self.available_hazards.pop() {
+            // There is; we don't need to create a new hazard.
+            //
+            // Since the hazard popped from the cache is not <br/>            // blocked, we must block the hazard to satisfy <br/>            // the requirements of this function.
+            hazard.block();
+            hazard
+        } else {
+            // There is not; we must create a new hazard.
+            global::create_hazard()
+        }
+    }</pre>
+<p>The final field, <kbd>available_hazards_free_before</kbd>, stores hazards in the freed state, prior to the actual deallocation of the underlying type. We'll discuss this more later. Hazards are in one of four states: free, dead, blocked, or protecting. A dead hazard can be deallocated safely, along with the protected memory. A dead hazard should not be read. A free hazard is protecting nothing and may be reused. A blocked hazard is in use by some other thread can and will cause reads of the hazard to stall. A protecting hazard is, well, protecting some bit of memory. Now, jump back to this branch in <kbd>local::get_hazard</kbd>:</p>
+<pre>    if STATE.state() == thread::LocalKeyState::Destroyed {
+        // The state was deinitialized, so we must rely on the <br/>        // global state for creating new hazards.
+        global::create_hazard()
+    } else {</pre>
+<p>What is <kbd>global::create_hazard</kbd>? This module is <kbd>tfs/conc/src/global.rs</kbd> and the function is:</p>
+<pre style="padding-left: 30px">pub fn create_hazard() -&gt; hazard::Writer {
+    STATE.create_hazard()
+}</pre>
+<p>The variable names are confusing. This <kbd>STATE</kbd> is not the thread-local <kbd>STATE</kbd> but a globally scoped <kbd>STATE</kbd>:</p>
+<pre style="padding-left: 30px">lazy_static! {
+    /// The global state.
+    ///
+    /// This state is shared between all the threads.
+    static ref STATE: State = State::new();
+}</pre>
+<p>Let's dig in there:</p>
+<pre style="padding-left: 30px">struct State {
+    /// The message-passing channel.
+    chan: mpsc::Sender&lt;Message&gt;,
+    /// The garbo part of the state.
+    garbo: Mutex&lt;Garbo&gt;,
+}</pre>
+<p>The global <kbd>STATE</kbd> is a mpsc <kbd>Sender</kbd> of <kbd>Message</kbd> and a mutex-guarded <kbd>Garbo</kbd>. <kbd>Message</kbd> is a simple enumeration:</p>
+<pre style="padding-left: 30px">enum Message {
+    /// Add new garbage.
+    Garbage(Vec&lt;Garbage&gt;),
+    /// Add a new hazard.
+    NewHazard(hazard::Reader),
+}</pre>
+<p><kbd>Garbo</kbd> is something we'll get into directly. Suffice it to say for now that <kbd>Garbo</kbd> acts as the global garbage collector for this implementation. The global state sets up a channel, maintaining the sender side in the global state and feeding the receiver into <kbd>Garbo</kbd>:</p>
+<pre style="padding-left: 30px">impl State {
+    /// Initialize a new state.
+    fn new() -&gt; State {
+        // Create the message-passing channel.
+        let (send, recv) = mpsc::channel();
+
+        // Construct the state from the two halfs of the channel.
+        State {
+            chan: send,
+            garbo: Mutex::new(Garbo {
+                chan: recv,
+                garbage: Vec::new(),
+                hazards: Vec::new(),
+            })
+        }
+    }</pre>
+<p>The creation of a new global hazard doesn't take much:</p>
+<pre>    fn create_hazard(&amp;self) -&gt; hazard::Writer {
+        // Create the hazard.
+        let (writer, reader) = hazard::create();
+        // Communicate the new hazard to the global state <br/>        // through the channel.
+        self.chan.send(Message::NewHazard(reader));
+        // Return the other half of the hazard.
+        writer
+    }</pre>
+<p>This establishes a new hazard via <kbd>hazard::create()</kbd> and feeds the reader side down through to <kbd>Garbo</kbd>, returning the writer side back out to <kbd>local::get_hazard()</kbd>. While the names writer and reader suggest that hazard is itself an MPSC, this is not true. The hazard module is <kbd>tfs/conc/src/hazard.rs</kbd> and creation is:</p>
+<pre style="padding-left: 30px">pub fn create() -&gt; (Writer, Reader) {
+    // Allocate the hazard on the heap.
+    let ptr = unsafe {
+        &amp;*Box::into_raw(Box::new(AtomicPtr::new(<br/>                        &amp;BLOCKED as *const u8 as *mut u8)))
+    };
+
+    // Construct the values.
+    (Writer {<br/>        ptr: ptr,<br/>    }, Reader {<br/>        ptr: ptr,<br/>    })<br/>}</pre>
+<p>Well, look at that. What we have here are two structs, <kbd>Writer</kbd> and <kbd>Reader</kbd>, which each store the same raw pointer to a heap-allocated atomic pointer to a mutable byte pointer. Phew! We've seen this trick previously but what's special here is the leverage of the type system to provide for different reading and writing interfaces over the same bit of raw memory.</p>
+<p>What about <kbd>Garbo</kbd>? It's defined in the global module and is defined as:</p>
+<pre style="padding-left: 30px">struct Garbo {
+    /// The channel of messages.
+    chan: mpsc::Receiver&lt;Message&gt;,
+    /// The to-be-destroyed garbage.
+    garbage: Vec&lt;Garbage&gt;,
+    /// The current hazards.
+    hazards: Vec&lt;hazard::Reader&gt;,
+}</pre>
+<p><kbd>Garbo</kbd> defines a <kbd>gc</kbd> function that reads all <kbd>Messages</kbd> from its channel, storing the garbage into the garbage field and free hazards into hazards. Dead hazards are destroyed, freeing its storage as the other holder is guaranteed to have hung up already. Protected hazards also make their way into hazards, which are to be scanned during the next call of gc. Garbage collections are sometimes performed when a thread calls <kbd>global::tick()</kbd> or when <kbd>global::try_gc()</kbd> is called. A tick is performed whenever <kbd>local::add_garbage</kbd> is called, which is what <kbd>whatconc::add_garbage_box</kbd> calls.</p>
+<p>We first encountered <kbd>add_barbage_box</kbd> at the start of this section. Every time a thread signals a node as garbage, it rolls the dice and potentially becomes responsible for performing a global garbage collection over all of the threads' hazard-pointed memory.</p>
+<p>Now that we understand how memory reclamation works, all that remains is to understand how hazard pointers protect memory from reads and writes. Let's finish <kbd>guard::try_new</kbd> in one large jump:</p>
+<pre>        // This fence is necessary for ensuring that `hazard` does not<br/>        // get reordered to after `ptr` has run.
+        // TODO: Is this fence even necessary?
+        atomic::fence(atomic::Ordering::SeqCst);
+
+        // Right here, any garbage collection is blocked, due to the<br/>        // hazard above. This ensures that between the potential <br/>        // read in `ptr` and it being protected by the hazard, there
+        // will be no premature free.
+
+        // Evaluate the pointer through the closure.
+        let res = ptr();
+
+        // Decrement the number of guards currently being created.
+        #[cfg(debug_assertions)]
+        CURRENT_CREATING.with(|x| x.set(x.get() - 1));
+
+        match res {
+            Ok(ptr) =&gt; {
+                // Now that we have the pointer, we can protect it by <br/>                // the hazard, unblocking a pending garbage collection<br/>                // if it exists.
+                hazard.protect(ptr as *const T as *const u8);
+
+                Ok(Guard {
+                    hazard: hazard,
+                    pointer: ptr,
+                })
+            },
+            Err(err) =&gt; {
+                // Set the hazard to free to ensure that the hazard <br/>                // doesn't remain blocking.
+                hazard.free();
+
+                Err(err)
+            }
+        }
+    }</pre>
+<p>We can see that the conc authors have inserted a sequentially consistent fence that they question. The model laid out by Michael does not require sequential consistency and I believe that this fence is not needed, being a significant drag on performance. The key things here to note are the call to <kbd>hazard::protect</kbd> and <kbd>'hazard::free</kbd>. Both calls are part of <kbd>hazard::Writer</kbd>, the former setting the internal pointer to the byte pointer fed to it, the latter marking the hazard as free. Both states interact with the garbage collector, as we've seen. The remaining bit has to do with <kbd>hardard::Reader::get</kbd>, the function used to retrieve the state of the hazard. Here it is:</p>
+<pre>impl Reader {
+    /// Get the state of the hazard.
+    ///
+    /// It will spin until the hazard is no longer in a blocked state, <br/>    /// unless it is in debug mode, where it will panic given enough<br/>    /// spins.
+    pub fn get(&amp;self) -&gt; State {
+        // In debug mode, we count the number of spins. In release <br/>        // mode, this should be trivially optimized out.
+        let mut spins = 0;
+
+        // Spin until not blocked.
+        loop {
+            let ptr = self.ptr.load(atomic::Ordering::Acquire) <br/>                          as *const u8;
+
+            // Blocked means that the hazard is blocked by another <br/>            // thread, and we must loop until it assumes another <br/>            // state.
+            if ptr == &amp;BLOCKED {
+                // Increment the number of spins.
+                spins += 1;
+                debug_assert!(spins &lt; 100_000_000, "\
+                    Hazard blocked for 100 millions rounds. Panicking <br/>                    as chances are that it will \
+                    never get unblocked.\
+                ");
+
+                continue;
+            } else if ptr == &amp;FREE {
+                return State::Free;
+            } else if ptr == &amp;DEAD {
+                return State::Dead;
+            } else {
+                return State::Protect(ptr);
+            }</pre>
+<p>Only if the hazard is blocked does the get of the state spin until it's dead, free, or merely protected. What blocks the hazard? Recall that they're created blocked. By creating the hazards in a blocked state, it is not possible to perform garbage collection over a pointer that has not been fully initialized—a problem we saw with the reference-counting implementation—nor is it possible to read from a partially-initialized hazarded pointer. Only once the pointer is moved into the protected state can reads move forward.</p>
+<p>And there you go—garbage collection and atomic isolation.</p>
+<p>Let's go all the way back up to the stack and look at its push implementation:</p>
+<pre>    pub fn push(&amp;self, item: T)
+    where T: 'static {
+        let mut snapshot = Guard::maybe_new(|| unsafe {
+            self.head.load(atomic::Ordering::Relaxed).as_ref()
+        });
+
+        let mut node = Box::into_raw(Box::new(Node {
+            item: item,
+            next: ptr::null_mut(),
+        }));
+
+        loop {
+            let next = snapshot.map_or(ptr::null_mut(), <br/>                                       |x| x.as_ptr() as *mut _);
+            unsafe { (*node).next = next; }
+
+            match Guard::maybe_new(|| unsafe {
+                self.head.compare_and_swap(next, node, <br/>                    atomic::Ordering::Release).as_ref()
+            }) {
+                Some(ref new) if new.as_ptr() == next =&gt; break,
+                None if next.is_null() =&gt; break,
+                // If it fails, we will retry the CAS with updated <br/>                // values.
+                new =&gt; snapshot = new,
+            }
+        }
+    }</pre>
+<p>At the top of the function, the implementation loads the hazard pointer for the head node into the snapshot. <kbd>Guard::as_ptr(&amp;self) -&gt; *const T</kbd> retrieves the current pointer for the hazard on each invocation, adapting as the underlying data shifts forward. The node is the allocated and raw-pointered <kbd>Node</kbd> containing <kbd>item: T</kbd>. The remainder of the loop is the same compare-and-swap we've seen for other data structures of this kind, merely in terms of a hazard <kbd>Guard</kbd> instead of raw <kbd>AtomicPtrs</kbd> or the like. The programming model is very direct, as it is for <kbd>pop</kbd> as well:</p>
+<pre>    pub fn pop(&amp;self) -&gt; Option&lt;Guard&lt;T&gt;&gt; {
+        let mut snapshot = Guard::maybe_new(|| unsafe {
+            self.head.load(atomic::Ordering::Acquire).as_ref()
+        });
+
+        while let Some(old) = snapshot {
+            snapshot = Guard::maybe_new(|| unsafe {
+                self.head.compare_and_swap(
+                    old.as_ptr() as *mut _,
+                    old.next as *mut Node&lt;T&gt;,
+                    atomic::Ordering::Release,
+                ).as_ref()
+            });
+
+            if let Some(ref new) = snapshot {
+                if new.as_ptr() == old.as_ptr() {
+                    unsafe { add_garbage_box(old.as_ptr()); }
+                    return Some(old.map(|x| &amp;x.item));
+                }
+            } else {
+                break;
+            }
+        }
+
+        None
+    }</pre>
+<p>Note that when the old node is removed from the stack, <kbd>add_garbage_box</kbd> is called on it, adding the node to be garbage-collected at a later date. We know, further, from inspection, that this later date might well be exactly the moment of invocation, depending on luck.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The hazard of Nightly</h1>
+                </header>
+            
+            <article>
+                
+<p>Unfortunately, conc relies on an unstable feature of the Rust compiler and will not compile with a recent <kbd>rustc</kbd>. The last update to <kbd>conc</kbd>, and to TFS, its parent project, was in August of 2017. We'll have to travel back in time for a nightly <kbd>rustc</kbd> from that period. If you followed the instructions laid out in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust</em>, and are using <kbd>rustup</kbd>, that's a simple <kbd>rustup</kbd> default nightly-2017-08-17 away. Don't forget to switch back to a more modern Rust when you're done playing with conc.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Exercizing the hazard-pointer Treiber stack</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's put the conc, Treiber stack through the wringer to get an idea of the performance of this approach. Key areas of interest for us will be:</p>
+<ul>
+<li>Push/pop cycles per second</li>
+<li>Memory behavior, high-water mark, and what not</li>
+<li>Cache behavior</li>
+</ul>
+<p>We'll run our programs on x86 and ARM, as in previous chapters. One thing to note here, before we proceed, is that conc—at least as of version 0.5—requires the nightly channel to be compiled. Please read the section just before this one if you're jumping around in the book for full details.</p>
+<p>Because we have to run on an old version of nightly, we have to stick static <kbd>AtomicUsize</kbd> into <kbd>lazy_static!</kbd>, a technique you'll see in older Rust code but not in this book, usually. With that in mind, here is our exercise program:</p>
+<pre style="padding-left: 30px">extern crate conc;
+#[macro_use]
+extern crate lazy_static;
+extern crate num_cpus;
+extern crate quantiles;
+
+use conc::sync::Treiber;
+use quantiles::ckms::CKMS;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{thread, time};
+
+lazy_static! {
+    static ref WORKERS: AtomicUsize = AtomicUsize::new(0);
+    static ref COUNT: AtomicUsize = AtomicUsize::new(0);
+}
+static MAX_I: u32 = 67_108_864; // 2 ** 26
+
+fn main() {
+    let stk: Arc&lt;Treiber&lt;(u64, u64, u64)&gt;&gt; = Arc::new(Treiber::new());
+
+    let mut jhs = Vec::new();
+
+    let cpus = num_cpus::get();
+    WORKERS.store(cpus, Ordering::Release);
+
+    for _ in 0..cpus {
+        let stk = Arc::clone(&amp;stk);
+        jhs.push(thread::spawn(move || {
+            for i in 0..MAX_I {
+                stk.push((i as u64, i as u64, i as u64));
+                stk.pop();
+                COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+            WORKERS.fetch_sub(1, Ordering::Relaxed)
+        }))
+    }
+
+    let one_second = time::Duration::from_millis(1_000);
+    let mut iter = 0;
+    let mut cycles: CKMS&lt;u32&gt; = CKMS::new(0.001);
+    while WORKERS.load(Ordering::Relaxed) != 0 {
+        let count = COUNT.swap(0, Ordering::Relaxed);
+        cycles.insert((count / cpus) as u32);
+        println!(
+            "CYCLES PER SECOND({}):\n  25th: \<br/>            {}\n  50th: {}\n  75th: \<br/>            {}\n  90th: {}\n  max:  {}\n",
+            iter,
+            cycles.query(0.25).unwrap().1,
+            cycles.query(0.50).unwrap().1,
+            cycles.query(0.75).unwrap().1,
+            cycles.query(0.90).unwrap().1,
+            cycles.query(1.0).unwrap().1
+        );
+        thread::sleep(one_second);
+        iter += 1;
+    }
+
+    for jh in jhs {
+        jh.join().unwrap();
+    }
+}</pre>
+<p>We have a number of worker threads equal to the total number of CPUs in the target machine, each doing one push and then an immediate pop on the stack. A <kbd>COUNT</kbd> is kept and the main thread swaps that value for <kbd>0</kbd> every second or so, tossing the value into a quantile estimate structure—discussed in more detail in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send<span> </span>–<span> </span>the Foundation of Rust Concurrency</em>—and printing out a summary of the recorded cycles per second, scaled to the number of CPUs. The worker threads the cycle up through to <kbd>MAX_I</kbd>, which is arbitrarily set to the smallish value of <kbd>2**26</kbd>. When the worker is finished cycling, it decreases <kbd>WORKERS</kbd> and exits. Once <kbd>WORKERS</kbd> hits zero, the main loop also exits.</p>
+<p>On my x86 machine, it takes approximately 58 seconds for this program to exit, with this output:</p>
+<pre><strong>CYCLES PER SECOND(0):
+  25th: 0
+  50th: 0
+  75th: 0
+  90th: 0
+  max:  0
+
+CYCLES PER SECOND(1):
+  25th: 0
+  50th: 0
+  75th: 1124493
+  90th: 1124493
+  max:  1124493
+
+...
+
+CYCLES PER SECOND(56):
+  25th: 1139055
+  50th: 1141656
+  75th: 1143781
+  90th: 1144324
+  max:  1145284
+
+CYCLES PER SECOND(57):
+  25th: 1139097
+  50th: 1141656
+  75th: 1143792
+  90th: 1144324
+  max:  1145284</strong></pre>
+<pre><strong>CYCLES PER SECOND(58):
+  25th: 1139097
+  50th: 1141809
+  75th: 1143792
+  90th: 1144398
+  max:  1152384</strong></pre>
+<p>The x86 perf run is as follows:</p>
+<pre><strong>&gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache-references,cache-misses target/release/conc_stack &gt; /dev/null
+
+ Performance counter stats for 'target/release/conc_stack':
+
+     230503.932161      task-clock (msec)         #    3.906 CPUs utilized
+               943      context-switches          #    0.004 K/sec
+             9,140      page-faults               #    0.040 K/sec
+   665,734,124,408      cycles                    #    2.888 GHz 
+   529,230,473,047      instructions              #    0.79  insn per cycle 
+    99,146,219,517      branches                  #  430.128 M/sec 
+     1,140,398,326      branch-misses             #    1.15% of all branches
+    12,759,284,944      cache-references          #   55.354 M/sec
+       124,487,844      cache-misses              #    0.976 % of all cache refs
+
+      59.006842741 seconds time elapsed</strong></pre>
+<p>The memory-allocation behavior of this program is very favorable as well.</p>
+<p>On my ARM machine, it takes approximately 460 seconds for the program to run to completion, with this output:</p>
+<pre><strong>CYCLES PER SECOND(0):
+  25th: 0
+  50th: 0
+  75th: 0
+  90th: 0
+  max:  0</strong></pre>
+<pre><strong>CYCLES PER SECOND(1):
+  25th: 0
+  50th: 0
+  75th: 150477
+  90th: 150477
+  max:  150477
+
+...
+
+CYCLES PER SECOND(462):
+  25th: 137736
+  50th: 150371
+  75th: 150928
+  90th: 151129
+  max:  151381
+
+CYCLES PER SECOND(463):
+  25th: 137721
+  50th: 150370
+  75th: 150928
+  90th: 151129
+  max:  151381</strong></pre>
+<p>This is about 7.5 times slower than the x86 machine, even though both machines have the same number of cores. The x86 machine has a faster clock and a faster memory bus than my ARM:</p>
+<pre><strong>&gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache
+-references,cache-misses target/release/conc_stack &gt; /dev/null
+
+ Performance counter stats for 'target/release/conc_stack':
+
+    1882745.172714      task-clock (msec)         #    3.955 CPUs utilized
+                 0      context-switches          #    0.000 K/sec
+             3,212      page-faults               #    0.002 K/sec
+ 2,109,536,434,019      cycles                    #    1.120 GHz
+ 1,457,344,087,067      instructions              #    0.69  insn per cycle
+   264,210,403,390      branches                  #  140.333 M/sec
+    36,052,283,984      branch-misses             #   13.65% of all branches
+   642,854,259,575      cache-references          #  341.445 M/sec
+     2,401,725,425      cache-misses              #    0.374 % of all cache refs
+
+     476.095973090 seconds time elapsed</strong></pre>
+<p>The fact that the branch misses on ARM are 12% higher than on x86 is an interesting result.</p>
+<p>Before moving on, do remember to execute the rustup default stable.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Tradeoffs</h1>
+                </header>
+            
+            <article>
+                
+<p>Assuming that conc was brought up to speed with modern Rust, where would you want to apply it? Well, let's compare it to reference counting. In a reference-counting data structure, every read and modification requires manipulating atomic values, implying some level of synchronization between threads with an impact on performance. A similar situation exists with hazard pointers, though to a lesser degree. As we've seen, the hazard requires synchronization, but reading anything apart from the hazard, through it, is going to be at machine speed. That's a significant improvement over reference counting. Furthermore, we know that the hazard pointer approach does accumulate garbage—and the implementation of conc is done via an especially neat trick—but this garbage is bounded in size, no matter the frequency of updates to the hazardous structure. The cost of garbage collection is placed on one thread, incurring potentially high latency spikes for some operations while benefiting from bulk-operation calls to the deallocator. This is distinct from reference counting approaches where every thread is responsible for deallocating dead memory as soon as it is dead, keeping operation cost overheads similar but higher than baseline, and incurred on each operation without the benefit of bulk accumulation of deallocations. The hazard pointer approach struggles as the number of threads increase: recall that the number of hazards needed grows linearly with the number of threads, but also consider that an increase in thread count increases the traversal cost of any structure. Furthermore, while many structures have easily identifiable hazards, this is not universally true. Where do you put the hazard pointers for a b-tree?</p>
+<p>In summary—hazard pointers are an excellent choice when you have relatively few hazardous memory references to make and need bounded garbage, no matter the load on your structure. Hazard-based memory reclamation does not have the raw speed of epoch-based reclamation, but bounded memory use in all cases is hard to pass up.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Epoch-based reclamation</h1>
+                </header>
+            
+            <article>
+                
+<p>We touched on epoch-based memory reclamation in the last chapter. We'll now examine the concept in depth and in the context of a ready-to-use implementation via the crossbeam project (<a href="https://github.com/crossbeam-rs">https://github.com/crossbeam-rs</a>). Some of the developers of conc overlap with crossbeam, but there's been more work done to crossbeam in the pursuit of a general-purpose framework for low-level atomic programming in Rust. The developers note that they plan to support other memory management schemes, for example hazard pointers (HP) and quiescent state-based reclamation (QSBR). The crate is re-exported as the epoch module. Future editions of this book may well only cover crossbeam and simply discuss the various memory reclamation techniques embedded in it. The particular crate we'll be discussing in this section is crossbeam-epoch, at SHA <kbd>3179e799f384816a0a9f2a3da82a147850e14d38</kbd>. This coincides with the 0.4.1 release of the project.</p>
+<div class="packt_infobox"><span>The </span><span>crossbeam crates under discussion here are </span><span>not listed in their entirety. You can find the full listings in this book's source repository. </span></div>
+<p>Epoch-based memory reclamation was introduced by Keir Fraser in his 2004 PhD thesis, <em>Practical lock-freedom</em>. Fraser's work builds on previous limbo list approaches, whereby garbage is placed in a global list and reclaimed through periodic scanning when it can be demonstrated that the garbage is no longer referenced. The exact mechanism varies somewhat by author, but limbo lists have some serious correctness and performance downsides. Fraser's improvement is to separate limbo lists into three epochs, a current epoch, a middle, and an epoch from which garbage may be collected. Every participating thread is responsible for observing the current epoch on start, adds its garbage to the current epoch, and attempts to increase the epoch count when its operations complete. The last thread to complete is the one that succeeds in increasing the epoch and is responsible for performing garbage collection on the final epoch. Three total epochs are needed as threads move from epochs independently from one another: a thread at epoch n may still hold a reference from n-1, but not n-2, and so only n-2 is safe to reclaim. Fraser's thesis is quite long—being, well, being that it is sufficient work to acquire a PhD—but Hart et al's 2007 paper, <em>Performance of Memory Reclamation for Lockless Synchronization</em>, is warmly recommended to the reader pressed for time.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">An epoch-based Treiber stack</h1>
+                </header>
+            
+            <article>
+                
+<p>We inspected reference counting and hazard-pointer-based Treiber stacks earlier in this chapter and will follow this approach in this section as well. Fortunately, crossbeam also ships with a Treiber stack implementation, in the crossbeam-rs/crossbeam project, which we'll examine at SHA <kbd>89bd6857cd701bff54f7a8bf47ccaa38d5022bfb</kbd>, which is the source for <kbd>crossbeam::sync::TreiberStack</kbd> is in <kbd>src/sync/treiber_stack.rs</kbd>. The preamble is almost immediately interesting:</p>
+<pre style="padding-left: 30px">use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::ptr;
+
+use epoch::{self, Atomic, Owned};</pre>
+<p>What, for instance, are <kbd>epoch::Atomic</kbd> and <kbd>epoch::Owned</kbd>? Well, we'll explore these here. Unlike the section on hazard pointers, which explored the implementation of conc in a depth-first fashion, we'll take a breadth-first approach here, more or less. The reason being, crossbeam-epoch is intricate—it's easy to get lost. Setting aside the somewhat unknown nature of <kbd>epoch::Atomic</kbd>, the <kbd>TreiberStack</kbd> and <kbd>Node</kbd> structs are similar to what we've seen in other implementations:</p>
+<pre style="padding-left: 30px">#[derive(Debug)]
+pub struct TreiberStack&lt;T&gt; {
+    head: Atomic&lt;Node&lt;T&gt;&gt;,
+}
+
+#[derive(Debug)]
+struct Node&lt;T&gt; {
+    data: T,
+    next: Atomic&lt;Node&lt;T&gt;&gt;,
+}</pre>
+<p>As is the creation of a new stack:</p>
+<pre style="padding-left: 30px">impl&lt;T&gt; TreiberStack&lt;T&gt; {
+    /// Create a new, empty stack.
+    pub fn new() -&gt; TreiberStack&lt;T&gt; {
+        TreiberStack {
+            head: Atomic::null(),
+        }
+    }</pre>
+<p>Pushing a new element also looks familiar:</p>
+<pre>    pub fn push(&amp;self, t: T) {
+        let mut n = Owned::new(Node {
+            data: t,
+            next: Atomic::null(),
+        });
+        let guard = epoch::pin();
+        loop {
+            let head = self.head.load(Relaxed, &amp;guard);
+            n.next.store(head, Relaxed);
+            match self.head.compare_and_set(head, n, Release, &amp;guard) {
+                Ok(_) =&gt; break,
+                Err(e) =&gt; n = e.new,
+            }
+        }
+    }</pre>
+<p>Except, what is <kbd>epoch::pin()</kbd>? This function <kbd>pins</kbd> the current thread, returning a <kbd>crossbeam_epoch::Guard</kbd>. Much like previous guards we've seen throughout the book, crossbeam_epoch's <kbd>Guard</kbd> protects a resource. In this case, the guard protects the pinned nature of the thread. Once the guard drops, the thread is no longer pinned. Okay, great, so what does it mean for a thread to be pinned? Recall that epoch-based reclamation works by a thread entering an epoch, doing some stuff with memory, and then potentially increasing the epoch after finishing up fiddling with memory. This process is observed in crossbeam by pinning. <kbd>Guard</kbd> in hand—implying a safe epoch has been entered—the thread is able to take a heap allocation and get a stack reference to it. Just any old heap allocation and stack reference would be unsafe, however. There's no magic here. That's where <kbd>Atomic</kbd> and <kbd>Owned</kbd> come in. They're analogs to <kbd>AtomicPtr</kbd> and <kbd>Box</kbd> from the standard library, except that the operations done on them require a reference to <kbd>crossbeam_epoch::Guard</kbd>. We saw this technique in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send<span> </span>–<span> </span>the Foundation of Rust Concurrency</em>, when discussing hopper, using the type-system to ensure that potentially thread-unsafe operations are done safely by requiring the caller to pass in a guard of some sort. Programmer error can creep in by using <kbd>AtomicPtr</kbd>, <kbd>Box</kbd>, or any non-epoch unprotected memory accesses, but these will tend to stand out.</p>
+<p>Let's look at popping an element off the stack, where we know marking memory as safe to delete will have to happen:</p>
+<pre>    pub fn try_pop(&amp;self) -&gt; Option&lt;T&gt; {
+        let guard = epoch::pin();
+        loop {
+            let head_shared = self.head.load(Acquire, &amp;guard);
+            match unsafe { head_shared.as_ref() } {
+                Some(head) =&gt; {
+                    let next = head.next.load(Relaxed, &amp;guard);
+                    if self.head
+                        .compare_and_set(head_shared, next, Release, <br/>                         &amp;guard)
+                        .is_ok()
+                    {
+                        unsafe {
+                            guard.defer(move || <br/>                            head_shared.into_owned());
+                            return Some(ptr::read(&amp;(*head).data));
+                        }
+                    }
+                }
+                None =&gt; return None,
+            }
+        }
+    }</pre>
+<p>The key things to note are the creation of <kbd>head_shared</kbd> by performing a load on an Atomic, the usual compare and set operation, and then this:</p>
+<pre>    guard.defer(move || head_shared.into_owned());
+    return Some(ptr::read(&amp;(*head).data));</pre>
+<p><kbd>head_shared</kbd> is moved into a closure, converted, and that closure is then passed into the as-yet unexamined defer function of <kbd>Guard</kbd>. But, head is dereferenced and the data from it is read out and returned. Absent some special trick, that's dangerous. We need to know more.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">crossbeam_epoch::Atomic</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's dig in with the holder of our data, <kbd>Atomic</kbd>. This structure is from the crossbeam_epoch library and its implementation is in <kbd>src/atomic.rs</kbd>:</p>
+<pre style="padding-left: 30px">pub struct Atomic&lt;T&gt; {
+    data: AtomicUsize,
+    _marker: PhantomData&lt;*mut T&gt;,
+}
+
+unsafe impl&lt;T: Send + Sync&gt; Send for Atomic&lt;T&gt; {}
+unsafe impl&lt;T: Send + Sync&gt; Sync for Atomic&lt;T&gt; {}</pre>
+<p>The representation is a little odd: why not <kbd>data: *mut T</kbd>? Crossbeam's developers have done something neat here. On modern machines, there's a fair bit of space inside of pointer to store information, in the least significant bits. Consider that if we point only to aligned data, the address of a bit of memory will be multiples of 4 on a 32-bit system, or multiples of 8 on a 64-bit system. This leaves either two zero bits at the end of a pointer on 32-bit systems or three zero bits on a 64-bit system. Those bits can store information, called a tag. The fact that <kbd>Atomic</kbd> can be tagged will come into play. But, Rust doesn't allow us to manipulate pointers in the fashion of other systems programming languages. To that end, and because <kbd>usize</kbd> is the size of the machine word, crossbeam stores its <kbd>*mut T</kbd> as a <kbd>usize</kbd>, allowing for tagging of the pointer. Null <kbd>Atomics</kbd> are equivalent to tagged pointers to zero:</p>
+<pre>    pub fn null() -&gt; Atomic&lt;T&gt; {
+        Self {
+            data: ATOMIC_USIZE_INIT,
+            _marker: PhantomData,
+        }
+    }</pre>
+<p>New <kbd>Atomic</kbd>s are created by passing <kbd>T</kbd> down through <kbd>Owned</kbd>—which we saw previously—and then converting from that <kbd>Owned</kbd>:</p>
+<pre>    pub fn new(value: T) -&gt; Atomic&lt;T&gt; {
+        Self::from(Owned::new(value))
+    }</pre>
+<p><kbd>Owned</kbd> boxes <kbd>T</kbd>, performing a heap allocation:</p>
+<pre style="padding-left: 30px">impl&lt;T&gt; Owned&lt;T&gt; {
+    pub fn new(value: T) -&gt; Owned&lt;T&gt; {
+        Self::from(Box::new(value))
+    }</pre>
+<p>And subsequently converts that box into <kbd>*mut T</kbd>:</p>
+<pre style="padding-left: 30px">impl&lt;T&gt; From&lt;Box&lt;T&gt;&gt; for Owned&lt;T&gt; {
+    fn from(b: Box&lt;T&gt;) -&gt; Self {
+        unsafe { Self::from_raw(Box::into_raw(b)) }
+    }
+}</pre>
+<p>And converts that into a tagged pointer:</p>
+<pre style="padding-left: 30px">pub unsafe fn from_raw(raw: *mut T) -&gt; Owned&lt;T&gt; {
+    ensure_aligned(raw);
+    Self::from_data(raw as usize)
+}</pre>
+<p>That's a bit of a trek, but what that tells us is that <kbd>Atomic</kbd> is no different in terms of data representation compared to <kbd>AtomicPtr</kbd>, except that the pointer itself is tagged.</p>
+<p>Now, what about the usual operations on an atomic pointer, loading and the like? How do those differ in <kbd>Atomic</kbd>? Well, for one, we know that an epoch <kbd>Guard</kbd> has to be passed in to each call, but there are other important differences. Here's <kbd>Atomic::load</kbd>:</p>
+<pre>    pub fn load&lt;'g&gt;(&amp;self, ord: Ordering, _: &amp;'g Guard) <br/>        -&gt; Shared&lt;'g, T&gt; <br/>    {
+        unsafe { Shared::from_data(self.data.load(ord)) }
+    }</pre>
+<p>We can see <kbd>self.data.load(ord)</kbd>, so the underlying atomic load is performed as expected. But, what is <kbd>Shared</kbd>?</p>
+<pre style="padding-left: 30px">pub struct Shared&lt;'g, T: 'g&gt; {
+    data: usize,
+    _marker: PhantomData&lt;(&amp;'g (), *const T)&gt;,
+}</pre>
+<p>It's a reference to <kbd>Atomic</kbd> with an embedded reference to <kbd>Guard</kbd>. So long as <kbd>Shared</kbd> exists, the <kbd>Guard</kbd> that makes memory operations on it safe will also exist and cannot, importantly, cease to exist until <kbd>Shared</kbd> has been dropped. <kbd>Atomic::compare_and_set</kbd> introduces a few more traits:</p>
+<pre>    pub fn compare_and_set&lt;'g, O, P&gt;(
+        &amp;self,
+        current: Shared&lt;T&gt;,
+        new: P,
+        ord: O,
+        _: &amp;'g Guard,
+    ) -&gt; Result&lt;Shared&lt;'g, T&gt;, CompareAndSetError&lt;'g, T, P&gt;&gt;
+    where
+        O: CompareAndSetOrdering,
+        P: Pointer&lt;T&gt;,
+    {
+        let new = new.into_data();
+        self.data
+            .compare_exchange(current.into_data(), new,<br/>                              ord.success(), ord.failure())
+            .map(|_| unsafe { Shared::from_data(new) })
+            .map_err(|current| unsafe {
+                CompareAndSetError {
+                    current: Shared::from_data(current),
+                    new: P::from_data(new),
+                }
+            })
+    }</pre>
+<p>Notice that <kbd>compare_and_set</kbd> is defined in terms of <kbd>compare_exchange</kbd>. This CAS primitive is equivalent to a comparative exchange, but that exchange allows failure to be given more relaxed semantics, offering a performance boost on some platforms. Implementation of compare-and-set, then, requires understanding of which success <kbd>Ordering</kbd> matches with which failure <kbd>Ordering</kbd>, from which need comes <kbd>CompareAndSetOrdering</kbd>:</p>
+<pre style="padding-left: 30px">pub trait CompareAndSetOrdering {
+    /// The ordering of the operation when it succeeds.
+    fn success(&amp;self) -&gt; Ordering;
+
+    /// The ordering of the operation when it fails.
+    ///
+    /// The failure ordering can't be `Release` or `AcqRel` and must be <br/>    /// equivalent or weaker than the success ordering.
+    fn failure(&amp;self) -&gt; Ordering;
+}
+
+impl CompareAndSetOrdering for Ordering {
+    #[inline]
+    fn success(&amp;self) -&gt; Ordering {
+        *self
+    }
+
+    #[inline]
+    fn failure(&amp;self) -&gt; Ordering {
+        strongest_failure_ordering(*self)
+    }
+}</pre>
+<p>Where <kbd>strongest_failure_ordering</kbd> is:</p>
+<pre style="padding-left: 30px">fn strongest_failure_ordering(ord: Ordering) -&gt; Ordering {
+    use self::Ordering::*;
+    match ord {
+        Relaxed | Release =&gt; Relaxed,
+        Acquire | AcqRel =&gt; Acquire,
+        _ =&gt; SeqCst,
+    }
+}</pre>
+<p>The final new trait is <kbd>Pointer</kbd>, a little utility trait to provide functions over both <kbd>Owned</kbd> and <kbd>Shared</kbd>:</p>
+<pre style="padding-left: 30px">pub trait Pointer&lt;T&gt; {
+    /// Returns the machine representation of the pointer.
+    fn into_data(self) -&gt; usize;
+
+    /// Returns a new pointer pointing to the tagged pointer `data`.
+    unsafe fn from_data(data: usize) -&gt; Self;
+}</pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">crossbeam_epoch::Guard::defer</h1>
+                </header>
+            
+            <article>
+                
+<p>Now, again, how is the following in <kbd>TreiberStack::try_pop</kbd> a safe operation?</p>
+<pre style="padding-left: 30px">guard.defer(move || head_shared.into_owned());
+return Some(ptr::read(&amp;(*head).data));</pre>
+<p>What we need to explore now is <kbd>defer</kbd>, which lives in crossbeam-epoch at <kbd>src/guard.rs</kbd>:</p>
+<pre>    pub unsafe fn defer&lt;F, R&gt;(&amp;self, f: F)
+    where
+        F: FnOnce() -&gt; R,
+    {
+        let garbage = Garbage::new(|| drop(f()));
+
+        if let Some(local) = self.local.as_ref() {
+            local.defer(garbage, self);
+        }
+    }</pre>
+<p>We need to understand <kbd>Garbage</kbd>. It's defined in <kbd>src/garbage.rs</kbd> as:</p>
+<pre style="padding-left: 30px">pub struct Garbage {
+    func: Deferred,
+}
+
+
+unsafe impl Sync for Garbage {}
+unsafe impl Send for Garbage {}</pre>
+<p>The implementation of <kbd>Garbage</kbd> is very brief: </p>
+<pre style="padding-left: 30px">impl Garbage {
+    /// Make a closure that will later be called.
+    pub fn new&lt;F: FnOnce()&gt;(f: F) -&gt; Self {
+        Garbage { func: Deferred::new(move || f()) }
+    }
+}
+
+impl Drop for Garbage {
+    fn drop(&amp;mut self) {
+        self.func.call();
+    }
+}</pre>
+<p><kbd>Deferred</kbd> is a small structure that wraps <kbd>FnOnce()</kbd>, storing it inline or on the heap as size allows. You are encouraged to examine the implementation yourself, but the basic idea is to maintain the same properties of <kbd>FnOnce</kbd> in a heap-allocated structure that finds use in the <kbd>Garbage</kbd> drop implementation. What drops <kbd>Garbage</kbd>? This is where the following comes into play:</p>
+<pre>        if let Some(local) = self.local.as_ref() {
+            local.defer(garbage, self);
+        }
+    }</pre>
+<p>The <kbd>self.local</kbd> of <kbd>Guard</kbd> is <kbd>*const Local</kbd>, a struct called a participant for garbage collection in crossbeam's documentation. We need to understand where and how this <kbd>Local</kbd> is created. Let's understand the <kbd>Guard</kbd> internals, first:</p>
+<pre style="padding-left: 30px">pub struct Guard {
+    pub(crate) local: *const Local,
+}</pre>
+<p><kbd>Guard</kbd> is a wrapper around a const pointer to <kbd>Local</kbd>. We know that instances of <kbd>Guard</kbd> are created by <kbd>crossbeam_epoch::pin</kbd>, defined in <kbd>src/default.rs</kbd>:</p>
+<pre style="padding-left: 30px">pub fn pin() -&gt; Guard {
+    HANDLE.with(|handle| handle.pin())
+}</pre>
+<p><kbd>HANDLE</kbd> is a thread-local static variable:</p>
+<pre style="padding-left: 30px">thread_local! {
+    /// The per-thread participant for the default garbage collector.
+    static HANDLE: Handle = COLLECTOR.register();
+}</pre>
+<p><kbd>COLLECTOR</kbd> is a static, global variable:</p>
+<pre style="padding-left: 30px">lazy_static! {
+    /// The global data for the default garbage collector.
+    static ref COLLECTOR: Collector = Collector::new();
+}</pre>
+<p>This is a lot of new things all at once. Pinning is a non-trivial activity! As its name implies and its documentation states, <kbd>COLLECTOR</kbd> is the entry point for crossbeam-epoch's global garbage collector, called <kbd>Global</kbd>. <kbd>Collector</kbd> is defined in <kbd>src/collector.rs</kbd> and has a very brief implementation:</p>
+<pre style="padding-left: 30px">pub struct Collector {
+    pub(crate) global: Arc&lt;Global&gt;,
+}
+
+unsafe impl Send for Collector {}
+unsafe impl Sync for Collector {}
+
+impl Collector {
+    /// Creates a new collector.
+    pub fn new() -&gt; Self {
+        Collector { global: Arc::new(Global::new()) }
+    }
+
+    /// Registers a new handle for the collector.
+    pub fn register(&amp;self) -&gt; Handle {
+        Local::register(self)
+    }
+}</pre>
+<p>We know that <kbd>Collector</kbd> is a global static, implying that <kbd>Global::new()</kbd> will be called only once. <kbd>Global</kbd>, defined in <kbd>src/internal.rs</kbd>, is the data repository for the global garbage collector:</p>
+<pre style="padding-left: 30px">pub struct Global {
+    /// The intrusive linked list of `Local`s.
+    locals: List&lt;Local&gt;,
+
+    /// The global queue of bags of deferred functions.
+    queue: Queue&lt;(Epoch, Bag)&gt;,
+
+    /// The global epoch.
+    pub(crate) epoch: CachePadded&lt;AtomicEpoch&gt;,
+}</pre>
+<p>List is an intrusive list, which we saw reference to in the definition of <kbd>Local</kbd>. An intrusive list is a linked list in which the pointer to the next node in the list is stored in the data itself, the <kbd>entry: Entry</kbd> field of <kbd>Local</kbd>. Intrusive lists pop up fairly rarely, but they are quite useful when you're concerned about small memory allocations or need to store an element in multiple collections, both of which apply to crossbeam. <kbd>Queue</kbd> is a Michael and Scott queue. The epoch is a cache-padded <kbd>AtomicEpoch</kbd>, cache-padding being a technique to disable write contention on cache lines, called false sharing. <kbd>AtomicEpoch</kbd> is a wrapper around <kbd>AtomicUsize</kbd>. <kbd>Global</kbd> is, then, a linked-list of instances of <kbd>Local</kbd> – which, themselves, are associated with thread-pinned <kbd>Guards</kbd>—a queue of <kbd>Bag</kbd>s, which we haven't investigated yet, associated with some epoch number (a <kbd>usize</kbd>) and an atomic, global <kbd>Epoch</kbd>. This layout is not unlike what the algorithm description suggests. Once the sole <kbd>Global</kbd> is initialized, every thread-local <kbd>Handle</kbd> is created by calling <kbd>Collector::register</kbd>, which is <kbd>Local::register</kbd> internally:</p>
+<pre>    pub fn register(collector: &amp;Collector) -&gt; Handle {
+        unsafe {
+            // Since we dereference no pointers in this block, it is <br/>            // safe to use `unprotected`.
+
+            let local = Owned::new(Local {
+                entry: Entry::default(),
+                epoch: AtomicEpoch::new(Epoch::starting()),
+                collector: UnsafeCell::new(<br/>                    ManuallyDrop::new(collector.clone())<br/>                ),
+                bag: UnsafeCell::new(Bag::new()),
+                guard_count: Cell::new(0),
+                handle_count: Cell::new(1),
+                pin_count: Cell::new(Wrapping(0)),
+            }).into_shared(&amp;unprotected());
+            collector.global.locals.insert(local, &amp;unprotected());
+            Handle { local: local.as_raw() }
+        }
+    }</pre>
+<p>Note, specifically, that the <kbd>collector.global.locals.insert(local, &amp;unprotected())</kbd> call is inserting the newly created <kbd>Local</kbd> into the list of <kbd>Global</kbd> locals. (<kbd>unprotected</kbd> is a <kbd>Guard</kbd> that points to a null, rather than some valid <kbd>Local</kbd>). Every pinned thread has a <kbd>Local</kbd> registered with the global garbage collector's data. In fact, let's look at what happens when <kbd>Guard</kbd> is dropped, before we finish <kbd>defer</kbd>:</p>
+<pre>impl Drop for Guard {
+    #[inline]
+    fn drop(&amp;mut self) {
+        if let Some(local) = unsafe { self.local.as_ref() } {
+            local.unpin();
+        }
+    }
+}</pre>
+<p>The <kbd>unpin</kbd> method of <kbd>Local</kbd> is called:</p>
+<pre>    pub fn unpin(&amp;self) {
+        let guard_count = self.guard_count.get();
+        self.guard_count.set(guard_count - 1);
+
+        if guard_count == 1 {
+            self.epoch.store(Epoch::starting(), Ordering::Release);
+
+            if self.handle_count.get() == 0 {
+                self.finalize();
+            }
+        }
+    }</pre>
+<p>The <kbd>guard_count</kbd> field, recall, is the total number of participating threads or otherwise arranged for guards that keep the thread pinned. The <kbd>handle_count</kbd> field is a similar mechanism, but one used by <kbd>Collector</kbd> and <kbd>Local</kbd>. <kbd>Local::finalize</kbd> is where the action is:</p>
+<pre>    fn finalize(&amp;self) {
+        debug_assert_eq!(self.guard_count.get(), 0);
+        debug_assert_eq!(self.handle_count.get(), 0);
+
+        // Temporarily increment handle count. This is required so that  <br/>        // the following call to `pin` doesn't call `finalize` again.
+        self.handle_count.set(1);
+        unsafe {
+            // Pin and move the local bag into the global queue. It's <br/>            // important that `push_bag` doesn't defer destruction <br/>            // on any new garbage.
+            let guard = &amp;self.pin();
+            self.global().push_bag(&amp;mut *self.bag.get(), guard);
+        }
+        // Revert the handle count back to zero.
+        self.handle_count.set(0);</pre>
+<p><kbd>Local</kbd> contains a <kbd>self.bag</kbd> field of the <kbd>UnsafeCell&lt;Bag&gt;</kbd> type. Here's <kbd>Bag</kbd>, defined in <kbd>src/garbage.rs</kbd>:</p>
+<pre style="padding-left: 30px">pub struct Bag {
+    /// Stashed objects.
+    objects: ArrayVec&lt;[Garbage; MAX_OBJECTS]&gt;,
+}</pre>
+<p><kbd>ArrayVec</kbd> is new to this book. It's defined in the <kbd>ArrayVec</kbd> crate and is a <kbd>Vec</kbd> but with a capped maximum size. It's the same growable vector we know and love, but one that can't allocate to infinity. <kbd>Bag</kbd>, then, is a growable vector of <kbd>Garbage</kbd>, capped at <kbd>MAX_OBJECTS</kbd> total size:</p>
+<pre style="padding-left: 30px">#[cfg(not(feature = "strict_gc"))]
+const MAX_OBJECTS: usize = 64;
+#[cfg(feature = "strict_gc")]
+const MAX_OBJECTS: usize = 4;</pre>
+<p>Attempting to push garbage into a bag above <kbd>MAX_OBJECTS</kbd> will fail, signaling to the caller that it's time to collect some garbage. What <kbd>Local::finalize</kbd> is doing, specifically with <kbd>self.global().push_bag(&amp;mut *self.bag.get(), guard)</kbd>, is taking the <kbd>Local</kbd>'s bag of garbage and pushing it into the <kbd>Global</kbd>'s bag of garbage as a part of shutting <kbd>Local</kbd> down. <kbd>Global::push_bag</kbd> is:</p>
+<pre>    pub fn push_bag(&amp;self, bag: &amp;mut Bag, guard: &amp;Guard) {
+        let bag = mem::replace(bag, Bag::new());
+
+        atomic::fence(Ordering::SeqCst);
+
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        self.queue.push((epoch, bag), guard);
+    }</pre>
+<p>Unpinning <kbd>Guard</kbd> potentially shuts down a <kbd>Local</kbd>, which pushes its garbage into the queue of epoch-tagged garbage in <kbd>Global</kbd>. Now that we understand that, let's finish <kbd>Guard::defer</kbd> by inspecting <kbd>Local::defer</kbd>:</p>
+<pre>    pub fn defer(&amp;self, mut garbage: Garbage, guard: &amp;Guard) {
+        let bag = unsafe { &amp;mut *self.bag.get() };
+
+        while let Err(g) = bag.try_push(garbage) {
+            self.global().push_bag(bag, guard);
+            garbage = g;
+        }
+    }</pre>
+<p>The pinned caller signals garbage to its <kbd>Guard</kbd> by calling <kbd>defer</kbd>. The <kbd>Guard</kbd>, in turn, defers this garbage to its <kbd>Local</kbd>, which enters a while loop wherein it attempts to push garbage onto the local bag of garbage but will shift garbage into <kbd>Global</kbd> so long as the local bag is full.</p>
+<p>When does garbage get collected from <kbd>Global</kbd>? The answer is in a function we've not yet examined, <kbd>Local::pin</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">crossbeam_epoch::Local::pin</h1>
+                </header>
+            
+            <article>
+                
+<p>Recall that <kbd>crossbeam_epoch::pin</kbd> calls <kbd>Handle::pin</kbd>, which in turn calls <kbd>pin</kbd> on its <kbd>Local</kbd>. What happens during the execution of <kbd>Local::pin</kbd>? A lot:</p>
+<pre>    pub fn pin(&amp;self) -&gt; Guard {
+        let guard = Guard { local: self };
+
+        let guard_count = self.guard_count.get();
+        self.guard_count.set(guard_count.checked_add(1).unwrap());</pre>
+<p>The <kbd>Local</kbd> guard count is increased, which is done amusingly by creating a <kbd>Guard</kbd> with <kbd>self</kbd>. If the guard count was previously zero:</p>
+<pre>        if guard_count == 0 {
+            let global_epoch = <br/>         self.global().epoch.load(Ordering::Relaxed);
+            let new_epoch = global_epoch.pinned();</pre>
+<p>This means that there are no other active participants in <kbd>Local</kbd>, and <kbd>Local</kbd> needs to query for the global epoch. The global epoch is loaded as the <kbd>Local</kbd> epoch:</p>
+<pre>              self.epoch.store(new_epoch, Ordering::Relaxed);
+              atomic::fence(Ordering::SeqCst);</pre>
+<p>Sequential consistency is used here to ensure that ordering is maintained with regard to future and past atomic operations. Finally, the <kbd>Local</kbd>'s <kbd>pin_count</kbd> is increased and this kicks off, potentially, <kbd>Global::collect</kbd>:</p>
+<pre>            let count = self.pin_count.get();
+            self.pin_count.set(count + Wrapping(1));
+
+            // After every `PINNINGS_BETWEEN_COLLECT` try advancing the <br/>            // epoch and collecting some garbage.
+            if count.0 % Self::PINNINGS_BETWEEN_COLLECT == 0 {
+                self.global().collect(&amp;guard);
+            }
+        }
+
+        guard
+    }</pre>
+<p>It is possible for <kbd>Local</kbd> to be pinned and unpinned repeatedly, which is where <kbd>pin_count</kbd> comes into play. This mechanism doesn't find use in our discussion here, but the reader is referred to <kbd>Guard::repin</kbd> and <kbd>Guard::repin_after</kbd>. The latter function is especially useful when mixing network calls with atomic data structures as, if you'll recall, garbage cannot be collected until epochs advance and the epoch is only advanced by unpinning, usually. <kbd>Global::collect</kbd> is brief:</p>
+<pre>    pub fn collect(&amp;self, guard: &amp;Guard) {
+        let global_epoch = self.try_advance(guard);</pre>
+<p>The global epoch is potentially advanced by <kbd>Global::try_advance</kbd>, the advancement only happening if every <kbd>Local</kbd> in the global list of <kbd>Local</kbd> is not in another epoch <em>or</em> the list of locals is not modified during examination. The detection of concurrent modification is an especially neat trick, being part of crossbeam-epoch's private <kbd>List</kbd> iteration. The tagged pointer plays a part in this iteration and the reader is warmly encouraged to read and understand the <kbd>List</kbd> implementation crossbeam-epoch uses:</p>
+<pre>        let condition = |item: &amp;(Epoch, Bag)| {
+            // A pinned participant can witness at most one epoch <br/>            advancement. Therefore, any bag
+            // that is within one epoch of the current one cannot be <br/>            destroyed yet.
+            global_epoch.wrapping_sub(item.0) &gt;= 2
+        };
+
+        let steps = if cfg!(feature = "sanitize") {
+            usize::max_value()
+        } else {
+            Self::COLLECT_STEPS
+        };<br/><br/>        for _ in 0..steps {<br/>            match self.queue.try_pop_if(&amp;condition, guard) {<br/>                None =&gt; break,<br/>                Some(bag) =&gt; drop(bag),<br/>            }<br/>        }<br/>    }</pre>
+<p>The condition will be passed into the Global's <kbd>Queue::try_pop_if</kbd>, which only pops an element from the queue that matches the conditional. We can see the algorithm at play again here. Recall <kbd>self.queue :: Queue&lt;(Epoch, Bag)&gt;</kbd>? Bags of garbage will only be pulled from the queue if they are greater than two epochs away from the current epoch, otherwise there may still be live and dangerous references to them. The steps control how much garbage will end up being collected, doing a tradeoff for time versus memory use. Recall that every newly pinned thread is participating in this process, deallocating some of the global garbage.</p>
+<p>To summarize, when the programmer calls for their thread to be pinned, this creates a <kbd>Local</kbd> for storing thread-local garbage that is linked into a list of all <kbd>Local</kbd>s in a <kbd>Global</kbd> context. The thread will attempt to collect <kbd>Global</kbd> garbage, potentially pushing the epoch forward in the process. Any garbage the programmer defers during execution is preferentially pushed into the <kbd>Local</kbd> bag of garbage or, if that's full, causes some garbage to shift into the <kbd>Global</kbd> bag. Any garbage in the <kbd>Local</kbd> bag is shifted onto the <kbd>Global</kbd> bag when the <kbd>Local</kbd> is unpinned. Every atomic operation, by reason of requiring a reference to <kbd>Guard</kbd>, is implicitly associated with some <kbd>Local</kbd>, some epoch, and can be safely reclaimed by the method outlined in the preceding algorithm.</p>
+<p>Phew!</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Exercising the epoch-based Treiber stack</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's put the crossbeam-epoch Treiber stack through the wringer to get an idea of the performance of this approach. Key areas of interest for us will be:</p>
+<ul>
+<li>Push/pop cycles per second</li>
+<li>Memory behavior, high-water mark, and what not</li>
+<li>cache behavior</li>
+</ul>
+<p>We'll run our programs on x86 and ARM, like we did in previous chapters. Our exercise program, similar to the hazard pointer program from the previous section:</p>
+<pre style="padding-left: 30px">extern crate crossbeam;
+#[macro_use]
+extern crate lazy_static;
+extern crate num_cpus;
+extern crate quantiles;
+
+use crossbeam::sync::TreiberStack;
+use quantiles::ckms::CKMS;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{thread, time};
+
+lazy_static! {
+    static ref WORKERS: AtomicUsize = AtomicUsize::new(0);
+    static ref COUNT: AtomicUsize = AtomicUsize::new(0);
+}
+static MAX_I: u32 = 67_108_864; // 2 ** 26
+
+fn main() {
+    let stk: Arc&lt;TreiberStack&lt;(u64, u64, u64)&gt;&gt; = Arc::new(TreiberStack::new());
+
+    let mut jhs = Vec::new();
+
+    let cpus = num_cpus::get();
+    WORKERS.store(cpus, Ordering::Release);
+
+    for _ in 0..cpus {
+        let stk = Arc::clone(&amp;stk);
+        jhs.push(thread::spawn(move || {
+            for i in 0..MAX_I {
+                stk.push((i as u64, i as u64, i as u64));
+                stk.pop();
+                COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+            WORKERS.fetch_sub(1, Ordering::Relaxed)
+        }))
+    }
+
+    let one_second = time::Duration::from_millis(1_000);
+    let mut iter = 0;
+    let mut cycles: CKMS&lt;u32&gt; = CKMS::new(0.001);
+    while WORKERS.load(Ordering::Relaxed) != 0 {
+        let count = COUNT.swap(0, Ordering::Relaxed);
+        cycles.insert((count / cpus) as u32);
+        println!(
+            "CYCLES PER SECOND({}):\n  25th: \<br/>             {}\n  50th: {}\n  75th: \<br/>             {}\n  90th: {}\n  max:  {}\n",
+            iter,
+            cycles.query(0.25).unwrap().1,
+            cycles.query(0.50).unwrap().1,
+            cycles.query(0.75).unwrap().1,
+            cycles.query(0.90).unwrap().1,
+            cycles.query(1.0).unwrap().1
+        );
+        thread::sleep(one_second);
+        iter += 1;
+    }
+
+    for jh in jhs {
+        jh.join().unwrap();
+    }
+}</pre>
+<p>We have a number of worker threads equal to the total number of CPUs in the target machine, each doing one push and then an immediate pop on the stack. A <kbd>COUNT</kbd> is kept and the main thread swaps that value for 0 every second or so, tossing the value into a quantile estimate structure—discussed in more detail in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send<span> </span>–<span> </span>the Foundation of Rust Concurrency</em>—and printing out a summary of the recorded cycles per second, scaled to the number of CPUs. The worker threads cycle up through to <kbd>MAX_I</kbd>, which is arbitrarily set to the smallish value of <kbd>2**26</kbd>. When the worker is finished cycling, it decreases <kbd>WORKERS</kbd> and exits. Once <kbd>WORKERS</kbd> hits zero, the main loop also exits.</p>
+<p>On my x86 machine, it takes approximately 38 seconds for this program to exit, with this output:</p>
+<pre><strong>CYCLES PER SECOND(0):
+  25th: 0
+  50th: 0
+  75th: 0
+  90th: 0
+  max:  0
+
+CYCLES PER SECOND(1):
+  25th: 0
+  50th: 0
+  75th: 1739270
+  90th: 1739270
+  max:  1739270
+
+...
+
+CYCLES PER SECOND(37):
+  25th: 1738976
+  50th: 1739528
+  75th: 1740474
+  90th: 1757650
+  max:  1759459
+
+CYCLES PER SECOND(38):
+  25th: 1738868
+  50th: 1739528
+  75th: 1740452
+  90th: 1757650
+  max:  1759459</strong></pre>
+<p>Compare this to the x86 hazard implementation, which takes 58 total seconds. The x86 perf run is as follows:</p>
+<pre><strong>&gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache-references,cache-misses target/release/epoch_stack &gt; /dev/null
+
+ Performance counter stats for 'target/release/epoch_stack':
+
+     148830.337380      task-clock (msec)         #    3.916 CPUs utilized
+             1,043      context-switches          #    0.007 K/sec
+             1,039      page-faults               #    0.007 K/sec
+   429,969,505,981      cycles                    #    2.889 GHz
+   161,901,052,886      instructions              #    0.38  insn per cycle
+    27,531,697,676      branches                  #  184.987 M/sec
+       627,050,474      branch-misses             #    2.28% branches
+    11,885,394,803      cache-references          #   79.859 M/sec
+         1,772,308      cache-misses              #    0.015 % cache refs
+
+      38.004548310 seconds time elapsed</strong></pre>
+<p>The total number of executed instructions is much, much lower in the epoch-based approach, which squares well with the analysis in the opening discussion of this section. Even with a single hazardous pointer, epoch-based approaches do less work. On my ARM machine, it takes approximately 72 seconds for the program to run to completion, with this output:</p>
+<pre><strong>CYCLES PER SECOND(0):
+  25th: 0
+  50th: 0
+  75th: 0
+  90th: 0
+  max:  0
+
+CYCLES PER SECOND(1):
+  25th: 0
+  50th: 0
+  75th: 921743
+  90th: 921743
+  max:  921743
+
+...
+
+CYCLES PER SECOND(71):
+  25th: 921908
+  50th: 922326
+  75th: 922737
+  90th: 923235
+  max:  924084
+
+CYCLES PER SECOND(72):
+  25th: 921908
+  50th: 922333
+  75th: 922751
+  90th: 923235
+  max:  924084</strong></pre>
+<p>Compared to the ARM hazard implementation, which takes 463 total seconds! The ARM perf run is as follows:</p>
+<pre><strong>&gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache-references,cache-misses target/release/epoch_stack &gt; /dev/null
+
+ Performance counter stats for 'target/release/epoch_stack':
+
+     304880.898057      task-clock (msec)         #    3.959 CPUs utilized
+                 0      context-switches          #    0.000 K/sec
+               248      page-faults               #    0.001 K/sec
+   364,139,169,537      cycles                    #    1.194 GHz
+   215,754,991,724      instructions              #    0.59  insn per cycle
+    28,019,208,815      branches                  #   91.902 M/sec
+     3,525,977,068      branch-misses             #   12.58% branches
+   105,165,886,677      cache-references          #  344.941 M/sec
+     1,450,538,471      cache-misses              #    1.379 % cache refs
+
+      77.014340901 seconds time elapsed</strong></pre>
+<p>Again, drastically fewer instructions are executed compared to the hazard-pointer implementation on the same processor architecture. In passing, it's worth noting that the memory use of both the x86 and ARM versions' <kbd>epoch_stack</kbd> were lower than the hazard pointer stack implementations, though neither were memory hogs, consuming only a few kilobytes each. Had one of our epoch threads slept for a long while—say, a second or so—before leaving its epoch, memory use would have grown during execution. The reader is encouraged to wreak havoc on their own system.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Tradeoffs</h1>
+                </header>
+            
+            <article>
+                
+<p>Of the three approaches outlined in this chapter, crossbeam-epoch is the fastest, both in terms of our measurements and from discussions in the literature. The faster technique, quiescent-state-based memory reclamation, is not discussed in this chapter as it's an awkward fit for user-space programs and there is no readily-available implementation in Rust. Furthermore, the authors of the library have put years of work into the implementation: it is well-documented and runs on modern Rust across multiple CPU architectures.</p>
+<p>Traditional issues with the approach—namely, threads introducing long delays to pinned critical sections, resulting in long-lived epochs and garbage buildup—are addressed in the API by the abiltiy of <kbd>Guard </kbd>to be arbitrarily repinned. The transition of standard-library <kbd>AtomicPtr</kbd> data structures to crossbeam is a project, to be sure, but an approachable one. As we've seen, crossbeam-epoch does introduce some overhead, both in terms of cache padding and thread synchronization. This overhead is minimal and should be expected to improve with time.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we discussed three memory reclamation techniques: reference counting, hazard pointers, and epoch-based reclamation. Each, in turn, is faster than the last, though there are tradeoffs with each approach. Reference counting incurs the most overhead and has to be incorporated carefully into your data structure, unless Arc fits your needs, which it may well. Hazard pointers require the identification of hazards, memory accesses that result in memory that cannot be reclaimed without some type of coordination. This approach incurs overhead on each access to the hazard, which is costly if traversal of a hazardous structure must be done. Finally, epoch-based reclamation incurs overhead at thread-pinning, which denotes the start of an epoch and may require the newly pinned thread to participate in garage collection. Additional overhead is not incurred on memory accesses post-pin, a big win if you're doing traversal or can otherwise include many memory operations in a pinned section.</p>
+<p>The crossbeam library is exceptionally well done. Unless you have an atomic data structure specifically designed to not require allocations or to cope with allocations on a relaxed memory system without recourse to garbage collection, you are warmly encouraged to consider crossbeam as part and parcel with doing atomic programming in Rust, as of this writing.</p>
+<p>In the next chapter, we will leave the realm of atomic programming and discuss higher-level approaches to parallel programming, using thread pooling and data parallel iterators. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li><em>Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects</em>, Maged Michael. This paper introduces the hazard-pointer reclamation technique discussed in this chapter. The paper specifically discusses the newly invented technique in comparison to reference counting and demonstrates the construction of a safe Michael and Scott queue using the hazard pointer technique.</li>
+<li><em>Practical Lock-Freedom</em>, Keir Fraser. This is Keir Fraser's PhD thesis and is quite long, being concerned with the introduction of abstractions to ease the writing of lock-free structures—one of which is epoch-based reclamation—and the introduction of lock-free search structures, skip-lists, binary search trees, and red-black trees. Warmly recommended.</li>
+<li><em>Performance of Memory Reclamation for Lockless Synchronization</em>, Thomas Hart et al. This paper provides an overview of four techniques, all of which were discussed in passing in <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics –<span> </span>the Primitives of Synchronization</em>, of this book, and three of which were discussed in-depth in this chapter. Further, the paper introduces an optimization to epoch-based reclamation, which has influenced crossbeam, if your author is not mistaken. The paper is an excellent overview of the algorithms and provides comparative measurements of the algorithms' performance in a well-defined manner.</li>
+<li><em>RFCs for changes to Crossbeam</em>, available at <a href="https://github.com/crossbeam-rs/rfcs">https://github.com/crossbeam-rs/rfcs</a>. This Github repository is the primary discussion point for large-scale changes to the crossbeam library and is an especially important read for its discussions. For instance, RFC 2017-07-23-relaxed-memory lays out the changes necessary to crossbeam to operate on relaxed-memory systems, a topic rarely discussed in the literature.</li>
+<li><em>CDSCHECKER: Checking Concurrent Data Structures Written with C/C++ Atomics</em>, Brian Norris and Brian Demsky. This paper introduces a tool for checking the behavior of concurrent data structures according to the C++11/LLVM memory model. Given how utterly confounding relaxed-memory ordering can be, this tool is extremely useful when doing C++ work. I am unaware of a Rust analog but hope this will be seen as an opportunity for some bright spark reading this. Good luck, you.</li>
+<li><em>A Promising Semantics for Relaxed-Memory Concurrency</em>, Jeehoon Kang et al. Reasoning about the memory model proposed in C++/LLVM is very difficult. Which, despite how many people have thought about it in-depth over the years, there's still active research into formalizing this model to validate the correct function of optimizers and algorithms. Do read this paper in conjunction with <kbd>CDSCHECKER</kbd> by Norris and Demsky.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  </body></html>

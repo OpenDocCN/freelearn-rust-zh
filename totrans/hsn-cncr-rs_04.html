@@ -1,0 +1,990 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Sync and Send – the Foundation of Rust Concurrency</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">Rust aims to be a programming language in which fearless concurrency is possible. What does this mean? How does it work? In <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapter 2</a>, <em>Sequential Rust Performance Testing</em>, we discussed the performance of sequential Rust programs, intentionally setting aside discussion of concurrent programs. In <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>, <em>The Rust Memory Model – Ownership, References and Manipulation</em>, we saw an overview of the way Rust handles memory, especially with regard to composing high-performance structures. In this chapter, we'll expand on what we've learned previously and, at long last, dig in to Rust's concurrency story.</p>
+<p>By the end of this chapter, we will have:</p>
+<ul>
+<li>Discussed the <kbd>Sync</kbd> and <kbd>Send</kbd> traits</li>
+<li>Inspected parallel races in a ring data structure with Helgrind</li>
+<li>Resolved this race with a mutex</li>
+<li>Investigated the use of the standard library MPSC</li>
+<li>Built a non-trivial data multiplexing project</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">This chapter requires a working Rust installation. The details of verifying your installation are covered in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust</em>. The Valgrind suite of tools are used below. Many operating systems bundle valgrind packages but you can find further installation instructions for your system at <a href="http://valgrind.org/">valgrind.org</a>. Linux Perf is used and is bundled by many Linux distributions. Any other software required for this chapter is installed as a part of the text.</p>
+<p class="mce-root">You can find the source code for this book's projects on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust/">https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust/</a>. This chapter has its source code under <kbd>Chapter04</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Sync and Send</h1>
+                </header>
+            
+            <article>
+                
+<p>There are two key traits that the parallel Rust programmer must understand—<kbd>Send</kbd> and <kbd>Sync</kbd>. The <kbd>Send</kbd> trait is applied to types that can be transferred across thread boundaries. That is, any type <kbd>T: Send</kbd> is safe to move from one thread to another. <kbd>Rc&lt;T&gt;: !Send</kbd> means that it is explicitly marked as being unsafe to move between threads. Why? Consider if it were marked <kbd>Send</kbd>; what would happen? We know from the previous chapter that <kbd>Rc&lt;T&gt;</kbd> is a boxed <kbd>T</kbd> with two counters in place for weak and strong references to <kbd>T</kbd>. These counters are the trick. Suppose we spread an <kbd>Rc&lt;T&gt;</kbd> across two threads—call them <kbd>A</kbd> and <kbd>B</kbd>—each of which created references, dropped them, and the like. What would happen if both <kbd>A</kbd> and <kbd>B</kbd> dropped the last reference to <kbd>Rc&lt;T&gt;</kbd> at the same time? We have a race between either thread to see which can deallocate <kbd>T</kbd> first and which will suffer a double-free for its troubles. Worse, suppose the taking of the strong reference counter in <kbd>Rc&lt;T&gt;</kbd> were spread across three pseudo-instructions:</p>
+<pre style="padding-left: 30px">LOAD counter            (tmp)
+ADD counter 1 INTO tmp  (tmp = tmp+1)
+STORE tmp INTO counter  (counter = tmp)</pre>
+<p>Likewise, suppose the dropping of a strong reference counter were spread across three pseudo-instructions:</p>
+<pre style="padding-left: 30px">LOAD counter            (tmp)
+SUB counter 1 INTO tmp  (tmp = tmp-1)
+STORE tmp INTO counter  (counter = tmp)</pre>
+<p>In a single-threaded context, this works well, but consider this result in a multi-threaded context. Let <kbd>counter</kbd>  be equal to 10 for all threads at the beginning of the following thought experiment:</p>
+<pre style="padding-left: 30px">[A]LOAD counter                        (tmp_a == 10)
+[B]LOAD counter                        (tmp_b == 10)
+[B]SUB counter 1 INTO tmp              (tmp_b = tmp_b-1)
+[A]ADD counter 1 INTO tmp              (tmp_a = tmp_a + 1)
+[A]STORE tmp INTO counter              (counter = tmp_a)    == 11
+[A]ADD counter 1 INTO tmp              (tmp_a = tmp_a + 1)
+[A]STORE tmp INTO counter              (counter = tmp_a)    == 12
+[A]ADD counter 1 INTO tmp              (tmp_a = tmp_a + 1)
+[A]STORE tmp INTO counter              (counter = tmp_a)    == 13
+[B]STORE tmp INTO counter              (counter == tmp_b)   == 9</pre>
+<p>By the end, we've lost three references to <kbd>Rc&lt;T&gt;</kbd>, meaning while <kbd>T</kbd> is not lost in memory, it is entirely possible that when we drop <kbd>T</kbd>, references will remain to its no longer valid memory out in the wild, the results of which are undefined but not likely to be great.</p>
+<p>The <kbd>Sync</kbd> trait is derived from <kbd>Send</kbd> and has to do with references: <kbd>T: Sync</kbd> if <kbd>&amp;T: Send</kbd>. That is, a <kbd>T</kbd> is <kbd>Sync</kbd> only if sharing a <kbd>&amp;T</kbd> <span>which </span>acts as if that <kbd>T</kbd> were sent into the thread. We know from the previous code that <kbd>Rc&lt;T&gt;: !Send</kbd> and so we also know that <kbd>Rc&lt;T&gt;: !Sync</kbd>. Rust types inherit their constituent parts' <kbd>Sync</kbd> and <kbd>Send</kbd> status. By convention, any type which is <kbd>Sync</kbd> + <kbd>Send</kbd> is called thread-safe. Any type we implement on top of <kbd>Rc&lt;T&gt;</kbd> will not be thread-safe. Now, for the most part, <kbd>Sync</kbd> and <kbd>Send</kbd> are automatically derived traits. <kbd>UnsafeCell</kbd> , discussed in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>, <em>The Rust Memory Model – Ownership, References and Manipulation</em>,  is not thread-safe. Neither are raw pointers, to go with their lack of other safety guarantees. As you poke around Rust code bases, you'll find traits that would otherwise have been derived thread-safe but are marked as not. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Racing threads</h1>
+                </header>
+            
+            <article>
+                
+<p>You can also mark types as thread-safe, effectively promising the compiler that you've arranged all the data races in such a way as to make them safe. This is relatively rare in practice but it's worth seeing what it takes to make a type thread-safe in Rust before we start building on top of safe primitives. First, let's take a look at code that's intentionally sideways:</p>
+<pre style="padding-left: 30px">use std::{mem, thread};
+use std::ops::{Deref, DerefMut};
+
+unsafe impl Send for Ring {}
+unsafe impl Sync for Ring {}
+
+struct InnerRing {
+    capacity: isize,
+    size: usize,
+    data: *mut Option&lt;u32&gt;,
+}
+
+#[derive(Clone)]
+struct Ring {
+    inner: *mut InnerRing,
+}</pre>
+<p>What we have here is a ring, or a circular buffer, of <kbd>u32</kbd>. <kbd>InnerRing</kbd> holds a raw mutable pointer and is not automatically thread-safe as a result. But, we've promised to Rust that we know what we're doing and implement <kbd>Send</kbd> and <kbd>Sync</kbd> for <kbd>Ring</kbd>. Why not on <kbd>InnerRing</kbd>? When we manipulate an object in memory from multiple threads, the location of that object has to be fixed. <kbd>InnerRing</kbd>—and the data it contains—have to occupy a stable place in memory. <kbd>Ring</kbd> can and will be bounced around, at the very least from a creating thread to a worker. Now, what's that data there in <kbd>InnerRing</kbd>? It's a pointer to the 0th offset of a contiguous block of memory that will be the store of our circular buffer. At the time of writing this book, Rust has no stable allocator interface and, so, to get a contiguous allocation we have to do it in a roundabout fashion—strip a <kbd>Vec&lt;u32&gt;</kbd> down to its pointer:</p>
+<pre style="padding-left: 30px">impl Ring {
+    fn with_capacity(capacity: usize) -&gt; Ring {
+        let mut data: Vec&lt;Option&lt;u32&gt;&gt; = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            data.push(None);
+        }
+        let raw_data = (&amp;mut data).as_mut_ptr();
+        mem::forget(data);
+        let inner_ring = Box::new(InnerRing {
+            capacity: capacity as isize,
+            size: 0,
+            data: raw_data,
+        });
+
+        Ring {
+            inner: Box::into_raw(inner_ring),
+        }
+    }
+}</pre>
+<p><kbd>Ring::with_capacity</kbd> functions much the same as other types' <kbd>with_capacity</kbd> from the Rust ecosystem: sufficient space is allocated to fit capacity items. In our case, we piggyback off <kbd>Vec::with_capacity</kbd>, being sure to allocate enough room for capacity <kbd>Option&lt;u32&gt;</kbd> instances, initializing to None along the full length of the memory block. If you'll recall from <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a><span>, <em>The Rust Memory Model – Ownership, References and Manipulation</em>,</span> this is done as <kbd>Vec</kbd> is lazy about allocating and we require the allocation. <kbd>Vec::as_mut_ptr</kbd> returns a raw pointer to a slice but does not consume the original object, a problem for <kbd>Ring</kbd>. When data falls out of scope, the allocated block must survive. The standard library's <kbd>mem::forget</kbd> is ideal for this very use case. The allocation now being safe, an <kbd>InnerRing</kbd> is boxed to store it. The box is then consumed by <kbd>Box::into_raw</kbd> and passed into a <kbd>Ring</kbd>. Ta-da!</p>
+<p>Interacting with a type that has an inner raw pointer can be verbose, scattering unsafe blocks around to little good effect. To that end, <kbd>Ring</kbd> gets a <kbd>Deref</kbd> and <kbd>DerefMut</kbd> implementation, both of which tidy up the interaction with <kbd>Ring</kbd>:</p>
+<pre style="padding-left: 30px">impl Deref for Ring {
+    type Target = InnerRing;
+
+    fn deref(&amp;self) -&gt; &amp;InnerRing {
+        unsafe { &amp;*self.inner }
+    }
+}
+
+impl DerefMut for Ring {
+    fn deref_mut(&amp;mut self) -&gt; &amp;mut InnerRing {
+        unsafe { &amp;mut *self.inner }
+    }
+}</pre>
+<p>Now that we have <kbd>Ring</kbd> defined, we can get into the meat of the program. We'll define two operations that will run concurrently with one another—writer and reader. The idea here is that writer will race around the ring writing, increasing <kbd>u32</kbd> values into the ring whenever there's capacity to do so. (At type boundary the <kbd>u32</kbd> will wrap.) The reader will race around behind the writer reading the values written, checking that each read value is up one from the previous read, with the caveat of wrapping. Here's the writer:</p>
+<pre style="padding-left: 30px">fn writer(mut ring: Ring) -&gt; () {
+    let mut offset: isize = 0;
+    let mut cur: u32 = 0;
+    loop {
+        unsafe {
+            if (*ring).size != ((*ring).capacity as usize) {
+                *(*ring).data.offset(offset) = Some(cur);
+                (*ring).size += 1;
+                cur = cur.wrapping_add(1);
+                offset += 1;
+                offset %= (*ring).capacity;
+            } else {
+                thread::yield_now();
+            }
+        }
+    }
+}</pre>
+<p>Now, to be crystal clear, there's a <em>lot</em> that's wrong here. The ambition is to only write when the size of the ring buffer has not reached its capacity—meaning there's free space available. The actual writing is:</p>
+<pre>                *(*ring).data.offset(offset) = Some(cur);
+                (*ring).size += 1;</pre>
+<p>That is, we dereference the <kbd>ring (*ring)</kbd> and get the pointer to the <kbd>Option&lt;u32&gt;</kbd> sized block at <kbd>(*ring).data.offset(offset)</kbd>, which we then dereference and move <kbd>Some(cur)</kbd> onto the top of whatever was previously there. It is entirely possible that because of races on the size of the <kbd>Ring</kbd> that we'll overwrite an unread <kbd>u32.</kbd> The remainder of the write block sets up our next <kbd>cur</kbd> and our next offset, adding one and modulating around if need be:</p>
+<pre>            } else {
+                thread::yield_now();
+            }</pre>
+<p><kbd>thread::yield_now</kbd> is new. The writer is a fast spin-loop—it checks a single condition and loops back around again for another try. This is very CPU and power inefficient. <kbd>thread::yield_now</kbd> hints to the operating system that this thread had no work to do and should be deprioritized in favor of other threads. The effect is OS and running environment-dependent but it's still a good idea to yield if you have to spin-loop:</p>
+<pre style="padding-left: 30px">fn reader(mut ring: Ring) -&gt; () {
+    let mut offset: isize = 0;
+    let mut cur: u32 = 0;
+    while cur &lt; 1_000 {
+        unsafe {
+            if let Some(num) = mem::replace(<br/>                &amp;mut *(*ring).data.offset(offset), <br/>                None) <br/>            {
+                assert_eq!(num, cur);
+                (*ring).size -= 1;
+                cur = cur.wrapping_add(1);
+                offset += 1;
+                offset %= (*ring).capacity;
+            } else {
+                thread::yield_now();
+            }
+        }
+    }
+}</pre>
+<p>The reader is similar to the writer, with the major difference being that it's not an infinite loop. Reads are done with <kbd>mem::replace</kbd>, swapping the block at the reader offset with <kbd>None</kbd>. When we hit bingo and score a <kbd>Some</kbd>, the memory of that <kbd>u32</kbd> is now owned by the reader—a drop will be called when it goes out of scope. This is important. The writer is responsible for losing memory inside of a raw pointer and the reader is responsible for finding it. In this way, we are careful not to leak memory. Or, well, we would if there wasn't a race on the size of the <kbd>Ring</kbd>.</p>
+<p>Finally, we have the <kbd>main</kbd> function:</p>
+<pre style="padding-left: 30px">fn main() {
+    let capacity = 10;
+    let ring = Ring::with_capacity(capacity);
+
+    let reader_ring = ring.clone();
+    let reader_jh = thread::spawn(move || {
+        reader(reader_ring);
+    });
+    let _writer_jh = thread::spawn(move || {
+        writer(ring);
+    });
+
+    reader_jh.join().unwrap();
+}</pre>
+<p>There are two new things going on here. The first is our use of <kbd>thread::spawn</kbd> to start a <kbd>reader</kbd> and a <kbd>writer</kbd>. The <kbd>move || {}</kbd> construct is called a <em>move closure</em>. That is, every variable reference inside the closure from the outer scope is moved into the closure's scope. It's for this reason that we clone ring to <kbd>reader_ring</kbd>. Otherwise, there'd be no <kbd>ring</kbd> for the writer to work with. The second new thing is the <kbd>JoinHandle</kbd> that <kbd>thread::spawn</kbd> returns. Rust threads are not a drastic departure from the common POSIX or Windows threads. Rust threads receive their own stack and are independently runnable by the operating system.</p>
+<p>Every Rust thread has a return value, though here ours is <kbd>()</kbd>. We get at that return value by <em>joining</em> on the thread's <kbd>JoinHandler</kbd>, pausing execution of our thread until the thread wraps up successfully or crashes. Our main thread assumes its child threads will return successfully, hence the <kbd>join().unwrap()</kbd>.</p>
+<p>What happens when we run our program? Well, failure, which is what we were expecting:</p>
+<pre><strong>&gt; rustc -C opt-level=3 data_race00.rs &amp;&amp; ./data_race00</strong><br/><strong>thread '&lt;unnamed&gt;' panicked at 'assertion failed: `(left == right)`</strong><br/><strong>  left: `31`,</strong><br/><strong>   right: `21`', data_race00.rs:90:17</strong><br/><strong>   note: Run with `RUST_BACKTRACE=1` for a backtrace.</strong><br/><strong>   thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: Any', libcore/result.rs:916:5</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The flaw of the Ring</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's explore what's going wrong here. Our ring is laid out in memory as a contiguous block and we have a few control variables hung off the side. Here's a diagram of the system before any reads or writes happen:</p>
+<pre style="padding-left: 30px">size: 0
+capacity: 5
+
+ rdr
+ |
+|0: None |1: None |2: None |3: None |4: None |
+ |
+ wrt</pre>
+<p>Here's a diagram of the system just after the writer has written its first value:</p>
+<pre style="padding-left: 30px">size: 0
+capacity: 5
+
+ rdr
+ |
+|0: Some(0) |1: None |2: None |3: None |4: None |
+             |
+             wrt</pre>
+<p>To do this, the writer has performed a load of both size and capacity, performed a comparison between then, written to its offset inside the block, and incremented size. None of these operations are guaranteed to be ordered as they are in the program, either due to speculative execution or compiler reordering. As we've seen in the previous run example, the writer has stomped its own writes and raced well ahead. How? Consider what happens when the execution of the reader and writer are interleaved in this setup:</p>
+<pre style="padding-left: 30px">size: 5
+capacity: 5
+
+ rdr
+ |
+|0: Some(5) |1: Some(6) |2: Some(7) |3: Some(8) |4: Some(9) |
+ |
+ wrt</pre>
+<p>The writer thread has looped through the ring twice and is poised at the start of the ring to write <kbd>10</kbd>. The reader has been through the ring once and is expecting to see <kbd>5</kbd>. Consider what happens if the reader's decrement of size makes it into main memory before the <kbd>mem::replace</kbd> happens. Imagine if, then, the writer is woken up just as its size and capacity is checked. Imagine if, in addition to that, the writer writes its new <kbd>cur</kbd> to the main memory before the reader wakes back up. You'll get this situation:</p>
+<pre style="padding-left: 30px">size: 5
+capacity: 5
+
+ rdr
+ |
+|0: Some(10) |1: Some(6) |2: Some(7) |3: Some(8) |4: Some(9) |
+              |
+              wrt</pre>
+<p>That's what we see in practice. Sometimes. Here's the trick with concurrent programming at the metal of the machine: you're dealing with probabilities. It's entirely possible for our program to run successfully or, worse, run successfully on one CPU architecture and not on another. Randomized testing and introspection of programs like this are <em>vital</em>. In fact, back in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust</em>, we discussed a <kbd>valgrind</kbd> suite tool called <kbd>helgrind</kbd>, but didn't have a real use for it then. We do now. What does <kbd>helgrind</kbd> have to say about our intentionally racey program?</p>
+<p>We'll run <kbd>helgrind</kbd> like so:</p>
+<pre><strong>&gt; valgrind --tool=helgrind --history-level=full --log-file="results.txt" ./data_race00</strong></pre>
+<p>This will print the full history of the program but place the results in a file on disk for easier inspection. Here's some of the output:</p>
+<pre><strong>==19795== ----------------------------------------------------------------
+==19795==
+==19795== Possible data race during write of size 4 at 0x621A050 by thread #3
+==19795== Locks held: none
+==19795==    at 0x10F8E2: data_race00::writer::h4524c5c44483b66e (in /home/blt/projects/us/troutwine/concurrency_in_rust/external_projects/data_races/data_race00)
+==19795==    by 0x10FE75: _ZN3std10sys_common9backtrace28__rust_begin_short_backtrace17ha5ca0c09855dd05fE.llvm.5C463C64 (in /home/blt/projects/us/troutwine/concurrency_in_rust/external_projects/data_races/data_race00)
+==19795==    by 0x12668E: __rust_maybe_catch_panic (lib.rs:102)
+==19795==    by 0x110A42: _$LT$F$u20$as$u20$alloc..boxed..FnBox$LT$A$GT$$GT$::call_box::h6b5d5a2a83058684 (in /home/blt/projects/us/troutwine/concurrency_in_rust/external_projects/data_races/data_race00)
+==19795==    by 0x1191A7: call_once&lt;(),()&gt; (boxed.rs:798)
+==19795==    by 0x1191A7: std::sys_common::thread::start_thread::hdc3a308e21d56a9c (thread.rs:24)
+==19795==    by 0x112408: std::sys::unix::thread::Thread::new::thread_start::h555aed63620dece9 (thread.rs:90)
+==19795==    by 0x4C32D06: mythread_wrapper (hg_intercepts.c:389)
+==19795==    by 0x5251493: start_thread (pthread_create.c:333)
+==19795==    by 0x5766AFE: clone (clone.S:97)
+==19795==
+==19795== This conflicts with a previous write of size 8 by thread #2
+==19795== Locks held: none
+==19795==    at 0x10F968: data_race00::reader::h87e804792f6b43da (in /home/blt/projects/us/troutwine/concurrency_in_rust/external_projects/data_races/data_race00)
+==19795==    by 0x12668E: __rust_maybe_catch_panic (lib.rs:102)
+==19795==    by 0x110892: _$LT$F$u20$as$u20$alloc..boxed..FnBox$LT$A$GT$$GT$::call_box::h4b5b7e5f469a419a (in /home/blt/projects/us/troutwine/concurrency_in_rust/external_projects/data_races/data_race00)
+==19795==    by 0x1191A7: call_once&lt;(),()&gt; (boxed.rs:798)
+==19795==    by 0x1191A7: std::sys_common::thread::start_thread::hdc3a308e21d56a9c (thread.rs:24)
+==19795==    by 0x112408: std::sys::unix::thread::Thread::new::thread_start::h555aed63620dece9 (thread.rs:90)
+==19795==    by 0x4C32D06: mythread_wrapper (hg_intercepts.c:389)
+==19795==    by 0x5251493: start_thread (pthread_create.c:333)
+==19795==    by 0x5766AFE: clone (clone.S:97)
+==19795==  Address 0x621a050 is in a rw- anonymous segment
+==19795==
+==19795== ----------------------------------------------------------------</strong></pre>
+<p>The output is less clear than it might be, but helgrind is warning us about the data stomping that we're already aware of. The reader is encouraged to run helgrind for themselves and inspect the whole history.</p>
+<p>Let's improve this situation. Clearly, we have a problem with racing reads and writes, but we also have a problem in terms of the behavior of the writer. It stomps its own writes and is entirely unaware of it. With an adjustment to the writer, we can stop absent-mindedly stomping on writes as follows:</p>
+<pre>fn writer(mut ring: Ring) -&gt; () {
+    let mut offset: isize = 0;
+    let mut cur: u32 = 0;
+    loop {
+        unsafe {
+            if (*ring).size != ((*ring).capacity as usize) {
+                assert!(mem::replace(&amp;mut *(*ring).data.offset(offset), <br/>                Some(cur)).is_none());
+                (*ring).size += 1;
+                cur = cur.wrapping_add(1);
+                offset += 1;
+                offset %= (*ring).capacity;
+            } else {
+                thread::yield_now();
+            }
+        }
+    }
+}</pre>
+<p>Afterwards, we run the program a few times and find the following:</p>
+<pre><strong>&gt; ./data_race01
+thread '&lt;unnamed&gt;thread '' panicked at '&lt;unnamed&gt;assertion failed: mem::replace(&amp;mut *(*ring).data.offset(offset), Some(cur)).is_none()' panicked at '', assertion failed: `(left == right)`
+  left: `20`,
+   right: `10`data_race01.rs', :data_race01.rs65::8517:
+   17note: Run with `RUST_BACKTRACE=1` for a backtrace.
+
+thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: Any', libcore/result.rs:945:5</strong></pre>
+<p>That's fun! Both threads have crashed for the same reason. The writer has inappropriately stomped a write and the reader has read it.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Getting back to safety</h1>
+                </header>
+            
+            <article>
+                
+<p>Like we discussed previously, the preceding examples were intentionally low-level and unsafe. How can we build something similar with the bits and pieces that Rust provides us with? Here's one approach:</p>
+<pre style="padding-left: 30px">use std::{mem, thread};
+use std::sync::{Arc, Mutex};
+
+struct Ring {
+    size: usize,
+    data: Vec&lt;Option&lt;u32&gt;&gt;,
+}
+
+impl Ring {
+    fn with_capacity(capacity: usize) -&gt; Ring {
+        let mut data: Vec&lt;Option&lt;u32&gt;&gt; = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            data.push(None);
+        }
+        Ring {
+            size: 0,
+            data: data,
+        }
+    }
+
+    fn capacity(&amp;self) -&gt; usize {
+        self.data.capacity()
+    }
+
+    fn is_full(&amp;self) -&gt; bool {
+        self.size == self.data.capacity()
+    }
+
+    fn emplace(&amp;mut self, offset: usize, val: u32) -&gt; Option&lt;u32&gt; {
+        self.size += 1;
+        let res = mem::replace(&amp;mut self.data[offset], Some(val));
+        res
+    }
+
+    fn displace(&amp;mut self, offset: usize) -&gt; Option&lt;u32&gt; {
+        let res = mem::replace(&amp;mut self.data[offset], None);
+        if res.is_some() {
+            self.size -= 1;
+        }
+        res
+    }
+}
+
+fn writer(ring_lk: Arc&lt;Mutex&lt;Ring&gt;&gt;) -&gt; () {
+    let mut offset: usize = 0;
+    let mut cur: u32 = 0;
+    loop {
+        let mut ring = ring_lk.lock().unwrap();
+        if !ring.is_full() {
+            assert!(ring.emplace(offset, cur).is_none());
+            cur = cur.wrapping_add(1);
+            offset += 1;
+            offset %= ring.capacity();
+        } else {
+            thread::yield_now();
+        }
+    }
+}
+
+fn reader(read_limit: usize, ring_lk: Arc&lt;Mutex&lt;Ring&gt;&gt;) -&gt; () {
+    let mut offset: usize = 0;
+    let mut cur: u32 = 0;
+    while (cur as usize) &lt; read_limit {
+        let mut ring = ring_lk.lock().unwrap();
+        if let Some(num) = ring.displace(offset) {
+            assert_eq!(num, cur);
+            cur = cur.wrapping_add(1);
+            offset += 1;
+            offset %= ring.capacity();
+        } else {
+            drop(ring);
+            thread::yield_now();
+        }
+    }
+}
+
+fn main() {
+    let capacity = 10;
+    let read_limit = 1_000_000;
+    let ring = Arc::new(Mutex::new(Ring::with_capacity(capacity)));
+
+    let reader_ring = Arc::clone(&amp;ring);
+    let reader_jh = thread::spawn(move || {
+        reader(read_limit, reader_ring);
+    });
+    let _writer_jh = thread::spawn(move || {
+        writer(ring);
+    });
+
+    reader_jh.join().unwrap();
+}</pre>
+<p>This is awfully similar to the previous, racey programs. We have Ring, which holds a size and is a set of operations around a <kbd>Vec&lt;Option&lt;u32&gt;&gt;</kbd>. This time, the <kbd>vec</kbd> is not exploded into a raw pointer and the implementation of Ring is fleshed out some more. Actually, it was possible to provide more of an abstract implementation in our previous examples—as we have seen by poking around inside Rust itself—but indirection and unsafety make for a rough combination. It's sometimes the case that indirect, unsafe code is harder to recognize as flawed than direct, unsafe code. Anyhow, you'll note that <kbd>Ring: !Send</kbd> in this implementation. Instead, the writer and reader threads operate on <kbd>Arc&lt;Mutex&lt;Ring&gt;&gt;</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Safety by exclusion</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's talk about <kbd>Mutex.</kbd> Mutexes provide MUTual EXclusion among threads. Rust's <kbd>Mutex</kbd> works just as you'd expect coming from other programming languages. Any thread that calls a lock on a <kbd>Mutex</kbd> will acquire the lock or block until such a time as the thread that holds the mutex unlocks it. The type for lock is <kbd>lock(&amp;self) -&gt; LockResult&lt;MutexGuard&lt;T&gt;&gt;</kbd>. There's a neat trick happening here. <kbd>LockResult&lt;Guard&gt;</kbd> is <kbd>Result&lt;Guard&gt;</kbd>, <kbd>PoisonError&lt;Guard&gt;&gt;</kbd>. That is, the thread that acquires a mutex lock actually gets a result, which containers the <kbd>MutexGuard&lt;T&gt;</kbd> on success or a <em>poisoned</em> notification. Rust poisons its mutexes when the holder of the mutex crashes, a tactic that helps prevent the continued operation of a multi-threaded propagation that has crashed in only one thread. For this very reason, you'll find that many Rust programs do not inspect the return of a lock call and immediately unwrap it. The <kbd>MutexGuard&lt;T&gt;</kbd>, when dropped, unlocks the mutex. Once the mutex guard is unlocked, it's no longer possible to access the data ensconced inside and, so, there's  no way for one thread to interact poorly with another. A <kbd>Mutex</kbd> is both <kbd>Sync</kbd> and <kbd>Send</kbd>, which makes good sense. Why then do we wrap our <kbd>Mutex&lt;Ring&gt;</kbd> in an <kbd>Arc</kbd>? What even is an <kbd>Arc&lt;T&gt;</kbd>?</p>
+<p>The <kbd>Arc&lt;T&gt;</kbd> is an atomic reference counting pointer. As discussed previously, <kbd>Rc&lt;T&gt;</kbd> is not thread-safe because if it were marked as such there'd be a race on the inner strong/weak counters, much like in our intentionally racey programs. <kbd>Arc&lt;T&gt;</kbd> is built on top of atomic integers, which we'll go into more detail on in the next chapter. Suffice it to say for now, the <kbd>Arc&lt;T&gt;</kbd> is able to act as a reference counting pointer without introducing data races between threads. <kbd>Arc&lt;T&gt;</kbd> can be used everywhere <kbd>Rc&lt;T&gt;</kbd> can, except those atomic integers are not free. If you can use <kbd>Rc&lt;T&gt;</kbd>, do so. Anyway, more on this next chapter.</p>
+<p>Why <kbd>Arc&lt;Mutex&lt;Ring&gt;&gt;</kbd>? Well, <kbd>Mutex&lt;Ring&gt;</kbd> can be moved but it cannot be cloned. Let's take a look inside <kbd>Mutex</kbd>:</p>
+<pre style="padding-left: 30px">pub struct Mutex&lt;T: ?Sized&gt; {
+    // Note that this mutex is in a *box*, not inlined into<br/>    // the struct itself. Once a native mutex has been used <br/>    // once, its address can never change (it can't be <br/>    // moved). This mutex type can be safely moved at any time,<br/>    // so to ensure that the native mutex is used correctly we<br/>    // box the inner mutex to give it a constant address.
+    inner: Box&lt;sys::Mutex&gt;,
+    poison: poison::Flag,
+    data: UnsafeCell&lt;T&gt;,
+}</pre>
+<p>We can see that <kbd>T</kbd> may or may not be sized and that <kbd>T</kbd> is stored in an <kbd>UnsafeCell&lt;T&gt;</kbd> next to something called <kbd>sys::Mutex</kbd>. Each platform that Rust runs on will provide its own form of mutex, being that these are often tied into the operating system environment. If you <span><span>take a look at</span></span> the rustc code, you'll find that <kbd>sys::Mutex</kbd> is a wrapper around system-dependent mutex implementations. The <kbd>Unix</kbd> implementation is in <kbd>src/libstd/sys/unix/mutex.rs</kbd> and is an <kbd>UnsafeCell</kbd> around <kbd>pthread_mutex_t</kbd>, as you might expect:</p>
+<pre style="padding-left: 30px">pub struct Mutex { inner: UnsafeCell&lt;libc::pthread_mutex_t&gt; }</pre>
+<p>It's not strictly necessary for <kbd>Mutex</kbd> to be implemented on top of system-dependent foundations, as we'll see in the chapter on atomic primitives when we build our own locks. Generally speaking though, it's a good call to use what's available and well-tested unless there's a good reason not to (like pedagogy).</p>
+<p>Now, what would happen if we were to clone <kbd>Mutex&lt;T&gt;</kbd>? We would need a new allocation of the system mutex, for one, and possibly a new <kbd>UnsafeCell</kbd>, if <kbd>T</kbd> itself were even clonable. The new system mutex is the real problem—threads have to synchronize on the same structure in memory. Tossing <kbd>Mutex</kbd> inside of an <kbd>Arc</kbd> solves that problem. Cloning the <kbd>Arc</kbd>, like cloning an <kbd>Rc</kbd>, creates new strong references to the <kbd>Mutex</kbd>. These references are immutable, though. How does that work out? For one, the mutex inside the <kbd>Arc</kbd> is never changed. In the abstract model that Rust provides, the mutex itself has no internal state and there's nothing really being mutated by locking threads. Of course, that's not actually true, by inspection. The Rust <kbd>Mutex</kbd> only behaves that way because of the interior <kbd>UnsafeCell</kbd> surrounding system-dependent structures. Rust <kbd>Mutex</kbd> makes use of the interior mutability that <kbd>UnsafeCell</kbd> allows. The mutex itself stays immutable while the interior <kbd>T</kbd> is mutably referenced through the <kbd>MutexGuard</kbd>. This is safe in Rust's memory model as there's only one mutable reference to <kbd>T</kbd> at any given time on account of mutual exclusion:</p>
+<pre>fn main() {
+    let capacity = 10;
+    let read_limit = 1_000_000;
+    let ring = Arc::new(Mutex::new(Ring::with_capacity(capacity)));
+
+    let reader_ring = Arc::clone(&amp;ring);
+    let reader_jh = thread::spawn(move || {
+        reader(read_limit, reader_ring);
+    });
+    let _writer_jh = thread::spawn(move || {
+        writer(ring);
+    });
+    <br/>    reader_jh.join().unwrap();<br/>}</pre>
+<p>We wrap our <kbd>Ring</kbd>, which is not thread-safe in the least, in an <kbd>Arc</kbd>, <kbd>Mutex</kbd> layer, clone this to the reader, and move it into the writer. Here, this is a matter of style, but it's important to realize that if a main thread creates and clones an <kbd>Arc</kbd> into child threads then the contents of <kbd>Arc</kbd> are still alive, at least as long as the main thread is. For instance, if a file handler were held in a main-thread <kbd>Arc</kbd>, cloned to temporary start-up workers, and then not dropped, the file handler itself would never be closed. This may or may not be what your program intends, of course. The reader and the writer each take a lock on the mutex—<kbd>Arc</kbd> has convenient <kbd>Deref</kbd>/<kbd>DerefMut</kbd> implementations—and then perform their action. Running this new program through <kbd>helgrind</kbd> gives a clean run. The reader is encouraged to confirm this on their own system.</p>
+<p>Moreover, the program itself runs to completion successfully after repeated runs. The unfortunate thing is that, theoretically, it's not especially efficient. Locking a mutex is not free, and while our thread's operations are short—a handful of arithmetic in addition to one memory swap—while one thread holds the mutex the other waits dumbly. Linux perf proves this somewhat:</p>
+<pre><strong>&gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache-references,cache-misses ./data_race02
+
+ Performance counter stats for './data_race02':
+
+        988.944526      task-clock (msec)         #    1.943 CPUs utilized
+             8,005      context-switches          #    0.008 M/sec
+               137      page-faults               #    0.139 K/sec
+     2,836,237,759      cycles                    #    2.868 GHz 
+     1,074,887,696      instructions              #    0.38  insn per cycle
+       198,103,111      branches                  #  200.318 M/sec
+         1,557,868      branch-misses             #    0.79% of all branches
+        63,377,456      cache-references          #   64.086 M/sec
+             3,326      cache-misses              #    0.005 % of all cache refs
+
+       0.508990976 seconds time elapsed</strong></pre>
+<p>Only 1.3 CPUs are used during the execution. For a program as simple as this, we're likely better off with the simplest approach. Also, because of cache write effects in the presence of a memory barrier—of which a mutex assuredly is one—it <em>may</em> be cheaper to prefer mutual exclusion instead of fine-grained locking strategies. Ultimately, it comes down to finding the trade-off in development time, need for machine efficiency, and defining what machine efficiency is for the CPU in use. We'll see some of this in later chapters.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Using MPSC</h1>
+                </header>
+            
+            <article>
+                
+<p>We've come at Ring from an odd point of view, looking to build a malfunctioning program from the start only to improve it later. In a real program where purposes and functions gradually drift from their origins, it's worth occasionally asking what a piece of software actually <em>does</em> as an abstract concept. So, what is it that Ring actually <em>does</em>? For one, it's bounded, we know that. It has a fixed capacity and the reader/writer pair are careful to stay within that capacity. Secondly, it's a structure that's intended to be operated on by two or more threads with two roles: reading and writing. Ring is a means of passing <kbd>u32</kbd> between threads, being read in the order that they were written.</p>
+<p>Happily, as long as we're willing to accept only a single reader thread, Rust ships with something in the standard library to cover this common need—<kbd>std::sync::mpsc</kbd>. The Multi Producer Single Consumer queue is one where the writer end—called <kbd>Sender&lt;T&gt;</kbd>—may be cloned and moved into multiple threads. The reader thread—called <kbd>Receiver&lt;T&gt;</kbd>—can only be moved. There are two variants of sender available—<kbd>Sender&lt;T&gt;</kbd> and <kbd>SyncSender&lt;T&gt;</kbd>. The first represents an unbounded MPSC, meaning the channel will allocate as much space as needed to hold the <kbd>Ts</kbd> sent into it. The second represents a bounded MPSC, meaning that the internal storage of the channel has a fixed upper capacity. While the Rust documentation describes <kbd>Sender&lt;T&gt;</kbd> and <kbd>SyncSender&lt;T&gt;</kbd> as being asynchronous and synchronous respectively this is not, strictly, true. <kbd>SyncSender&lt;T&gt;::send</kbd> will block if there is no space available in the channel but there is also a <kbd>SyncSender&lt;T&gt;::try_send</kbd> which is of type <kbd>try_send(&amp;self, t: T) -&gt; Result&lt;()</kbd>, <kbd>TrySendError&lt;T&gt;&gt;</kbd>. It's possible to use Rust's MPSC in bounded memory, keeping in mind that the caller will have to have a strategy for what to do with inputs that are rejected for want of space to place them in.</p>
+<p>What does our <kbd>u32</kbd> passing program look like using Rust's MPSC? Like so:</p>
+<pre style="padding-left: 30px">use std::thread;
+use std::sync::mpsc;
+
+fn writer(chan: mpsc::SyncSender&lt;u32&gt;) -&gt; () {
+    let mut cur: u32 = 0;
+    while let Ok(()) = chan.send(cur) {
+        cur = cur.wrapping_add(1);
+    }
+}
+
+fn reader(read_limit: usize, chan: mpsc::Receiver&lt;u32&gt;) -&gt; () {
+    let mut cur: u32 = 0;
+    while (cur as usize) &lt; read_limit {
+        let num = chan.recv().unwrap();
+        assert_eq!(num, cur);
+        cur = cur.wrapping_add(1);
+    }
+}
+
+fn main() {
+    let capacity = 10;
+    let read_limit = 1_000_000;
+    let (snd, rcv) = mpsc::sync_channel(capacity);
+
+    let reader_jh = thread::spawn(move || {
+        reader(read_limit, rcv);
+    });
+    let _writer_jh = thread::spawn(move || {
+        writer(snd);
+    });
+
+    reader_jh.join().unwrap();
+}</pre>
+<p>This is significantly shorter than any of our previous programs as well as being not at all prone to arithmetic bugs. The send type of <kbd>SyncSender</kbd> is <kbd>send(&amp;self, t: T) -&gt; Result&lt;()</kbd>, <kbd>SendError&lt;T&gt;&gt;</kbd>, meaning that <kbd>SendError</kbd> has to be cared for to avoid a program crash. <kbd>SendError</kbd> is only returned when the remote side of an MPSC channel is disconnected, as will happen in this program when the reader hits its <kbd>read_limit</kbd>. The performance characteristics of this odd program are not quite as quick as for the last <kbd>Ring</kbd> program:</p>
+<pre><strong>&gt; perf stat --event task-clock,context-switches,page-faults,cycles,instructions,branches,branch-misses,cache-references,cache-misses ./data_race03
+
+ Performance counter stats for './data_race03':
+
+        760.250406      task-clock (msec)   #    0.765 CPUs utilized
+           200,011      context-switches    #    0.263 M/sec
+               135      page-faults         #    0.178 K/sec
+     1,740,006,788      cycles              #    2.289 GHz
+     1,533,396,017      instructions        #    0.88  insn per cycle
+       327,682,344      branches            #  431.019 M/sec
+     741,095      branch-misses             #    0.23% of all branches
+        71,426,781      cache-references    #   93.952 M/sec
+          4,082      cache-misses          #  0.006 % of all cache refs
+
+       0.993142979 seconds time elapsed</strong></pre>
+<p>But it's well within the margin of error, especially considering the ease of programming. One thing worth keeping in mind is that messages in MPSC flow in only one direction: the channel is not bi-directional. In this way, MPSC is not suitable for request/response patterns. It's not unheard of to layer two or more MPSCs together to achieve this, with the understanding that a single consumer on either side is sometimes not suitable.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">A telemetry server</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's build a descriptive statistics server. These pop up often in one way or another inside organizations: a thing is needed that consumes events, does some kind of descriptive statistic computation over those things, and then multiplexes the descriptions out to other systems. The very reason my work project, postmates/cernan (<a href="https://crates.io/crates/cernan">https://crates.io/crates/cernan</a>), exists is to service this need at scale on resource constrained devices without tying operations staff into any kind of pipeline. What we'll build here now is a kind of mini-cernan, something whose flow is as follows:</p>
+<pre>                                _--&gt; high_filter --&gt; cma_egress
+                               /
+  telemetry -&gt; ingest_point ---
+    (udp)                      \_--&gt; low_filter --&gt; ckms_egress</pre>
+<p>The idea is to take <kbd>telemetry</kbd> from a simple UDP protocol, receive it as quickly as possible to avoid the OS dumping packets, pass these points through a high and low filter, and then hand the filtered points off to two different statistical <kbd>egress</kbd> points. The <kbd>egress</kbd> associated with the high filter computes a continuous moving average, while the low filter associated <kbd>egress</kbd> computes a quantile summary using an approximation algorithm from the postmates/quantiles (<a href="https://crates.io/crates/quantiles">https://crates.io/crates/quantiles</a>) library.</p>
+<p>Let's dig in. First, let's look at <kbd>Cargo.toml</kbd> for the project:</p>
+<pre>[package]
+name = "telem"
+version = "0.1.0"
+
+[dependencies]
+quantiles = "0.7"
+seahash = "3.0"
+
+[[bin]]
+name = "telem"
+doc = false</pre>
+<p>Short and to the point. We draw in quantiles, as mentioned previously, as well as seahasher. Seahasher is a particularly fast—but not cryptographically safe—hasher that we'll substitute into <kbd>HashMap</kbd>. More on that shortly. Our executable is broken out into <kbd>src/bin/telem.rs</kbd> since this project is a split library/binary setup:</p>
+<pre style="padding-left: 30px">extern crate telem;
+
+use std::{thread, time};
+use std::sync::mpsc;
+use telem::IngestPoint;
+use telem::egress::{CKMSEgress, CMAEgress, Egress};
+use telem::event::Event;
+use telem::filter::{Filter, HighFilter, LowFilter};
+
+fn main() {
+    let limit = 100;
+    let (lp_ic_snd, lp_ic_rcv) = mpsc::channel::&lt;Event&gt;();
+    let (hp_ic_snd, hp_ic_rcv) = mpsc::channel::&lt;Event&gt;();
+    let (ckms_snd, ckms_rcv) = mpsc::channel::&lt;Event&gt;();
+    let (cma_snd, cma_rcv) = mpsc::channel::&lt;Event&gt;();
+
+    let filter_sends = vec![lp_ic_snd, hp_ic_snd];
+    let ingest_filter_sends = filter_sends.clone();
+    let _ingest_jh = thread::spawn(move || {
+        IngestPoint::init("127.0.0.1".to_string(), 1990, <br/>        ingest_filter_sends).run();
+    });
+    let _low_jh = thread::spawn(move || {
+        let mut low_filter = LowFilter::new(limit);
+        low_filter.run(lp_ic_rcv, vec![ckms_snd]);
+    });
+    let _high_jh = thread::spawn(move || {
+        let mut high_filter = HighFilter::new(limit);
+        high_filter.run(hp_ic_rcv, vec![cma_snd]);
+    });
+    let _ckms_egress_jh = thread::spawn(move || {
+        CKMSEgress::new(0.01).run(ckms_rcv);
+    });
+    let _cma_egress_jh = thread::spawn(move || {
+        CMAEgress::new().run(cma_rcv);
+    });
+
+    let one_second = time::Duration::from_millis(1_000);
+    loop {
+        for snd in &amp;filter_sends {
+            snd.send(Event::Flush).unwrap();
+        }
+        thread::sleep(one_second);
+    }
+}</pre>
+<p>There's a fair bit going on here. The first eight lines are imports of the library bits and pieces we need. The body of main is dominated by setting up our worker threads and feeding the appropriate channels into them. Note that some threads take multiple sender sides of a channel:</p>
+<pre>    let filter_sends = vec![lp_ic_snd, hp_ic_snd];
+    let ingest_filter_sends = filter_sends.clone();
+    let _ingest_jh = thread::spawn(move || {
+        IngestPoint::init("127.0.0.1".to_string(), 1990, <br/>        ingest_filter_sends).run();
+    });</pre>
+<p>That's how we do fanout using Rust MPSC. Let's take a look at <kbd>IngestPoint</kbd>, in fact. It's defined in <kbd>src/ingest_point.rs</kbd>:</p>
+<pre style="padding-left: 30px">use event;
+use std::{net, thread};
+use std::net::ToSocketAddrs;
+use std::str;
+use std::str::FromStr;
+use std::sync::mpsc;
+use util;
+
+pub struct IngestPoint {
+    host: String,
+    port: u16,
+    chans: Vec&lt;mpsc::Sender&lt;event::Event&gt;&gt;,
+}</pre>
+<p>An <kbd>IngestPoint</kbd> is a host—either an IP address or a DNS hostname, per <kbd>ToSocketAddrs</kbd>—a port and a vector of <kbd>mpsc::Sender&lt;event::Event&gt;</kbd>. The inner type is something we've defined:</p>
+<pre style="padding-left: 30px">#[derive(Clone)]
+pub enum Event {
+    Telemetry(Telemetry),
+    Flush,
+}
+
+#[derive(Debug, Clone)]
+pub struct Telemetry {
+    pub name: String,
+    pub value: u32,
+}</pre>
+<p><kbd>telem</kbd> has two kinds of <em>events</em> that flow through it—<kbd>Telemetry</kbd>, which comes from <kbd>IngresPoint</kbd> and <kbd>Flush</kbd>, which comes from the main thread. <kbd>Flush</kbd> acts like a clock-tick for the system, allowing the individual subsystems of the project to keep track of time without making reference to the wall-clock. It's not uncommon in embedded programs to define time in terms of some well-known pulse and, when possible, I've tried to keep to that in parallel programming as well. If nothing else, it helps with testing to have time as an externally pushed attribute of the system. Anyhow, back to <kbd>IngestPoint</kbd>:</p>
+<pre>impl IngestPoint {
+    pub fn init(
+        host: String,
+        port: u16,
+        chans: Vec&lt;mpsc::Sender&lt;event::Event&gt;&gt;,
+    ) -&gt; IngestPoint {
+        IngestPoint {
+            chans: chans,
+            host: host,
+            port: port,
+        }
+    }
+
+    pub fn run(&amp;mut self) {
+        let mut joins = Vec::new();
+
+        let addrs = (self.host.as_str(), self.port).to_socket_addrs();
+        if let Ok(ips) = addrs {
+            let ips: Vec&lt;_&gt; = ips.collect();
+            for addr in ips {
+                let listener =
+                    net::UdpSocket::bind(addr)<br/>                        .expect("Unable to bind to UDP socket");
+                let chans = self.chans.clone();
+                joins.push(thread::spawn(move || handle_udp(chans, <br/>                                                   &amp;listener)));
+            }
+        }
+
+        for jh in joins {
+            jh.join().expect("Uh oh, child thread panicked!");
+        }
+    }
+}</pre>
+<p>The first bit of this, <kbd>init</kbd>, is just setup. The run function calls <kbd>to_socket_addrs</kbd> on our host/port pair and retrieves all the associated IP addresses. Each of these addresses get a <kbd>UdpSocket</kbd> bound to them and an OS thread to listen for datagrams from that socket. This is wasteful in terms of thread overhead and later in this book we'll discuss evented-IO alternatives. Cernan, discussed previously, being a production system makes use of Mio in its <em>Sources</em>. The key function here is <kbd>handle_udp</kbd>, the function that gets passed to the new listener threads. It is as follows:</p>
+<pre>fn handle_udp(mut chans: Vec&lt;mpsc::Sender&lt;event::Event&gt;&gt;, <br/>              socket: &amp;net::UdpSocket) {
+    let mut buf = vec![0; 16_250];
+    loop {
+        let (len, _) = match socket.recv_from(&amp;mut buf) {
+            Ok(r) =&gt; r,
+            Err(e) =&gt; { <br/>                panic!(<br/>                    format!("Could not read UDP socket with \<br/>                            error {:?}", e)),<br/>            }
+        };
+        if let Some(telem) = <br/>        parse_packet(str::from_utf8(&amp;buf[..len]).unwrap()) {
+            util::send(&amp;mut chans, event::Event::Telemetry(telem));
+        }
+    }
+}</pre>
+<p>The function is a simple infinite loop that pulls datagrams off the socket into a 16 KB buffer—comfortably larger than most datagrams—and then calls <kbd>parse_packet</kbd> on the result. If the datagram was a valid example of our as yet unspecified protocol, then we call <kbd>util::send</kbd> to send the <kbd>Event::Telemetry</kbd> out over the <kbd>Sender&lt;event::Event&gt;</kbd> in <kbd>chans</kbd>. <kbd>util::send</kbd> is little more than a for loop:</p>
+<pre style="padding-left: 30px">pub fn send(chans: &amp;[mpsc::Sender&lt;event::Event&gt;], event: event::Event) {
+    if chans.is_empty() {
+        return;
+    }
+
+    for chan in chans.iter() {
+        chan.send(event.clone()).unwrap();
+    }
+}</pre>
+<p>The ingest payload is nothing special: a name of non-whitespace characters followed by one or more whitespace characters followed by a <kbd>u32</kbd>, all string encoded and utf8 valid:</p>
+<pre style="padding-left: 30px">fn parse_packet(buf: &amp;str) -&gt; Option&lt;event::Telemetry&gt; {
+    let mut iter = buf.split_whitespace();
+    if let Some(name) = iter.next() {
+        if let Some(val) = iter.next() {
+            match u32::from_str(val) {
+                Ok(int) =&gt; {
+                    return Some(event::Telemetry {
+                        name: name.to_string(),
+                        value: int,
+                    })
+                }
+                Err(_) =&gt; return None,
+            };
+        }
+    }
+    None
+}</pre>
+<p>Popping out to the filters, both <kbd>HighFilter</kbd> and <kbd>LowFilter</kbd> are done in terms of a common <kbd>Filter</kbd> trait, defined in <kbd>src/filter/mod.rs</kbd>:</p>
+<pre>use event;
+use std::sync::mpsc;
+use util;
+
+mod high_filter;
+mod low_filter;
+
+pub use self::high_filter::*;
+pub use self::low_filter::*;
+
+pub trait Filter {
+    fn process(
+        &amp;mut self,
+        event: event::Telemetry,
+        res: &amp;mut Vec&lt;event::Telemetry&gt;,
+    ) -&gt; ();
+
+    fn run(
+        &amp;mut self,
+        recv: mpsc::Receiver&lt;event::Event&gt;,
+        chans: Vec&lt;mpsc::Sender&lt;event::Event&gt;&gt;,
+    ) {
+        let mut telems = Vec::with_capacity(64);
+        for event in recv.into_iter() {
+            match event {
+                event::Event::Flush =&gt; util::send(&amp;chans, <br/>                 event::Event::Flush),
+                event::Event::Telemetry(telem) =&gt; {
+                    self.process(telem, &amp;mut telems);
+                    for telem in telems.drain(..) {
+                        util::send(&amp;chans, <br/>                        event::Event::Telemetry(telem))
+                    }
+                }
+            }
+        }
+    }
+}</pre>
+<p>Any implementing filter is responsible for providing their own process. It's this function that the default run calls when an <kbd>Event</kbd> is pulled from the <kbd>Receiver&lt;Event&gt;</kbd> and found to be a <kbd>Telemetry</kbd>. Though neither high nor low filters make use of it, the process function is able to inject new <kbd>Telemetry</kbd> into the stream if it's programmed to do so by pushing more onto the passed <kbd>telems</kbd> vector. That's how cernan's <em>programmable filter</em> is able to allow end users to create <kbd>telemetry</kbd> from Lua scripts. Also, why pass <kbd>telems</kbd> rather than have the process return a vector of <kbd>Telemetry</kbd>? It avoids continual small allocations. Depending on the system, allocations will not necessarily be uncoordinated between threads—meaning high-load situations can suffer from mysterious pauses—and so it's good style to avoid them where possible if the code isn't twisted into some weird version of itself by taking such care.</p>
+<p>Both low and high filters are basically the same. The low filter passes a point through itself if the point is less than or equal to a pre-defined limit, where the high filter is greater than or equal to it. Here's <kbd>LowFilter</kbd>, defined in <kbd>src/filter/low_filter.rs</kbd>:</p>
+<pre style="padding-left: 30px">use event;
+use filter::Filter;
+
+pub struct LowFilter {
+    limit: u32,
+}
+
+impl LowFilter {
+    pub fn new(limit: u32) -&gt; Self {
+        LowFilter { limit: limit }
+    }
+}
+
+impl Filter for LowFilter {
+    fn process(
+        &amp;mut self,
+        event: event::Telemetry,
+        res: &amp;mut Vec&lt;event::Telemetry&gt;,
+    ) -&gt; () {
+        if event.value &lt;= self.limit {
+            res.push(event);
+        }
+    }
+}</pre>
+<p><kbd>Egress</kbd> of telemetry is defined similarly to the way filter is done, split out into a sub-module and a common trait. The trait is present in <kbd>src/egress/mod.rs</kbd>:</p>
+<pre style="padding-left: 30px">use event;
+use std::sync::mpsc;
+
+mod cma_egress;
+mod ckms_egress;
+
+pub use self::ckms_egress::*;
+pub use self::cma_egress::*;
+
+pub trait Egress {
+    fn deliver(&amp;mut self, event: event::Telemetry) -&gt; ();
+
+    fn report(&amp;mut self) -&gt; ();
+
+    fn run(&amp;mut self, recv: mpsc::Receiver&lt;event::Event&gt;) {
+        for event in recv.into_iter() {
+            match event {
+                event::Event::Telemetry(telem) =&gt; self.deliver(telem),
+                event::Event::Flush =&gt; self.report(),
+            }
+        }
+    }
+}</pre>
+<p>The deliver function is intended to give the <kbd>egress</kbd> its <kbd>Telemetry</kbd> for storage. The report is intended to force the implementors of <kbd>Egress</kbd> to issue their summarized telemetry to the outside world. Both of our <kbd>Egress</kbd> implementors—<kbd>CKMSEgress</kbd> and <kbd>CMAEgress</kbd>—merely print their information but you can well imagine an <kbd>Egress</kbd> that emits its information out over some network protocol to a remote system. This is, in fact, exactly what cernan's <kbd>Sinks</kbd> do, across many protocols and transports. Let's look at a single egress, as they're both very similar. <kbd>CKMSEgress</kbd> is defined in <kbd>src/egress/ckms_egress.rs</kbd>:</p>
+<pre>use egress::Egress;
+use event;
+use quantiles;
+use util;
+
+pub struct CKMSEgress {
+    error: f64,
+    data: util::HashMap&lt;String, quantiles::ckms::CKMS&lt;u32&gt;&gt;,
+    new_data_since_last_report: bool,
+}
+
+impl Egress for CKMSEgress {
+    fn deliver(&amp;mut self, event: event::Telemetry) -&gt; () {
+        self.new_data_since_last_report = true;
+        let val = event.value;
+        let ckms = self.data
+            .entry(event.name)
+            .or_insert(quantiles::ckms::CKMS::new(self.error));
+        ckms.insert(val);
+    }
+
+    fn report(&amp;mut self) -&gt; () {
+        if self.new_data_since_last_report {
+            for (k, v) in &amp;self.data {
+                for q in &amp;[0.0, 0.25, 0.5, 0.75, 0.9, 0.99] {
+                    println!("[CKMS] {} {}:{}", k, q, <br/>                             v.query(*q).unwrap().1);
+                }
+            }
+            self.new_data_since_last_report = false;
+        }
+    }
+}
+
+impl CKMSEgress {
+    pub fn new(error: f64) -&gt; Self {
+        CKMSEgress {
+            error: error,
+            data: Default::default(),
+            new_data_since_last_report: false,
+        }
+    }
+}</pre>
+<p>Note that <kbd>data: util::HashMap&lt;String, quantiles::ckms::CKMS&lt;u32&gt;&gt;</kbd>. This <kbd>util::HashMap</kbd> is a type alias for <kbd>std::collections::HashMap&lt;K, V, hash::BuildHasherDefault&lt;SeaHasher&gt;&gt;</kbd>, as mentioned previously. The cryptographic security of hashing here is less important than the speed of hashing, which is why we go with <kbd>SeaHasher</kbd>. There are a great many alternative hashers available in crates and it's a fancy trick to be able to swap them out for your use case. <kbd>quantiles::ckms::CKMS</kbd> is an approximate data structure, defined in <em>Effective Computation of Biased Quantiles Over Data Streams</em> by Cormode et al. Many summary systems run in limited space but are willing to tolerate errors. The CKMS data structure allows for point shedding while keeping guaranteed error bounds on the quantile approximations. The discussion of the data structure is outside the domain of this book but the implementation is interesting and the paper is remarkably well-written. Anyhow, that's what the error setting is all about. If you flip back to the main function, note that we hard-code the error as being 0.01, or, any quantile summary is guaranteed to be off true within 0.01.</p>
+<p>That, honestly, is pretty much it. We've just stepped through the majority of a non-trivial Rust program built around the MPSC abstraction provided in the standard library. Let's fiddle with it some. In one shell, start <kbd>telem</kbd>:</p>
+<pre><strong>&gt; cargo run --release
+   Compiling quantiles v0.7.0
+   Compiling seahash v3.0.5
+   Compiling telem v0.1.0 (file:///Users/blt/projects/us/troutwine/concurrency_in_rust/external_projects/telem)
+    Finished release [optimized] target(s) in 7.16 secs
+     Running `target/release/telem`</strong></pre>
+<p>In another shell, start sending UDP packets. On macOS, you can use <kbd>nc</kbd> like so:</p>
+<pre><strong>&gt; echo "a 10" | nc -c -u 127.0.0.1 1990
+&gt; echo "a 55" | nc -c -u 127.0.0.1 1990</strong></pre>
+<p>The call is similar on Linux; you just have to be careful not to wait for a response is all. In the original shell, you should see an output like this after a second:</p>
+<pre><strong>[CKMS] a 0:10
+[CKMS] a 0.25:10
+[CKMS] a 0.5:10
+[CKMS] a 0.75:10
+[CKMS] a 0.9:10
+[CKMS] a 0.99:10
+[CKMS] a 0:10
+[CKMS] a 0.25:10
+[CKMS] a 0.5:10
+[CKMS] a 0.75:55
+[CKMS] a 0.9:55
+[CKMS] a 0.99:55</strong></pre>
+<p>The points, being below the limit, have gone through the low filter and into the CKMS <kbd>egress</kbd>. Back to our other shell:</p>
+<pre><strong>&gt; echo "b 1000" | nc -c -u 127.0.0.1 1990
+&gt; echo "b 2000" | nc -c -u 127.0.0.1 1990
+&gt; echo "b 3000" | nc -c -u 127.0.0.1 1990</strong></pre>
+<p>In the telem shell:</p>
+<pre><strong>[CMA] b 1000
+[CMA] b 1500
+[CMA] b 2000</strong></pre>
+<p>Bang, just as expected. The points, being above the limit, have gone through the high filter and into the CMA <kbd>egress</kbd>. So long as no points are coming in, the <kbd>telem</kbd> should be drawing almost no CPU, waking up each of the threads once every second or so for the Flush pulse. Memory consumption will also be very low, being primarily represented by the large input buffer in <kbd>IngestPoint</kbd>.</p>
+<p>There are problems with this program. In many places, we explicitly panic or unwrap on potential problem points, rather than deal with the issues. While it's reasonable to unwrap in a production program, you should be <em>very</em> sure that the error you're blowing your program up for cannot be otherwise dealt with. Most concerning is that the program has no concept of <em>back-pressure</em>. If <kbd>IngestPoint</kbd> were able to produce points faster than the filters or the <kbd>egress</kbd>es, they could absorb the channels between threads that would keep allocating space. A slight rewrite of the program to use <kbd>mpsc::SyncSender</kbd> would be suitable—back-pressure is applied as soon as a channel is filled to capacity—but only if dropping points is acceptable. Given that the ingest protocol is in terms of UDP it almost surely is, but the reader can imagine a scenario where it would not be. Rust's standard library struggles in areas where alternative forms of back-pressure are needed but these are, admittedly, esoteric. If you're interested in reading through a production program that works along the lines of <kbd>telem</kbd> but has none of the defects identified here, I warmly recommend the cernan codebase.</p>
+<p>All in all, Rust's MPSC is a very useful tool when constructing parallel systems. In this chapter, we built our own buffered channel, Ring, but that isn't common at all. You'd need a fairly specialized use case to consider not using the standard library's MPSC for intra-thread channel-based communication. We'll examine one such use case in the next chapter after we cover more of Rust's basic concurrency primitives.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we discussed the foundations of Rust concurrency—<kbd>Sync</kbd> and <kbd>Send</kbd>. Furthermore, we started on what makes a primitive thread-safe in Rust and how to build concurrent structures with those primitives. We reasoned through an improperly synchronized program, showing how knowledge of the Rust memory model, augmented by tools such as <kbd>helgrind</kbd>, allow us to determine what's gone sideways in our programs. This is, perhaps unsurprisingly to the reader, a painstaking process that is, like as not, prone to error. In <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock,</em> we'll discuss the higher-level coarse synchronization primitives that Rust exposes to the programmer. In <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics – the Primitives of Synchronization</em>, we'll discuss the fine synchronization primitives that modern machines expose.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<p>Safe concurrent programming is, unsurprisingly, a very broad topic and the recommendations for further reading here reflect that. The careful reader will note that these references span time and approach, reflecting the broad changes in machines and languages over time.</p>
+<ul>
+<li><em>The Art of Multiprocessor Programming,</em> Maurice Herlihy and Nir Shavit. This book is an excellent introduction to multiprocessor algorithms. Application to systems languages is made a touch difficult by the fact that the authors assume a Java environment—garbage collection is a huge win for implementing reclamation in that, well, you don't have to do it.</li>
+<li><em>C++ Concurrency in Action: Practical Multithreading</em>, Anthony Williams. This book is an excellent pair to TAoMP, being focused on implementation of similar structures in C++. While there is a translation step needed between C++ and Rust, it's not so great a jump as from Java to Rust.</li>
+<li><em>LVars: Lattice-based Data Structures for Deterministic Parallelism</em>, Lindsey Kuper and Ryan Newton. This book presents a certain kind of parallel construction, one influenced by current machines. It is possible, however, that our current models are overly complicated and will someday be seen as archaic, even without having to sacrifice raw performance as we've done in the move to VM-based languages. This paper presents a construction alternative, influenced by the work done on distributed algorithms in recent years. It may or may not be the future but the reader is encouraged to keep a look out.</li>
+<li><em>ffwd: delegation is (much) faster than you think</em>, Sepideh Roghanchi, Jakob Eriksson, and Nilanjana Basu. Modern machines are odd beasts. Conceptually, the fastest data structure is one that minimizes the wait time of working threads, speeding through instructions to work completion. This is… not entirely the case, as this paper demonstrates. The authors, by carefully maintaining cache locality, are able to outpace more complicated structures that might, theoretically, be much faster due to more aggressive sharing between threads with fine-grained locks.</li>
+<li><em>Flat Combining and the Synchronization-Parallelism Tradeoff</em>, Danny Hendler, Itai Incze, and Nir Shavit. Along the same lines as ffwd, the authors present a flat combining approach to constructing concurrent structures, which relies on coarse exclusive locking between threads with a periodic combination of logs of operations. The interaction with cache makes flat combining <em>faster</em> than more complicated lock-free/wait-free alternatives, which do not interact with the cache as gracefully.</li>
+<li><em>New Rustacean, e022: Send and Sync</em>, available at <a href="http://www.newrustacean.com/show_notes/e022/struct.Script.html">http://www.newrustacean.com/show_notes/e022/struct.Script.html</a>. The New Rustacean is an excellent podcast for Rust developers of all levels. This episode dovetails nicely with the material discussed in the current chapter. Warmly recommended.</li>
+<li><em>Effective Computation of Biased Quantiles Over Data Streams</em>, Graham Cormode, Flip Korn, S. Muthukrishnan, and Divesh Srivastava. This paper underpins the CKMS structure used in telem. It's instructive to examine the difference between the implementation outlined in the paper—based on linked-lists—and the implementation found in the library, a variant of a skip-list. This difference is wholly due to cache locality concerns.</li>
+<li><em>The Cernan Project</em>, various developers, available at <a href="https://github.com/postmates/cernan">https://github.com/postmates/cernan</a> under the MIT license. Cernan is an event multiplexing server, the production version of the toy telem discussed in this chapter. As of writing this book, it is 17,000 lines of code contributed by 14 people. Careful attention has been taken to maintain low resource consumption and high levels of performance. I am the primary author of this project and the techniques discussed in this book are applied in cernan.</li>
+</ul>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  </body></html>

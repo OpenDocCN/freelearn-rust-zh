@@ -1,0 +1,936 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Involving Concurrency with Actors and the Actix Crate</h1>
+                </header>
+            
+            <article>
+                
+<p>This chapter will show an alternative approach to creating microservices based on the actors model (like Erlang or Akka). This approach allows you to write clear and effective code by splitting a microservice into small independent tasks that interact with each other by message passing.</p>
+<p>By the end of this chapter, you will be able to do the following:</p>
+<ul>
+<li class="CDPAlignLeft CDPAlign">Create a microservice using the Actix framework and the <kbd>actix-web</kbd> crate</li>
+<li>Create middleware for the Actix Web framework</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>To implement and run all the examples of this chapter, you'll need<span> the</span> Rust compiler with version <span>1.31 as a minimum.</span></p>
+<p>You can find the sources for the code examples in this chapter on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter11">https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter11</a></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actor concurrency in microservices</h1>
+                </header>
+            
+            <article>
+                
+<p>If you are familiar with Erlang or Akka, you may already know what actors are and how to use them. But in any case, we'll refresh our knowledge about the actors model in this section.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title"> Understanding actors</h1>
+                </header>
+            
+            <article>
+                
+<p>We already became familiar with actors in <a href="ba240208-414e-4dd4-bba8-8bd2658949cd.xhtml" target="_blank">Chapter 10</a>, <em>Background Tasks and Thread Pools in Microservices</em>, but let's talk about using actors for microservices.</p>
+<p>An actor is a model for doing concurrent computations. We should know the following models:</p>
+<ul>
+<li><strong>Threads</strong>: In this model, every task works in a separate thread</li>
+<li><strong>Fibers or green threads</strong>: <span>In this model, </span>every task has work scheduled by a special runtime</li>
+<li><strong>Asynchronous code</strong>: <span>In this model, </span>every task is run by a reactor (actually, this is similar to fibers)</li>
+</ul>
+<p>Actors combine all these approaches into an elegant one. To do any part of the work, you can implement actors that perform their own part of the work, and interact with other actors through messages to inform each other on the overall progress. Every actor has a mailbox for incoming messages and can send messages to other actors using this address.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actors in microservices</h1>
+                </header>
+            
+            <article>
+                
+<p>To develop a microservice using actors, you should split your service into tasks that solves different kinds of work. For example, you can use a separate actor for every incoming connection or database interaction, and even as a supervisor to control other actors. Every actor is an asynchronous task that is executed in a reactor.</p>
+<p>The benefits of this approach are as follows:</p>
+<ul>
+<li>It's simpler to write separate actors than a bulk of functions</li>
+<li>Actors can fail and respawn</li>
+<li>You can reuse actors</li>
+</ul>
+<p>One important benefit of using actors is reliability, because every actor can be failed and respawned, so you don't need a long recovery code to handle failures. It doesn't mean your code can call the <kbd>panic!</kbd> macro everywhere, but this does mean that you can consider actors as short life cycle tasks that work concurrently on small tasks.</p>
+<p>If you design actors well, you also gain great performance, because interaction with messages helps you to split work into short reactions, which won't block the reactor for a long time. Also, your source code becomes more structured.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The Actix framework</h1>
+                </header>
+            
+            <article>
+                
+<p>The Actix framework provides an actors model for Rust, based on the <kbd>futures</kbd> crate and some asynchronous code to allow actors to work concurrently with minimal resources needed.</p>
+<p>I think this is one of the best tools for creating web applications and microservices with Rust. The framework includes two good crates—the <kbd>actix</kbd> crate that contains core structures, and <span>the</span> <kbd>actix-web</kbd> crate that implements the HTTP and WebSocket protocols. Let's create a microservice that routes requests to other microservices.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a microservice with actix-web</h1>
+                </header>
+            
+            <article>
+                
+<p>In this section, we will create a microservice that looks similar to other microservices we created in <a href="6d371e55-d1cf-45b4-83a9-4d5098a885d0.xhtml" target="_blank">Chapter 9</a>, <em>Simple REST Definition and Requests Routing with Frameworks</em><span>, but use an actors model internally to achieve full resource utilization</span>.</p>
+<p>To create a microservice using <kbd>actix-web</kbd>, you need to add both the <kbd>actix</kbd> and <kbd>actix-web</kbd> crates. First, we need to start the <kbd>System</kbd> actor that manages the runtime of other actors. Let's create a <kbd>System</kbd> instance and start an <kbd>actix-web</kbd> server with the necessary routes.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Bootstrapping an actix-web server</h1>
+                </header>
+            
+            <article>
+                
+<p>Starting an <kbd>actix-web</kbd> server instance looks similar to other Rust web frameworks, but requires a <kbd>System</kbd> actor instance. We don't need to use <kbd>System</kbd> directly, but need to run it by calling the <kbd>run</kbd> method when everything is ready. This call starts the <kbd>System</kbd> actor and blocks the current thread. Internally, it uses the <kbd>block_on</kbd> method that we discussed in previous chapters.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Starting a server</h1>
+                </header>
+            
+            <article>
+                
+<p>Consider the following code:</p>
+<pre>fn main() {<br/>    env_logger::init();<br/>    let sys = actix::System::new("router");<br/>    server::new(|| {<br/>      // Insert `App` declaration here<br/>    }).workers(1)<br/>        .bind("127.0.0.1:8080")<br/>        .unwrap()<br/>        .start();<br/>    let _ = sys.run();<br/>}</pre>
+<p>We create a new server with the <kbd>server::new</kbd> method call that expects a closure to return<span> the</span> <kbd>App</kbd> instance. Before we create<span> the</span> <kbd>App</kbd> instance, we have to finish our server and run it. The <kbd>workers</kbd> method sets<span> the </span>number of threads to run actors.</p>
+<div class="packt_tip">You can choose not to set this value explicitly, and by default, it will be equal to the number of CPUs on the system. In many cases, it's the best possible value for performance.</div>
+<p>The next call of<span> the</span> <kbd>bind</kbd> method binds<span> the</span> server's socket to an address. If it can't be bound to an address, the method returns <kbd>Err</kbd>, and we <kbd>unwrap</kbd> the result to halt a server if we can't start a server on a desired port. At the end, we call<span> the</span> <kbd>start</kbd> method to start<span> the</span> <kbd>Server</kbd> actor. It returns an <kbd>Addr</kbd> struct with an address that you can use to send messages to a <kbd>Server</kbd> actor instance.</p>
+<p>Actually, the <kbd>Server</kbd> actor won't run until we call run <span>the </span>method of the <kbd>System</kbd> instance. Add this method call, and then we'll go on to look at creating an <kbd>App</kbd> instance in detail.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">App creation</h1>
+                </header>
+            
+            <article>
+                
+<p>Insert the following code into a closure of the <kbd>server::new</kbd> function call:</p>
+<pre>let app = App::with_state(State::default())<br/>    .middleware(middleware::Logger::default())<br/>    .middleware(IdentityService::new(<br/>            CookieIdentityPolicy::new(&amp;[0; 32])<br/>            .name("auth-example")<br/>            .secure(false),<br/>            ))<br/>    .middleware(Counter);</pre>
+<p>The <kbd>App</kbd> struct contains information about<span> the</span> state, middleware, and <span>the </span>scopes of routes. To set shared state to our application, we use<span> the</span> <kbd>with_state</kbd> method to construct<span> the</span> <kbd>App</kbd> instance. We create a default instance of<span> the</span> <kbd>State</kbd> struct, which is declared as follows:</p>
+<pre>#[derive(Default)]<br/>struct State(RefCell&lt;i64&gt;);</pre>
+<p><kbd>State</kbd> contains a cell with an <kbd>i64</kbd> value to count all requests. By default, it is created with a <kbd>0</kbd> value.</p>
+<p>After this, we use<span> the</span> middleware method of <kbd>App</kbd> to set the three following middlewares:</p>
+<ul>
+<li><kbd>actix_web::middleware::Logger</kbd> is a logger that uses<span> the</span> <kbd>log</kbd> crate to log request and responses</li>
+<li><kbd>actix_web::middleware::identity::IdentityService</kbd> helps to identity requests using an identity backend that implements<span> the</span> <kbd>IdentityPolicy</kbd> trait</li>
+<li><kbd>Counter</kbd> is a piece of middleware that we will create in the following <em>Middleware</em> section, and uses <kbd>State</kbd> to count the total quantity of requests</li>
+</ul>
+<p>For our <kbd>IdentityPolicy</kbd> backend, we use <kbd>CookieIdentityPolicy</kbd> from the same identity submodule where <kbd>IdentityService</kbd> lives. <kbd>CookieIdentityPolicy</kbd> expects a key with at least 32 bytes. When an instance of an identity policy for cookies has been created, we can use methods like <kbd>path</kbd>, <kbd>name</kbd>, and <kbd>domain</kbd> to set specific cookies parameters. We also allow the sending of cookies with insecure connections by using<span> the</span> <kbd>secure</kbd> method with a <kbd>false</kbd> value.</p>
+<div class="packt_infobox">There are two special parameters of cookies you should know about: <kbd>Secure</kbd> and <kbd>HttpOnly</kbd>. The first requires secure HTTPS connection to send cookies. If you run a service for testing and use plain HTTP to connect to it, then the <kbd>CookieIdentityPolicy</kbd> won't work. <kbd>HttpOnly</kbd> parameters don't allow the use of cookies from JavaScript. <kbd>CookieIdentityPolicy</kbd> sets this parameter to true and you can't override this behavior.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Scope and routes</h1>
+                </header>
+            
+            <article>
+                
+<p>The next thing we have to add to our <kbd>App</kbd> instance is routing. There is a <kbd>route</kbd> function that lets you set a handler for any route. But it's more thoughtful to use scopes to construct a structure of nested paths. Look at the following code:</p>
+<pre>app.scope("/api", |scope| {<br/>    scope<br/>        .route("/signup", http::Method::POST, signup)<br/>        .route("/signin", http::Method::POST, signin)<br/>        .route("/new_comment", http::Method::POST, new_comment)<br/>        .route("/comments", http::Method::GET, comments)<br/>})</pre>
+<p>The <kbd>scope</kbd> method of our <kbd>App</kbd> struct expects a prefix of a path and a closure with a <kbd>scope</kbd> as a single argument, and creates a scope that can contain subroutes. We create a <kbd>scope</kbd> for<span> the</span> <kbd>/api</kbd> path prefix and add four routes using<span> the</span> <kbd>route</kbd> method: <kbd>/signup</kbd>, <kbd>/signin</kbd>, <kbd>/new_comment</kbd>, and <kbd>/comments</kbd>. The <kbd>route</kbd> method expects a suffix including a path, a method, and a handler. For example, if a server now takes a request for <kbd>/api/singup</kbd> with<span> the</span> <kbd>POST</kbd> method, it will call the <kbd>signup</kbd> function. Let's add a default handler for other paths.</p>
+<p>Our microservice also uses <kbd>Counter</kbd> middleware, which we will implement later, to count the total quantity of requests. We need to add a route to render statistics for the microservice, as follows:</p>
+<pre>.route("/counter", http::Method::GET, counter)</pre>
+<p>As you can see, we don't need <kbd>scope</kbd> here, since we have only one handler and can call<span> the</span> <kbd>route</kbd> method directly for<span> the</span> <kbd>App</kbd> instance (not <kbd>scope</kbd>).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Static files handler</h1>
+                </header>
+            
+            <article>
+                
+<p>For the other paths that were not listed in the previous <kbd>scope</kbd>, we will use a <kbd>handler</kbd> that will return a file's content from a folder to serve static assets. The <kbd>handler</kbd> method expects a prefix for a path, and a type that implements<span> the</span> <kbd>Handler</kbd> trait. In our case, we will use a ready-to-use static files handler, <kbd>actix_web::fs::StaticFiles</kbd>. It needs a path to a local folder and we can also set an index file by calling<span> the</span> <kbd>index_file</kbd> method:</p>
+<pre>app.handler(<br/>    "/",<br/>    fs::StaticFiles::new("./static/").unwrap().index_file("index.html")<br/>)</pre>
+<p>Now, if a client send a <kbd>GET</kbd> request to a path such as <kbd>/index.html</kbd> or <kbd>/css/styles.css</kbd>, then the <kbd>StaticFiles</kbd> handler will send the contents of the corresponding files from<span> the</span> <kbd>./static/</kbd> local folder.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">HTTP client</h1>
+                </header>
+            
+            <article>
+                
+<p>The handlers of this microservice work as proxies and resend incoming requests to other microservices, which will not be available to users directly. To send requests to other microservices, we need an HTTP client. The <kbd>actix_web</kbd> crate contains one. To use a client, we add two functions: one for proxfying <kbd>GET</kbd> requests, and the other to send <kbd>POST</kbd> requests.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">GET requests</h1>
+                </header>
+            
+            <article>
+                
+<p>To send <kbd>GET</kbd> requests, we create a <kbd>get_request</kbd> function that expects a <kbd>url</kbd> parameter and returns a <kbd>Future</kbd> instance with binary data:</p>
+<pre>fn get_request(url: &amp;str) -&gt; impl Future&lt;Item = Vec&lt;u8&gt;, Error = Error&gt; {<br/>    client::ClientRequest::get(url)<br/>        .finish().into_future()<br/>        .and_then(|req| {<br/>            req.send()<br/>                .map_err(Error::from)<br/>                .and_then(|resp| resp.body().from_err())<br/>                .map(|bytes| bytes.to_vec())<br/>        })<br/>}</pre>
+<p>We use <kbd>ClientRequestBuilder</kbd> to create<span> the</span> <kbd>ClientRequest</kbd> instance. The <kbd>ClientRequest</kbd> struct already has shortcuts that create builders with a preset HTTP method. We call the <kbd>get</kbd> method that only sets the <kbd>Method::GET</kbd> value to a request that is implemented as the calling method of the <kbd>ClientRequestBuilder</kbd> instance. You can also use a builder to set extra headers or cookies. When you are done with these values, you have to create a <kbd>ClientRequest</kbd> instance from a builder by calling one of the following methods:</p>
+<ul>
+<li><kbd>body</kbd> sets a body value to binary data that can be converted <kbd>Into&lt;Body&gt;</kbd></li>
+<li><kbd>json</kbd> sets a body value to any type that can be serialized into JSON value</li>
+<li><kbd>form</kbd> sets a body value to a type that can be serialized with <kbd>serde_urlencoded: serializer</kbd></li>
+<li><kbd>streaming</kbd> consumes a body value from a <kbd>Stream</kbd> instance</li>
+<li><kbd>finish</kbd> creates a request without a body value</li>
+</ul>
+<p>We use <kbd>finish</kbd>, because <kbd>GET</kbd> requests don't contain a body value. All these methods return a <kbd>Result</kbd> with a <kbd>ClientRequest</kbd> instance as a successful value. We don't unwrap the <kbd>Result</kbd> and will convert it into a <kbd>Future</kbd> value with <span> the </span><kbd>into_future</kbd> method call to return an <kbd>Error</kbd> value to a client if the handler can't even build a request.</p>
+<p>Since we have a <kbd>Future</kbd> value, we can use<span> the</span> <kbd>and_then</kbd> method to add the next processing step. We call<span> the</span> <kbd>send</kbd> method of a <kbd>ClientRequest</kbd> to create a <kbd>SendRequest</kbd> instance, which implements<span> the</span> <kbd>Future</kbd> trait and sends a request to a server. Since<span> the</span> <kbd>send</kbd> call can return<span> the</span> <kbd>SendRequestError</kbd> error type, we wrap it with <kbd>failure::Error</kbd>.</p>
+<p>If a request has sent successfully we can take a <kbd>MessageBody</kbd> value with the <kbd>body</kbd> method call. This method is a part of<span> the</span> <kbd>HttpMessage</kbd> trait. <kbd>MessageBody</kbd> also implements a <kbd>Future</kbd> trait with<span> a</span> <kbd>Bytes</kbd> value and we use<span> the</span> <kbd>and_then</kbd> method to extend a chain of futures and transform a value from <kbd>SendRequest</kbd> to <kbd>Bytes</kbd>.</p>
+<p>Finally, we use<span> the</span> <kbd>to_vec</kbd> method of <kbd>Bytes</kbd> to convert it into <kbd>Vec&lt;u8&gt;</kbd> and provide this value as a response to a client. We have finished our method that proxies <kbd>GET</kbd> requests to another microservice. Let's create a similar method for <kbd>POST</kbd> requests.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">POST requests</h1>
+                </header>
+            
+            <article>
+                
+<p>For <kbd>POST</kbd> requests, we need input parameters that will be serialized to the request's body, and output parameters that will be deserialized from the request's response body. Look at the following function:</p>
+<pre>fn post_request&lt;T, O&gt;(url: &amp;str, params: T) -&gt; impl Future&lt;Item = O, Error = Error&gt;<br/>where<br/>    T: Serialize,<br/>    O: for &lt;'de&gt; Deserialize&lt;'de&gt; + 'static,<br/>{<br/>    client::ClientRequest::post(url)<br/>        .form(params).into_future().and_then(|req| {<br/>            req.send()<br/>                .map_err(Error::from).and_then(|resp| {<br/>                    if resp.status().is_success() {<br/>                        let fut = resp.json::&lt;O&gt;().from_err();<br/>                        boxed(fut)<br/>                    } else {<br/>                        error!("Microservice error: {}", resp.status());<br/>                        let fut = Err(format_err!("microservice error"))<br/>                            .into_future().from_err();<br/>                        boxed(fut)<br/>                    }<br/>                })<br/>        })<br/>}</pre>
+<p>The <kbd>post_request</kbd> function creates <kbd>ClientRequestBuilder</kbd> with the <kbd>post</kbd> method of <kbd>ClientRequest</kbd> and fills a form with values from<span> the</span> <kbd>params</kbd> variable. We convert <kbd>Result</kbd> into <kbd>Future</kbd> and send a request to a server. Also, as in<span> the</span> <kbd>GET</kbd> version, we process a response, but do it another way. We get a status of a response with<span> the</span> <kbd>status</kbd> method call of <kbd>HttpResponse</kbd>, and check whether it's successful, with<span> the</span> <kbd>is_sucess</kbd> method call.</p>
+<p>For successful responses, we use<span> the</span> <kbd>json</kbd> method of <kbd>HttpResponse</kbd> to get a <kbd>Future</kbd> that collects a body and deserializes it from JSON. If the response wasn't successful, we return an error to the client. Now, we have methods to send requests to other microservices, and can implement handlers for every route.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handlers</h1>
+                </header>
+            
+            <article>
+                
+<p>We added methods to proxy incoming requests and resend them to other microservices. Now, we can implement handlers for every supported path of our microservice we will provide a holistic API to a client, but actually, we will use a set of microservices to provide all the necessary services to the client. Let's start with implementation of a handler for the <kbd>/signup</kbd> path.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Signup</h1>
+                </header>
+            
+            <article>
+                
+<p>The Router microservice uses<span> the</span> <kbd>/signup</kbd> route to resend a signup request to a users microservice bound to <span> the </span><kbd>127.0.0.1:8001</kbd> address. This request creates a new users with filled from <kbd>UserForm</kbd>, passed with a parameter wrapped with<span> the</span> <kbd>Form</kbd> type. Look at the following code:</p>
+<pre>fn signup(params: Form&lt;UserForm&gt;) -&gt; FutureResponse&lt;HttpResponse&gt; {<br/>    let fut = post_request("http://127.0.0.1:8001/signup", params.into_inner())<br/>        .map(|_: ()| {<br/>            HttpResponse::Found()<br/>            .header(header::LOCATION, "/login.html")<br/>            .finish()<br/>        });<br/>    Box::new(fut)<br/>}</pre>
+<p>We call<span> the</span> <kbd>post_request</kbd> function that we declared before to send a <kbd>POST</kbd> request to a users microservice and if it returns a successful response, we return a response with a <kbd>302</kbd> status code. We create <kbd>HttpResponseBuilder</kbd> with the corresponding status code by<span> the</span>  <kbd>HttpResponse::Found</kbd> function call. After this, we also set the <kbd>LOCATION</kbd> header to redirect the user to a login form with <span>the</span> <kbd>header</kbd> method call of <kbd>HttpResponseBuilder</kbd>. Lastly, we call <kbd>finish()</kbd> to create a <kbd>HttpResponse</kbd> from a builder and return it as a boxed <kbd>Future</kbd> object.</p>
+<p>The function has a <kbd>FutureResponse</kbd> return type that is implemented as follows:</p>
+<pre>type FutureResponse&lt;I, E = Error&gt; = Box&lt;dyn Future&lt;Item = I, Error = E&gt;&gt;;</pre>
+<p>As you can see, it's a <kbd>Box</kbd> with a type that implements a <kbd>Future</kbd> trait.</p>
+<p>Also, the function expects <kbd>Form&lt;UserForm&gt;</kbd> as a parameter. The <kbd>UserForm</kbd> structs are declared as follows:</p>
+<pre>#[derive(Deserialize, Serialize)]<br/>pub struct UserForm {<br/>    email: String,<br/>    password: String,<br/>}</pre>
+<p>As you can see, it expects two parameters: <kbd>email</kbd> and <kbd>password</kbd>. Both will be extracted from the query string of a request in the format of <kbd>email=user@example.com&amp;password=&lt;secret&gt;</kbd>. The <kbd>Form</kbd> wrapper helps to extract data from the response's body.</p>
+<div class="packt_tip">The <kbd>actix_web</kbd> crate limits requests and responses by size. If you want to send or receive huge payloads, you have to override defaults that often won't allow requests larger than 256 KB. For example, if you want to increase the limit, you can use<span> the</span> <kbd>FormConfig</kbd> struct provided with<span> the</span> <kbd>with_config</kbd> method call of <kbd>Route</kbd>, and call the <kbd>limit</kbd> method of a config with the desired quantity of bytes. The HTTP client is also limited by response size. For example, if you try to read a large JSON object from a <kbd>JsonBody</kbd> instance, you may need to limit it with the <kbd>limit</kbd> method call before you use it as a <kbd>Future</kbd> object.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Signin</h1>
+                </header>
+            
+            <article>
+                
+<p>Other methods allow users to sign in to a microservice with the provided credentials. Look at<span> the following</span> <kbd>signin</kbd> function that processes requests that are sent to the <kbd>/signin</kbd> path:</p>
+<pre>fn signin((req, params): (HttpRequest&lt;State&gt;, Form&lt;UserForm&gt;))<br/>    -&gt; FutureResponse&lt;HttpResponse&gt;<br/>{<br/>    let fut = post_request("http://127.0.0.1:8001/signin", params.into_inner())<br/>        .map(move |id: UserId| {<br/>            req.remember(id.id);<br/>            HttpResponse::build_from(&amp;req)<br/>            .status(StatusCode::FOUND)<br/>            .header(header::LOCATION, "/comments.html")<br/>            .finish()<br/>        });<br/>    Box::new(fut)<br/>}</pre>
+<p>The function has two parameters: <kbd>HttpRequest</kbd> and <kbd>Form</kbd>. The first we need<span> to</span> get access to a shared <kbd>State</kbd> object. The second we need to extract<span> the</span> <kbd>UserForm</kbd> struct from the request body. We can also use<span> the</span> <kbd>post_request</kbd> function here, but expect it to return a <kbd>UserId</kbd> value in its response. The <kbd>UserId</kbd> struct is declared as follows:</p>
+<pre>#[derive(Deserialize)]<br/>pub struct UserId {<br/>    id: String,<br/>}</pre>
+<p>Since <kbd>HttpRequest</kbd> implements<span> the</span> <kbd>RequestIdentity</kbd> trait and we plugged in  <kbd>IdentityService</kbd> to <kbd>App</kbd>, we can call <span>the </span><kbd>remember</kbd> method with a user's ID to associate the current session with a user.</p>
+<p>After this, we create a response with<span> the</span> <kbd>302</kbd> status code, as we did in the previous handler, and redirect users to <span> the </span><kbd>/comments.html</kbd> page. But we have to build an <kbd>HttpResponse</kbd> instance from <kbd>HttpRequest</kbd> to keep the changes of the <kbd>remember</kbd> function call.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">New comment</h1>
+                </header>
+            
+            <article>
+                
+<p>The handler for creating new comments uses<span> the</span> identity of a user to check that there are credentials to add a new comment:</p>
+<pre>fn new_comment((req, params): (HttpRequest&lt;State&gt;, Form&lt;AddComment&gt;))<br/>    -&gt; FutureResponse&lt;HttpResponse&gt;<br/>{<br/>    let fut = req.identity()<br/>        .ok_or(format_err!("not authorized").into())<br/>        .into_future()<br/>        .and_then(move |uid| {<br/>            let params = NewComment {<br/>                uid,<br/>                text: params.into_inner().text,<br/>            };<br/>            post_request::&lt;_, ()&gt;("http://127.0.0.1:8003/new_comment", params)<br/>        })<br/>        .then(move |_| {<br/>            let res = HttpResponse::build_from(&amp;req)<br/>                .status(StatusCode::FOUND)<br/>                .header(header::LOCATION, "/comments.html")<br/>                .finish();<br/>            Ok(res)<br/>        });<br/>    Box::new(fut)<br/>}</pre>
+<p>This handler allows every user who has signed it to leave a comment. Let's look at how this handler works.</p>
+<p>First, it calls<span> the</span> <kbd>identity</kbd> method of<span> the</span> <kbd>RequestIdentity</kbd> trait that returns the user's ID. We convert it to <kbd>Result</kbd> to make it possible to convert it into <kbd>Future</kbd> and return an error if the user is not identified.</p>
+<p>We use the returned user ID value to prepare a request for the comments microservice. We extract the <kbd>text</kbd> field from an <kbd>AddComment</kbd> form, and create a <kbd>NewComment</kbd> struct with<span> the</span> user 's ID and a comment. Structs are declared as follows:</p>
+<pre>#[derive(Deserialize)]<br/>pub struct AddComment {<br/>    pub text: String,<br/>}<br/><br/>#[derive(Serialize)]<br/>pub struct NewComment {<br/>    pub uid: String,<br/>    pub text: String,<br/>}</pre>
+<div class="packt_tip">We can also use a single struct with an optional <kbd>uid</kbd>, but it's safer to use a separate struct for different needs, because if we use the same struct and resend it to another microservice without validation, we can create a vulnerability that allows any user to add a comment with another user's identity. Try to avoid these kind of mistakes by using exact, strict types, instead of universal, flexible ones.</div>
+<p>Finally, we create a redirect a client as we did before, and send the user to<span> the</span> <kbd>/comments.html</kbd> page.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Comments</h1>
+                </header>
+            
+            <article>
+                
+<p>To view all comments that were created by the previous handler, we have to send a <kbd>GET</kbd> request to the comments microservice with the <kbd>get_request</kbd> function that we created before and resend the response data to a client:</p>
+<pre>fn comments(_req: HttpRequest&lt;State&gt;) -&gt; FutureResponse&lt;HttpResponse&gt; {<br/>    let fut = get_request("http://127.0.0.1:8003/list")<br/>        .map(|data| {<br/>            HttpResponse::Ok().body(data)<br/>        });<br/>    Box::new(fut)<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Counter</h1>
+                </header>
+            
+            <article>
+                
+<p>The handler that prints the total quantity of requests also has quite simple implementation, but in this case, we get access to a shared state:</p>
+<pre>fn counter(req: HttpRequest&lt;State&gt;) -&gt; String {<br/>    format!("{}", req.state().0.borrow())<br/>}</pre>
+<p>We use the <kbd>state</kbd> method of <kbd>HttpRequest</kbd> to get a reference to a <kbd>State</kbd> instance. Since the counter value is stored in <kbd>RefCell</kbd>, we use<span> the</span> <kbd>borrow</kbd> method to get the value from a cell. We implemented all handlers, and now we have to add some middleware that will count every request to the microservice.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Middleware</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>actix-web</kbd> crate supports middleware that can be attached to an <kbd>App</kbd> instance to process every request and response. Middleware helps to log requests, transform them, or even control access to a group of paths using regular expressions. Consider middleware as handlers for all incoming requests and outgoing responses. To create the middleware, we first have to implement the <kbd>Middleware</kbd> trait for it. Look at the following code:</p>
+<pre>pub struct Counter;<br/><br/>impl Middleware&lt;State&gt; for Counter {<br/>    fn start(&amp;self, req: &amp;HttpRequest&lt;State&gt;) -&gt; Result&lt;Started&gt; {<br/>        let value = *req.state().0.borrow();<br/>        *req.state().0.borrow_mut() = value + 1;<br/>        Ok(Started::Done)<br/>    }<br/><br/>    fn response(&amp;self, _req: &amp;HttpRequest&lt;State&gt;, resp: HttpResponse) -&gt; Result&lt;Response&gt; {<br/>        Ok(Response::Done(resp))<br/>    }<br/><br/>    fn finish(&amp;self, _req: &amp;HttpRequest&lt;State&gt;, _resp: &amp;HttpResponse) -&gt; Finished {<br/>        Finished::Done<br/>    }<br/>}</pre>
+<p>We declare an empty <kbd>Counter</kbd> struct and implement<span> the</span> <kbd>Middleware</kbd> trait for it.</p>
+<div class="packt_tip">The <kbd>Middleware</kbd> trait has a type parameter with a state. Since we want to use the counter of our <kbd>State</kbd> struct, we set it as a type parameter, but if you want to create middleware that is compatible with different states, you need to add type parameters to your implementation and add an implementation of necessary traits that you can export to your module or crate.</div>
+<p>The <kbd>Middleware</kbd> trait contains three methods. We implemented all of them:</p>
+<ul>
+<li><kbd>start</kbd> is called when the request is ready and will be sent to a handler</li>
+<li><kbd>response</kbd> is called after<span> the </span>handler returns a response</li>
+<li><kbd>finish</kbd> is called when data has been sent to a client</li>
+</ul>
+<p>We use<span> the</span> default implementation for<span> the</span> <kbd>response</kbd> and <kbd>finish</kbd> methods.</p>
+<p>For the first method, we return a response without any changes in the <kbd>Response::Done</kbd> wrapper. <kbd>Response</kbd> also has a variant, <kbd>Future</kbd>, if you want to return a <kbd>Future</kbd> that generates an <kbd>HttpResponse</kbd>.</p>
+<p>For the second method, we return a <kbd>Done</kbd> variant of<span> the</span> <kbd>Finished</kbd> enum. It also has a <kbd>Future</kbd> variant that can contain a boxed <kbd>Future</kbd> object, which will be run after<span> the</span> <kbd>finish</kbd> method ends. Let's explore how<span> the</span> <kbd>start</kbd> method works in our implementation.</p>
+<p>In the <kbd>start</kbd> method implementation of<span> the</span> <kbd>Counter</kbd> middleware, we will count all incoming requests. To do this, we get the current counter value from <kbd>RefCell</kbd>, add <kbd>1</kbd>, and replace the cell with a new value. At the end, the method returns a <kbd>Started::Done</kbd> value to notify you that the current request will be reused in the next handler/middleware of the processing chain. The <kbd>Started</kbd> enum also has variants:</p>
+<ul>
+<li><kbd>Response</kbd> should be used if you want to return a response immediately</li>
+<li><kbd>Future</kbd> should be used if you want to run a <kbd>Future</kbd> that will return a response</li>
+</ul>
+<p>Now, the microservice is ready to build and run.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Building and running</h1>
+                </header>
+            
+            <article>
+                
+<p>To run a microservice, use<span> the</span> <kbd>cargo run</kbd> command. Since we don't have an other microservice for handlers, we can use<span> the</span> <kbd>counter</kbd> method to check that the server and <kbd>Counter</kbd> middleware works. Try to open <kbd>http://127.0.0.1:8080/stats/counter</kbd> in the browser. It will show a <kbd>1</kbd> value on a blank page. If you refresh the page, you will see a <kbd>3</kbd> value. That's because<span> the</span> browser also sends a request to get a <kbd>favicon.ico</kbd> file after the main request.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using databases</h1>
+                </header>
+            
+            <article>
+                
+<p>Another good feature of <kbd>actix-web</kbd>, in combination with<span> the</span> <kbd>actix</kbd> crate, is the ability to use databases. Do you remember how we used <kbd>SyncArbyter</kbd> to perform background tasks? It's a good approach to implement database interaction since there are not enough asynchronous database connectors and we have to use synchronous ones. Let's add the caching of responses to a Redis database for our previous example.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The database interaction actor</h1>
+                </header>
+            
+            <article>
+                
+<p>We start by implementing an actor that interacts with a database. Copy the previous example and add<span> the</span> <kbd>redis</kbd> crate to<span> the </span>dependencies:</p>
+<pre>redis = "0.9"</pre>
+<p class="mce-root">We use Redis because it's great for caching, but we can <span>also </span>store cached values in memory.</p>
+<p class="mce-root">Create a <kbd>src/cache.rs</kbd> module and add the following dependencies:</p>
+<pre>use actix::prelude::*;<br/>use failure::Error;<br/>use futures::Future;<br/>use redis::{Commands, Client, RedisError};</pre>
+<p>It adds types from<span> the</span> <kbd>redis</kbd> crate that we already used in <a href="e09a1e76-ae09-41d4-99dc-9bad95fa3de7.xhtml" target="_blank">Chapter 7</a>, <em><span>Reliable Integration with Databases</span></em>, to interact with Redis storage.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actors</h1>
+                </header>
+            
+            <article>
+                
+<p>Our actor has to keep an instance of <kbd>Client</kbd>. We don't use a connection pool, because we will use multiple actors for handing parallel requests to a database. Look at the following struct:</p>
+<pre>pub struct CacheActor {<br/>    client: Client,<br/>    expiration: usize,<br/>}</pre>
+<p>The struct also contains an <kbd>expiration</kbd> field that holds the <strong>time-to-live</strong> (<strong>TTL</strong>) period. This defines how long Redis will hold the value.</p>
+<p>Add a <kbd>new</kbd> method to the implementation that uses a provided address string to create a <kbd>Client</kbd> instance, and adds both the <kbd>client</kbd> and <kbd>expiration</kbd> values to<span> the</span> <kbd>CacheActor</kbd> struct, as follows:</p>
+<pre>impl CacheActor {<br/>    pub fn new(addr: &amp;str, expiration: usize) -&gt; Self {<br/>        let client = Client::open(addr).unwrap();<br/>        Self { client, expiration }<br/>    }<br/>}</pre>
+<p>Also, we have to implement an <kbd>Actor</kbd> trait for <kbd>SyncContext</kbd>, just as we did when resizing the worker in <a href="ba240208-414e-4dd4-bba8-8bd2658949cd.xhtml" target="_blank">Chapter 10</a>, <em>Background Tasks and Thread Pools in Microservices</em>:</p>
+<pre>impl Actor for CacheActor {<br/>    type Context = SyncContext&lt;Self&gt;;<br/>}</pre>
+<p class="mce-root">Now, we can add support for messages to set and get cached values.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Messages</h1>
+                </header>
+            
+            <article>
+                
+<p>To interact with <kbd>CacheActor</kbd>, we have to add two types of messages: to set a value and to get a value.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Setting a value message</h1>
+                </header>
+            
+            <article>
+                
+<p>The first message type we add is <kbd>SetValue</kbd>, which provides a pair of key and new value for caching. The struct has two fields—<kbd>path</kbd>, which is used as a key, and <kbd>content</kbd>, which holds a value:</p>
+<pre>struct SetValue {<br/>    pub path: String,<br/>    pub content: Vec&lt;u8&gt;,<br/>}</pre>
+<p>Let's implement a <kbd>Message</kbd> trait for the <kbd>SetValue</kbd> struct with an empty unit type if the value is set, and return <kbd>RedisError</kbd> if there are issues with a database connection:</p>
+<pre>impl Message for SetValue {<br/>    type Result = Result&lt;(), RedisError&gt;;<br/>}</pre>
+<p><kbd>CacheActor</kbd> has support for receiving <kbd>SetValue</kbd> messages. Let's implement this with the <kbd>Handler</kbd> trait:</p>
+<pre>impl Handler&lt;SetValue&gt; for CacheActor {<br/>    type Result = Result&lt;(), RedisError&gt;;<br/><br/>    fn handle(&amp;mut self, msg: SetValue, _: &amp;mut Self::Context) -&gt; Self::Result {<br/>        self.client.set_ex(msg.path, msg.content, self.expiration)<br/>    }<br/>}</pre>
+<p class="mce-root">We used a <kbd>Client</kbd> instance stored in <kbd>CacheActor</kbd> to execute the <kbd>SETEX</kbd> command from Redis with the <kbd>set_ex</kbd> method call. This command sets a value with an expiration period in seconds. As you can see, the implementation is close to the database interaction functions of <a href="e09a1e76-ae09-41d4-99dc-9bad95fa3de7.xhtml" target="_blank">Chapter 7</a>, <em>Reliable Integration with Databases</em>, but implemented as a <kbd>Handler</kbd> of the specific message. This code structuring is simpler and more intuitive.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Get value message</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>GetValue</kbd> struct represents a message to extract a value from Redis by key (or path, in our case). It contains only one field with a <kbd>path</kbd> value:</p>
+<pre>struct GetValue {<br/>    pub path: String,<br/>}</pre>
+<p>We also have to implement the <kbd>Message</kbd> trait to it, but we want it to return an optional <kbd>Vec&lt;u8&gt;</kbd> value if Redis contains a value for the provided key:</p>
+<pre>impl Message for GetValue {<br/>    type Result = Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, RedisError&gt;;<br/>}</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p><kbd>CacheActor</kbd> also implements a <kbd>Handler</kbd> trait for the <kbd>GetValue</kbd> message type, and uses the <kbd>GET</kbd> command of Redis storage by calling the <kbd>get</kbd> method of <kbd>Client</kbd> to extract a value from storage:</p>
+<pre>impl Handler&lt;GetValue&gt; for CacheActor {<br/>    type Result = Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, RedisError&gt;;<br/><br/>    fn handle(&amp;mut self, msg: GetValue, _: &amp;mut Self::Context) -&gt; Self::Result {<br/>        self.client.get(&amp;msg.path)<br/>    }<br/>}</pre>
+<p class="mce-root">As you can see, actors and messages are simple enough, but we have to use an <kbd>Addr</kbd> value to interact with them. It's not a concise approach. We will add a special type that allows methods to interact with the <kbd>CacheActor</kbd> instance.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Link to actor</h1>
+                </header>
+            
+            <article>
+                
+<p>The following struct wraps an address of <kbd>CacheActor</kbd>:</p>
+<pre>#[derive(Clone)]<br/>pub struct CacheLink {<br/>    addr: Addr&lt;CacheActor&gt;,<br/>}</pre>
+<p>The constructor only fills this <kbd>addr</kbd> field with an <kbd>Addr</kbd> value:</p>
+<pre>impl CacheLink {<br/>    pub fn new(addr: Addr&lt;CacheActor&gt;) -&gt; Self {<br/>        Self { addr }<br/>    }<br/>}</pre>
+<p>We need a <kbd>CacheLink</kbd> wrapping struct to add methods to get access to caching features, but need to hide the implementation details and message interchange. First, we need a method to get cached values:</p>
+<pre>pub fn get_value(&amp;self, path: &amp;str) -&gt; Box&lt;Future&lt;Item = Option&lt;Vec&lt;u8&gt;&gt;, Error = Error&gt;&gt; {<br/>    let msg = GetValue {<br/>        path: path.to_owned(),<br/>    };<br/>    let fut = self.addr.send(msg)<br/>        .from_err::&lt;Error&gt;()<br/>        .and_then(|x| x.map_err(Error::from));<br/>    Box::new(fut)<br/>}</pre>
+<p>The preceding function creates a new <kbd>GetValue</kbd> message with a <kbd>path</kbd> inside, and sends this message to <kbd>Addr</kbd>, contained in <kbd>CacheLink</kbd>. After this, it waits for the result. The function returns this interaction sequence as a boxed <kbd>Future</kbd>.</p>
+<p>The next method is implemented in a similar way—the <kbd>set_value</kbd> method sets a new value to a cache by sending a <kbd>SetValue</kbd> message to <kbd>CacheActor</kbd>:</p>
+<pre>pub fn set_value(&amp;self, path: &amp;str, value: &amp;[u8]) -&gt; Box&lt;Future&lt;Item = (), Error = Error&gt;&gt; {<br/>    let msg = SetValue {<br/>        path: path.to_owned(),<br/>        content: value.to_owned(),<br/>    };<br/>    let fut = self.addr.send(msg)<br/>        .from_err::&lt;Error&gt;()<br/>        .and_then(|x| x.map_err(Error::from));<br/>    Box::new(fut)<br/>}</pre>
+<p>To compose a message, we use a <kbd>path</kbd> and a bytes array reference converted into a <kbd>Vec&lt;u8&gt;</kbd> value. Now, we can use <kbd>CacheActor</kbd> and <kbd>CacheLink</kbd> in a server implementation.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using database actors</h1>
+                </header>
+            
+            <article>
+                
+<p>In the previous example in this chapter, we used shared <kbd>State</kbd> to provide access to a counter stored as <kbd>i64</kbd>, wrapped with <kbd>RefCell</kbd>. We reuse this struct, but add a <kbd>CacheLink</kbd> field to use connections with a <kbd>CacheActor</kbd> to get or set cached values. Add this field:</p>
+<pre>struct State {<br/>    counter: RefCell&lt;i64&gt;,<br/>    cache: CacheLink,<br/>}</pre>
+<p>We derived a <kbd>Default</kbd> trait for the <kbd>State</kbd> struct before, but now we need a new constructor, because we have to provide a <kbd>CacheLink</kbd> instance with the actual address of<span> the</span> caching actor:</p>
+<pre>impl State {<br/>    fn new(cache: CacheLink) -&gt; Self {<br/>        Self {<br/>            counter: RefCell::default(),<br/>            cache,<br/>        }<br/>    }<br/>}</pre>
+<p>In most cases, caching works this way—it tries to extract a value from a cache; if it exists and hasn't expired, then the value is returned to a client. If there is no valid value, we need to obtain a new one. After we have taken it, we have to store it in a cache for future use.</p>
+<p>In the previous example, we often used a <kbd>Future</kbd> instance that receives a <kbd>Response</kbd> from another microservice. To simplify our use of caching, let's add<span> the</span> <kbd>cache</kbd> method to our <kbd>State</kbd> implementation. This method will wrap any provided <kbd>future</kbd> with a path and try to extract the cached value. If the value isn't available, it will obtain a new one, and afterwards, it receives the store-copied value to cache, and returns the value to the client. This method wraps the provided <kbd>Future</kbd> value with another <kbd>Future</kbd> trait implementation. Look at the following implementation:</p>
+<pre>fn cache&lt;F&gt;(&amp;self, path: &amp;str, fut: F)<br/>    -&gt; impl Future&lt;Item = Vec&lt;u8&gt;, Error = Error&gt;<br/>where<br/>    F: Future&lt;Item = Vec&lt;u8&gt;, Error = Error&gt; + 'static,<br/>{<br/>    let link = self.cache.clone();<br/>    let path = path.to_owned();<br/>    link.get_value(&amp;path)<br/>        .from_err::&lt;Error&gt;()<br/>        .and_then(move |opt| {<br/>            if let Some(cached) = opt {<br/>                debug!("Cached value used");<br/>                boxed(future::ok(cached))<br/>            } else {<br/>                let res = fut.and_then(move |data| {<br/>                    link.set_value(&amp;path, &amp;data)<br/>                        .then(move |_| {<br/>                            debug!("Cache updated");<br/>                            future::ok::&lt;_, Error&gt;(data)<br/>                        })<br/>                        .from_err::&lt;Error&gt;()<br/>                });<br/>                boxed(res)<br/>            }<br/>        })<br/>}</pre>
+<p>The implementation uses<span> the</span> <kbd>State</kbd> instance to clone <kbd>CacheLink</kbd>. We have to use a cloned <kbd>link</kbd> because we have to move it to the closure that uses it to store a new value, should we need to obtain it.</p>
+<p>First, we call<span> the</span> <kbd>get_value</kbd> method of <kbd>CacheLink</kbd> and get a <kbd>Future</kbd> that requests a value from the cache. Since the method returns <kbd>Option</kbd>, we will use<span> the</span> <kbd>and_then</kbd> method to check that the value exists in a cache, and return that value to the client. If the value is expired or not available, we will obtain it by executing the provided <kbd>Future</kbd> and use a link to call<span> the</span> <kbd>set_value</kbd> method if the new value is returned successfully.</p>
+<p>Now, we can use<span> the </span><kbd>cache</kbd> method to cache the list of comments that are returned for the <kbd>comments</kbd> handler of the previous example:</p>
+<pre>fn comments(req: HttpRequest&lt;State&gt;) -&gt; FutureResponse&lt;HttpResponse&gt; {<br/>    let fut = get_request("http://127.0.0.1:8003/list");<br/>    let fut = req.state().cache("/list", fut)<br/>        .map(|data| {<br/>            HttpResponse::Ok().body(data)<br/>        });<br/>    Box::new(fut)<br/>}</pre>
+<p>First, we create a <kbd>Future</kbd> to get a value from another microservice using<span> the</span> <kbd>get_request</kbd> method that we have implemented before. After that, we get a reference to <kbd>State</kbd> using<span> the</span> <kbd>state</kbd> method of<span> the</span> request, and call<span> the</span> <kbd>cache</kbd> method by passing<span> the</span> <kbd>/list</kbd> path, then create a <kbd>Future</kbd> instance to obtain a new value.</p>
+<p>We have implemented all of the parts of our database actor. We still need to start a set of caching actors with <kbd>SyncArbiter</kbd>, and wrap the returned <kbd>Addr</kbd> value with <kbd>CacheLink</kbd>:</p>
+<pre>let addr = SyncArbiter::start(3, || {<br/>    CacheActor::new("redis://127.0.0.1:6379/", 10)<br/>});<br/>let cache = CacheLink::new(addr);<br/>server::new(move || {<br/>    let state = State::new(cache.clone());<br/>    App::with_state(state)<br/>    // remains part App building<br/>})</pre>
+<p>Now, you can build the server. It will return the cached value of the <kbd>/api/list</kbd> request every 10 seconds.</p>
+<p>The other good benefit of using actors is WebSocket. With this, we can add stateful interaction to our microservices using a state-machine implemented as an actor. Let's look at this in the next section.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">WebSocket</h1>
+                </header>
+            
+            <article>
+                
+<p>WebSocket is a full-duplex communication protocol worked over HTTP. WebSockets are often used as an extension of main HTTP interaction and can be used for live updates or notifications.</p>
+<p>An actors model is well-suited for implementing WebSocket handlers, because you can combine and isolate code in a single place: in<span> the</span> implementation of<span> the</span> actor. <kbd>actix-web</kbd> supports<span> the </span>WebSocket protocol, and in this section, we will add notification functionality to our microservice. Maybe all the features we have implemented with <kbd>actix-web</kbd> make our example a bit complex, but it's important for demonstration purposes to keep all features to show how you can combine a server with multiple actors and tasks.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Repeater actor</h1>
+                </header>
+            
+            <article>
+                
+<p>We have to send notifications about new comments to all connected clients. To do this, we have to keep the list of all connected clients to send a notification to them. We could update the <kbd>State</kbd> instance on every connection to add every new client to it, but instead, we will create a more elegant solution with a router that resends messages to multiple subscribers. Subscribers or listeners, in this case, will be actors that handle incoming WebSocket connections.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actors</h1>
+                </header>
+            
+            <article>
+                
+<p>We will add an actor to resend messages to other actors. We need some basic types from<span> the</span> <kbd>actix</kbd> crate, along with a <kbd>HashSet</kbd> to keep addresses of actors. Import<span> the</span> <kbd>NewComment</kbd> struct, which we will clone and resend:</p>
+<pre>use actix::{Actor, Context, Handler, Message, Recipient};<br/>use std::collections::HashSet;<br/>use super::NewComment;</pre>
+<p>Add a <kbd>RepeaterActor</kbd> struct with a <kbd>listeners</kbd> field of<span> the</span> <kbd>HashSet</kbd> type that contains <kbd>Recipient</kbd> instances:</p>
+<pre>pub struct RepeaterActor {<br/>    listeners: HashSet&lt;Recipient&lt;RepeaterUpdate&gt;&gt;,<br/>}</pre>
+<p>You are familiar with the <kbd>Addr</kbd> type, but we haven't used <kbd>Recipient</kbd> before. Actually, you can convert any <kbd>Addr</kbd> instance into a <kbd>Recipient</kbd> using<span> the</span> <kbd>recipient</kbd> method call. The <kbd>Recipient</kbd> type is an address that supports only one type of <kbd>Message</kbd>.</p>
+<p>Add a constructor that creates an empty <kbd>HashSet</kbd>:</p>
+<pre>impl RepeaterActor {<br/>    pub fn new() -&gt; Self {<br/>        Self {<br/>            listeners: HashSet::new(),<br/>        }<br/>    }<br/>}</pre>
+<p>Next, implement an <kbd>Actor</kbd> trait for this struct:</p>
+<pre>impl Actor for RepeaterActor {<br/>    type Context = Context&lt;Self&gt;;<br/>}</pre>
+<p>It's enough to have a standard <kbd>Context</kbd> type as an associated context type of <kbd>Actor</kbd>, because it can work asynchronously.</p>
+<p>Now, we have to add messages to this actor type.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Messages</h1>
+                </header>
+            
+            <article>
+                
+<p>We will support two types of messages. The first is an update message that transfers a new comment from one actor to another. The second is a control message that adds or removes listeners to the actor.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Updating the message</h1>
+                </header>
+            
+            <article>
+                
+<p>We will start with updating the message. Add a <kbd>RepeaterUpdate</kbd> struct that wraps a <kbd>NewComment</kbd> type:</p>
+<pre>#[derive(Clone)]<br/>pub struct RepeaterUpdate(pub NewComment);</pre>
+<p>As you can see, we also derived<span> the</span> <kbd>Clone</kbd> trait, because we need to clone this message to resend it to multiple subscribers. <kbd>NewComment</kbd> also has to be cloneable now.</p>
+<p>Let's implement<span> the</span> <kbd>Message</kbd> trait for<span> the</span> <kbd>RepeaterUpdate</kbd> struct. We will use an empty type for the <kbd>Result</kbd> associated type, because we don't care about<span> the</span> delivery of these messages:</p>
+<pre>impl Message for RepeaterUpdate {<br/>    type Result = ();<br/>}</pre>
+<p>Now, we can implement a <kbd>Handler</kbd> for<span> the</span> <kbd>RepeaterUpdate</kbd> message type:</p>
+<pre>impl Handler&lt;RepeaterUpdate&gt; for RepeaterActor {<br/>    type Result = ();<br/><br/>    fn handle(&amp;mut self, msg: RepeaterUpdate, _: &amp;mut Self::Context) -&gt; Self::Result {<br/>        for listener in &amp;self.listeners {<br/>            listener.do_send(msg.clone()).ok();<br/>        }<br/>    }<br/>}</pre>
+<p>The algorithm of<span> the</span> handler is simple: it iterates over all listeners (actually, addresses of listeners stored as <kbd>Recipient</kbd> instances) and sends a cloned message to them. In other words, this actor receives a message and immediately sends it to all known listeners.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Control message</h1>
+                </header>
+            
+            <article>
+                
+<p>The following message type is necessary to subscribe or unsubscribe from <kbd>RepeaterUpdate</kbd> messages. Add the following enumeration:</p>
+<pre>pub enum RepeaterControl {<br/>    Subscribe(Recipient&lt;RepeaterUpdate&gt;),<br/>    Unsubscribe(Recipient&lt;RepeaterUpdate&gt;),<br/>}</pre>
+<p>It has two variants with the same <kbd>Recipient&lt;RepeaterUpdate&gt;</kbd> type inside. Actors will send their own <kbd>Recipient</kbd> addresses to start listening for updates or to stop any notifications about new comments.</p>
+<p>Implement<span> the</span> <kbd>Message</kbd> trait for<span> the</span> <kbd>RepeaterControl</kbd> struct to turn it into the <kbd>message</kbd> type and use an empty <kbd>Result</kbd> associated type:</p>
+<pre>impl Message for RepeaterControl {<br/>    type Result = ();<br/>}</pre>
+<p>Now, we can implement a <kbd>Handler</kbd> trait for<span> the</span> <kbd>RepeaterControl</kbd> message:</p>
+<pre>impl Handler&lt;RepeaterControl&gt; for RepeaterActor {<br/>    type Result = ();<br/><br/>    fn handle(&amp;mut self, msg: RepeaterControl, _: &amp;mut Self::Context) -&gt; Self::Result {<br/>        match msg {<br/>            RepeaterControl::Subscribe(listener) =&gt; {<br/>                self.listeners.insert(listener);<br/>            }<br/>            RepeaterControl::Unsubscribe(listener) =&gt; {<br/>                self.listeners.remove(&amp;listener);<br/>            }<br/>        }<br/>    }<br/>}</pre>
+<p>The implementation of the preceding handler is also pretty simple: it adds a new <kbd>Recipient</kbd> to listeners set on<span> the</span> <kbd>Subscribe</kbd> message variant, and removes the <kbd>Recipient</kbd> upon <kbd>Unsubscribe</kbd> messages.</p>
+<p>The actor that resends <kbd>NewComment</kbd> values to other actors is ready, and now we can start to implement an actor for handling WebSocket connections.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The notification actor</h1>
+                </header>
+            
+            <article>
+                
+<p>The notification actor is actually a handler of WebScoket connections, but it performs only one function—sending a <kbd>NewComment</kbd> value, serialized to JSON, to clients.</p>
+<p>Since we need a JSON serializer, add<span> the</span> <kbd>serde_json</kbd> crate to dependencies:</p>
+<pre>serde_json = "1.0"</pre>
+<p>Then, add<span> the</span> <kbd>src/notify.rs</kbd> module and start implementing the actor.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Actor</h1>
+                </header>
+            
+            <article>
+                
+<p>The notification actor is more complex and we need more types to implement it. Let's look into them:</p>
+<pre>use actix::{Actor, ActorContext, AsyncContext, Handler, Recipient, StreamHandler};<br/>use actix_web::ws::{Message, ProtocolError, WebsocketContext};<br/>use crate::repeater::{RepeaterControl, RepeaterUpdate};<br/>use std::time::{Duration, Instant};<br/>use super::State;</pre>
+<p>First, we started by using<span> the</span> <kbd>ws</kbd> module of<span> the</span> <kbd>actix_web</kbd> crate. It contains a necessary <kbd>WebsocketContext</kbd> that we will use as a context value in <span>the</span> <kbd>Actor</kbd> trait implementation. Also, we need <kbd>Message</kbd> and <kbd>ProtocolError</kbd> types to implement WebSocket stream handling. We also imported <kbd>ActorContext</kbd> to stop the method of<span> the</span> <kbd>Context</kbd> instance to break the connection with a client. We imported the <kbd>AsyncContext</kbd> trait to get an address of a context and to run a task that performs on time intervals. One new type that we have not used yet is <kbd>StreamHandler</kbd>. It is necessary to implement the handing of values that are sent from <kbd>Stream</kbd> to <kbd>Actor</kbd>.</p>
+<div class="packt_tip">You can use either <kbd>Handler</kbd> or <kbd>StreamHandler</kbd> for handling messages of the same type. Which one is preferable? The rule is simple: if your actor will process a lot of messages, it's better to use <kbd>StreamHandler</kbd> and connect the messages flow as a <kbd>Stream</kbd> to an <kbd>Actor</kbd>. The <kbd>actix</kbd> runtime has check and if it calls the same <kbd>Handler</kbd>, you may receive warnings.</div>
+<p>Add<span> the</span> constants that we will use for sending <kbd>ping</kbd> messages to our clients:</p>
+<pre>const PING_INTERVAL: Duration = Duration::from_secs(20);<br/>const PING_TIMEOUT: Duration = Duration::from_secs(60);</pre>
+<p>The constants contain interval and timeout values.</p>
+<div class="packt_infobox">We will send pings to a client, because we have to keep a connection alive, since servers often have default timeouts for WebSocket connections. For example, <kbd>nginx</kbd> will close the connection after 60 seconds if there isn't any activity. And if you use <kbd>nginx</kbd> as a proxy with default configuration for WebSocket connections, then your connections can be broken. Browsers don't send pings and only send pongs for incoming pings. The server is responsible for sending pings to clients connected via browsers to prevent disconnecting through a timeout.</div>
+<p>Add<span> the following</span> <kbd>NotifyActor</kbd> struct to the code:</p>
+<pre>pub struct NotifyActor {<br/>     last_ping: Instant,<br/>     repeater: Recipient&lt;RepeaterControl&gt;,<br/>}</pre>
+<p>This actor has a <kbd>last_ping</kbd> of the <kbd>Instant</kbd> type to keep the timestamp of the latest ping. Also, the actor holds a <kbd>Recipient</kbd> address to send <kbd>RepeaterControl</kbd> messages. We will provide<span> the</span> address of <kbd>RepeaterActor</kbd> for this field with the constructor:</p>
+<pre>impl NotifyActor {<br/>    pub fn new(repeater: Recipient&lt;RepeaterControl&gt;) -&gt; Self {<br/>        Self {<br/>            last_ping: Instant::now(),<br/>            repeater,<br/>        }<br/>    }<br/>}</pre>
+<p>Now, we have to implement<span> the</span> <kbd>Actor</kbd> trait for<span> the</span> <kbd>NotifyActor</kbd> struct:</p>
+<pre>impl Actor for NotifyActor {<br/>    type Context = WebsocketContext&lt;Self, State&gt;;<br/><br/>    fn started(&amp;mut self, ctx: &amp;mut Self::Context) {<br/>        let msg = RepeaterControl::Subscribe(ctx.address().recipient());<br/>        self.repeater.do_send(msg).ok();<br/>        ctx.run_interval(PING_INTERVAL, |act, ctx| {<br/>            if Instant::now().duration_since(act.last_ping) &gt; PING_TIMEOUT {<br/>                ctx.stop();<br/>                return;<br/>            }<br/>            ctx.ping("ping");<br/>        });<br/>    }<br/><br/>    fn stopped(&amp;mut self, ctx: &amp;mut Self::Context) {<br/>        let msg = RepeaterControl::Unsubscribe(ctx.address().recipient());<br/>        self.repeater.do_send(msg).ok();<br/>    }<br/>}</pre>
+<p>This is the first time where we need to override the empty <kbd>started</kbd> and <kbd>stopped</kbd> methods. In the <kbd>started</kbd> method implementation, we will create a <kbd>Subscribe</kbd> message and send it using <kbd>Repeater</kbd>. Also, we add a task that will be executed on <kbd>PING_INTERVAL</kbd> and will send a ping message using the <kbd>ping</kbd> method of <kbd>WebsocketContext</kbd>. If a client never responds to us, then the <kbd>last_ping</kbd> field won't be updated. If the interval is larger than our <kbd>PING_TIMEOUT</kbd> value, we will interrupt the connection using<span> the</span> <kbd>stop</kbd> method of<span> the</span> context.</p>
+<p>The <kbd>stopped</kbd> method implementation is much simpler: it prepares an <kbd>Unsubscribe</kbd> event with the same address of the actor and sends it to <kbd>RepeaterActor</kbd>.</p>
+<p>Our actor implementation is ready and now we have to add handlers for messages and a stream.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handlers</h1>
+                </header>
+            
+            <article>
+                
+<p>First, we will implement a <kbd>StreamHandler</kbd> instance of<span> the </span><kbd>ws::Message</kbd> messages:</p>
+<pre>impl StreamHandler&lt;Message, ProtocolError&gt; for NotifyActor {<br/>    fn handle(&amp;mut self, msg: Message, ctx: &amp;mut Self::Context) {<br/>        match msg {<br/>            Message::Ping(msg) =&gt; {<br/>                self.last_ping = Instant::now();<br/>                ctx.pong(&amp;msg);<br/>            }<br/>            Message::Pong(_) =&gt; {<br/>                self.last_ping = Instant::now();<br/>            }<br/>            Message::Text(_) =&gt; { },<br/>            Message::Binary(_) =&gt; { },<br/>            Message::Close(_) =&gt; {<br/>                ctx.stop();<br/>            }<br/>        }<br/>    }<br/>}</pre>
+<p>This is a basic approach for implementing the WebSocket protocol interaction with <kbd>actix-web</kbd>. We will use<span> the</span> <kbd>ws::start</kbd> method later to attach a <kbd>Stream</kbd> of WebSocket messages to this actor.</p>
+<p>The <kbd>Message</kbd> type has multiple variants that reflects types of WebSocket messages from RFC 6455 (the official protocol specification). We use <kbd>Ping</kbd> and <kbd>Pong</kbd> to update the <kbd>last_ping</kbd> field of the actor's struct, and use <kbd>Close</kbd> to stop the connection by user's demand.</p>
+<p>The last <kbd>Handler</kbd> we have to implement allows us to receive <kbd>RepeaterUpdate</kbd> messages and to send <kbd>NewComment</kbd> values to a client:</p>
+<pre>impl Handler&lt;RepeaterUpdate&gt; for NotifyActor {<br/>    type Result = ();<br/><br/>    fn handle(&amp;mut self, msg: RepeaterUpdate, ctx: &amp;mut Self::Context) -&gt; Self::Result {<br/>        let RepeaterUpdate(comment) = msg;<br/>        if let Ok(data) = serde_json::to_string(&amp;comment) {<br/>            ctx.text(data);<br/>        }<br/>    }<br/>}</pre>
+<p>The implementation destructs a <kbd>RepeaterUpdate</kbd> message to get a <kbd>NewComment</kbd> value, serializes it to JSON using<span> the</span> <kbd>serde_json</kbd> crate, and sends it to a client using<span> the</span> <kbd>text</kbd> method of <kbd>WebsocketContext</kbd>.</p>
+<p>We have all necessary actors, so let's join them with a server.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding WebSocket support to a server</h1>
+                </header>
+            
+            <article>
+                
+<p>Since we will be extended the example from the previous section, we reuse<span> the</span> <kbd>State</kbd> struct, but add an <kbd>Addr</kbd> to<span> the</span> <kbd>Repeater</kbd> actor that we will create later in<span> the</span> <kbd>main</kbd> function:</p>
+<pre>pub struct State {<br/>     counter: RefCell&lt;i64&gt;,<br/>     cache: CacheLink,<br/>     repeater: Addr&lt;RepeaterActor&gt;,<br/> }</pre>
+<p class="mce-root"/>
+<p>Update<span> the</span> constructor to fill<span> the</span> <kbd>repeater</kbd> field:</p>
+<pre>fn new(cache: CacheLink, repeater: Addr&lt;RepeaterActor&gt;) -&gt; Self {<br/>     Self {<br/>         counter: RefCell::default(),<br/>         cache,<br/>         repeater,<br/>     }<br/> }</pre>
+<p>Now, we can spawn a <kbd>RepeaterActor</kbd>, set<span> the </span>address of the actor to <kbd>State</kbd>, and use it as the state for our <kbd>App</kbd>:</p>
+<pre>let repeater = RepeaterActor::new().start();<br/> <br/> server::new(move || {<br/>     let state = State::new(cache.clone(), repeater.clone());<br/>     App::with_state(state)<br/>         .resource("/ws", |r| r.method(http::Method::GET).f(ws_connect))<br/>         // other<br/> })</pre>
+<p>Also, we added a handler for HTTP requests with a resource method call of <kbd>App</kbd>, and passed<span> the</span> <kbd>ws_connect</kbd> function to it. Let's look at the implementation of this function:</p>
+<pre>fn ws_connect(req: &amp;HttpRequest&lt;State&gt;) -&gt; Result&lt;HttpResponse, Error&gt; {<br/>     let repeater = req.state().repeater.clone().recipient();<br/>     ws::start(req, NotifyActor::new(repeater))<br/> }</pre>
+<p>This clones an address of <kbd>RepeaterActor</kbd>, converting it into a <kbd>Recipient</kbd> which is then used for creating a <kbd>NotifyActor</kbd> instance. To start that actor instance, you have to use<span> the</span> <kbd>ws::start</kbd> method that uses the current <kbd>Request</kbd> and bootstraps <kbd>WebsocketContext</kbd> for this actor.</p>
+<p>The remaining thing is to send a <kbd>NewComment</kbd> to <kbd>RepeaterActor</kbd>, which will resend it to any <kbd>NotifyActor</kbd> instances of connected clients:</p>
+<pre>fn new_comment((req, params): (HttpRequest&lt;State&gt;, Form&lt;AddComment&gt;)) -&gt; FutureResponse&lt;HttpResponse&gt; {<br/>     let repeater = req.state().repeater.clone();<br/>     let fut = req.identity()<br/>         .ok_or(format_err!("not authorized").into())<br/>         .into_future()<br/>         .and_then(move |uid| {<br/>             let new_comment = NewComment {<br/>                 uid,<br/>                 text: params.into_inner().text,<br/>             };<br/>             let update = RepeaterUpdate(new_comment.clone());<br/>             repeater<br/>                 .send(update)<br/>                 .then(move |_| Ok(new_comment))<br/>         })<br/>         .and_then(move |params| {<br/>             post_request::&lt;_, ()&gt;("http://127.0.0.1:8003/new_comment", params)<br/>         })<br/>         .then(move |_| {<br/>             let res = HttpResponse::build_from(&amp;req)<br/>                 .status(StatusCode::FOUND)<br/>                 .header(header::LOCATION, "/comments.html")<br/>                 .finish();<br/>             Ok(res)<br/>         });<br/>     Box::new(fut)<br/> }</pre>
+<p>We extended<span> the</span> <kbd>new_comment</kbd> handler that is called when a user adds a new comment, and add an extra step to send a <kbd>NewComment</kbd> value to a repeater. In any case, we ignore the result of delivery of this message to an actor, and we send a POST request to another microservice. It's worth noting that clients will be notified about the new comment, even it won't send to the other microservice, but you can improve it by changing the order of the corresponding <kbd>Future</kbd> in the chain.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we covered creating a microservice using<span> the</span> Actix framework. We discovered how to create and configure an <kbd>App</kbd> instance, which describes all routes and middleware to be used. After that, we implemented all handlers that return a <kbd>Future</kbd> instance. In all handlers, we also use <kbd>ClientRequest</kbd> to send a request to another microservice and return a response back to the client using an asynchronous approach with futures. Finally, we explored how to create our own <kbd>Middleware</kbd> for the <kbd>actix-web</kbd> crate.</p>
+<p>In the next chapter, we'll examine the scalable microservices architecture, and look at how to achieve loose coupling of microservices. We'll also consider the use of message brokers to provide a flexible and manageable way to exchange messages between parts of a large application.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

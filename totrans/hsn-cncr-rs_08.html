@@ -1,0 +1,2432 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">High-Level Parallelism – Threadpools, Parallel Iterators and Processes</h1>
+                </header>
+            
+            <article>
+                
+<p>In previous chapters, we introduced the basic mechanisms of concurrency in the Rust—programming language. In <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>, we discussed the interplay of the type system of Rust with concurrent programs, how Rust ensures memory safety in this most difficult of circumstances. In <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>, we discussed the higher, so-called coarse, synchronization mechanisms available to us, common among many languages. In <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics<span> </span><span>– </span>the Primitives of Synchronization</em>, and <a href="2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml" target="_blank">Chapter 7</a>, <em>Atomics<span> </span>–<span> </span>Safely Reclaiming Memory</em>, we discussed the finer synchronization primitives available on modern machines, exposed through Rust's concurrent memory model. This has all been well and good but, though we've done deep-dives into select libraries or data structures, we have yet to see the <em>consequences</em> of all of these tools on the structure of programs, or how you might choose to split up your workloads across CPUs depending on need.</p>
+<p>In this chapter, we will explore higher-level techniques for exploiting concurrent machines without dipping into manual locking or atomic synchronization. We'll examine thread pooling, a technique common in other programming languages, data parallelism with the rayon library, and demonstrate multiprocessing in the context of a genetic programming project that will carry us into the next chapter, as well.</p>
+<p>By the end of this chapter, we will have:</p>
+<ul>
+<li><span>Explored the implementation of thread pool</span></li>
+<li><span>Understood how thread pooling relates to the operation of rayon</span></li>
+<li><span>Explored rayon's internal mechanism in-depth</span></li>
+<li><span>Demonstrated the use of rayon in a non-trivial exercise</span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>This chapter requires a working Rust installation. The details of verifying your installation are covered in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries<span> </span>–<span> </span>Machine Architecture and Getting Started with Rust. </em>A pMARS executable is required and must be on your PATH. Please follow the instructions in the pMARS (<a href="http://www.koth.org/pmars/">http://www.koth.org/pmars/</a>) source tree for building instructions.<br/>
+You can find the source code for this book's projects on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust">https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust</a>. The source code for this chapter is under <kbd>Chapter08</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Thread pooling</h1>
+                </header>
+            
+            <article>
+                
+<p>To this point in the book, whenever we have needed a thread, we've simply called <kbd>thread::spawn</kbd>. This is not necessarily a safe thing to do. Let's inspect two projects that suffer from a common defect—potential over-consumption of OS threads. The first will be obviously deficient, the second less so.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Slowloris – attacking thread-per-connection servers</h1>
+                </header>
+            
+            <article>
+                
+<p>The thread-per-connection architecture is a networking architecture that allocates one OS thread per inbound connection. This works well for servers that will receive a total number of connections relatively similar to the number of CPUs available to the server. Depending on the operating system, this architecture tends to reduce time-to-response latency of network transactions, as a nice bonus. The major defect with thread-per-connection systems has to do with slowloris attacks. In this style of attack, a malicious user opens a connection to the server<span>–</span>a relatively cheap operation, requiring only a single file-handler and simply holds it. Thread-per-connection systems can mitigate the slowloris attack by aggressively timing out idle connections, which the attacker can then mitigate by sending data through the connection at a very slow rate, say one byte per 100 milliseconds. The attacker, which could easily be just buggy software if you're deploying solely inside a trusted network, spends very little resources to carry out their attack. Meanwhile, for every new connection into the system, the server is forced to allocate a full stack frame and forced to cram another thread into the OS scheduler. That's not cheap.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The server</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's put together a vulnerable server, then blow it up. Lay out your <kbd>Cargo.toml</kbd> like so:</p>
+<pre>[package]
+name = "overwhelmed_tcp_server"
+version = "0.1.0"
+authors = ["Brian L. Troutwine &lt;brian@troutwine.us&gt;"]
+
+[dependencies]
+clap = "2.31"
+slog = "2.2"
+slog-term = "2.4"
+slog-async = "2.3"
+
+[[bin]]
+name = "server"
+
+[[bin]]
+name = "client"</pre>
+<p>The library slog (<a href="https://crates.io/crates/slog">https://crates.io/crates/slog</a>) is a structured logging library that I highly recommend in production systems. Slog itself is very flexible, being more of a framework for composing a logging system rather than a set thing. Here we'll be logging to terminal, which is what slog-term is for. The <kbd>slog-async</kbd> dependency defers actual writing to the terminal, in our case, to a dedicated thread. This dedication is more important when slog is emitting logs over a network, rather than quickly to terminal. We won't go in-depth on slog in this book but the documentation is comprehensive and I imagine you'll appreciate slog if you aren't already using it. The library clap (<a href="https://crates.io/crates/clap">https://crates.io/crates/clap</a>) is a command-line parsing library, which I also highly recommend for use in production systems. Note, finally, that we produce two binaries in this project, called <kbd>server</kbd> and <kbd>client</kbd>. Let's dig into <kbd>server</kbd> first. As usual, our projects start with a preamble:</p>
+<pre style="padding-left: 30px">#[macro_use]
+extern crate slog;
+extern crate clap;
+extern crate slog_async;
+extern crate slog_term;
+
+use clap::{App, Arg};
+use slog::Drain;
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::net::{TcpListener, TcpStream};</pre>
+<pre style="padding-left: 30px">use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+
+static TOTAL_STREAMS: AtomicUsize = AtomicUsize::new(0);</pre>
+<p>By this point in the book, there's nothing surprising here. We import the external libraries we've just discussed as well as a host of standard library material. The networking-related imports are unfamiliar, with regard to the previous content of this book, but we'll go into that briefly below. We finally create a static <kbd>TOTAL_STREAMS</kbd> at the top of the program that the <kbd>server</kbd> will use to track the total number of TCP streams it has connected. The <kbd>main</kbd> function starts off setting up slog:</p>
+<pre>fn main() {
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    let root = slog::Logger::root(drain, o!());</pre>
+<p>The exact details here are left to the reader to discover in slog's documentation. Next, we set up the clap and <kbd>parse</kbd> program arguments:</p>
+<pre>    let matches = App::new("server")
+        .arg(
+            Arg::with_name("host")
+                .long("host")
+                .value_name("HOST")
+                .help("Sets which hostname to listen on")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("port")
+                .long("port")
+                .value_name("PORT")
+                .help("Sets which port to listen on")
+                .takes_value(true),
+        )
+        .get_matches();
+
+    let host: &amp;str = matches.value_of("host").unwrap_or("localhost");
+    let port = matches
+        .value_of("port")
+        .unwrap_or("1987")
+        .parse::&lt;u16&gt;()
+        .expect("port-no not valid");</pre>
+<p>The details here are also left to the reader to discover in clap's documentation, but hopefully the intent is clear enough. We're setting up two arguments, <kbd>host</kbd> and <kbd>port</kbd>, which the server will listen for connections on. Speaking of:</p>
+<pre>    let listener = TcpListener::bind((host, port)).unwrap();</pre>
+<p>Note that we're unwrapping if it's not possible for the server to establish a connection. This is user-hostile and in a production-worthy application you should match on the error and print out a nice, helpful message to explain the error. Now that the server is listening for new connections, we make a server-specific logger and start handling incoming connections:</p>
+<pre>    let server = root.new(o!("host" =&gt; host.to_string(),<br/>                             "port" =&gt; port));
+    info!(server, "Server open for business! :D");
+
+    let mut joins = Vec::new();
+    for stream in listener.incoming() {
+        if let Ok(stream) = stream {
+            let stream_no = TOTAL_STREAMS.fetch_add(1, <br/>            Ordering::Relaxed);
+            let log = root.new(o!("stream-no" =&gt; stream_no,
+                   "peer-addr" =&gt; stream.peer_addr()<br/>                                  .expect("no peer address")<br/>                                  .to_string()));
+            let writer = BufWriter::new(<br/>                             stream.try_clone()<br/>                             .expect("could not clone stream"));
+            let reader = BufReader::new(stream);
+            match handle_client(log, reader, writer) {
+                Ok(handler) =&gt; {
+                    joins.push(handler);
+                }
+                Err(err) =&gt; {
+                    error!(server, <br/>                           "Could not make client handler. {:?}",<br/>                           err);
+                }
+            }
+        } else {
+            info!(root, "Shutting down! {:?}", stream);
+        }
+    }
+
+    info!(
+        server,
+        "No more incoming connections. Draining existing connections."
+    );
+    for jh in joins {
+        if let Err(err) = jh.join() {
+            info!(server, <br/>                  "Connection handler died with error: {:?}", <br/>                  err);
+        }
+    }
+}</pre>
+<p>The key thing here is <kbd>handle_client(log, reader, writer)</kbd>. This function accepts the newly created <kbd>stream :: TcpStream</kbd>– in its buffered reader and writer guise—and returns <kbd>std::io::Result&lt;JoinHandler&lt;()&gt;</kbd>. We'll see the implementation of this function directly. Before that and somewhat as an aside, it's very important to remember to add buffering to your IO. If we did not have <kbd>BufWriter</kbd> and <kbd>BufReader</kbd> in place here, every read and write to <kbd>TcpStream</kbd> would result in a system call on most systems doing per-byte transmissions over the network. It is <em>significantly</em> more efficient for everyone involved to do reading and writing in batches, which the <kbd>BufReader</kbd> and <kbd>BufWriter</kbd> implementations take care of. I have lost count of how many overly slow programs I've seen fixed with a judicious application of buffered-IO. Unfortunately, we won't dig into the implementations of <kbd>BufReader</kbd> and <kbd>BufWriter</kbd> here as they're outside the scope of this book. If you've read this far and I've done alright job explaining, then you've learned everything you need to understand the implementations and you are encouraged to dig in at your convenience. Note that here we're also allocating a vector for <kbd>JoinHandler&lt;()&gt;</kbd>s returned by <kbd>handle_client</kbd>. This is not necessarily ideal. Consider if the first connection were to be long-lived and every subsequent connection short. None of the handlers would be cleared out, though they were completed, and the program would gradually grow in memory consumption. The resolution to this problem is going to be program-specific but, at least here, it'll be sufficient to ignore the handles and force mid-transaction exits on worker threads. Why? Because the server is only echoing:</p>
+<pre style="padding-left: 30px">fn handle_client(
+    log: slog::Logger,
+    mut reader: BufReader&lt;TcpStream&gt;,
+    mut writer: BufWriter&lt;TcpStream&gt;,
+) -&gt; io::Result&lt;thread::JoinHandle&lt;()&gt;&gt; {
+    let builder = thread::Builder::new();
+    builder.spawn(move || {
+        let mut buf = String::with_capacity(2048);
+
+        while let Ok(sz) = reader.read_line(&amp;mut buf) {
+            info!(log, "Received a {} bytes: {}", sz, buf);
+            writer
+                .write_all(&amp;buf.as_bytes())
+                .expect("could not write line");
+            buf.clear();
+        }
+        TOTAL_STREAMS.fetch_sub(1, Ordering::Relaxed);
+    })
+}</pre>
+<p>A network protocol must, anyway, be resilient to hangups on either end, owing to the unreliable nature of networks. In fact, the reader who has enjoyed this book and especially <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml">Chapter 6</a>, <em>Atomics<span> </span>–<span> </span>the Primitives of Synchronization</em>, and <a href="2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml" target="_blank">Chapter 7</a>, <em>Atomics<span> </span>–<span> </span>Safely Reclaiming Memory</em>, will be delighted to learn that distributed systems face many of the same difficulties with the added bonus of unreliable transmission. Anyway, note that <kbd>handle_client</kbd> isn't doing all that much, merely using the <kbd>thread::Builder</kbd> API to construct threads, which we discussed in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>. Otherwise, it's a fairly standard TCP echo.</p>
+<p>Let's see the server in operation. In the top of the project, run <kbd>cargo run --release --bin server</kbd> and you should be rewarded with something much like:</p>
+<pre><strong>&gt; cargo run --release --bin server
+    Finished release [optimized] target(s) in 0.26 secs
+     Running `target/release/server`
+host: localhost
+ port: 1987
+  Apr 22 21:31:14.001 INFO Server open for business! :D</strong></pre>
+<p>So far so good. This server is listening on localhost, port 1987. In some other terminal, you can run a telnet to the server:</p>
+<pre><strong>&gt; telnet localhost 1987
+Trying ::1...
+Connected to localhost.
+Escape character is '^]'.
+hello server</strong></pre>
+<p>I've sent <kbd>hello server</kbd> to my running instance and have yet to receive a response because of the behavior of the write buffer. An explicit flush would correct this, at the expense of worse performance. Whether a flush should or should not be placed will depend entirely on setting. Here? Meh.</p>
+<p>The server dutifully logs the interaction:</p>
+<pre><strong>stream-no: 0
+ peer-addr: [::1]:65219
+  Apr 22 21:32:54.943 INFO Received a 14 bytes: hello server</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The client</h1>
+                </header>
+            
+            <article>
+                
+<p>The real challenge for our server comes with a specially constructed client. Let's go through it before we see the client in action. The preamble is typical:</p>
+<pre>#[macro_use]
+extern crate slog;
+extern crate clap;
+extern crate slog_async;
+extern crate slog_term;
+
+use clap::{App, Arg};
+use slog::Drain;
+use std::net::TcpStream;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{thread, time};
+
+static TOTAL_STREAMS: AtomicUsize = AtomicUsize::new(0);</pre>
+<p>In fact, this client preamble hews fairly close to that of the server. So, too, the <kbd>main</kbd> function, as we'll see shortly. As with many other programs in this book, we dedicate a thread to reporting on the behavior of the program. In this client, this thread runs the long-lived <kbd>report</kbd>:</p>
+<pre>fn report(log: slog::Logger) {
+    let delay = time::Duration::from_millis(1000);
+    let mut total_streams = 0;
+    loop {
+        let streams_per_second = TOTAL_STREAMS.swap(0, Ordering::Relaxed);
+        info!(log, "Total connections: {}", total_streams);
+        info!(log, "Connections per second: {}", streams_per_second);
+        total_streams += streams_per_second;
+        thread::sleep(delay);
+    }
+}</pre>
+<p>Every second <kbd>report</kbd> swaps <kbd>TOTAL_STREAMS</kbd>, maintaining its own <kbd>total_streams</kbd>, and uses the reset value as a per-second gauge. Nothing we haven't seen before in this book. Now, in the <kbd>main</kbd> function, we set up the logger and parse the same command options as in the server:</p>
+<pre>fn main() {
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    let root = slog::Logger::root(drain, o!());
+
+    let matches = App::new("server")
+        .arg(
+            Arg::with_name("host")
+                .long("host")
+                .value_name("HOST")
+                .help("Sets which hostname to listen on")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("port")
+                .long("port")
+                .value_name("PORT")
+                .help("Sets which port to listen on")
+                .takes_value(true),
+        )
+        .get_matches();
+
+    let host: &amp;str = matches.value_of("host").unwrap_or("localhost");
+    let port = matches
+        .value_of("port")
+        .unwrap_or("1987")
+        .parse::&lt;u16&gt;()
+        .expect("port-no not valid");
+
+    let client = root.new(o!("host" =&gt; host.to_string(), "port" =&gt; port));
+    info!(client, "Client ready to be mean. &gt;:)");</pre>
+<p>In <kbd>main,</kbd> we start the reporter thread and ignore its handle:</p>
+<pre>    let reporter_log = root.new(o!("meta" =&gt; "report"));
+    let _ = thread::spawn(|| report(reporter_log));</pre>
+<p>That leaves only committing the slowloris attack, which is disappointingly easy for the client to do:</p>
+<pre>    let mut streams = Vec::with_capacity(2048);
+    loop {
+        match TcpStream::connect((host, port)) {
+            Ok(stream) =&gt; {
+                TOTAL_STREAMS.fetch_add(1, Ordering::Relaxed);
+                streams.push(stream);
+            }
+            Err(err) =&gt; error!(client, <br/>                               "Connection rejected with error: {:?}", <br/>                               err),
+        }
+    }
+}</pre>
+<p>Yep, that's it, one simple loop connecting as quickly as possible. A more sophisticated setup would send a trickle of data through the socket to defeat aggressive timeouts or limit the total number of connections made to avoid suspicion, coordinating with other machines to do the same.</p>
+<p>Mischief on networks is an arms race that nobody really wins, is the moral.</p>
+<p>Anyway, let's see this client in action. If you run <kbd>cargo run --release --bin client</kbd>, you should be rewarded with:</p>
+<pre><strong>&gt; cargo run --release --bin client
+    Finished release [optimized] target(s) in 0.22 secs
+     Running `target/release/client`
+host: localhost
+ port: 1987
+  Apr 22 21:50:49.200 INFO Client ready to be mean. &gt;:)
+meta: report
+ Apr 22 21:50:49.200 INFO Total connections: 0
+ Apr 22 21:50:49.201 INFO Connections per second: 0
+ Apr 22 21:50:50.200 INFO Total connections: 0
+ Apr 22 21:50:50.200 INFO Connections per second: 1160
+ Apr 22 21:50:51.204 INFO Total connections: 1160
+ Apr 22 21:50:51.204 INFO Connections per second: 1026
+ Apr 22 21:50:52.204 INFO Total connections: 2186
+ Apr 22 21:50:52.204 INFO Connections per second: 915</strong></pre>
+<p>You'll find a spew of errors in the server log as well as high-CPU load due to the OS scheduler thrash. It's not a good time.</p>
+<p>The ultimate problem here is that we've allowed an external party, the client, to decide the allocation patterns of our program. Fixed sizes make for safer software. In this case, we'll need to fix the total number of threads at startup, thereby capping the number of connections the server is able to sustain to a relatively low number. Though, it will be a safe low number. Note that the deficiency of allocating a whole OS thread to a single network connection is what inspired C10K Problem in the late 1990s, leading to more efficient polling capabilities in modern operating systems. These polling syscalls are the basis of Mio and thereby Tokio, though the discussion of either is well outside the scope of this book. Look them up. It's the future of Rust networking.</p>
+<p>What this program needs is a way of fixing the number of threads available for connections. That's exactly what a thread pool is.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">A thread-pooling server</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's adapt our overwhelmed TCP server to use a fixed number of threads. We'll start a new project whose <kbd>Cargo.toml</kbd> looks like:</p>
+<pre>[package]
+name = "fixed_threads_server"
+version = "0.1.0"
+authors = ["Brian L. Troutwine &lt;brian@troutwine.us&gt;"]
+
+[dependencies]
+clap = "2.31"
+slog = "2.2"
+slog-term = "2.4"
+slog-async = "2.3"
+threadpool = "1.7"
+
+[[bin]]
+name = "server"
+
+[[bin]]
+name = "client"</pre>
+<p>This is almost exactly the same as the unbounded thread project, save that the name has been changed from <kbd>overwhelmed_tpc_server</kbd> to <kbd>fixed_threads_tcp_server</kbd> and we've added a new dependency<span>–</span>threadpool. There are a few different, stable thread-pool libraries available in crates, each with a slightly different feature set or focus. The workerpool project (<a href="https://crates.io/crates/workerpool">https://crates.io/crates/workerpool</a>), for example, sports almost the same API as threadpool, save that it comes rigged up so in/out communication with the worker thread is enforced at the type-level, where threadpool requires the user to establish this themselves if they want. In this project, we don't have a need to communicate with the worker thread.</p>
+<p>The server preamble is only slightly altered from the previous project:</p>
+<pre>#[macro_use]
+extern crate slog;
+extern crate clap;
+extern crate slog_async;
+extern crate slog_term;
+extern crate threadpool;
+
+use clap::{App, Arg};
+use slog::Drain;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use threadpool::ThreadPool;
+
+static TOTAL_STREAMS: AtomicUsize = AtomicUsize::new(0);</pre>
+<p>The only changes here are the introduction of the thread-pooling library and the removal of some unused imports. Our <kbd>handle_client</kbd> implementation is also basically the same, but is notably not spawning a thread:</p>
+<pre>fn handle_client(
+    log: slog::Logger,
+    mut reader: BufReader&lt;TcpStream&gt;,
+    mut writer: BufWriter&lt;TcpStream&gt;,
+) -&gt; () {
+    let mut buf = String::with_capacity(2048);
+
+    while let Ok(sz) = reader.read_line(&amp;mut buf) {
+        info!(log, "Received a {} bytes: {}", sz, buf);
+        writer
+            .write_all(&amp;buf.as_bytes())
+            .expect("could not write line");
+        buf.clear();
+    }
+    TOTAL_STREAMS.fetch_sub(1, Ordering::Relaxed);
+}</pre>
+<p>Our main function, likewise, is very similar. We set up the logger and parse application options, adding in a new <kbd>max_connections</kbd> option:</p>
+<pre>fn main() {
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    let root = slog::Logger::root(drain, o!());
+
+    let matches = App::new("server")
+        .arg(
+            Arg::with_name("host")
+                .long("host")
+                .value_name("HOST")
+                .help("Sets which hostname to listen on")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("port")
+                .long("port")
+                .value_name("PORT")
+                .help("Sets which port to listen on")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("max_connections")
+                .long("max_connections")
+                .value_name("CONNECTIONS")
+                .help("Sets how many connections (thus,\<br/>                       threads) to allow simultaneously")
+                .takes_value(true),
+        )
+        .get_matches();
+
+    let host: &amp;str = matches.value_of("host").unwrap_or("localhost");
+    let port = matches
+        .value_of("port")
+        .unwrap_or("1987")
+        .parse::&lt;u16&gt;()
+        .expect("port-no not valid");
+    let max_connections = matches
+        .value_of("max_connections")
+        .unwrap_or("256")
+        .parse::&lt;u16&gt;()
+        .expect("max_connections not valid");</pre>
+<p>Note that <kbd>max_connections</kbd> is <kbd>u16</kbd>. This is arbitrary and will under-consume some of the larger machines available in special circumstances. But this is a reasonable range for most hardware today. Just the same as before, we adapt the logger to include the host and port information:</p>
+<pre>    let listener = TcpListener::bind((host, port)).unwrap();
+    let server = root.new(o!("host" =&gt; host.to_string(), "port" =&gt; port));
+    info!(server, "Server open for business! :D");</pre>
+<p>So far, so good. Before the server can start accepting incoming connections, it needs a thread pool. Like so:</p>
+<pre>    let pool: ThreadPool = threadpool::Builder::new()
+        .num_threads(max_connections as usize)
+        .build();</pre>
+<p>Exactly what <kbd>threadpool::Builder</kbd> does and how it works we defer to the next section, relying only on documentation to guide us. As such, we now have <kbd>ThreadPool</kbd> with <kbd>max_connection</kbd> possible active threads. This pool implementation does not bound the total number of jobs that can be run against the pool, collecting them in a queue, instead. This is not ideal for our purposes, where we aim to reject connections that can't be serviced. This is something we can address:</p>
+<pre>    for stream in listener.incoming() {
+        if let Ok(stream) = stream {
+            if pool.active_count() == (max_connections as usize) {
+                info!(
+                    server,
+                    "Max connection condition reached, rejecting incoming"
+                );
+            } else {
+                let stream_no = TOTAL_STREAMS.fetch_add(<br/>                                    1, <br/>                                    Ordering::Relaxed<br/>                                );
+                let log = root.new(o!("stream-no" =&gt; stream_no,
+                   "peer-addr" =&gt; stream.peer_addr()<br/>                                  .expect("no peer address")<br/>                                  .to_string()));
+                let writer = BufWriter::new(stream.try_clone()<br/>                             .expect("could not clone stream"));
+                let reader = BufReader::new(stream);
+                pool.execute(move || handle_client(log, reader, writer));
+            }
+        } else {
+            info!(root, "Shutting down! {:?}", stream);
+        }
+    }</pre>
+<p>The accept loop is more or less the same as in the previous server, except at the top of the loop we check <kbd>pool.active_count()</kbd> against the configured <kbd>max_connections</kbd>, reject the connection if the number of running workers is at capacity; otherwise we accept the connection and execute it against the pool. Finally, much as before, the server drains connections when the incoming socket is closed:</p>
+<pre>    info!(
+        server,
+        "No more incoming connections. \<br/>         Draining existing connections."
+    );
+    pool.join();
+}</pre>
+<p>The client presented in the previous section can be applied to this server without any changes. If the reader inspects the book's source repository, they will find that the clients are identical between projects. </p>
+<p>This server implementation does not suffer from an ever-growing <kbd>JoinHandle</kbd> vector, as the last server did. The pool takes care to remove panicked threads from its internal buffers and we take care to never allow more workers than there are threads available to work them. Let's find out how that works!</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Looking into thread pool</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's look into threadpool and understand its implementation. Hopefully by this point in the book, you have a sense of how you'd go about building your own thread-pooling library. Consider that for a moment, before we continue, and see how well your idea stacks up against this particular approach. We'll inspect the library (<a href="https://crates.io/crates/threadpool">https://crates.io/crates/threadpool</a>) at SHA <kbd>a982e060ea2e3e85113982656014b212c5b88ba2</kbd>.</p>
+<div class="packt_infobox"><span>The thread pool crate is not listed in its entirety. You can find the full listing in the book's source repository. </span></div>
+<p>Let's look first at the project's <kbd>Cargo.toml</kbd>:</p>
+<pre>[package]
+
+name = "threadpool"
+version = "1.7.1"
+authors = ["The Rust Project Developers", "Corey Farwell &lt;coreyf@rwell.org&gt;", "Stefan Schindler &lt;dns2utf8@estada.ch&gt;"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/rust-threadpool/rust-threadpool"
+homepage = "https://github.com/rust-threadpool/rust-threadpool"
+documentation = "https://docs.rs/threadpool"
+description = """
+A thread pool for running a number of jobs on a fixed set of worker threads.
+"""</pre>
+<pre>keywords = ["threadpool", "thread", "pool", "threading", "parallelism"]
+categories = ["concurrency", "os"]
+
+[dependencies]
+num_cpus = "1.6"</pre>
+<p>Fairly minimal. The only dependency is <kbd>num_cpus</kbd>, a little library to determine the number of logical and physical cores available on the machine. On linux, this reads <kbd>/proc/cpuinfo</kbd>. On other operating systems, such as the BSDs or Windows, the library makes system calls. It's a clever little library and well worth reading if you need to learn how to target distinct function implementations across OSes. The key thing to take away from the threadpool's <kbd>Cargo.toml</kbd> is that it is almost entirely built from the tools available in the standard library. In fact, there's only a single implementation file in the library, <kbd>src/lib.rs</kbd>. All the code we'll discuss from this point can be found in that file.</p>
+<p>Now, let's understand the builder pattern we saw in the previous section. The <kbd>Builder</kbd> type is defined like so:</p>
+<pre>#[derive(Clone, Default)]
+pub struct Builder {
+    num_threads: Option&lt;usize&gt;,
+    thread_name: Option&lt;String&gt;,
+    thread_stack_size: Option&lt;usize&gt;,
+}</pre>
+<p>We only populated <kbd>num_threads</kbd> in the previous section. <kbd>thread_stack_size</kbd> is used to control the stack size of pool threads. As of writing, thread stack sizes are by default two megabytes. Standard library's <kbd>std::thread::Builder::stack_size</kbd> allows us to manually set this value. We could have, for instance, in our thread-per-connection example, set the stack size significantly lower, netting us more threads on the same hardware. After all, each thread allocated very little storage, especially if we had taken steps to read only into a fixed buffer. The <kbd>thread_name</kbd> field, like the stack size, is a toggle for <kbd>std::thread::Builder::name</kbd>. That is, it allows the user to set the thread name for all threads in the pool, a name they will all share. In my experience, naming threads is a relatively rare thing to do, especially in a pool, but it can sometimes be useful for logging purposes.</p>
+<p>The pool builder works mostly as you'd expect, with the public functions setting the fields in the <kbd>Builder</kbd> struct. Where the implementation gets interesting is <kbd>Builder::build</kbd>:</p>
+<pre>    pub fn build(self) -&gt; ThreadPool {
+        let (tx, rx) = channel::&lt;Thunk&lt;'static&gt;&gt;();
+
+        let num_threads = self.num_threads.unwrap_or_else(num_cpus::get);
+
+        let shared_data = Arc::new(ThreadPoolSharedData {
+            name: self.thread_name,
+            job_receiver: Mutex::new(rx),
+            empty_condvar: Condvar::new(),
+            empty_trigger: Mutex::new(()),
+            join_generation: AtomicUsize::new(0),
+            queued_count: AtomicUsize::new(0),
+            active_count: AtomicUsize::new(0),
+            max_thread_count: AtomicUsize::new(num_threads),
+            panic_count: AtomicUsize::new(0),
+            stack_size: self.thread_stack_size,
+        });
+
+        // Threadpool threads
+        for _ in 0..num_threads {
+            spawn_in_pool(shared_data.clone());
+        }
+
+        ThreadPool {
+            jobs: tx,
+            shared_data: shared_data,
+        }
+    }</pre>
+<p>There's a lot going on here. Let's take it a bit at a time. First, that channel is the <kbd>std::sync::mpsc::channel</kbd> we discussed at length in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>. What is unfamiliar there is <kbd>Thunk</kbd>. Turns out, it's a type synonym:</p>
+<pre>type Thunk&lt;'a&gt; = Box&lt;FnBox + Send + 'a&gt;;</pre>
+<p>Now, what is <kbd>FnBox</kbd>? It's a small trait:</p>
+<pre>trait FnBox {
+    fn call_box(self: Box&lt;Self&gt;);
+}
+
+impl&lt;F: FnOnce()&gt; FnBox for F {
+    fn call_box(self: Box&lt;F&gt;) {
+        (*self)()
+    }
+}</pre>
+<p>It is the <kbd>FnOnce</kbd> trait we encountered in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>, <em>The Rust Memory Model<span> </span>–<span> </span>Ownership, References and Manipulation</em>, so if you read that chapter, you know that <kbd>F</kbd> will only be called once. The boxing of the function closure means its captured variables are available on the heap and don't get deallocated when the pool caller moves the closure out of scope. Great. Now, let's jump back to build and look at <kbd>shared_data</kbd>:</p>
+<pre>        let shared_data = Arc::new(ThreadPoolSharedData {
+            name: self.thread_name,
+            job_receiver: Mutex::new(rx),
+            empty_condvar: Condvar::new(),
+            empty_trigger: Mutex::new(()),
+            join_generation: AtomicUsize::new(0),
+            queued_count: AtomicUsize::new(0),
+            active_count: AtomicUsize::new(0),
+            max_thread_count: AtomicUsize::new(num_threads),
+            panic_count: AtomicUsize::new(0),
+            stack_size: self.thread_stack_size,
+        });</pre>
+<p>Alright, several atomic usizes, a condvar, a mutex to protect the receiver side of the thunk channel, and a mutex that'll be paired with the condvar. There's a fair bit you can tell from reading the population of a struct, with a little bit of background information. The implementation of <kbd>ThreadPoolSharedData</kbd> is brief:</p>
+<pre>impl ThreadPoolSharedData {
+    fn has_work(&amp;self) -&gt; bool {
+        self.queued_count.load(Ordering::SeqCst) &gt; 0 || <br/>        self.active_count.load(Ordering::SeqCst) &gt; 0
+    }
+
+    /// Notify all observers joining this pool if there<br/>    /// is no more work to do.
+    fn no_work_notify_all(&amp;self) {
+        if !self.has_work() {
+            *self.empty_trigger
+                .lock()
+                .expect("Unable to notify all joining threads");
+            self.empty_condvar.notify_all();
+        }
+    }
+}</pre>
+<p>The <kbd>has_work</kbd> function does a sequentially consistent read of the two indicators of work, an operation that is not exactly cheap considering the two sequentially consistent reads, but implies a need for accuracy in the response. The <kbd>no_work_notify_all</kbd> function is more complicated and mysterious. Happily, the function is used in the implementation of the next chunk of <kbd>Build::build</kbd> and will help clear up that mystery. The next chunk of <kbd>build</kbd> is:</p>
+<pre>        for _ in 0..num_threads {
+            spawn_in_pool(shared_data.clone());
+        }
+
+        ThreadPool {
+            jobs: tx,
+            shared_data: shared_data,
+        }
+    }
+}</pre>
+<p>For each of the <kbd>num_threads</kbd>, the <kbd>spawn_in_pool</kbd> function is called over a clone of the <kbd>Arc</kbd>ed <kbd>ThreadPoolSharedData</kbd>. Let's inspect <kbd>spawn_in_pool</kbd>:</p>
+<pre>fn spawn_in_pool(shared_data: Arc&lt;ThreadPoolSharedData&gt;) {
+    let mut builder = thread::Builder::new();
+    if let Some(ref name) = shared_data.name {
+        builder = builder.name(name.clone());
+    }
+    if let Some(ref stack_size) = shared_data.stack_size {
+        builder = builder.stack_size(stack_size.to_owned());
+    }</pre>
+<p>As you might have expected, the function creates <kbd>std::thread::Builder</kbd> and pulls references to the name and stack size embedded in the <kbd>ThreadPoolSharedData</kbd> shared data. With these variables handy, the <kbd>builder.spawn</kbd> is called, passing in a closure in the usual fashion:</p>
+<pre>    builder
+        .spawn(move || {
+            // Will spawn a new thread on panic unless it is cancelled.
+            let sentinel = Sentinel::new(&amp;shared_data);</pre>
+<p>Well, let's take a look at <kbd>Sentinel:</kbd></p>
+<pre>struct Sentinel&lt;'a&gt; {
+    shared_data: &amp;'a Arc&lt;ThreadPoolSharedData&gt;,
+    active: bool,
+}</pre>
+<p>It holds a reference to <kbd>Arc&lt;ThreadPoolSharedData&gt;</kbd>—avoiding increasing the reference counter—and an <kbd>active</kbd> boolean. The implementation is likewise brief:</p>
+<pre>impl&lt;'a&gt; Sentinel&lt;'a&gt; {
+    fn new(shared_data: &amp;'a Arc&lt;ThreadPoolSharedData&gt;) -&gt; Sentinel&lt;'a&gt; {
+        Sentinel {
+            shared_data: shared_data,
+            active: true,
+        }
+    }
+
+    /// Cancel and destroy this sentinel.
+    fn cancel(mut self) {
+        self.active = false;
+    }
+}</pre>
+<p>The real key here is the <kbd>Drop</kbd> implementation:</p>
+<pre>impl&lt;'a&gt; Drop for Sentinel&lt;'a&gt; {
+    fn drop(&amp;mut self) {
+        if self.active {
+            self.shared_data.active_count.fetch_sub(1, Ordering::SeqCst);
+            if thread::panicking() {
+                self.shared_data.panic_count<br/>                    .fetch_add(1, Ordering::SeqCst);
+            }
+            self.shared_data.no_work_notify_all();
+            spawn_in_pool(self.shared_data.clone())
+        }
+    }
+}</pre>
+<p>Recall how in the previous section, our join vector grew without bound, even though threads in that vector had panicked and were no longer working. There is an interface available to determine whether the current thread is in a panicked state, <kbd>std::thread::panicking()</kbd>, in use here.</p>
+<p>When a thread panics, it drops its storage, which, in this pool, includes the allocated <kbd>Sentinel</kbd>.  <kbd>drop</kbd> then checks the <kbd>active</kbd> flag on the <kbd>Sentinel,</kbd> decrements the <kbd>active_count</kbd> of the <kbd>ThreadPoolSharedData,</kbd> increases its <kbd>panic_count,</kbd> calls the as-yet mysterious <kbd>no_work_notify_all</kbd> and then adds an additional thread to the pool. In this way, the pool maintains its appropriate size and there is no need for any additional monitoring of threads to determine when they need to be recycled: the type system does all the work.</p>
+<p>Let's hop back into <kbd>spawn_in_pool:</kbd></p>
+<pre>            loop {
+                // Shutdown this thread if the pool has become smaller
+                let thread_counter_val = shared_data<br/>                                             .active_count<br/>                                             .load(Ordering::Acquire);
+                let max_thread_count_val = shared_data<br/>                                             .max_thread_count<br/>                                             .load(Ordering::Relaxed);
+                if thread_counter_val &gt;= max_thread_count_val {
+                    break;
+                }</pre>
+<p>Here, we see the start of the infinite loop of the <kbd>builder.spawn</kbd> function, plus a check to shut down threads if the pool size has decreased since the last iteration of the loop. <kbd>ThreadPool</kbd> exposes the <kbd>set_num_threads</kbd> function to allow changes to the pool's size at runtime. Now, why an infinite loop? Spawning a new thread is not an entirely fast operation on some systems and, besides, it's not a free operation. If you can avoid the cost, you may as well. Some pool implementations in other languages spawn a new thread for every bit of work that comes in, fearing memory pollution. This is less a problem in Rust, where unsafe memory access has to be done intentionally and <kbd>FnBox</kbd> is effectively a trap for such behavior anyway, owing to the fact that the closure will have no pointers to the pool's private memory. The loop exists to pull <kbd>Thunks</kbd> from the receiver channel side in <kbd>ThreadPoolSharedData</kbd>:</p>
+<pre>                let message = {
+                    // Only lock jobs for the time it takes
+                    // to get a job, not run it.
+                    let lock = shared_data
+                        .job_receiver
+                        .lock()
+                        .expect("Worker thread unable to \<br/>                                lock job_receiver");
+                    lock.recv()
+                };</pre>
+<p>The message may be an error, implying that the <kbd>ThreadPool</kbd> was dropped, closing the sender channel side. But, should the message be <kbd>Ok</kbd>, we'll have our <kbd>FnBox</kbd> to call:</p>
+<pre>                let job = match message {
+                    Ok(job) =&gt; job,
+                    // The ThreadPool was dropped.
+                    Err(..) =&gt; break,
+                };</pre>
+<p>The final bit of <kbd>spawn_in_pool</kbd> is uneventful:</p>
+<pre>                shared_data.active_count.fetch_add(1, Ordering::SeqCst);
+                shared_data.queued_count.fetch_sub(1, Ordering::SeqCst);
+
+                job.call_box();
+
+                shared_data.active_count.fetch_sub(1, Ordering::SeqCst);
+                shared_data.no_work_notify_all();
+            }
+
+            sentinel.cancel();
+        })
+        .unwrap();
+}</pre>
+<p>The <kbd>FnBox</kbd> called job is called via <kbd>call_box</kbd> and if this panics, killing the thread, the <kbd>Sentinel</kbd> cleans up the atomic references as appropriate and starts a new thread in the pool. By leaning on Rust's type system and memory model, we get a cheap thread-pool implementation that spawns threads only when needed, with no fears of accidentally polluting memory between jobs.</p>
+<p><kbd>ThreadPool::execute</kbd> is a quick boxing of <kbd>FnOnce</kbd>, pushed into the sender side of the <kbd>Thunk</kbd> channel:</p>
+<pre>    pub fn execute&lt;F&gt;(&amp;self, job: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.shared_data.queued_count.fetch_add(1, Ordering::SeqCst);
+        self.jobs
+            .send(Box::new(job))
+            .expect("ThreadPool::execute unable to send job into queue.");
+    }</pre>
+<p>The last piece here is <kbd>ThreadPool::join</kbd>. This is where <kbd>ThreadPoolSharedData::no_work_notify_all</kbd> comes into focus. Let's look at <kbd>join</kbd>:</p>
+<pre>    pub fn join(&amp;self) {
+        // fast path requires no mutex
+        if self.shared_data.has_work() == false {
+            return ();
+        }
+
+        let generation = self.shared_data<br/>                             .join_generation<br/>                             .load(Ordering::SeqCst);
+        let mut lock = self.shared_data.empty_trigger.lock().unwrap();
+
+        while generation == self.shared_data<br/>                                .join_generation <br/>                                .load(Ordering::Relaxed)
+            &amp;&amp; self.shared_data.has_work()
+        {
+            lock = self.shared_data.empty_condvar.wait(lock).unwrap();
+        }
+
+        // increase generation if we are the first thread to<br/>        // come out of the loop
+        self.shared_data.join_generation.compare_and_swap(
+            generation,
+            generation.wrapping_add(1),
+            Ordering::SeqCst,
+        );
+    }</pre>
+<p>The function calls first to <kbd>has_work</kbd>, bailing out early if there are no active or queued threads in the pool. No reason to block the caller there. Then, <kbd>generation</kbd> is set up to act as a condition variable in the loop surrounding <kbd>empty_condvar</kbd>. Every thread that joins to the pool checks that the pool <kbd>generation</kbd> has not shifted, implying some other thread has unjoined, and that there's work yet to do. Recall that it's <kbd>no_work_notify_all</kbd> that calls <kbd>notify_all</kbd> on condvar, this function in turn being called when either a <kbd>Sentinel</kbd> drops or the inner-loop of <kbd>spawn_in_pool</kbd> returns from a job. Any joined thread waking on those two conditions—a job being completed or crashing—checks their condition, incrementing the <kbd>generation</kbd> on their the way to becoming unjoined.</p>
+<p>That's it! That's a thread pool, a thing built out of the pieces we've discussed so far in this book. If you wanted to make a thread pool without queuing, you'd push an additional check into <kbd>execute</kbd>. Some of the sequentially consistent atomic operations could likely be relaxed, as well, as potentially the consequence of making a simple implementation more challenging to reason with. It's potentially worth it for the performance gain if your executed jobs are very brief. In fact, we'll discuss a library later in this chapter that ships an alternative thread pool implementation for just such a use case, though it is quite a bit more complex than the one we've just discussed.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The Ethernet sniffer</h1>
+                </header>
+            
+            <article>
+                
+<p>Of equal importance to understanding a technique in-depth is understanding when not to apply it. Let's consider another thread-per-unit-of-work system, but this time we'll be echoing Ethernet packets rather than lines received over a TCP socket. Our project's <kbd>Cargo.toml</kbd>:</p>
+<pre>[package]
+name = "sniffer"
+version = "0.1.0"
+authors = ["Brian L. Troutwine &lt;brian@troutwine.us&gt;"]
+
+[dependencies]
+pnet = "0.21"
+
+[[bin]]
+name = "sniffer"
+
+[[bin]]
+name = "poor_threading"</pre>
+<p>Like the TCP example, we'll create two binaries, one that is susceptible to thread overload–<kbd>poor_threading</kbd><span>–</span>and another–<kbd>sniffer</kbd>–that is not. The premise here is that we want to sniff a network interface for Ethernet packets, reverse the source and destination headers on that packet, and send the modified packet back to the original source. Simultaneously, we'll collect summary statistics of the packets we collect. On a saturated network, our little programs will be very busy and there will have to be trade-offs made somewhere in terms of packet loss and receipt.</p>
+<p>The only dependency we're pulling in here is <a href="https://github.com/libpnet/libpnet">pnet</a>. libpnet is a low-level packet manipulation library, useful for building network utilities or for prototyping transport protocols. I think it's pretty fun to fuzz-test transport implementations with libpnet on commodity network devices. Mostly, though, the reward is a crashed home router, but I find that amusing. Anyhow, let's look into <kbd>poor_threading</kbd>. It's preamble is fairly ho-hum:</p>
+<pre>extern crate pnet;
+
+use pnet::datalink::Channel::Ethernet;
+use pnet::datalink::{self, DataLinkReceiver, DataLinkSender, <br/>                     MacAddr, NetworkInterface};
+use pnet::packet::ethernet::{EtherType, EthernetPacket, <br/>                             MutableEthernetPacket};
+use pnet::packet::{MutablePacket, Packet};
+use std::collections::HashMap;
+use std::sync::mpsc;
+use std::{env, thread};</pre>
+<p>We pull in a fair bit of pnet's facilities, which we'll discuss in due time. We don't pull in clap or similar argument-parsing libraries, instead requiring that the user pass in the interface name as the first argument to the program:</p>
+<pre>fn main() {
+    let interface_name = env::args().nth(1).unwrap();
+    let interface_names_match = |iface: &amp;NetworkInterface| {<br/>        iface.name == interface_name<br/>    };
+
+    // Find the network interface with the provided name
+    let interfaces: Vec&lt;NetworkInterface&gt; = datalink::interfaces();
+    let interface = interfaces
+        .into_iter()
+        .filter(interface_names_match)
+        .next()
+        .unwrap();</pre>
+<p>The user-supplied interface name is checked against the interfaces pnet is able to find, via its <kbd>datalink::interfaces()</kbd> function. We haven't done much yet in this book with iterators, though they've been omnipresent and assumed knowledge, at least minimally. We'll discuss iteration in Rust in detail after this. Note here, though, that <kbd>filter(interface_names_match)</kbd> is applying a boolean function, <kbd>interface_names_match(&amp;NetworkInterface) -&gt; bool</kbd>, to each member of the determined interfaces.</p>
+<p>If the function returns true, the member passes through the filter, otherwise it doesn't. The call to <kbd>next().unwrap()</kbd> cranks the filtered iterator forward one item, crashing if there are no items in the filtered iterator. This is a somewhat user-hostile way to determine whether the passed interface is, in fact, an interface that pnet could discover. That's alright here in our demonstration program.</p>
+<p>Next, we establish a communication channel for the concurrent actors of this program:</p>
+<pre>    let (snd, rcv) = mpsc::sync_channel(10);
+
+    let _ = thread::spawn(|| gather(rcv));
+    let timer_snd = snd.clone();
+    let _ = thread::spawn(move || timer(timer_snd));</pre>
+<p>The <kbd>timer</kbd> function pushes a time pulse through the channel we just established at regular intervals, as similarly is done in cernan, discussed previously in this book. The function is small:</p>
+<pre>fn timer(snd: mpsc::SyncSender&lt;Payload&gt;) -&gt; () {
+    use std::{thread, time};
+    let one_second = time::Duration::from_millis(1000);
+
+    let mut pulses = 0;
+    loop {
+        thread::sleep(one_second);
+        snd.send(Payload::Pulse(pulses)).unwrap();
+        pulses += 1;
+    }
+}</pre>
+<p>The <kbd>Payload</kbd> type is an enum with only two variants:</p>
+<pre>enum Payload {
+    Packet {
+        source: MacAddr,
+        destination: MacAddr,
+        kind: EtherType,
+    },
+    Pulse(u64),
+}</pre>
+<p>The <kbd>Pulse(u64)</kbd> variant is the timer pulse, sent periodically by the <kbd>timer</kbd> thread. It's very useful to divorce time in a concurrent system from the actual wall-clock, especially with regard to testing individual components of the system. It's also helpful for the program structure to unify different message variants in a union. At the time of writing, Rust's MPSC implementation does not have a stable select capability, and so you'll have to manually implement that with <kbd>mpsc::Receiver::recv_timeout</kbd> and careful multiplexing. It's much better to unify it into one union type. Additionally, this gets the type system on your side, confirming that all incoming variants are handled in a single match, which likely optimizes better, too. This last benefit should be measured.</p>
+<p>Let's look at <kbd>gather</kbd> now:</p>
+<pre>fn gather(rcv: mpsc::Receiver&lt;Payload&gt;) -&gt; () {
+    let mut sources: HashMap&lt;MacAddr, u64&gt; = HashMap::new();
+    let mut destinations: HashMap&lt;MacAddr, u64&gt; = HashMap::new();
+    let mut ethertypes: HashMap&lt;EtherType, u64&gt; = HashMap::new();
+
+    while let Ok(payload) = rcv.recv() {
+        match payload {
+            Payload::Pulse(id) =&gt; {
+                println!("REPORT {}", id);
+                println!("    SOURCES:");
+                for (k, v) in sources.iter() {
+                    println!("        {}: {}", k, v);
+                }
+                println!("    DESTINATIONS:");
+                for (k, v) in destinations.iter() {
+                    println!("        {}: {}", k, v);
+                }
+                println!("    ETHERTYPES:");
+                for (k, v) in ethertypes.iter() {
+                    println!("        {}: {}", k, v);
+                }
+            }
+            Payload::Packet {
+                source: src,
+                destination: dst,
+                kind: etype,
+            } =&gt; {
+                let mut destination = destinations.entry(dst).or_insert(0);
+                *destination += 1;
+
+                let mut source = sources.entry(src).or_insert(0);
+                *source += 1;
+
+                let mut ethertype = ethertypes.entry(etype).or_insert(0);
+                *ethertype += 1;
+            }
+        }
+    }
+}</pre>
+<p>Straightforward receiver loop, pulling off <kbd>Payload</kbd> enums. The <kbd>Payload::Packet</kbd> variant is deconstructed and its contents stored into three <kbd>HashMap</kbd>s, mapping MAC addresses to a counter or an EtherType to a counter. MAC addresses are the unique identifiers of network interfaces—or, ideally unique, as there have been goofs—and get used at the data-link layer of the OSI model. (This is not a book about networking but it is, I promise, a really fun domain.) EtherType maps to the two octet fields at the start of every Ethernet packet, defining the packet's, well, type. There's a standard list of types, which pnet helpfully encodes for us. When <kbd>gather</kbd> prints the EtherType, there's no special work needed to get human-readable output.</p>
+<p>Now that we know how <kbd>gather</kbd> and <kbd>timer</kbd> work, we can wrap up the <kbd>main</kbd> function:</p>
+<pre>    let iface_handler = match datalink::channel(&amp;interface, <br/>                                                Default::default()) {
+        Ok(Ethernet(tx, rx)) =&gt; {
+            let snd = snd.clone();
+            thread::spawn(|| watch_interface(tx, rx, snd))
+        }
+        Ok(_) =&gt; panic!("Unhandled channel type"),
+        Err(e) =&gt; panic!(
+            "An error occurred when creating the datalink channel: {}",
+            e
+        ),
+    };
+
+    iface_handler.join().unwrap();
+}</pre>
+<p>The <kbd>datalink::channel</kbd> function establishes an MPSC-like channel for bi-directional packet reading and writing on the given interface. We only care about Ethernet packets here and match only on that variant. We spawn a new thread for <kbd>watch_interface,</kbd> which receives both read/write sides of the channel and the MPSC we made for <kbd>Payload.</kbd> In this way, we have one thread reading Ethernet packets from the network, stripping them into a normalized <kbd>Payload::Packet</kbd> and pushing them to the <kbd>gather</kbd> thread. Meanwhile, we have another <kbd>timer</kbd> thread pushing <kbd>Payload::Pulse</kbd> at regular intervals to the <kbd>gather</kbd> thread to force user reporting.</p>
+<p>The sharp-eyed reader will have noticed that our <kbd>Payload</kbd> channel is actually <kbd>sync_channel(10)</kbd>, meaning that this program is not meant to store much transient information in memory. On a busy Ethernet network, this will mean it's entirely possible that <kbd>watch_interface</kbd> will be unable to push a normalized Ethernet packet into the channel. Something will have to be done and it all depends on how willing we are to lose information.</p>
+<p>Let's look and see how this implementation goes about addressing this problem:</p>
+<pre>fn watch_interface(
+    mut tx: Box&lt;DataLinkSender&gt;,
+    mut rx: Box&lt;DataLinkReceiver&gt;,
+    snd: mpsc::SyncSender&lt;Payload&gt;,
+) {
+    loop {
+        match rx.next() {
+            Ok(packet) =&gt; {
+                let packet = EthernetPacket::new(packet).unwrap();</pre>
+<p>So far, so good. We see the sides of <kbd>datalink::Channel</kbd> that we discussed earlier, plus our internal MPSC. The infinite loop reads <kbd>&amp;[u8]</kbd> off the receive side of the channel and our implementation has to convert this into a proper EthernetPacket. If we were being very thorough, we'd guard against malformed Ethernet packets but, since we aren't, the creation is unwrapped. Now, how about that normalization into <kbd>Payload::Packet</kbd> and transmission to <kbd>gather</kbd>:</p>
+<pre>                {
+                    let payload: Payload = Payload::Packet {
+                        source: packet.get_source(),
+                        destination: packet.get_destination(),
+                        kind: packet.get_ethertype(),
+                    };
+                    let thr_snd = snd.clone();
+                    thread::spawn(move || {
+                        thr_snd.send(payload).unwrap();
+                    });
+                }</pre>
+<p>Uh oh. The EthernetPacket has normalized into <kbd>Payload::Packet</kbd> just fine, but when we send the packet down the channel to <kbd>gather</kbd> we do so by spawning a thread. The decision being made here is that no incoming packet should be lost—implying we have to read them off the network interface as quickly as possible—and if the channel blocks, we'll need to store that packet in some pool, somewhere.</p>
+<p>The <em>pool</em> is, in fact, a thread stack. Or, a bunch of them. Even if we were to drop the thread's stack size to a sensible low size on a saturated network, we're still going to overwhelm the operating system at some point. If we absolutely could not stand to lose packets, we could use something such as hopper (<a href="https://github.com/postmates/hopper">https://github.com/postmates/hopper</a>), discussed in detail in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>, which was designed for just this use case. Or, we could defer these sends to threadpool, allow it to queue the jobs, and run them on a finite number of threads. Anyway, let's set this aside for just a second and wrap up <kbd>watch_interface</kbd>:</p>
+<pre>                tx.build_and_send(1, packet.packet().len(), <br/>                                  &amp;mut |new_packet| <br/>                {
+                    let mut new_packet = <br/>                        MutableEthernetPacket::new(new_packet).unwrap();
+
+                    // Create a clone of the original packet
+                    new_packet.clone_from(&amp;packet);
+
+                    // Switch the source and destination
+                    new_packet.set_source(packet.get_destination());
+                    new_packet.set_destination(packet.get_source());
+                });
+            }
+            Err(e) =&gt; {
+                panic!("An error occurred while reading: {}", e);
+            }
+        }
+    }
+}</pre>
+<p>The implementation takes the newly created EthernetPacket, swaps the source and destination of the original in a new EthernetPacket, and sends it back across the network at the original source. Now, let's ask ourselves, is it <em>really</em> important that we tally every Ethernet packet we can pull off the network? We could speed up the <kbd>HashMap</kbd>s in the <kbd>gather</kbd> thread in the fashion described in <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml">Chapter 02</a>, <em>Sequential Rust Performance and Testing</em>, by inserting a faster hasher. Or, we could buffer in the <kbd>watch_interface</kbd> thread when the synchronous channel is full, in addition to using threadpool or hopper. Only speeding up <kbd>gather</kbd> and using hopper don't potentially incur unbounded storage requirements. But hopper will require a filesystem and may still not be able to accept all incoming packets, only making it less likely that there won't be sufficient storage.</p>
+<p>It's a tough problem. Given the nature of the network at layer 2, you might as well just shed the packets. The network card itself is going to be shedding packets. With that in mind, the implementation of <kbd>watch_interface</kbd> in the other binary in this project—<kbd>sniffer</kbd>—differs only marginally:</p>
+<pre>fn watch_interface(
+    mut tx: Box&lt;DataLinkSender&gt;,
+    mut rx: Box&lt;DataLinkReceiver&gt;,
+    snd: mpsc::SyncSender&lt;Payload&gt;,
+) {
+    loop {
+        match rx.next() {
+            Ok(packet) =&gt; {
+                let packet = EthernetPacket::new(packet).unwrap();
+
+                let payload: Payload = Payload::Packet {
+                    source: packet.get_source(),
+                    destination: packet.get_destination(),
+                    kind: packet.get_ethertype(),
+                };
+                if snd.try_send(payload).is_err() {
+                    SKIPPED_PACKETS.fetch_add(1, Ordering::Relaxed);
+                }</pre>
+<p><kbd>Payload::Packet</kbd> is created and rather than calling <kbd>snd.send</kbd>, this implementation calls <kbd>snd.try_send</kbd>, ticking up a <kbd>SKIPPED_PACKETS</kbd> static <kbd>AtomicUsize</kbd> in the event a packet has to be shed. The gather implementation is likewise only slightly adjusted to report on this new <kbd>SKIPPED_PACKETS</kbd>:</p>
+<pre>fn gather(rcv: mpsc::Receiver&lt;Payload&gt;) -&gt; () {
+    let mut sources: HashMap&lt;MacAddr, u64&gt; = HashMap::new();
+    let mut destinations: HashMap&lt;MacAddr, u64&gt; = HashMap::new();
+    let mut ethertypes: HashMap&lt;EtherType, u64&gt; = HashMap::new();
+
+    while let Ok(payload) = rcv.recv() {
+        match payload {
+            Payload::Pulse(id) =&gt; {
+                println!("REPORT {}", id);
+                println!(
+                    "    SKIPPED PACKETS: {}",
+                    SKIPPED_PACKETS.swap(0, Ordering::Relaxed)
+                );</pre>
+<p>This program will use a moderate amount of storage for the <kbd>Payload</kbd> channel, no matter how busy the network.</p>
+<p>In high-traffic domains or long-lived deployments, the <kbd>HashMap</kbd>s in the <kbd>gather</kbd> thread are going to be a concern, but this is a detail the intrepid reader is invited to address.</p>
+<p>When you run <kbd>sniffer</kbd>, you should be rewarded with output very much like this:</p>
+<pre><strong>REPORT 6
+    SKIPPED PACKETS: 75
+    SOURCES:
+        ff:ff:ff:ff:ff:ff: 1453
+        00:23:6a:00:51:6e: 2422
+        5c:f9:38:8b:4a:b6: 1034
+    DESTINATIONS:
+        33:33:ff:0b:62:e8: 1
+        33:33:ff:a1:90:82: 1
+        33:33:00:00:00:01: 1
+        00:23:6a:00:51:6e: 2414
+        5c:f9:38:8b:4a:b6: 1032
+        ff:ff:ff:ff:ff:ff: 1460
+    ETHERTYPES:
+        Ipv6: 4
+        Ipv4: 1999
+        Arp: 2906</strong></pre>
+<p>This report came from the sixth second of my sniffer run and 75 packets were dropped for lack of storage. That's better than 75 threads.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Iterators</h1>
+                </header>
+            
+            <article>
+                
+<p>So far, we've assumed that the reader has been at least passingly familiar with Rust iterators. It's possible that you've used them extensively but have never written your own iterator implementation. That knowledge is important for what follows and we'll discuss Rust's iteration facility now.</p>
+<p>A Rust iterator is any type that implements <kbd>std::iter::Iterator</kbd>. The <kbd>Iterator</kbd> trait has an interior <kbd>Item</kbd> type that allows the familiar iterator functions, such as <kbd>next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;</kbd>, to be defined in terms of that generic <kbd>Item</kbd>. Many of the iterator functions are, well, functional in nature: <kbd>map</kbd>, <kbd>filter</kbd>, and <kbd>fold</kbd> are all higher-order functions on a stream of <kbd>Item</kbd>. Many of the iterator functions are searches on that stream of <kbd>Item</kbd>: <kbd>max</kbd>, <kbd>min</kbd>, <kbd>position</kbd>, and <kbd>find</kbd>. It is a versatile trait. If you find it limited in some manner, the community has put together a crate with more capability: itertools (<a href="https://crates.io/crates/itertools">https://crates.io/crates/itertools</a>). Here, we're less concerned with the interface of <kbd>Iterator</kbd> than how to implement it for our own types.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Smallcheck iteration</h1>
+                </header>
+            
+            <article>
+                
+<p>In <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapters 2</a>, <em>Sequential Rust Performance and Testing</em>, <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank"><span>Chapters </span>5</a>,<em> Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>, and <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank"><span>Chapters </span>6</a>, <em>Atomics<span> </span>–<span> </span>the Primitives of Synchronization</em>, we've discussed the QuickCheck testing methodology, a structured way of inserting random, type-driven input into a function to search function property failures. Inspired by the work done by Claessen and Hughes in their QuickCheck paper, Runciman, Naylor and Lindblad observed that, in their experience, most failures were on small input and put forward the observation that a library that tested from small output to big first might find failures faster than purely random methods. Their hypothesis was more or less correct, for a certain domain of function, but the approach suffers from duplication of effort, resolved somewhat by the authors in the same paper with Lazy Smallcheck. We won't go into further detail here, but the paper is included in the <em>Further reading</em> section of this chapter and the reader is encouraged to check out the paper.</p>
+<p>Anyway, producing all values of a <em>small</em> to <em>big</em> type sounds like iteration. In fact, it is. Let's walk through producing iterators for signed and unsigned integers. The project's <kbd>Cargo.toml</kbd> is minimal:</p>
+<pre>[package]
+name = "smalliters"
+version = "0.1.0"
+authors = ["Brian L. Troutwine &lt;brian@troutwine.us&gt;"]
+
+[dependencies]</pre>
+<p>No dependencies, just the default that <kbd>cargo new</kbd> lays down. The project has only one file, <kbd>src/lib.rs</kbd>. The rest of our discussion will take place in the context of this file. First, the preamble:</p>
+<pre>use std::iter::Iterator;
+use std::mem;</pre>
+<p>We pull in <kbd>Iterator</kbd>, as you might expect, and then <kbd>std::mem</kbd>, which we've seen throughout this book. Nothing unusual here. What is unusual for this book is this:</p>
+<pre>macro_rules! unsized_iter {
+    ($name:ident, $int:ty, $max:expr) =&gt; {</pre>
+<p>A macro! We've been using macros throughout the entire book but have not written one yet. Macros in Rust are kind of a dark art and a touch on the fidgety side to get working. Our ambitions here are simple. The iterators for the Rust integer types are mostly the same, varying by signed/unsigned and total bit size of the type, hence <kbd>std::mem</kbd>. <kbd>($name:ident, $int:ty, and $max:expr)</kbd> declares three macro variables: <kbd>$name</kbd>, which is an identifier, <kbd>$int</kbd>, which is a type, and <kbd>$max</kbd>, which is an expression. Here is how we'll use the <kbd>unsigned_iter!</kbd> macro:</p>
+<pre>unsized_iter!(SmallU8, u8, u8::max_value());
+unsized_iter!(SmallU16, u16, u16::max_value());
+unsized_iter!(SmallU32, u32, u32::max_value());
+unsized_iter!(SmallU64, u64, u64::max_value());
+unsized_iter!(SmallUsize, usize, usize::max_value());</pre>
+<p>That's an identifier, followed by a type, followed by an expression. OK, now back to the macro definition:</p>
+<pre>macro_rules! unsized_iter {
+    ($name:ident, $int:ty, $max:expr) =&gt; {
+        #[derive(Default)]
+        pub struct $name {
+            cur: $int,
+            done: bool,
+        }</pre>
+<p>The first step in defining a small iterator for integer types is to produce some struct to store whatever data the Iterator implementation needs. We require two things, the current integer and a boolean flag to tell us when we're done iterating. When the macros expand, there will be structs called <kbd>SmallU8</kbd>, <kbd>SmallU16</kbd>, and so on in the expanded source code, like this:</p>
+<pre>#[derive(Default)]
+pub struct SmallU8 {
+    cur: u8,
+    done: bool,
+}</pre>
+<p>The <kbd>Iterator</kbd> implementation for unsigned types is straightforward: keep incrementing until you hit the maximum value for the type:</p>
+<pre>        impl Iterator for $name {
+            type Item = $int;
+
+            fn next(&amp;mut self) -&gt; Option&lt;$int&gt; {
+                if self.done {
+                    return None;
+                }
+                let old = self.cur;
+                if old == $max {
+                    self.done = true;
+                }
+                self.cur = self.cur.saturating_add(1);
+                return Some(old);
+            }</pre>
+<p>Technically, <kbd>saturating_add</kbd> is not needed and could be replaced with <kbd>+=</kbd>, but it's helpful to have to avoid wrap-around bugs. Finally, we also provide an <kbd>Iterator::size_hint</kbd> implementation:</p>
+<pre>            fn size_hint(&amp;self) -&gt; (usize, Option&lt;usize&gt;) {
+                let size = mem::size_of::&lt;$int&gt;() * 8;
+                let total = 2_usize.pow(size as u32);
+                let remaining = total - (self.cur as usize);
+                (remaining, Some(remaining))
+            }
+        }
+    };
+}</pre>
+<p>This function is an optional implementation, but it is neighborly to provide one. The return tuple estimates how many items remain in the iteration, the first element being a lower estimate and the second being an optional upper bound. We happen to know exactly how many elements remain to be iterated because our domain is finite. Implementing <kbd>Iterator::size_hint</kbd> will help out code with pre-allocating buffers, which includes other functions on <kbd>Iterator</kbd>.</p>
+<p>The sized integer types have a similar implementation. Their macro, <kbd>sized_iter!</kbd>, in use:</p>
+<pre>sized_iter!(SmallI8, i8, i8::min_value());
+sized_iter!(SmallI16, i16, i16::min_value());
+sized_iter!(SmallI32, i32, i32::min_value());
+sized_iter!(SmallI64, i64, i64::min_value());
+sized_iter!(SmallIsize, isize, isize::min_value());</pre>
+<p>The macro itself starts out in the same way as its unsigned counterpart:</p>
+<pre>macro_rules! sized_iter {
+    ($name:ident, $int:ty, $min:expr) =&gt; {
+        #[derive(Default)]
+        pub struct $name {
+            cur: $int,
+            done: bool,
+        }
+
+        impl Iterator for $name {
+            type Item = $int;
+
+            fn next(&amp;mut self) -&gt; Option&lt;$int&gt; {
+                if self.done {
+                    return None;
+                }</pre>
+<p>Only the inner part of <kbd>next</kbd> is different:</p>
+<pre>                let old = self.cur;
+                if self.cur == 0 {
+                    self.cur = -1;
+                } else if self.cur.is_negative() &amp;&amp; self.cur == $min {
+                    self.done = true;
+                } else if self.cur.is_positive() {
+                    self.cur *= -1;
+                    self.cur -= 1;
+                } else if self.cur.is_negative() {
+                    self.cur *= -1;
+                }
+                return Some(old);
+            }</pre>
+<p>This warrants some explanation. We take inspiration from the SmallCheck paper and iterate values out like so: 0, -1, 1, -2, 2, and so on. The implementation could follow the same method as the unsigned variant, proceeding up from <kbd>min_value()</kbd> to <kbd>max_value()</kbd>, but this would not be small to big, at least in terms of byte representation. Finally, <kbd>size_hint</kbd>:</p>
+<pre>            fn size_hint(&amp;self) -&gt; (usize, Option&lt;usize&gt;) {
+                let size = mem::size_of::&lt;$int&gt;() * 8;
+                let total = 2_usize.pow(size as u32);
+                let remaining = total - ((self.cur.abs() * 2) as usize);
+                (remaining, Some(remaining))
+            }
+        }
+    };
+}</pre>
+<p>If these implementations work correctly, the <kbd>Iterator::count</kbd> for our new iterators ought to be equal to the two-power of the bit size of the type, <kbd>count</kbd> being a function that keeps a tally of elements iterated out. The tests also rely on macros to cut down on duplication. First, the signed variants:</p>
+<pre>#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! sized_iter_test {
+        ($test_name:ident, $iter_name:ident, $int:ty) =&gt; {
+            #[test]
+            fn $test_name() {
+                let i = $iter_name::default();
+                let size = mem::size_of::&lt;$int&gt;() as u32;
+                assert_eq!(i.count(), 2_usize.pow(size * 8));
+            }
+        };
+    }
+
+    sized_iter_test!(i8_count_correct, SmallI8, i8);
+    sized_iter_test!(i16_count_correct, SmallI16, i16);
+    sized_iter_test!(i32_count_correct, SmallI32, i32);
+    // NOTE: These take forever. Uncomment if you have time to burn.
+    // sized_iter_test!(i64_count_correct, SmallI64, i64);
+    // sized_iter_test!(isize_count_correct, SmallIsize, isize);</pre>
+<p>And now the unsigned variants:</p>
+<pre>    macro_rules! unsized_iter_test {
+        ($test_name:ident, $iter_name:ident, $int:ty) =&gt; {
+            #[test]
+            fn $test_name() {
+                let i = $iter_name::default();
+                let size = mem::size_of::&lt;$int&gt;() as u32;
+                assert_eq!(i.count(), 2_usize.pow(size * 8));
+            }
+        };
+    }
+
+    unsized_iter_test!(u8_count_correct, SmallU8, u8);
+    unsized_iter_test!(u16_count_correct, SmallU16, u16);
+    unsized_iter_test!(u32_count_correct, SmallU32, u32);
+    // NOTE: These take forever. Uncomment if you have time to burn.
+    // unsized_iter_test!(u64_count_correct, SmallU64, u64);
+    // unsized_iter_test!(usize_count_correct, SmallUsize, usize);
+}</pre>
+<p>If you run the tests, you should find that they pass. It'll take a minute for the larger types. But, that's iterators. All they are is some kind of base type—in this case, the built-in integers—plus a state-tracking type—our <kbd>Small*</kbd> structs—and an implementation of <kbd>Iterator</kbd> for that state-tracking type. Remarkably useful, and the optimizer is reasonably good at turning iterator chains into loops and getting better at it all the time.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">rayon – parallel iterators</h1>
+                </header>
+            
+            <article>
+                
+<p>In the previous section, we built an iterator over Rust integer types. The essential computation of each <kbd>next</kbd> call was small—some branch checks, and possibly a negation or an addition. If we were to try to parallelize this, we'd drown out any potential performance bump with the time it takes to allocate a new thread from the operating systems. No matter how fast that becomes, it will still be slower than an addition. But, say we've gone all-in on writing in iteration style and do have computations that would benefit from being run in parallel. How do you make <kbd>std::iter::Iterator</kbd> parallel?</p>
+<p>You use rayon.</p>
+<p>The rayon crate is a <em>data-parallelism</em> library for Rust. That is, it extends Rust's basic <kbd>Iterator</kbd> concept to include a notion of implicit parallelism. Yep, implicit. Rust's memory safety means we can pull some pretty fun tricks on modern machines. Consider that the thread pool implementation we investigated previously in the chapter, which had no concerns for memory pollution. Well, it's the same deal with rayon. Every element in an iterator is isolated from each other, an invariant enforced by the type system. Which means, the rayon developers can focus on building a data-parallelism library to be as fast as possible while we, the end users, can focus on structuring out code in an iterator style.</p>
+<p>We'll examine rayon (<a href="https://crates.io/crates/rayon">https://crates.io/crates/rayon</a>) at SHA <kbd>5f98c019abc4d40697e83271c072cb2b92966f46</kbd>. The rayon project is split into sub-crates:</p>
+<ul>
+<li>rayon-core</li>
+<li>rayon-futures</li>
+</ul>
+<p>We'll discuss rayon—the top-level crate—and rayon-core in this chapter, touching on the fundamental technology behind rayon-futures in <a href="2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml" target="_blank">Chapter 10</a>, <em>Futurism<span> </span>–<span> </span>Near-Term</em> <em>Rus</em><em>t</em>. The interested reader can flag rayon-futures on to play with that interface but please do refer to the <kbd>README</kbd> at the top of that sub-crate for details.</p>
+<div class="packt_infobox"><span>The rayon crate is not listed in its entirety. You can find the full listing in this book's source repository. </span></div>
+<p>The dependencies of rayon are minimal, being that rayon-core is the sole dependency by default. The rayon-core dependencies are:</p>
+<pre>[dependencies]
+rand = "&gt;= 0.3, &lt; 0.5"
+num_cpus = "1.2"
+libc = "0.2.16"
+lazy_static = "1"</pre>
+<p>We've seen these dependencies before, except <kbd>libc</kbd>. This library exposes the <kbd>libc</kbd> platform in a stable interface. From the project's documentation:</p>
+<div class="packt_quote">"This crate does not strive to have any form of compatibility across platforms, but rather it is simply a straight binding to the system libraries on the platform in question."</div>
+<p>It's quite useful. Now, rayon is a large library and it can be a challenge to navigate. That's okay, though, because it's simple to use. To give ourselves an in, let's pull the example code from rayon's <kbd>README</kbd> and do an exploration from that point. The example is:</p>
+<pre>use rayon::prelude::*;
+
+fn sum_of_squares(input: &amp;[i32]) -&gt; i32 {
+    input.par_iter()
+         .map(|&amp;i| i * i)
+         .sum()
+}</pre>
+<p>Okay, so what's going on here? Well, let's first compare it against the sequential version of this example:</p>
+<pre>fn sum_of_squares(input: &amp;[i32]) -&gt; i32 {
+    input.iter()
+         .map(|&amp;i| i * i)
+         .sum()
+}</pre>
+<p>Spot the key difference? The sequential version is <kbd>input.iter()</kbd>, the parallel version is <kbd>input.par_iter()</kbd>. Okay, first, we have to understand that every slice exposes <kbd>iter(&amp;self) -&gt; std::slice::Iter</kbd>. This <kbd>Iter</kbd> implements <kbd>std::iter::Iterator</kbd>, which we recently discussed. rayon implements something similar, so that:</p>
+<ul>
+<li><kbd>input.iter() :: std::slice::Iter&lt;'_, u32&gt;</kbd></li>
+<li><kbd>input.par_iter() :: rayon::slice::Iter&lt;'_, i32&gt;</kbd></li>
+</ul>
+<p>Let's look at <kbd>rayon::slice::Iter</kbd>, in <kbd>src/slice/mod.rs</kbd>:</p>
+<pre>#[derive(Debug)]
+pub struct Iter&lt;'data, T: 'data + Sync&gt; {
+    slice: &amp;'data [T],
+}</pre>
+<p>Okay, nothing we haven't seen so far. There's a lifetime data, and every <kbd>T</kbd> has to be part of that lifetime plus <kbd>Sync</kbd>. Now, what is the type of rayon's <kbd>map</kbd>? By inspection, we can see it's <kbd>ParallelIterator::map&lt;F, R&gt;(self, map_op: F) -&gt; Map&lt;Self, F&gt;</kbd> where <kbd>F: Fn(Self::Item) -&gt; R + Sync + Send</kbd> and <kbd>R: Send</kbd>. Alright, <kbd>ParallelIterator</kbd>. That is new. There's an implementation for <kbd>Iter</kbd> just under the struct definition:</p>
+<pre>impl&lt;'data, T: Sync + 'data&gt; ParallelIterator for Iter&lt;'data, T&gt; {
+    type Item = &amp;'data T;
+
+    fn drive_unindexed&lt;C&gt;(self, consumer: C) -&gt; C::Result
+        where C: UnindexedConsumer&lt;Self::Item&gt;
+    {
+        bridge(self, consumer)
+    }
+
+    fn opt_len(&amp;self) -&gt; Option&lt;usize&gt; {
+        Some(self.len())
+    }
+}</pre>
+<p>Clearly, we need to understand <kbd>ParallelIterator</kbd>. This trait is defined in <kbd>src/iter/mod.rs</kbd> and is declared to be the parallel version of the standard iterator trait. Well, good! That gives us a pretty good anchor into its semantics. Now, we just have to figure out its implementation. The implementation of <kbd>ParallelIterator</kbd> for <kbd>Iter</kbd> defined two functions: <kbd>drive_unindexed</kbd> and <kbd>opt_len</kbd>. The latter function returns the optional length of the underlying structure, much like <kbd>Iterator::size_hint</kbd>.</p>
+<p>The rayon documentation notes that some of their functions can trigger fast-paths when <kbd>opt_len</kbd> returns a value: always a win. <kbd>drive_unindexed</kbd> is more complicated and introduces two unknowns. Let's figure out what <kbd>consumer: UnindexedConsumer</kbd> is first. The trait definition, in <kbd>src/iter/plumbing/mod.rs</kbd>, is very brief:</p>
+<pre>pub trait UnindexedConsumer&lt;I&gt;: Consumer&lt;I&gt; {
+    /// Splits off a "left" consumer and returns it. The `self`
+    /// consumer should then be used to consume the "right" portion of
+    /// the data. (The ordering matters for methods like find_first –
+    /// values produced by the returned value are given precedence
+    /// over values produced by `self`.) Once the left and right
+    /// halves have been fully consumed, you should reduce the results
+    /// with the result of `to_reducer`.
+    fn split_off_left(&amp;self) -&gt; Self;
+
+    /// Creates a reducer that can be used to combine the results from
+    /// a split consumer.
+    fn to_reducer(&amp;self) -&gt; Self::Reducer;
+}</pre>
+<p>Okay, we're missing some key pieces of information here. What is <kbd>Consumer</kbd>? This trait is defined in the same file, like so:</p>
+<pre>pub trait Consumer&lt;Item&gt;: Send + Sized {
+    /// The type of folder that this consumer can be converted into.
+    type Folder: Folder&lt;Item, Result = Self::Result&gt;;
+
+    /// The type of reducer that is produced if this consumer is split.
+    type Reducer: Reducer&lt;Self::Result&gt;;
+
+    /// The type of result that this consumer will ultimately produce.
+    type Result: Send;
+
+    /// Divide the consumer into two consumers, one processing items
+    /// `0..index` and one processing items from `index..`. Also
+    /// produces a reducer that can be used to reduce the results at
+    /// the end.
+    fn split_at(self, index: usize) -&gt; (Self, Self, Self::Reducer);
+
+    /// Convert the consumer into a folder that can consume items
+    /// sequentially, eventually producing a final result.
+    fn into_folder(self) -&gt; Self::Folder;
+
+    /// Hint whether this `Consumer` would like to stop processing
+    /// further items, e.g. if a search has been completed.
+    fn full(&amp;self) -&gt; bool;
+}</pre>
+<p>There are some key unknowns here, but the picture is getting a little clearer. <kbd>Consumer</kbd> is able to take in <kbd>Item</kbd> and subdivide it at an <kbd>index</kbd>. rayon is performing a divide and conquer, taking small chunks of the stream and dividing them over <em>something</em>. What are <kbd>Folder</kbd> and <kbd>Reducer</kbd>? This trait <em>folds</em> into itself, like the higher-order fold function. The trait definition is:</p>
+<pre>pub trait Folder&lt;Item&gt;: Sized {
+    type Result;
+
+    fn consume(self, item: Item) -&gt; Self;
+
+    fn consume_iter&lt;I&gt;(mut self, iter: I) -&gt; Self
+        where I: IntoIterator&lt;Item = Item&gt;
+    {
+        for item in iter {
+            self = self.consume(item);
+            if self.full() {
+                break;
+            }
+        }
+        self
+    }
+
+    fn complete(self) -&gt; Self::Result;
+
+    fn full(&amp;self) -&gt; bool;
+}</pre>
+<p>The important function here is <kbd>consume_iter</kbd>. Note that it calls <kbd>consume</kbd> for each element in the <kbd>iter</kbd> variable, folding the previous <kbd>self</kbd> into a new <kbd>self</kbd>, only stopping once the implementor of <kbd>Folder</kbd> signals that it is <em>full</em>. Note as well that a <kbd>Folder</kbd>, once complete is called on it, is turned into a  <kbd>Result</kbd>. Recall that <kbd>Result</kbd> is set in <kbd>Consumer</kbd>. Now, what is <kbd>Reducer</kbd>? It is:</p>
+<pre>pub trait Reducer&lt;Result&gt; {
+    fn reduce(self, left: Result, right: Result) -&gt; Result;
+}</pre>
+<p><kbd>Reducer</kbd> combines two <kbd>Result</kbd>s into one single <kbd>Result</kbd>. <kbd>Consumer</kbd> is then a type that can take an <kbd>Item</kbd>, apply <kbd>Folder</kbd> over chunks of the <kbd>Item</kbd>, and then reduce the many <kbd>Result</kbd>s down into a single <kbd>Result</kbd>. If you squint, <kbd>Consumer</kbd> <em>is</em> a fold. <kbd>UnindexedConsumer</kbd> is a specialization of <kbd>Consumer</kbd> that splits at an arbitrary point, where the plain <kbd>Consumer</kbd> requires an index. We understand, then, that the parallel iterator for the slice iterator is being driven by <kbd>drive_unindexed</kbd>. This function is passed <em>some</em> <kbd>consumer: C</kbd>, which is minimally <kbd>UnindexedConsumer</kbd> and the function entirely defers to <kbd>bridge</kbd> to do its work. Two questions: <em>what</em> is calling <kbd>drive_unindexed</kbd> and what is <kbd>bridge</kbd>? Let's look into the <kbd>bridge</kbd> function, defined in <kbd>src/iter/plumbing/mod.rs</kbd>. The header of the function immediately presents new information:</p>
+<pre>pub fn bridge&lt;I, C&gt;(par_iter: I, consumer: C) -&gt; C::Result
+    where I: IndexedParallelIterator,
+          C: Consumer&lt;I::Item&gt;</pre>
+<p>What is <kbd>IndexedParallelIterator</kbd>? I'll spare you the exploration, but it's a further specialization of <kbd>ParallelIterator</kbd> that can be <em>split at arbitrary indices</em>. This specialization has more functions than the <kbd>ParallelIterator</kbd> trait, and <kbd>rayon::slice::Iter</kbd> implements both. The definition is brief and something we'll need to know to understand bridge:</p>
+<pre>impl&lt;'data, T: Sync + 'data&gt; IndexedParallelIterator for Iter&lt;'data, T&gt; {
+    fn drive&lt;C&gt;(self, consumer: C) -&gt; C::Result
+        where C: Consumer&lt;Self::Item&gt;
+    {
+        bridge(self, consumer)
+    }
+
+    fn len(&amp;self) -&gt; usize {
+        self.slice.len()
+    }
+
+    fn with_producer&lt;CB&gt;(self, callback: CB) -&gt; CB::Output
+        where CB: ProducerCallback&lt;Self::Item&gt;
+    {
+        callback.callback(IterProducer { slice: self.slice })
+    }
+}</pre>
+<p>We see <kbd>bridge</kbd> backing a function <kbd>drive</kbd> and a new <kbd>with_producer</kbd> function with an unknown purpose. Back to <kbd>bridge</kbd>:</p>
+<pre>{
+    let len = par_iter.len();
+    return par_iter.with_producer(Callback {
+                                      len: len,
+                                      consumer: consumer,
+                                  });</pre>
+<p>We see <kbd>bridge</kbd> calculate the length of the underlying slice and then call <kbd>with_producer</kbd> on some <kbd>Callback</kbd> struct. We know from the trait implementation on <kbd>Iter</kbd> that <kbd>Callback: ProducerCallback</kbd>, which is itself an analogue to <kbd>FnOnce</kbd>, is taking some <kbd>T</kbd>, a <kbd>Producer&lt;T&gt;</kbd>, and emitting an <kbd>Output</kbd> from <kbd>ProducerCallback::callback</kbd>. If you squint hard enough, that's a closure. A <kbd>Producer</kbd> is more or less an <kbd>std::iter::IntoIterator</kbd>, but one that can be split at an index into two <kbd>Producer</kbd>s. Again, we see that rayon is dividing work into sub-pieces and that this method of operation extends through multiple types. But what is <kbd>Callback</kbd>? It turns out, this struct is defined inline with the function body of <kbd>bridge</kbd>:</p>
+<pre>    struct Callback&lt;C&gt; {
+        len: usize,
+        consumer: C,
+    }
+
+    impl&lt;C, I&gt; ProducerCallback&lt;I&gt; for Callback&lt;C&gt;
+        where C: Consumer&lt;I&gt;
+    {
+        type Output = C::Result;
+        fn callback&lt;P&gt;(self, producer: P) -&gt; C::Result
+            where P: Producer&lt;Item = I&gt;
+        {
+            bridge_producer_consumer(self.len, producer, self.consumer)
+        }
+    }
+}</pre>
+<p>I admit, that's pretty weird! The <kbd>producer: P</kbd> that is passed in the interior callback is an <kbd>IterProducer</kbd>, a type defined in <kbd>src/slice/mod.rs</kbd>, which holds a reference to the slice. The interesting thing is the implementation of <kbd>Producer</kbd> for <kbd>IterProducer</kbd>:</p>
+<pre>impl&lt;'data, T: 'data + Sync&gt; Producer for IterProducer&lt;'data, T&gt; {
+    type Item = &amp;'data T;
+    type IntoIter = ::std::slice::Iter&lt;'data, T&gt;;
+
+    fn into_iter(self) -&gt; Self::IntoIter {
+        self.slice.into_iter()
+    }
+
+    fn split_at(self, index: usize) -&gt; (Self, Self) {
+        let (left, right) = self.slice.split_at(index);
+        (IterProducer { slice: left }, IterProducer { slice: right })
+    }
+}</pre>
+<p>Look at that <kbd>split_at</kbd>! Whenever rayon needs to split a slice Producer, it calls <kbd>std::slice::split_at</kbd> and makes two new <kbd>Producer</kbd>s. Alright, so now we know <em>how</em> rayon is splitting things up but still not <em>to what</em>. Let's look further into the implementation of <kbd>bridge_producer_consumer</kbd>:</p>
+<pre>pub fn bridge_producer_consumer&lt;P, C&gt;(len: usize, producer: P,<br/>                                      consumer: C) -&gt; C::Result
+    where P: Producer,
+          C: Consumer&lt;P::Item&gt;
+{
+    let splitter = LengthSplitter::new(producer.min_len(), <br/>                                       producer.max_len(), len);
+    return helper(len, false, splitter, producer, consumer);</pre>
+<p>Okay, we are mostly familiar with these types. <kbd>LengthSplitter</kbd> is new and is a type that informs us whether a split of a certain length is valid for some minimum size. This is where rayon is able to decide how small to make split work and whether or not to split a workload further. The <kbd>helper</kbd> function rounds things out:</p>
+<pre>    fn helper&lt;P, C&gt;(len: usize,
+                    migrated: bool,
+                    mut splitter: LengthSplitter,
+                    producer: P,
+                    consumer: C)
+                    -&gt; C::Result
+        where P: Producer,
+              C: Consumer&lt;P::Item&gt;
+    {
+        if consumer.full() {
+            consumer.into_folder().complete()
+        } else if splitter.try(len, migrated) {
+            let mid = len / 2;
+            let (left_producer, right_producer) = producer.split_at(mid);
+            let (left_consumer, right_consumer, <br/>                 reducer) = consumer.split_at(mid);
+            let (left_result, right_result) =
+                join_context(|context| {
+                    helper(mid, context.migrated(), splitter,
+                           left_producer, left_consumer)
+                }, |context| {
+                    helper(len - mid, context.migrated(), splitter,
+                           right_producer, right_consumer)
+                });
+            reducer.reduce(left_result, right_result)
+        } else {
+            producer.fold_with(consumer.into_folder()).complete()
+        }
+    }
+}</pre>
+<p>This is dense. Most of this is to do with splitting the current <kbd>Producer</kbd> into appropriately sized chunks, but especially this block of code:</p>
+<pre>                join_context(|context| {
+                    helper(mid, context.migrated(), splitter,
+                           left_producer, left_consumer)
+                }, |context| {
+                    helper(len - mid, context.migrated(), splitter,
+                           right_producer, right_consumer)
+                });</pre>
+<p>Here we see newly split <kbd>Producers</kbd> that lazily make a recursive call to <kbd>helper</kbd> when executed by <kbd>join_context</kbd>. This function is defined in <kbd>rayon-core/src/join/mod.rs</kbd>:</p>
+<pre>pub fn join_context&lt;A, B, RA, RB&gt;(oper_a: A, oper_b: B) -&gt; (RA, RB)
+    where A: FnOnce(FnContext) -&gt; RA + Send,
+          B: FnOnce(FnContext) -&gt; RB + Send,
+          RA: Send,
+          RB: Send
+{</pre>
+<p>The new type here, <kbd>FnContext</kbd>, is a <kbd>Send + Sync</kbd> disabling boolean. The boolean interior to <kbd>FnContext</kbd> is called <kbd>migrated</kbd>, an interesting clue to the context's purpose. Let's continue in <kbd>join_context</kbd>:</p>
+<pre>    registry::in_worker(|worker_thread, injected| unsafe {
+        log!(Join { worker: worker_thread.index() });
+
+        // Create virtual wrapper for task b; this all has to be
+        // done here so that the stack frame can keep it all live
+        // long enough.
+        let job_b = StackJob::new(|migrated| <br/>                                  oper_b(FnContext::new(migrated)),
+                                  SpinLatch::new());
+        let job_b_ref = job_b.as_job_ref();
+        worker_thread.push(job_b_ref);</pre>
+<p>Well hey, it's a thread pool! We <em>know</em> thread pools! There's a lot more detail to rayon's thread pool implementation compared to the one we investigated earlier in this chapter, but it's a known concept. Each thread in rayon's pool maintains its own queue of work. Every thread queues up two new jobs—in this case, calls to helper with a specific <kbd>FnContext</kbd>—that may execute the function that <kbd>Consumer</kbd> and <kbd>Producer</kbd> combined represent, or split the work up into small chunks, pushing onto the thread's queue. Each thread in the pool is able to steal jobs from the others in the pool, spreading the load around the pool. In fact, what we've seen so far is that the caller of <kbd>join_context</kbd> immediately constructs <kbd>StackJob</kbd> out of <kbd>oper_b</kbd> and calls <kbd>worker_thread.push</kbd>. This function is defined in <kbd>rayon-core/src/registry.rs</kbd>:</p>
+<pre>    #[inline]
+    pub unsafe fn push(&amp;self, job: JobRef) {
+        self.worker.push(job);
+        self.registry.sleep.tickle(self.index);</pre>
+<p><kbd>sleep.tickle</kbd>, in addition to being amusingly named, is meant to notify threads waiting on condvar. This condvar is tracking whether or not there's work available, saving power when there's none, rather than have threads in the pool spin-looping. What happens when <kbd>self.worker.push</kbd> is called? It turns out, the <kbd>WorkerThread::worker</kbd> field is of the <kbd>crossbeam_deque::Deque&lt;job::JobRef&gt;</kbd> type. We discussed crossbeam in the previous chapter! Things are starting to come together for us. Let's look at the definition of <kbd>WorkerThread</kbd>:</p>
+<pre>pub struct WorkerThread {
+    /// the "worker" half of our local deque
+    worker: Deque&lt;JobRef&gt;,
+
+    index: usize,
+
+    /// are these workers configured to steal breadth-first or not?
+    breadth_first: bool,
+
+    /// A weak random number generator.
+    rng: UnsafeCell&lt;rand::XorShiftRng&gt;,
+
+    registry: Arc&lt;Registry&gt;,
+}</pre>
+<p>What is <kbd>Registry</kbd>? What's creating these <kbd>WorkerThread</kbd>s? Recall that in <kbd>join_context</kbd>, we're inside a call to <kbd>registry::in_worker</kbd>. That function is defined in <kbd>rayon-core/src/registry.rs</kbd> and is:</p>
+<pre>pub fn in_worker&lt;OP, R&gt;(op: OP) -&gt; R
+    where OP: FnOnce(&amp;WorkerThread, bool) -&gt; R + Send, R: Send
+{
+    unsafe {
+        let owner_thread = WorkerThread::current();
+        if !owner_thread.is_null() {
+            // Perfectly valid to give them a `&amp;T`: this is the
+            // current thread, so we know the data structure won't be
+            // invalidated until we return.
+            op(&amp;*owner_thread, false)
+        } else {
+            global_registry().in_worker_cold(op)
+        }
+    }
+}</pre>
+<p>The <kbd>WorkerThread::current()</kbd> call is polling a thread-local static variable called <kbd>WORKER_THREAD_STATE</kbd>, a <kbd>Cell&lt;*const WorkerThread&gt;</kbd> that may or may not be null in the event that no <kbd>WorkerThread</kbd> has been created inside the current operating system thread or has ceased to exist for some reason. If the <kbd>WorkerThread</kbd> does exist as thread-local, the passed <kbd>op</kbd> function is called, which is what we're investigating inside <kbd>join_context</kbd>. But, if the thread-local is null, <kbd>global_registry().in_worker_cold(op)</kbd> is called. The <kbd>global_registry</kbd> is:</p>
+<pre>static mut THE_REGISTRY: Option&lt;&amp;'static Arc&lt;Registry&gt;&gt; = None;
+static THE_REGISTRY_SET: Once = ONCE_INIT;
+
+/// Starts the worker threads (if that has not already happened). If
+/// initialization has not already occurred, use the default
+/// configuration.
+fn global_registry() -&gt; &amp;'static Arc&lt;Registry&gt; {
+    THE_REGISTRY_SET.call_once(|| unsafe { init_registry(ThreadPoolBuilder::new()).unwrap() });
+    unsafe { <br/>        THE_REGISTRY.expect("The global thread pool \<br/>                            has not been initialized.") <br/>    }
+}</pre>
+<p>That is, once <kbd>global_registry()</kbd> is called at least once, we've established a static <kbd>Registry</kbd> populated by the return of <kbd>init_registry</kbd>:</p>
+<pre>unsafe fn init_registry(builder: ThreadPoolBuilder) -&gt; Result&lt;(), ThreadPoolBuildError&gt; {
+    Registry::new(builder).map(|registry| <br/>                                THE_REGISTRY = Some(leak(registry))<br/>                              )
+}</pre>
+<p>That function further defers to <kbd>Registry::new</kbd> after having populated some builders for configuration purposes:</p>
+<pre>impl Registry {
+    pub fn new(mut builder: ThreadPoolBuilder) <br/>           -&gt; Result&lt;Arc&lt;Registry&gt;, ThreadPoolBuildError&gt; <br/>    {
+        let n_threads = builder.get_num_threads();
+        let breadth_first = builder.get_breadth_first();
+
+        let inj_worker = Deque::new();
+        let inj_stealer = inj_worker.stealer();
+        let workers: Vec&lt;_&gt; = (0..n_threads)
+            .map(|_| Deque::new())
+            .collect();
+        let stealers: Vec&lt;_&gt; = workers.iter().map(|d| <br/>                                                  d.stealer()<br/>                                              ).collect();
+
+        let registry = Arc::new(Registry {
+            thread_infos: stealers.into_iter()
+                .map(|s| ThreadInfo::new(s))
+                .collect(),
+            state: Mutex::new(RegistryState::new(inj_worker)),
+            sleep: Sleep::new(),
+            job_uninjector: inj_stealer,
+            terminate_latch: CountLatch::new(),
+            panic_handler: builder.take_panic_handler(),
+            start_handler: builder.take_start_handler(),
+            exit_handler: builder.take_exit_handler(),
+        });</pre>
+<p>Here, finally, we see threads being built:</p>
+<pre>        // If we return early or panic, make sure to terminate <br/>        // existing threads.
+        let t1000 = Terminator(&amp;registry);
+
+        for (index, worker) in workers.into_iter().enumerate() {
+            let registry = registry.clone();
+            let mut b = thread::Builder::new();
+            if let Some(name) = builder.get_thread_name(index) {
+                b = b.name(name);
+            }
+            if let Some(stack_size) = builder.get_stack_size() {
+                b = b.stack_size(stack_size);
+            }
+            if let Err(e) = b.spawn(move || unsafe { <br/>                main_loop(worker, registry, index, breadth_first) <br/>            }) {
+                return Err(ThreadPoolBuildError::new(<br/>                               ErrorKind::IOError(e))<br/>                           )
+            }
+        }
+
+        // Returning normally now, without termination.
+        mem::forget(t1000);
+
+        Ok(registry.clone())
+    }</pre>
+<p>Woo! Okay, a <kbd>Registry</kbd> is a static which, once created, spawns a number of threads and enters them into <kbd>main_loop</kbd>. This loop creates <kbd>WorkerThread</kbd>, notifies the <kbd>Registry</kbd> of <kbd>WorkerThread</kbd> being started, which marks the thread as alive. This is the <kbd>thread_infos</kbd> of the <kbd>Registry</kbd> and is why <kbd>WorkerThread</kbd> carries an index in itself. <kbd>main_thread</kbd> calls <kbd>WorkerThread::wait_until</kbd>, a function whose purpose is to probe the <kbd>Registry</kbd> for termination notice and, without that notice, calls <kbd>WorkerThread::wait_until_cold</kbd>. That cold condition is the status of <kbd>WorkerThread</kbd> when <kbd>take_local_job</kbd> or steal fail to return any items. Taking a local job looks like so:</p>
+<pre>    #[inline]
+    pub unsafe fn take_local_job(&amp;self) -&gt; Option&lt;JobRef&gt; {
+        if !self.breadth_first {
+            self.worker.pop()
+        } else {
+            loop {
+                match self.worker.steal() {
+                    Steal::Empty =&gt; return None,
+                    Steal::Data(d) =&gt; return Some(d),
+                    Steal::Retry =&gt; {},
+                }
+            }
+        }
+    }</pre>
+<p>The <kbd>self.worker</kbd> here is the deque from crossbeam and the breadth first option simply controls which end of the deque work is retrieved from. Stealing is a little more complicated, using the random number generator of <kbd>WorkerThread</kbd> to choose arbitrary threads—indexed through the <kbd>Registry</kbd>—to steal work from, seeking forward through the threads until work can be stolen from another thread's deque or until no work is found.</p>
+<p>No more mysteries! As we descend further into rayon, we understand that it's got quite a bit of machinery for representing split workloads that then gradually transition into the execution of those chunks of work on a thread pool. That thread pool performs work-stealing to keep the CPUs saturated. This understanding helps make the remainder of <kbd>join_context</kbd> more understandable:</p>
+<pre>        // Execute task a; hopefully b gets stolen in the meantime.
+        let status_a = unwind::halt_unwinding(move || <br/>                           oper_a(FnContext::new(injected)));
+        let result_a = match status_a {
+            Ok(v) =&gt; v,
+            Err(err) =&gt; join_recover_from_panic(worker_thread, <br/>                                                &amp;job_b.latch, <br/>                                                err),
+        };</pre>
+<p>The caller of <kbd>join_context</kbd> has packaged <kbd>oper_b</kbd> up, pushed it to the worker's queue, and executes <kbd>oper_a</kbd> in the hopes that the other operation will be executed as well. The remainder of the function is a loop, either pulling <kbd>oper_b</kbd> from the local deque or stealing from some other thread:</p>
+<pre>        while !job_b.latch.probe() {
+            if let Some(job) = worker_thread.take_local_job() {
+                if job == job_b_ref {
+                    // Found it! Let's run it.
+                    //
+                    // Note that this could panic, but it's ok if we <br/>                    // unwind here.
+                    log!(PoppedRhs { worker: worker_thread.index() });
+                    let result_b = job_b.run_inline(injected);
+                    return (result_a, result_b);
+                } else {
+                    log!(PoppedJob { worker: worker_thread.index() });
+                    worker_thread.execute(job);
+                }
+            } else {
+                // Local deque is empty. Time to steal from other
+                // threads.
+                log!(LostJob { worker: worker_thread.index() });
+                worker_thread.wait_until(&amp;job_b.latch);
+                debug_assert!(job_b.latch.probe());
+                break;
+            }
+        }
+
+        return (result_a, job_b.into_result());
+    })</pre>
+<p>Ordering is maintained through the latch mechanism, defined in <kbd>rayon-core/src/latch.rs</kbd>. You are encouraged to study this mechanism. It's very clever and well within the capabilities of the reader who has gotten this far in the book, bless you.</p>
+<p>That is <em>almost</em> it. We still have yet to discuss <kbd>map(|&amp;i| i * i).sum()</kbd>. The <kbd>map</kbd> there is defined on <kbd>ParallelIterator</kbd>, <kbd>IndexedParallelIterator</kbd>, and is:</p>
+<pre>    fn map&lt;F, R&gt;(self, map_op: F) -&gt; Map&lt;Self, F&gt;
+        where F: Fn(Self::Item) -&gt; R + Sync + Send,
+              R: Send
+    {
+        map::new(self, map_op)
+    }</pre>
+<p><kbd>Map</kbd> is, in turn, a <kbd>ParallelIterator</kbd> that consumes the individual <kbd>map_op</kbd> functions, producing <kbd>MapConsumer</kbd>s out of them, the details of which we'll skip as we are already familiar enough with rayon's <kbd>Consumer</kbd> concept. Finally, sum:</p>
+<pre>    fn sum&lt;S&gt;(self) -&gt; S
+        where S: Send + Sum&lt;Self::Item&gt; + Sum&lt;S&gt;
+    {
+        sum::sum(self)
+    }</pre>
+<p>This is, in turn, defined in <kbd>src/iter/sum.rs</kbd> as:</p>
+<pre>pub fn sum&lt;PI, S&gt;(pi: PI) -&gt; S
+    where PI: ParallelIterator,
+          S: Send + Sum&lt;PI::Item&gt; + Sum
+{
+    pi.drive_unindexed(SumConsumer::new())
+}</pre>
+<p>The producer is driven into a <kbd>SumConsumer</kbd> that splits the summation work up over the thread pool and then eventually folds it into a single value.</p>
+<p>And <em>that</em> is that. That's rayon. It's a thread pool that can automatically split workloads over the threads plus a series of <kbd>Iterator</kbd> adaptations that greatly reduce the effort required to exploit the thread-pooling model.</p>
+<p>Now you know! That's not all that rayon can do—it's a <em>very</em> useful library—but that's the central idea. I warmly encourage you to read through rayon's documentation.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Data parallelism and OS processes – evolving corewars players</h1>
+                </header>
+            
+            <article>
+                
+<p>In this final section of the chapter, I'd like to introduce a project that will carry us over into the next chapter. This project will tie together the concepts we've introduced so far in this chapter and introduce a new one: processes. Compared to threads, processes have a lot to recommend them: memory isolation, independent priority scheduling, convenient integration of existing programs into your own, and a long history of standardized syscalls (in Unix) to deal with them. But, memory isolation is less ideal when your aim is to fiddle with the same memory from multiple concurrent actors—as in atomic programming—or when you otherwise have to set up expensive IPC channels. Worse, some operating systems are not fast to spawn new processes, limiting a multi-processesing program's ability to exploit CPUs on a few fronts. All that said, knowing how to spawn and manipulate OS processes <em>is</em> very useful and we'd be remiss not to cover it in this book.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Corewars</h1>
+                </header>
+            
+            <article>
+                
+<p>Corewars is a computer programmer game from the 1980s. Introduced in a 1984 Scientific American article, the game is a competition between two or more programs—or warriors—that are written in an obscure assembly language called Redcode. Realistically, there are effectively two variants of Redcode, one of which has nice features, such as labels or pseudo-opcodes for variable assignments. This is usually referred to as Redcode. The other variant is referred to as <em>load file Redcode</em> or simply <em>load file</em> and is a straight listening of opcodes. The machine that Redcode targets is the Memory Array Redcode Simulator (MARS). It is… peculiar. Memory is bounded and circular, the maximum address prior to wrap-around is <kbd>core_size-1</kbd>. Most players set <kbd>core_size</kbd> to 8000 but any value is valid. Each memory location is an instruction. There is no distinction between instruction cache and data storage. In fact, there's not <em>really</em> data storage per se, though you can store information in unused sections of an instruction. There is no such thing as absolute memory addressing in the MARS machine: every address is relative in the ring of memory to the current instruction. For instance, the following instruction will tell MARS to jump backward two spots in memory and continue execution from there:</p>
+<pre>JMP -2</pre>
+<p>MARS executes one instruction from each warrior in turn, in the order that the MARS loaded the warrior into memory. Warriors start at some offset from one another and are guaranteed not to overlap. A warrior may spawn sub-warriors and this sub-warrior will get executed like all the others. A single opcode <kbd>DAT</kbd> will cause a warrior to exit. The objective of the game is force opposing warriors to execute <kbd>DAT.</kbd> The last warrior—plus any spawned warriors—under simulation wins the game.</p>
+<p>There's quite a bit more detail to Corewars than has been presented here, in terms of opcode listing and memory modes and what not, but this is not a Corewars tutorial. There are many fine tutorials online and I suggest some in the <em>Further reading</em> section. What's important to understand is that Corewars is a game played between programmers with programs. There are many MARS simulators but the most commonly used as the <em>MARS</em> is pMARS (<a href="http://www.koth.org/pmars/">http://www.koth.org/pmars/</a>), or Portable MARS. It'll build pretty easily even under a modern GCC, though I can't say I've managed to build it under clang.</p>
+<p>Here's a pretty fun bomber from pmars 0.9.2's source distribution, to give you a sense of how these programs look:</p>
+<pre>;redcode-94
+;name Rave
+;author Stefan Strack
+;strategy Carpet-bombing scanner based on Agony and Medusa's
+;strategy (written in ICWS'94)
+;strategy Submitted: @date@
+;assert CORESIZE==8000
+
+CDIST   equ 12
+IVAL    equ 42
+FIRST   equ scan+OFFSET+IVAL
+OFFSET  equ (2*IVAL)
+DJNOFF  equ -431
+BOMBLEN equ CDIST+2
+
+        org comp
+
+scan    sub.f  incr,comp
+comp    cmp.i  FIRST,FIRST-CDIST        ;larger number is A
+        slt.a  #incr-comp+BOMBLEN,comp  ;compare to A-number
+        djn.f  scan,&lt;FIRST+DJNOFF       ;decrement A- and B-number
+        mov.ab #BOMBLEN,count
+split   mov.i  bomb,&gt;comp               ;post-increment
+count   djn.b  split,#0
+        sub.ab #BOMBLEN,comp
+        jmn.b  scan,scan
+bomb    spl.a  0,0
+        mov.i  incr,&lt;count
+incr    dat.f  &lt;0-IVAL,&lt;0-IVAL
+        end</pre>
+<p>A bomber tosses a bomb at offset intervals into memory. Some toss <kbd>DAT</kbd>s, which force warriors to exit if executed. This one tosses an imp. An imp is a Corewars program that creeps forward in memory some number of instructions at a time. The Imp, introduced in the 1984 article, is:</p>
+<pre>MOV.I 0 1</pre>
+<p>The opcode here is <kbd>MOV</kbd> with modifier <kbd>I</kbd>, source address 0, and destination address 1. <kbd>MOV</kbd> moves instructions at the source address, also traditionally called the <em>a-field</em>, to the destination address, also called the <em>b-field</em>. The opcode modifier—the <kbd>.I</kbd>—defines how the opcode interprets its mandate. Here, we're specifying that MOV moves the whole instruction from the current cell to the next one up the ring. <kbd>MOV.A</kbd> would have only moved the a-field of the current instruction into the a-field of the destination instruction. The bomber's imp <kbd>mov.i incr,&lt;count</kbd> relies on previously computed values to drop imps in memory that advance at different rates with different offsets. The <kbd>&lt;</kbd> on the b-field is an indirect with predecrement operator on the address but, like I said, this is not a Corewars tutorial.</p>
+<p>The pMARS simulator can read in both load files and Redcode, will drop the warriors into the simulator, and report the results. Here we run the bomber against the imp for 100 simulated rounds:</p>
+<pre><strong>&gt; pmars -b -r 1000 imp.red rave.red
+Imp by Alexander Dewdney scores 537
+Rave by Stefan Strack scores 1926
+Results: 0 463 537</strong></pre>
+<p>The imp does not fare too well. It wins 0 times but does manage to tie 537 times. An imp is hard to kill.</p>
+<p>Writing warriors is fun, but teaching a computer to write warriors is even more fun and so that's what we're going to set out to do. Specifically, we'll write an <em>evolver,</em> a program that uses a simulated evolution of a population of warriors to produce ever more fit specimens. We'll call out to the pMARS executable to evaluate our population and, with enough time, hopefully pop out something pretty impressive.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Feruscore – a Corewars evolver</h1>
+                </header>
+            
+            <article>
+                
+<p>I want to make sure we're all on the same page, before we start digging through source code. The way simulated evolution works is you make a population—maybe totally random, maybe not—and call it generation <kbd>0</kbd>. You then run some <kbd>fitness</kbd> function on the members of the population. Fitness may be defined in terms of some known absolute or as a relative value between members of the population. The fittest members of the population are then taken to form a subset of parents. Many algorithms take two members, but the sky's the limit and your species could well require six individuals for reproduction. That's what we're after—reproduction.</p>
+<p>The individuals of the population are non-destructively recombined to form children. The population is then mutated, changing genes in an individual's genomes with some domain-specific probability. This may be <em>all</em> members of the population or just children, or just parents, or whatever you'd like. There's no perfect answer here. After mutation, the parents, their children, and any non-reproducing members of the population that did not die during fitness evaluation are then promoted to generation 2. The cycle continues:</p>
+<ul>
+<li>Fitness evaluation</li>
+<li>Parents reproduce</li>
+<li>Population is mutated</li>
+</ul>
+<p>Exactly when the cycle stops is up to the programmer: perhaps when a fixed number of generations have passed, perhaps when an individual that meets some minimum threshold of fitness has evolved.</p>
+<p>Simulated evolution is not magic. Much like QuickCheck, which uses randomness to probe programs for property violations, this algorithm is probing a problem space for the most fit solution. It's an optimization strategy, mimicking the biological process. As you can probably infer from the description I just gave, there are a lot of knobs and alternatives to the basic approach. We'll be putting together a straightforward approach here but the you are warmly encouraged to make your own modifications.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Representing the domain</h1>
+                </header>
+            
+            <article>
+                
+<p>Before we can start evolving anything, we have to figure out how to represent the individuals; we need to decide how to structure their chromosome. Many genetic algorithm implementations represent these as a [u8], serializing and deserializing as appropriate. There's a lot to recommend this representation. For one, modern computers have instructions specifically tailored to operate on many bytes in parallel—a topic we'll touch on in <a href="2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml" target="_blank">Chapter 10</a>, <em>Futurism – Near-Term Rust,</em>—which is especially helpful in the mutation and reproduction stages of a genetic algorithm. You see, one of the key things to a successful simulation of evolution is <em>speed</em>. We need a large population and many, many generations to discover fit individuals. <kbd>[u8]</kbd> is a convenient representation for serialization and deserialization, especially with something such as serde <a href="https://crates.io/crates/serde">(https://crates.io/crates/serde</a>) and bincode (<a href="https://crates.io/crates/bincode">https://crates.io/crates/bincode</a>) at hand. The downside to a <kbd>[u8]</kbd> representation is creating individuals that don't deserialize into something valid, in addition to eating up CPU time moving back and forth between <kbd>[u8]</kbd> and structs.</p>
+<p>Program optimization comes down to carefully structuring one's computation to suit the computer or finding clever ways to avoid computation altogether. In this particular project, we do have a trick we can play. A valid individual is a finite list of instructions—feruscore targets producing <em>load files</em>—and all we have to do, then, is represent an instruction as a Rust struct and pop it into a vector. Not bad! This will save us a significant amount of CPU time, though our mutation step will be a tad slower. That's okay, though, as fitness evaluation will be the biggest time sink, as we'll see that shortly.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Exploring the source</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's look at feruscore's <kbd>Cargo.toml</kbd> first. It is:</p>
+<pre>[package]
+name = "feruscore"
+version = "0.1.0"
+authors = ["Brian L. Troutwine &lt;brian@troutwine.us&gt;"]
+
+[dependencies]
+rand = "0.4"
+rayon = "1.0"
+tempdir = "0.3"</pre>
+<p>We saw the tempdir crate back in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>; its purpose is to create temporary directories that get deleted when the directory handler is dropped. We discussed rayon earlier in the chapter. The rand crate is new, though we did mention it in passing in both <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapter 2</a>, <em>Sequential Rust Performance and Testing</em>,  and <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>, when we produced our own XorShift. The rand crate implements many different pseudo-random algorithms, in addition to providing a convenient interface to OS facilities for randomness. We'll be putting rand to good use.</p>
+<p>The project is a standard library/executable bundle. Unlike many other projects in this book, we are not creating multiple executables and so there's only a single <kbd>src/main.rs</kbd>. We'll talk through that in due course. The library root, in <kbd>src/lib.rs</kbd>:</p>
+<pre>extern crate rand;
+extern crate rayon;
+extern crate tempdir;
+
+pub mod individual;
+pub mod instruction;</pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Instructions</h1>
+                </header>
+            
+            <article>
+                
+<p>No surprises here. We import the project dependencies and expose two public modules: instruction and individual. The instruction module at <kbd>src/instruction.rs</kbd> is feruscore's version of <kbd>[u8]</kbd>, or, rather, the <kbd>u8</kbd> in the array. Let's take a look. The structure at the root is <kbd>Instruction</kbd>:</p>
+<pre>#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+pub struct Instruction {
+    pub opcode: OpCode,
+    pub modifier: Modifier,
+    pub a_mode: Mode,
+    pub a_offset: Offset,
+    pub b_mode: Mode,
+    pub b_offset: Offset,
+}</pre>
+<p>An instruction in Redcode is an opcode, a modifier for that opcode, an a-offset plus modifier and a b-offset plus modifier. (The a-field and b-field are the combination of offset and mode.) That's exactly what we have here. No need to deserialize from a byte array; we'll work on a direct representation. The implementation of <kbd>Instruction</kbd> is small. To start, we need some way of creating random <kbd>Instruction</kbd>s:</p>
+<pre>impl Instruction {
+    pub fn random(core_size: u16) -&gt; Instruction {
+        Instruction {
+            opcode: OpCode::random(),
+            modifier: Modifier::random(),
+            a_mode: Mode::random(),
+            a_offset: Offset::random(core_size / 32),
+            b_mode: Mode::random(),
+            b_offset: Offset::random(core_size / 32),
+        }
+    }</pre>
+<p>This sets up a pattern we'll use through the rest of this module. Every type exposes <kbd>random() -&gt; Self</kbd> or some variant thereof. Note that the offset is restricted to 1/32 the passed <kbd>core_size</kbd>. Why? Well, we're trying to cut down the cardinality of the domain being explored. Say the core size is 8,000. If all possible  instances of core size values were tried in an offset, there'd be 64,000,000 possible <kbd>Instruction</kbd>, not including any of the other valid combinations with the other structure fields. Based on what I know about high-scoring warriors, the explicit offsets are usually small numbers.</p>
+<p>By cutting down the offset domain, we've eliminated 62,000,000 potential instructions, saving CPU time. This could well be a pessimistic restriction—forcing the population right into a bottleneck—but I doubt it. Every struct in this module also has a <kbd>serialize(&amp;self, w: &amp;mut Write) -&gt; io::Result&lt;usize&gt;</kbd> function. Here's the one for <kbd>Instruction</kbd>:</p>
+<pre>    pub fn serialize(&amp;self, w: &amp;mut Write) -&gt; io::Result&lt;usize&gt; {
+        let mut total_written = 0;
+        self.opcode.serialize(w)?;
+        total_written += w.write(b".")?;
+        self.modifier.serialize(w)?;
+        total_written += w.write(b" ")?;
+        total_written += match self.a_mode {
+            Mode::Immediate =&gt; w.write(b"#")?,
+            Mode::Direct =&gt; w.write(b"$")?,
+            Mode::Indirect =&gt; w.write(b"*")?,
+            Mode::Decrement =&gt; w.write(b"{")?,
+            Mode::Increment =&gt; w.write(b"}")?,
+        };
+        self.a_offset.serialize(w)?;
+        total_written += w.write(b", ")?;
+        total_written += match self.b_mode {
+            Mode::Immediate =&gt; w.write(b"#")?,
+            Mode::Direct =&gt; w.write(b"$")?,
+            Mode::Indirect =&gt; w.write(b"@")?,
+            Mode::Decrement =&gt; w.write(b"&lt;")?,
+            Mode::Increment =&gt; w.write(b"&gt;")?,
+        };
+        total_written += self.b_offset.serialize(w)?;
+        total_written += w.write(b"\n")?;
+        Ok(total_written)
+    }
+}</pre>
+<p>We're going to be calling out to the local system's pmars executable when we run feruscore and that program needs to find files on-disk. Every <kbd>Instruction</kbd> in every individual will be serialized to disk each time we check fitness. That load file will be deserialized by pmars, run in simulation and the results issued back to feruscore from pmars' stdout. That's not a fast process.</p>
+<p>The remainder of the instruction module follows this general outline. Here, for instance, is the <kbd>Modifier</kbd> struct:</p>
+<pre>#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+pub enum Modifier {
+    A,
+    B,
+    AB,
+    BA,
+    F,
+    X,
+    I,
+}</pre>
+<p>Here's the implementation:</p>
+<pre>impl Modifier {
+    pub fn random() -&gt; Modifier {
+        match thread_rng().gen_range(0, 7) {
+            0 =&gt; Modifier::A,
+            1 =&gt; Modifier::B,
+            2 =&gt; Modifier::AB,
+            3 =&gt; Modifier::BA,
+            4 =&gt; Modifier::F,
+            5 =&gt; Modifier::X,
+            6 =&gt; Modifier::I,
+            _ =&gt; unreachable!(),
+        }
+    }
+
+    pub fn serialize(&amp;self, w: &amp;mut Write) -&gt; io::Result&lt;usize&gt; {
+        match *self {
+            Modifier::A =&gt; w.write(b"A"),
+            Modifier::B =&gt; w.write(b"B"),
+            Modifier::AB =&gt; w.write(b"AB"),
+            Modifier::BA =&gt; w.write(b"BA"),
+            Modifier::F =&gt; w.write(b"F"),
+            Modifier::X =&gt; w.write(b"X"),
+            Modifier::I =&gt; w.write(b"I"),
+        }
+    }
+}</pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Individuals</h1>
+                </header>
+            
+            <article>
+                
+<p>Nothing special, especially by this point in the book. The <kbd>random() -&gt; Self</kbd> functions are a touch fragile because you can't query an enumeration for its total number of fields, meaning that if we add or remove a field from <kbd>Modifier</kbd>, for instance, we also have to remember to update <kbd>gen_range(0, 7)</kbd> appropriately. Removal is not so bad, the compiler will complain some, but addition is easy to forget and overlook.</p>
+<p>Let's now look at the individual module. The bulk of the code is in src/individual/mod.rs. The struct for Individual is very short:</p>
+<pre>#[derive(Debug)]
+pub struct Individual {
+    chromosome: Vec&lt;Option&lt;Instruction&gt;&gt;,
+}</pre>
+<p>An <kbd>Individual</kbd> is a chromosome and little else, a vector of instructions just as we discussed. The functions on the <kbd>Individual</kbd> provide what you might expect, given the discussion of the evolution algorithm. Firstly, we have to be able to make a new <kbd>Individual</kbd>:</p>
+<pre>impl Individual {
+    pub fn new(chromosome_size: u16, core_size: u16) -&gt; Individual {
+        let mut chromosome = Vec::with_capacity(chromosome_size as usize);
+        chromosome.par_extend((0..(chromosome_size as usize))<br/>                  .into_par_iter().map(|_| {
+            if thread_rng().gen_weighted_bool(OpCode::total() * 2) {
+                None
+            } else {
+                Some(Instruction::random(core_size))
+            }
+        }));
+        Individual { chromosome }
+    }</pre>
+<p>Ah! Here now we've run into something new. What in the world is <kbd>par_extend</kbd>? It's a rayon function, short for parallel extend. Let's work inside out. The interior map ignores its argument and produces a <kbd>None</kbd> with 1/28 chance—14 being the total number of <kbd>OpCode</kbd> variants—and some other random <kbd>Instruction</kbd> with 27/28th chance:</p>
+<pre>map(|_| {
+    if thread_rng().gen_weighted_bool(OpCode::total() * 2) {
+        None
+    } else {</pre>
+<pre>        Some(Instruction::random(core_size))
+    }
+})</pre>
+<p>The input that the interior map is so studiously ignoring is <kbd>(0..(chromosome_size as usize)).into_par_iter()</kbd>. That's a <kbd>ParallelIterator</kbd> over a range of numbers, from 0 to the maximum number of chromosomes an Individual is allowed to have. One creative solution in early Corewars was to submit a <kbd>MOV 0 1</kbd> imp followed by 7999 <kbd>DAT</kbd> instructions. If the MARS loaded your warrior and wasn't programmed to carefully check warrior offsets, your opponent would lose by being immediately overwritten. <kbd>Instruction</kbd> length limits were quickly put into place and we obey that here, too. Serialization of an <kbd>Individual</kbd> follows the pattern we're familiar with:</p>
+<pre>    pub fn serialize(&amp;self, w: &amp;mut Write) -&gt; io::Result&lt;usize&gt; {
+        let mut total_wrote = 0;
+        for inst in &amp;self.chromosome {
+            if let Some(inst) = inst {
+                total_wrote += inst.serialize(w)?;
+            } else {
+                break;
+            }
+        }
+        Ok(total_wrote)
+    }</pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Mutation and reproduction</h1>
+                </header>
+            
+            <article>
+                
+<p>Before we discuss competition between two <kbd>Individual</kbd>s, let's talk about mutation and reproduction. Mutation is the easier of the two to understand, in my opinion, because it operates on one <kbd>Individual</kbd> at a time. Our implementation:</p>
+<pre>    pub fn mutate(&amp;mut self, mutation_chance: u32, core_size: u16) -&gt; () {
+        self.chromosome.par_iter_mut().for_each(|gene| {
+            if thread_rng().gen_weighted_bool(mutation_chance) {
+                *gene = if thread_rng().gen::&lt;bool&gt;() {
+                    Some(Instruction::random(core_size))
+                } else {
+                    None
+                };
+            }
+        });
+    }</pre>
+<p>The call to <kbd>par_iter_mut</kbd> creates a <kbd>ParallelIterator</kbd> in which the elements of the iterator are mutable, much like <kbd>iter_mut</kbd> from the standard library. The <kbd>for_each</kbd> operator applies the closure to each. The <kbd>for_each</kbd> operator  is similar in purpose to <kbd>map</kbd>, except it's going to necessarily consume the input but will be able to avoid allocating a new underlying collection. Modifying a thing in-place? Use <kbd>for_each</kbd>. Creating a new thing from an existing bit of storage? Use <kbd>map</kbd>. Anyway, the mutation strategy that feruscore uses is simple enough. Every <kbd>Instruction</kbd> in the chromosome is going to be changed with probability <kbd>1/mutation_chance</kbd> and may be disabled with 1/2 probability, that is, be set to None. The careful reader will have noticed that the serializer stops serializing instructions when a <kbd>None</kbd> is found in the chromosome, making everything after that point junk DNA. The junk still comes into play during reproduction:</p>
+<pre>    pub fn reproduce(&amp;self, partner: &amp;Individual, <br/>                     child: &amp;mut Individual) -&gt; () <br/>    {
+        for (idx, (lgene, rgene)) in self.chromosome
+            .iter()
+            .zip(partner.chromosome.iter())
+            .enumerate()
+        {
+            child.chromosome[idx] = if thread_rng().gen::&lt;bool&gt;() {
+                *lgene
+            } else {
+                *rgene
+            };
+        }
+    }</pre>
+<p>Feruscore uses a reproduction strategy called half-uniform crossover. Each gene from a parent has even odds of finding its way into the child. The child is passed as a mutable reference, which is creepy if you think about it too hard. I'm not sure of any real species that takes over the body of a less fit individual and hot-swaps DNA into it to form a child in order to save on energy (or computation, in our case) but here we are. Note that, unlike mutation, reproduction is done serially. Remember that rayon is chunking work and distributing it through a threadpool. If we were to make this parallel, there'd have to be a mechanism in place to rectify the choices made from the zipper of the parents' chromosomes into the child. If the chromosomes were many multiple megabytes, this would be a good thing to tinker with. As is, the chromosomes are very small. Most Corewars games limit a warrior to 100 instructions. rayon is impressive but it is not <em>free</em>, either in runtime cost or programming effort.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Competition – calling out to pMARS</h1>
+                </header>
+            
+            <article>
+                
+<p>It's now time to consider how each <kbd>Individual</kbd> competes. Earlier, we discussed calling out to pmars on-system, which requires on-disk representations of the two competing Individual warriors. True to that, competition first serializes both warriors to temporary locations on the disk:</p>
+<pre>    pub fn compete(&amp;self, other: &amp;Individual) -&gt; Winner {
+        let dir = TempDir::new("simulate")<br/>                      .expect("could not make tempdir");
+
+        let l_path = dir.path().join("left.red");
+        let mut lfp = BufWriter::new(File::create(&amp;l_path)<br/>                          .expect("could not write lfp"));
+        self.serialize(&amp;mut lfp).expect("could not serialize");
+        drop(lfp);
+
+        let r_path = dir.path().join("right.red");
+        let mut rfp = BufWriter::new(File::create(&amp;r_path)<br/>                          .expect("could not write rfp"));
+        other.serialize(&amp;mut rfp).expect("could not serialize");
+        drop(rfp);</pre>
+<p>We haven't interacted much with the filesystem in this book but, suffice it to say, Rust has an <em>excellent</em> filesystem setup in the standard library, most of it under <kbd>std::fs</kbd>. You are warmly encouraged to take a gander at the documentation for any of the functions here if they are not already familiar with them. Anyway, with both warriors written to disk, we can run pmars on them:</p>
+<pre>        let output = Command::new("pmars")
+            .arg("-r") // Rounds to play
+            .arg(format!("{}", ROUNDS))
+            .arg("-b") // Brief mode (no source listings)
+            .arg(&amp;l_path)
+            .arg(&amp;r_path)
+            .output()
+            .expect("failed to execute process");</pre>
+<p>Let's break down what's happening here. <kbd>std::process::Command</kbd> is a builder struct for running an OS process. If we did nothing but call <kbd>Command::output(&amp;mut self)</kbd> on the new <kbd>Command</kbd> then:</p>
+<ul>
+<li>pmars would be run without arguments</li>
+<li>The working directory and environment of feruscore would become pmars</li>
+<li>The stdout of pmars will be piped back to the feruscore process</li>
+</ul>
+<p>Each of these can be changed. The actual execution of pmars does not take place until the output is called: or, spawn, which is intended for long-lived processes. The <kbd>Command::stdin</kbd>, <kbd>Command::stderr</kbd>, and <kbd>Command::stdout</kbd> functions control the IO behavior of the process, whether feruscore's descriptors are inherited by the child-process—which is the case with spawn—or piped back to feruscore, the default for output. We <em>don't</em> want pmars to write to feruscore's stdout/sterr, so the defaults of <kbd>output</kbd> are ideal for our needs. The call to <kbd>args</kbd> adds a new argument to the <kbd>Command</kbd> and a new call is required even for arguments that associate. We write <kbd>.arg("-r").arg(format("{}", ROUNDS))</kbd> rather than <kbd>.arg(format!("-r {}", ROUNDS))</kbd>. Here, we're crashing the program if pmars fails to make appropriate output, which might happen if the executable can't be found or we trigger a crash-bug in pmars and don't have permissions to run the program. Crashing is a bit user-hostile, but good enough for our purposes here.</p>
+<p>Now, <kbd>output: std::process::Output</kbd>, a struct with three members. We've ignored the exit status in favor of pulling the last stdio line:</p>
+<pre>        let result_line = ::std::str::from_utf8(&amp;output.stdout)
+            .expect("could not parse output")
+            .lines()
+            .last()
+            .expect("no output");</pre>
+<p>If there was output on stdio, then pmars successfully ran the passed warriors, if not, then the warriors were invalid. The parser in pmars is very forgiving if the warriors failed to load the serializer in Individual or Instruction is faulty. Note that <kbd>result_line</kbd> is the last line of output. The last line is always of the form <kbd>Results: 10 55 32</kbd>, meaning that the left program won 10 times, the right program won 55 times, and they tied 32 times. A tie happens when neither warrior is able to force the other out of the game by some pre-determined number of executions, often around 10,000. Parsing that last line is a rugged affair:</p>
+<pre>        let pieces = result_line.split(' ').collect::&lt;Vec&lt;&amp;str&gt;&gt;();
+
+        let l_wins = pieces[1].parse::&lt;u16&gt;()<br/>                         .expect("could not parse l_wins");
+        let r_wins = pieces[2].parse::&lt;u16&gt;()<br/>                         .expect("could not parse r_wins");
+        let ties = pieces[3].parse::&lt;u16&gt;()<br/>                         .expect("could not parse ties");
+        assert_eq!((l_wins + r_wins + ties) as usize, ROUNDS);</pre>
+<p>Note the assertion. <kbd>ROUNDS</kbd> is a constant set in the module, set to 100. Our <kbd>Command</kbd> informed pmars to play 100 rounds with the passed warriors, if the result doesn't add up to 100, we've got a real problem. Placing these sanity checks in code sometimes feels a bit silly but, lo and behold, they do turn up bugs. Likewise, it's rarely a wasted effort to invest in diagnostics. For instance, in genetic algorithms, it's hard to know how things are going in your population. Is every generation getting fitter? Has the population bottlenecked somewhere? To that end, the next step of compete is to tally the fitness of the left and right warriors:</p>
+<pre>        tally_fitness(l_wins as usize);
+        tally_fitness(r_wins as usize);</pre>
+<p>The <kbd>tally_fitness</kbd> function is defined like so:</p>
+<pre>fn tally_fitness(score: usize) -&gt; () {
+    assert!(score &lt;= ROUNDS);
+
+    match score {
+        0...10 =&gt; FITNESS_00010.fetch_add(1, Ordering::Relaxed),
+        11...20 =&gt; FITNESS_11020.fetch_add(1, Ordering::Relaxed),
+        21...30 =&gt; FITNESS_21030.fetch_add(1, Ordering::Relaxed),
+        31...40 =&gt; FITNESS_31040.fetch_add(1, Ordering::Relaxed),
+        41...50 =&gt; FITNESS_41050.fetch_add(1, Ordering::Relaxed),
+        51...60 =&gt; FITNESS_51060.fetch_add(1, Ordering::Relaxed),
+        61...70 =&gt; FITNESS_61070.fetch_add(1, Ordering::Relaxed),
+        71...80 =&gt; FITNESS_71080.fetch_add(1, Ordering::Relaxed),
+        81...90 =&gt; FITNESS_81090.fetch_add(1, Ordering::Relaxed),
+        91...100 =&gt; FITNESS_91100.fetch_add(1, Ordering::Relaxed),
+        _ =&gt; unreachable!(),
+    };
+}</pre>
+<p>What is this, you ask? Well, I'll tell you! <kbd>tally_fitness</kbd> takes the input score—the wins of the warrior—and buckets that score into a histogram. Usually this is done with a modulo operation but we're stuck here. The implementation has to assume that <kbd>tally_fitness</kbd> will be run by multiple threads at once. So, we've constructed a histogram from several discrete <kbd>AtomicUsize</kbd>s with names suggestive of their bucket purpose. The declaration of the statics is as repetitive as you'd imagine and we'll spare repeating it here. Maintaining this structure by hand is a real pain but it <em>does</em> get you an atomic histogram, so long as you're fine with that histogram also being static. This implementation is. The histogram is not used for decision making so much as it's meant for diagnostic display. We'll come to that when we discuss the main loop.</p>
+<p>The final lines of <kbd>compete</kbd> are underwhelming:</p>
+<pre>        if l_wins &gt; r_wins {
+            Winner::Left(l_wins)
+        } else if l_wins &lt; r_wins {
+            Winner::Right(r_wins)
+        } else {
+            Winner::Tie
+        }
+    }
+}</pre>
+<p>The win counts of each warrior are compared and the winner is declared to be the one with the higher score, or neither wins and a tie is declared. Depending on your problem domain, this fitness' rubric might be too coarse. From the output, we don't know how much fitter an individual was compared to its competitor, only that it was. The warriors may have tied at 0 wins each, or gone 50/50. We believe this simple signal is enough, at least for our purposes now.</p>
+<p>At least as far as creating an <kbd>Individual</kbd>, mutating it, reproducing it, and competing it, that's it! Now all that's left is to simulate evolution and for that we have to jump to <kbd>main.rs</kbd>. Before we do, though, I want to point out briefly that there's a submodule here, <kbd>individuals::ringers</kbd>. This module has functions such as:</p>
+<pre>pub fn imp(chromosome_sz: u16) -&gt; Individual {
+    let mut chromosome = vec![
+        // MOV.I $0, $1
+        Some(Instruction {
+            opcode: OpCode::Mov,
+            modifier: Modifier::I,
+            a_mode: Mode::Direct,
+            a_offset: Offset { offset: 0 },
+            b_mode: Mode::Direct,
+            b_offset: Offset { offset: 1 },
+        }),
+    ];
+    for _ in 0..(chromosome_sz - chromosome.len() as u16) {
+        chromosome.push(None);
+    }
+    Individual { chromosome }
+}</pre>
+<p>Sometimes it's wise to nudge evolution along by sprinkling a little starter into the random mixture. Feruscore has no parser—at least, not until some kind reader contributes one—so the ringers are written out long-form.</p>
+<p>Now, on to <kbd>main</kbd>!</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Main</h1>
+                </header>
+            
+            <article>
+                
+<p>The preamble to <kbd>src/main.rs</kbd> is typical for the programs we've seen so far in this book:</p>
+<pre>extern crate feruscore;
+extern crate rand;
+extern crate rayon;
+
+use feruscore::individual::*;
+use rand::{thread_rng, Rng};
+use rayon::prelude::*;
+use std::collections::VecDeque;
+use std::fs::File;
+use std::fs::{self, DirBuilder};
+use std::io::{self, BufWriter};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{thread, time};</pre>
+<p>The program does start, however, with an abnormally large block of constants and statics:</p>
+<pre>// configuration
+const POPULATION_SIZE: u16 = 256; // NOTE must be powers of two
+const CHROMOSOME_SIZE: u16 = 25; // Must be &lt;= 100
+const PARENTS: u16 = POPULATION_SIZE / 8;
+const CHILDREN: u16 = PARENTS * 2;
+const RANDOS: u16 = POPULATION_SIZE - (PARENTS + CHILDREN);
+const CORE_SIZE: u16 = 8000;
+const GENE_MUTATION_CHANCE: u32 = 100;
+
+// reporting
+static GENERATIONS: AtomicUsize = AtomicUsize::new(0);
+static REGIONAL_BATTLES: AtomicUsize = AtomicUsize::new(0);
+static FINALS_BATTLES: AtomicUsize = AtomicUsize::new(0);
+static STATE: AtomicUsize = AtomicUsize::new(0);
+static NEW_PARENTS: AtomicUsize = AtomicUsize::new(0);</pre>
+<p>Realistically, the configuration constants could be adjusted into actual configuration, via clap or some configuration-parsing library. The toml (<a href="https://crates.io/crates/toml">https://crates.io/crates/toml</a>) crate paired with serde is very useful for parsing straightforward configuration, where the validation steps are a few checks we now encode as comments. The reporting statics are the same static <kbd>AtomicUsize</kbd>s we've seen through the book. In fact, starting the reporting thread is the first thing that the <kbd>main</kbd> function does:</p>
+<pre>fn main() {
+    let _ = thread::spawn(report);</pre>
+<p>The <kbd>report</kbd> thread works in a similar fashion to the threads that fill a comparable role elsewhere in the book: the global statics—including <kbd>FITNESS_*</kbd> from <kbd>feruscore::individuals</kbd>—are swapped for zero, a little bit of computation happens, then there's a block that prints to stdout, and finally the thread sleeps for a bit before looping around again, forever. It's a well-worn technique by this point.</p>
+<p>With the reporting thread online, feruscore creates its initial population:</p>
+<pre>    let mut population: Vec&lt;Individual&gt; = <br/>        Vec::with_capacity(POPULATION_SIZE as usize);
+    let mut children: Vec&lt;Individual&gt; = <br/>        Vec::with_capacity(CHILDREN as usize);
+    let mut parents: VecDeque&lt;Individual&gt; = <br/>        VecDeque::with_capacity(PARENTS as usize);
+    population.par_extend(
+        (0..POPULATION_SIZE)
+            .into_par_iter()
+            .map(|_| Individual::new(CHROMOSOME_SIZE, CORE_SIZE)),
+    );
+    population.pop();
+    population.pop();
+    population.push(ringers::imp(CHROMOSOME_SIZE));
+    population.push(ringers::dwarf(CHROMOSOME_SIZE));</pre>
+<p>rayon's <kbd>par_extend</kbd> makes an appearance again, useful when <kbd>POPULATION_SIZE</kbd> is a large number but not harmful with its current value. As we saw, rayon will decline to split a parallel collection too small to be effectively parallelized, the distribution to threads overwhelming the time to compute. <kbd>Individual::new</kbd> is called with the actual chromosome and core sizes, and two unlucky, random members of the population are ejected and deallocated in favor of ringers from <kbd>individual::ringers</kbd>.</p>
+<p>There are many ways to decide the fitness of individuals in a population. The method that feruscore takes is to run individuals in a tournament. The winner of the first tournament becomes the first parent, the winner of the second becomes the second parent, and so forth until each parent is filled up. That implementation is brief but contains multitudes:</p>
+<pre>    loop {
+        // tournament, fitness and selection of parents
+        STATE.store(0, Ordering::Release);
+        while parents.len() &lt; PARENTS as usize {
+            thread_rng().shuffle(&amp;mut population);
+            let res = population
+                .into_par_iter()
+                .fold(|| (None, Vec::new()), regional_tournament)
+                .reduce(|| (None, Vec::new()), finals_tournament);
+            population = res.1;
+            parents.push_back(res.0.unwrap());
+            NEW_PARENTS.fetch_add(1, Ordering::Relaxed);
+        }</pre>
+<p>What's going on here? The population is shuffled at the start to avoid pairing up the same individuals in each tournament. Indeterminacy in thread makes this somewhat unnecessary and the speed-obsessed evolver might do well to remove this. The main show is the fold and reduce of the population. Readers familiar with functional programming will be surprised to learn that rayon's <kbd>fold</kbd> and <kbd>reduce</kbd> are not synonymous. The type of <kbd>ParallelIterator::fold</kbd> is:</p>
+<pre>fold&lt;T, ID, F&gt;(self, identity: ID, fold_op: F) <br/>    -&gt; Fold&lt;Self, ID, F&gt; <br/>where
+    F: Fn(T, Self::Item) -&gt; T + Sync + Send,
+    ID: Fn() -&gt; T + Sync + Send,
+    T: Send,</pre>
+<p>Readers familiar with functional programming will not be surprised to learn that <kbd>fold</kbd>'s type is somewhat involved. Jokes aside, note that the function does not return an instance of <kbd>T</kbd> but <kbd>Fold&lt;Self, ID, F&gt;</kbd> where <kbd>Fold: ParallelIterator</kbd>. rayon's <kbd>fold</kbd> does not produce a single <kbd>T</kbd> but, instead, a parallel iterator over chunks that will have <kbd>Fn(T, Self::Item) -&gt; T</kbd> applied: an iterator over folded chunks. <kbd>ParallelIterator::reduce</kbd> has the following type:</p>
+<pre>reduce&lt;OP, ID&gt;(self, identity: ID, op: OP) <br/>    -&gt; Self::Item <br/>where
+    OP: Fn(Self::Item, Self::Item) -&gt; Self::Item + Sync + Send,
+    ID: Fn() -&gt; Self::Item + Sync + Send,</pre>
+<p>The <kbd>OP</kbd> takes two <kbd>Item</kbd>s and combines them into one <kbd>Item</kbd>. <kbd>Reduce</kbd>, then, takes a <kbd>ParallelIterator</kbd> of <kbd>Item</kbd>s and reduces them down into a single instance of <kbd>Item</kbd> type. Our tournament implementation folds <kbd>regional_tournament</kbd> over the population, producing a <kbd>Fold</kbd> over <kbd>(Option&lt;Individual&gt;, Vec&lt;Individual&gt;)</kbd>, the first element of the tuple being the fittest individual in that subchunk of the population, the second element being the remainder of the population. The <kbd>reduce</kbd> step, then, takes the winners of the regional tournaments and reduces them into one final winner. The implementation of these two functions is similar. First, <kbd>regional_tournament</kbd>:</p>
+<pre>fn regional_tournament(
+    (chmp, mut population): (Option&lt;Individual&gt;, Vec&lt;Individual&gt;),
+    indv: Individual,
+) -&gt; (Option&lt;Individual&gt;, Vec&lt;Individual&gt;) {
+    if let Some(chmp) = chmp {
+        REGIONAL_BATTLES.fetch_add(1, Ordering::Relaxed);
+        match chmp.compete(&amp;indv) {
+            Winner::Left(_) | Winner::Tie =&gt; {
+                population.push(indv);
+                (Some(chmp), population)
+            }
+            Winner::Right(_) =&gt; {
+                population.push(chmp);
+                (Some(indv), population)
+            }
+        }
+    } else {
+        (Some(indv), population)
+    }
+}</pre>
+<p>Note the call to compete and the choice to promote the existing <kbd>chmp</kbd>—champion—to the next tournament round in the event of a tie. <kbd>REGIONAL_BATTLES</kbd> sees an update, feeding the report thread information. The less fit individual is pushed back into the population. <kbd>finals_tournament</kbd> is a little more complicated but built along the same lines:</p>
+<pre>fn finals_tournament(
+    (left, mut lpop): (Option&lt;Individual&gt;, Vec&lt;Individual&gt;),
+    (right, rpop): (Option&lt;Individual&gt;, Vec&lt;Individual&gt;),
+) -&gt; (Option&lt;Individual&gt;, Vec&lt;Individual&gt;) {
+    if let Some(left) = left {
+        lpop.extend(rpop);
+        if let Some(right) = right {
+            FINALS_BATTLES.fetch_add(1, Ordering::Relaxed);
+            match left.compete(&amp;right) {
+                Winner::Left(_) | Winner::Tie =&gt; {
+                    lpop.push(right);
+                    (Some(left), lpop)
+                }
+                Winner::Right(_) =&gt; {
+                    lpop.push(left);
+                    (Some(right), lpop)
+                }
+            }
+        } else {
+            (Some(left), lpop)
+        }
+    } else {
+        assert!(lpop.is_empty());
+        (right, rpop)
+    }
+}</pre>
+<p>This function is responsible for rerunning competitions and for joining up the previously split parts of the population. Note the call to <kbd>lpop.extend</kbd>. The right population—<kbd>rpop</kbd>—is always merged into the left population, as are less fit individuals. There's no special reason for this, we could equally have merged right and returned right.</p>
+<p>Now, take a minute to look at these two functions. They are sequential. We are able to reason about them as sequential functions, we are able to program them like sequential functions. We can test them like sequential functions. rayon's internal model doesn't leak into this code. We have to understand only the types and, once that's done, rayon's able to do its thing. This sequential inside, parallel outside model is unique, compared to all the techniques we've discussed in the book so far. rayon's implementation is undoubtedly complicated, but the programming model it admits is quite straightforward, once you get the hang of iterator style.</p>
+<p>Once the tournament selection is completed, the parents vector is filled with <kbd>PARENTS</kbd>, number of <kbd>Individual</kbd>s and the population has members who are all suitable for being turned into children. Why draw from the population? Well, the upside is we avoid having to reallocate a new <kbd>Individual</kbd> for each reproduction. Many small allocations can get expensive fast. The downside is, by drawing from the population, we're not able to easily turn a direct loop into a parallel iterator. Given that the total number of reproductions is small, the implementation does not attempt anything but a serial loop:</p>
+<pre>        STATE.store(1, Ordering::Release);
+        while children.len() &lt; CHILDREN as usize {
+            let parent0 = parents.pop_front().expect("no parent0");
+            let parent1 = parents.pop_front().expect("no parent1");
+            let mut child = population.pop().expect("no child");
+            parent0.reproduce(&amp;parent1, &amp;mut child);
+            children.push(child);
+            parents.push_back(parent0);
+            parents.push_back(parent1);
+        }</pre>
+<p>Two parents are popped off, a child is popped off, reproduction happens, and everyone is pushed into their respective collection. Children exist to avoid reproducing into the same <kbd>Individual</kbd> multiple times. Once reproduction is completed, <kbd>children</kbd> is merged back into the population, but not before some sanity-checks take place:</p>
+<pre>        assert_eq!(children.len(), CHILDREN as usize);
+        assert_eq!(parents.len(), PARENTS as usize);
+        assert_eq!(population.len(), RANDOS as usize);
+
+        population.append(&amp;mut children);</pre>
+<p>Once <kbd>children</kbd> is integrated into the population, mutation:</p>
+<pre>        STATE.store(2, Ordering::Release);
+        population.par_iter_mut().for_each(|indv| {
+            let _ = indv.mutate(GENE_MUTATION_CHANCE, CORE_SIZE);
+        });</pre>
+<p>The careful reader will note that the parents are not included in the mutation step. This is intentional. Some implementations do mutate the parents in a given generation, and whether or not this is a good thing to do depends very much on domain. Here, the difference between a fit <kbd>Individual</kbd> and an unfit one is so small that I deemed it best to leave parents alone. A matter for experimentation.</p>
+<p>Finally, we bump the <kbd>generation</kbd>, potentially <kbd>checkpoint</kbd>, and re-integrate the parents into the population:</p>
+<pre>        let generation = GENERATIONS.fetch_add(1, Ordering::Relaxed);
+        if generation % 100 == 0 {
+            checkpoint(generation, &amp;parents)<br/>                .expect("could not checkpoint");
+        }
+
+        for parent in parents.drain(..) {
+            population.push(parent);
+        }
+    }
+}</pre>
+<p>There is no stop condition in feruscore. Instead, every 100 generations, the program will write out its best warriors—the parents—to disk. The user can use this information as they want. It would be reasonable to stop simulation after a fixed number of generations or compare the parents against a host of known best-of-breed warriors, exiting when a warrior had been evolved that could beat them all. That last would be especially nifty but would require either a parser or a fair deal of hand-assembly. Checkpointing looks the way you may imagine it:</p>
+<pre>fn checkpoint(generation: usize, best: &amp;VecDeque&lt;Individual&gt;) -&gt; io::Result&lt;()&gt; {
+    let root: PathBuf = Path::new("/tmp/feruscore/checkpoints")<br/>                            .join(generation.to_string());
+    DirBuilder::new().recursive(true).create(&amp;root)?;
+    assert!(fs::metadata(&amp;root).unwrap().is_dir());
+
+    for (idx, indv) in best.iter().enumerate() {
+        let path = root.join(format!("{:04}.red", idx));
+        let mut fp = BufWriter::new(File::create(&amp;path)<br/>                         .expect("could not write lfp"));
+        indv.serialize(&amp;mut fp)?;
+    }
+
+    Ok(())
+}</pre>
+<p>Okay! Let's evolve some warriors.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Running feruscore</h1>
+                </header>
+            
+            <article>
+                
+<p>Before you attempt to run feruscore, please make sure pmars is available on your PATH. Some operating systems bundle pmars in their package distribution, others, such as OS X, require gcc to compile the program. The pMARS project is <em>venerable</em> C code and getting it compiled can be a bit fiddly. On my Debian system, I had to tweak the makefile some, but on OS X I found a helpful brew cask to get pMARS installed.</p>
+<p>Once you've got pMARS installed, you should be able to run <kbd>cargo run --release</kbd> at the head of the project and receive output like the following:</p>
+<pre><strong>GENERATION(0):
+    STATE:          Tournament
+    RUNTIME (sec):  4
+    GENS/s:         0
+    PARENTS:        2
+       PARENTS/s:   1
+    BATTLES:        660
+       R_BATTLES/s: 131
+       F_BATTLES/s: 25
+    FITNESS:
+        00...10:    625
+        11...20:    1
+        21...30:    3
+        31...40:    0
+        41...50:    130
+        51...60:    3
+        61...60:    0
+        71...70:    0
+        81...80:    0
+        91...100:   550</strong></pre>
+<p>Woo! Look at it go. This instance of feruscore has been running for 4 seconds—RUNTIME (sec): 4—and has computed two parents so far. This generation has gone through 660 battles: 131 regional and 25 final. The fitness histogram shows that the population is pretty evenly bad, otherwise we'd expect to see a clump at the 0 end and a clump at the 100 end. You should see something similar. I bet you'll also find that your CPUs are pegged. But, there's a problem. This is <em>slow</em>. It gets worse. Once I evolved more fit warriors, the generations took longer and longer to compute:</p>
+<pre><strong>GENERATION(45):
+    STATE:          Tournament
+    RUNTIME (sec):  25297
+    GENS/s:         0
+    PARENTS:        8
+       PARENTS/s:   0
+    BATTLES:        1960
+       R_BATTLES/s: 12
+       F_BATTLES/s: 1
+    FITNESS:
+        00...10:    3796
+        11...20:    0
+        21...30:    0
+        31...40:    0
+        41...50:    0
+        51...60:    0
+        61...60:    0
+        71...70:    0
+        81...80:    0
+        91...100:   118</strong></pre>
+<p>That makes sense though. The better the population is, the longer members will hold out in a round. It's not uncommon to run a genetic algorithm for <em>thousands</em> of generations before it settles on a really excellent solution. A generation in the present implementation takes, generously, 30 seconds at least. By the time we're able to evolve a halfway-decent warrior, it'll be the 30th anniversary of the '94 ICWS Corewars standard! That's no good.</p>
+<p>Turns out, serializing an <kbd>Individual</kbd> to disk, spawning a pMARS process, and forcing it to parse the serialized format—the load file—is not a fast operation. We could also compact our <kbd>Individual</kbd> representation significantly, improving cache locality of simulation. There's also something fishy about performing a <em>regional</em> and then a <em>finals</em> tournament just to fit the iterator style rayon requires. We can fix all of these things, but it'll have to wait until the next chapter. We're going to embed a MARS written in C into feruscore and all sorts of changes will fall out as a result.</p>
+<p>Should be fun!</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we set the lower-level details of concurrency in Rust as a foundation. We discussed thread pools, which, it turns out, we had all the pieces in-hand from previous chapters, to understand a fairly sophisticated one. Then we looked into rayon and discovered that we could also understand an <em>extremely</em> sophisticated threadpool, hidden behind the type system to enable data parallelism in the programming model. We discussed architectural concerns with the thread-per-connection model and the challenges of splitting small datasets up into data parallel iterators. Finally, we did a walkthrough of a rayon and multi-processing-based genetics algorithm project. The <kbd>std::process</kbd> interface is lean compared to that exposed by some operating systems, but well-thought-out and quite useful, as demonstrated in the feruscore project that closed out the chapter. We'll pick up feruscore in the next chapter when we integrate C code into it, in lieu of calling out to a process.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<p>The notes for the chapter are a bit unusual for the book. Rather than call out papers the reader could look to for further research these notes are, overwhelmingly, suggestions of codebases to read. Data parallel iterators are <em>amazing</em> but take a little getting used to.</p>
+<p>Nothing helps more than reading existing projects. Me, I figure every thousand lines of source code takes an hour to understand well. Makes for a peaceful afternoon:</p>
+<ul>
+<li><em>rayon</em>, available at <a href="https://github.com/rayon-rs/rayon">https://github.com/rayon-rs/rayon</a>. We discussed this crate quite a bit in the chapter but only skimmed the surface of it. I highly, highly recommend that the motivated reader go through ParallelIterator and work to understand the operators exposed there.</li>
+<li><em>xsv</em>, available at <a href="https://github.com/BurntSushi/xsv">https://github.com/BurntSushi/xsv</a>. Andrew Gallant is responsible for some of the fastest text-focused Rust code right now and xsv is no exception. This crate implements a toolkit for very fast, parallel CSV querying and manipulation. The threadpool crate discussed earlier drives the whole thing. Well worth reading if you've got ambitions for fast text processing and want to see the application of thread pooling to such.</li>
+<li><em>ripgrep</em>, available at <a href="https://github.com/BurntSushi/xsv">https://github.com/BurntSushi/xsv</a>. Andrew Gallant's ripgrep is one of the fastest grep implementations in the world. The reader will be interested to know that the implementation does not use any off-the-shelf threadpool crates nor rayon. Ripgrep spawns a result printing thread for every search, then a bounded many threads to perform actual searches on files. Each search thread communicates results to the print thread via an MPSC, thereby ensuring that printed results are not torn and search can exploit the available machine CPUs.</li>
+<li><em>tokei</em>, available at <a href="https://github.com/Aaronepower/tokei">https://github.com/Aaronepower/tokei</a>. There are many source-code line-counting programs in the world, but few cover as many languages or are as fast as Aaron Power's tokei. The implementation is well worth reading if you're interested in parsing alone. But, tokei also notably makes use of rayon. Where the project has chosen sequential std iterators over rayon's parallel iterators is something readers should discover for themselves. Then, they should ponder through the reasons why such choices were made.</li>
+<li><em>i8080</em>, available at <a href="https://github.com/Aaronepower/i8080">https://github.com/Aaronepower/i8080</a>. In addition to tokei, Aaron Power wrote an impressive Intel 8080 emulator in Rust. MARS is a deeply odd machine and the reader will probably have an excellent time discovering how an actual, simple CPU is emulated.</li>
+<li><em>QuickCheck: Lightweight Tool for Random Testing of Haskell Programs</em>, 2000, Koen Claessen and John Hughes. This paper introduces the QuickCheck tool for Haskell and introduces property-based testing to the world. The research here builds on previous work into randomized testing, but is novel for realizing that computers had got fast enough to support type-directed generation as well as shipping with the implementation in a single-page appendix. Many, many subsequent papers have built on this one to improve the probing ability of property testers.</li>
+<li><em>Smallcheck and Lazy Smallcheck: Automatic Exhaustive Testing for Small Values</em>, 2008, Colin Runciman, Matthew Naylor, and Fredrik Lindblad. This paper takes direct inspiration from Claessen and Hughes work but works the hypothesis that many program defects are to be found on s<em>mall</em> input first. The Lazy Smallcheck discussion in the second half of the paper is especially interesting. I found myself reading this with a growing ambition to implement a Prolog.</li>
+<li><em>Macros: The Rust Reference</em>, available at <a href="https://doc.rust-lang.org/reference/macros.html">https://doc.rust-lang.org/reference/macros.html</a>. Macro use in Rust is in a weird state. It's clearly useful but the current macro implementation is unloved and a new macro system is coming, gradually, to replace it. Meanwhile, if you want to build macros to use in code, you're going to need this reference.</li>
+<li><em>The C10K Problem</em>, available at <a href="http://www.kegel.com/c10k.html">http://www.kegel.com/c10k.html</a>. This page was much discussed when it first hit the internet. The problem discussed was that of getting 10,000 active connections to a single network server, processing them in a non-failing fashion. The author notes several resources for further reading, all of which are still useful today, and discusses the state-of-the-art operating systems at that time, in terms of kernal versions and the inclusion of new, better polling APIs. Though old—the many-connection problem is often now stated as C1M—it's still an excellent and informative read.</li>
+<li><em>Annotated Draft of the Proposed 1994 Core War Standard</em>, available at <a href="http://corewar.co.uk/standards/icws94.htm">http://corewar.co.uk/standards/icws94.htm</a>. Corewars is a subtle game, in terms of the effect of the assembly language, Redcode, on the machine and the function of the machine itself. This document is the attempt to standardize the behavior of both in 1994. The standard was not accepted—the standard body was dying—but the proposal document is very clear and even comes with a brief C implementation of a MARS.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  </body></html>

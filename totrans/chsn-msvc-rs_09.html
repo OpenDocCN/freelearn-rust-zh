@@ -1,0 +1,669 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Simple REST Definition and Request Routing with Frameworks</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">In this chapter, we'll have a look at alternative frameworks for creating microservices. In the previous chapters, we used a <kbd>hyper</kbd> crate to handle HTTP interaction, but it required us to write asynchronous code. If you don't need low-level control, if a microservice you've created won't work with a high load, or if you need to write one simply and quickly, you can try using the following crates to create microservices:</p>
+<ul>
+<li><kbd>rouille</kbd></li>
+<li><kbd>nickel</kbd></li>
+<li><kbd>rocket</kbd></li>
+<li><kbd>gotham</kbd></li>
+</ul>
+<p>In this chapter, we will create four microservices that use database interaction concepts from previous chapters.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>This chapter introduces you to new crates—<kbd>rouille</kbd>, <kbd>nickel</kbd>, <kbd>rocket</kbd>, and <kbd>gotham</kbd>. You don't need to install special software instead of <kbd>cargo</kbd> and the Rust compiler, but you need a nightly version, because the Rocket framework requires it.</p>
+<p>To make the examples complex, we will use SQL Database and an SMTP server. But you don't need to install this software locally. It's sufficient to start containers with PostgreSQL and Postfix servers using Docker.</p>
+<p>You can get the sources for this chapter from the relevant project on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter09">https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter09</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Rouille</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>rouille</kbd> crate helps you to create a microservice with a simple routing declaration using the <kbd>route!</kbd> macro. This framework provides a synchronous API and every request is processed by a thread from a pool.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a microservice</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's write a microservice for user registration using the Rouille framework. It allows users to create an account and authorize the use of other microservices. We can start by creating a server instance.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Bootstrapping a server</h1>
+                </header>
+            
+            <article>
+                
+<p>The Rouille framework is very simple to use. It contains <kbd>start_server</kbd> functions that expect a function to handle every incoming request. Let's create a <kbd>main</kbd> function that uses a <kbd>diesel</kbd> crate with an <kbd>r2d2</kbd> pool feature and calls a function to handle requests:</p>
+<pre>fn main() {<br/>     env_logger::init();<br/>     let manager = ConnectionManager::&lt;SqliteConnection&gt;::new("test.db");<br/>     let pool = Pool::builder().build(manager).expect("Failed to create pool.");<br/>     rouille::start_server("127.0.0.1:8001", move |request| {<br/>         match handler(&amp;request, &amp;pool) {<br/>             Ok(response) =&gt; { response },<br/>             Err(err) =&gt; {<br/>                 Response::text(err.to_string())<br/>                     .with_status_code(500)<br/>             }<br/>         }<br/>     })<br/> }</pre>
+<p>We created a <kbd>ConnectionManager</kbd> for a local <kbd>test.db</kbd> SQLite database and a <kbd>Pool</kbd> instance with this manager. We discussed this in previous chapters. We are interested in the line with the <kbd>rouille::start_server</kbd> function call. This function takes two arguments: a listening address and a closure for handling requests. We moved <kbd>pool</kbd> to the closure and called <kbd>handler</kbd> functions, which we declared underneath it to generate a response for a request with <kbd>Pool</kbd> as an argument.</p>
+<p>Since <kbd>handler</kbd> functions have to return a <kbd>Response</kbd> instance, we have to return a response with a 500 status code if a <kbd>handler</kbd> function returns an error. Looks pretty simple, doesn't it? Let's look at a <kbd>handler</kbd> function declaration.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handling requests</h1>
+                </header>
+            
+            <article>
+                
+<p>The Rouille framework contains a <kbd>router!</kbd> macro that helps you declare a handler for every path and HTTP method. If we add a <kbd>handler</kbd> function that is called from a closure we used in the <kbd>start_server</kbd> function call, the <kbd>router!</kbd> macro expects a request instance as the first argument and the desired number of request handlers. Let's analyze the four handler functions in order.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Root handler</h1>
+                </header>
+            
+            <article>
+                
+<p>The following is a simple handler that expects a <kbd>GET</kbd> method and returns a text response:</p>
+<pre>(GET) (/) =&gt; {<br/>    Response::text("Users Microservice")<br/>},</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Sign-up handler</h1>
+                </header>
+            
+            <article>
+                
+<p>To handle sign-up requests, we need a <kbd>POST</kbd> method handler for the <kbd>/signup</kbd> path. We can declare it in the following way:</p>
+<pre>(POST) (/signup) =&gt; {<br/>    let data = post_input!(request, {<br/>        email: String,<br/>        password: String,<br/>    })?;<br/>    let user_email = data.email.trim().to_lowercase();<br/>    let user_password = pbkdf2_simple(&amp;data.password, 12345)?;<br/>    {<br/>        use self::schema::users::dsl::*;<br/>        let conn = pool.get()?;<br/>        let user_exists: bool = select(exists(users.filter(email.eq(user_email.clone()))))<br/>            .get_result(&amp;conn)?;<br/>        if !user_exists {<br/>            let uuid = format!("{}", uuid::Uuid::new_v4());<br/>            let new_user = models::NewUser {<br/>                id: &amp;uuid,<br/>                email: &amp;user_email,<br/>                password: &amp;user_password,<br/>            };<br/>            diesel::insert_into(schema::users::table).values(&amp;new_user).execute(&amp;conn)?;<br/>            Response::json(&amp;())<br/>        } else {<br/>            Response::text(format!("user {} exists", data.email))<br/>                .with_status_code(400)<br/>        }<br/>    }<br/>}</pre>
+<p>This handler is more complex and also demonstrates how to parse the parameters of a request. We need to parse an HTML form with two parameters—<kbd>email</kbd> and <kbd>password</kbd>. To do this, we used the <kbd>post_input!</kbd> macro, which expects a request instance and a form declaration with types. The form structure declaration looks like a simple struct declaration without a name, but with fields. We added two necessary fields and the <kbd>post_input!</kbd> macro parsed a request to fill an object with the corresponding fields.</p>
+<p>Since parsed parameters only fit types, we also had to add extra processing to it. The <kbd>email</kbd> field is a <kbd>String</kbd> type, and we used the <kbd>trim</kbd> method to remove unnecessary spacing and the <kbd>to_lowercase</kbd> method to convert it to lowercase. We used the <kbd>password</kbd> field without any changes and passed it as a parameter to the <kbd>pbkdf2_simple</kbd> method of the <kbd>rust-crypto</kbd> crate.</p>
+<div class="packt_infobox">PBKDF2 is an algorithm that adds computational cost to an encrypted value to prevent brute-force attacks. If your microservice is attacked and your password is stolen, it won't be easy for attackers to find a password value to access the service with someone else's account. If you use hashes, then the attacker will be able to find the matching password quickly.</div>
+<p>After we prepared parameters, we used them with object-relational mapping methods. First, to check whether the user with the provided email exists, we use a DSL generated by the <kbd>diesel</kbd> crate and, if the user doesn't exist, we generate a unique ID for the user using the <kbd>uuid</kbd> crate. The handler fills the <kbd>NewUser</kbd> instance with corresponding values and inserts it into a database. Upon success, it returns an empty JSON response. If the user already exists, the handler returns a response with a 400 status code (Bad Response) with a message to the effect that the user with the provided email already exists. Let's look at how to sign in with a stored user value.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Sign-in handler</h1>
+                </header>
+            
+            <article>
+                
+<p>The following code represents a handler for the <kbd>/signin</kbd> request path and parses a query with the data from the HTML form using <kbd>post_input!</kbd>:</p>
+<pre>(POST) (/signin) =&gt; {<br/>    let data = post_input!(request, {<br/>        email: String,<br/>        password: String,<br/>    })?;<br/>    let user_email = data.email;<br/>    let user_password = data.password;<br/>    {<br/>        use self::schema::users::dsl::*;<br/>        let conn = pool.get()?;<br/>        let user = users.filter(email.eq(user_email))<br/>            .first::&lt;models::User&gt;(&amp;conn)?;<br/>        let valid = pbkdf2_check(&amp;user_password, &amp;user.password)<br/>            .map_err(|err| format_err!("pass check error: {}", err))?;<br/>        if valid {<br/>            let user_id = UserId {<br/>                id: user.id,<br/>            };<br/>            Response::json(&amp;user_id)<br/>                .with_status_code(200)<br/>        } else {<br/>            Response::text("access denied")<br/>                .with_status_code(403)<br/>        }<br/>    }<br/>}</pre>
+<p>When the data has been extracted, we get a connection from a pool and use types generated by the <kbd>diesel</kbd> crate to send a query to the database. The code gets the first record from the users table with the provided email value. After that, we use the <kbd>pbkdf2_check</kbd> function to check that the password matches the stored one. If the user is valid, we return a JSON value with the user's ID. In the next chapters, we won't provide this service directly but will use it from another microservice. If the password doesn't match, we will return a response with a <kbd>403</kbd> status code.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Default handler</h1>
+                </header>
+            
+            <article>
+                
+<p>For cases where there is no path or method pair matched for the request, we can add a default handler. Our microservice returns a <kbd>404</kbd> error for all unknown requests. Add this to the <kbd>router!</kbd> macro call:</p>
+<pre>_ =&gt; {<br/>    Response::empty_404()<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Compiling and running</h1>
+                </header>
+            
+            <article>
+                
+<p>Prepare the database and run the server using the following commands:</p>
+<pre><strong>DATABASE_URL=test.db diesel migration run</strong><br/><strong>cargo run</strong></pre>
+<p>When the server is started, try to send sign-in and sign-up requests:</p>
+<pre><strong>curl -d "email=user@example.com&amp;password=password" -X POST http://localhost:8001/signup</strong><br/><strong>curl -d "email=user@example.com&amp;password=password" -X POST http://localhost:8001/signin</strong></pre>
+<p>The second request will return a response with a user identifier in JSON format that looks like this:</p>
+<pre>{"id":"08a023d6-be15-46c1-a6d6-56f0e2a04aae"}</pre>
+<p>Now we can try to implement another service with the <kbd>nickel</kbd> crate.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Nickel</h1>
+                </header>
+            
+            <article>
+                
+<p>Another framework  that helps us create a microservice very simply is <kbd>nickel</kbd>. In terms of the design of its handlers, it's very similar to <kbd>hyper</kbd>, but it's synchronous.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a microservice</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's create a service that sends emails to any address. This microservice will also build the email's body content from a template. To start with, we have to add the necessary dependencies to start a server instance.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Bootstrapping a server</h1>
+                </header>
+            
+            <article>
+                
+<p>To write a mailer microservice, we need two dependencies: the <kbd>nickel</kbd> crate and the <kbd>lettre</kbd> crate. The first is a framework inspired by the Express framework for Node.js. The second implements the SMTP protocol and lets us interact with a mail server such as Postfix. Add these dependencies to <kbd>Cargo.toml</kbd>:</p>
+<pre>failure = "0.1"<br/>lettre = { git = "https://github.com/lettre/lettre" }<br/>lettre_email = { git = "https://github.com/lettre/lettre" }<br/>nickel = "0.10"</pre>
+<p>For the <kbd>lettre</kbd> crate, we're using version 0.9.0 from GitHub, because it's not available on crates.io at the time of writing. We need to import some types from these crates:</p>
+<pre>use lettre::{ClientSecurity, SendableEmail, EmailAddress, Envelope, SmtpClient, SmtpTransport, Transport};<br/>use lettre::smtp::authentication::IntoCredentials;<br/>use nickel::{Nickel, HttpRouter, FormBody, Request, Response, MiddlewareResult};<br/>use nickel::status::StatusCode;<br/>use nickel::template_cache::{ReloadPolicy, TemplateCache};</pre>
+<p>Types from the <kbd>std</kbd> and <kbd>failure</kbd> crates are not presented in the preceding code. Now we can declare the <kbd>Data</kbd> struct that represents the shared state of the server:</p>
+<pre>struct Data {<br/>    sender: Mutex&lt;Sender&lt;SendableEmail&gt;&gt;,<br/>    cache: TemplateCache,<br/>}</pre>
+<p>This struct contains two fields—a <kbd>Sender</kbd> to send messages to the mailer worker that we will implement later, and <kbd>TemplateCache</kbd>, which lets us load and render templates from a local directory. We will use it directly for the body of emails only, because this microservice won't render HTML responses.</p>
+<p>The following code spawns a mail sender worker, creates an instance of the <kbd>Data</kbd> struct, creates a <kbd>Nickel</kbd> server, and binds it to the <kbd>127.0.0.1:8002</kbd> socket address:</p>
+<pre>fn main() {<br/>    let tx = spawn_sender();<br/><br/>    let data = Data {<br/>        sender: Mutex::new(tx),<br/>        cache: TemplateCache::with_policy(ReloadPolicy::Always),<br/>    };<br/><br/>    let mut server = Nickel::with_data(data);<br/>    server.get("/", middleware!("Mailer Microservice"));<br/>    server.post("/send", send);<br/>    server.listen("127.0.0.1:8002").unwrap();<br/>}</pre>
+<p>In the <kbd>cache</kbd> field of the <kbd>Data</kbd> struct, we set a <kbd>TemplateCache</kbd> instance that needs <kbd>ReloadPolicy</kbd> as an argument. The <kbd>ReloadPolicy</kbd> parameter controls how often templates will be reloaded. We use the <kbd>Always</kbd> variant, which means templates will be reloaded on every rendering. It lets an administrator update templates without interrupting the service.</p>
+<p>To start the server, we need to create a <kbd>Nickel</kbd> instance, which we initialize with the <kbd>Data</kbd> instance using the <kbd>with_data</kbd> method. Since <kbd>Data</kbd> will be shared across threads, we have to wrap <kbd>Sender</kbd> with <kbd>Mutex</kbd>. <kbd>TemplateCache</kbd> already implements <kbd>Sync</kbd> and <kbd>Send</kbd> and can be shared safely.</p>
+<p>We add two methods to the <kbd>Nickel</kbd> server instance using the <kbd>get</kbd> and <kbd>post</kbd> methods. We add two handlers. The first is for the root path, <kbd>/</kbd>, which uses the <kbd>middleware!</kbd> macro from the <kbd>nickel</kbd> crate to attach a handler that returns a text response. The second handles requests with the <kbd>/send</kbd> path and calls the <kbd>send</kbd> function, which is implemented beneath that. The last method call, <kbd>listen</kbd>, binds the server's socket to an address. Now we can move forward and implement a handler.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handling requests</h1>
+                </header>
+            
+            <article>
+                
+<p>Handlers of the Nickel framework take two parameters: a mutable reference to a <kbd>Request</kbd> struct and an owned <kbd>Response</kbd> instance that we can fill with data. Handlers have to return <kbd>MiddlewareResult</kbd>. Every input and output type has a type parameter of a shared data type.</p>
+<p>The <kbd>nickel</kbd> crate contains the <kbd>try_with!</kbd> macro. It needs to unwrap the <kbd>Result</kbd> type, but returns an HTTP error if the result equals <kbd>Err</kbd>. I created the <kbd>send_impl</kbd> method to use the usual <kbd>?</kbd> operator; <kbd>failure::Error</kbd> is the error type. I've found this to be more common than using a special macro such as <kbd>try_with!</kbd>:</p>
+<pre>fn send&lt;'mw&gt;(req: &amp;mut Request&lt;Data&gt;, res: Response&lt;'mw, Data&gt;) -&gt; MiddlewareResult&lt;'mw, Data&gt; {<br/>    try_with!(res, send_impl(req).map_err(|_| StatusCode::BadRequest));<br/>    res.send("true")<br/>}</pre>
+<p>We mapped the result to <kbd>BadRequest</kbd>. If the method returns <kbd>Ok</kbd>, we will send a JSON <kbd>true</kbd> value as a response. We don't need to use serialization for this simplest type of JSON value.</p>
+<p>The following code is the <kbd>send_impl</kbd> function implementation. Let's take it apart piece by piece:</p>
+<pre>fn send_impl(req: &amp;mut Request&lt;Data&gt;) -&gt; Result&lt;(), Error&gt; {<br/>    let (to, code) = {<br/>        let params = req.form_body().map_err(|_| format_err!(""))?;<br/>        let to = params.get("to").ok_or(format_err!("to field not set"))?.to_owned();<br/>        let code = params.get("code").ok_or(format_err!("code field not set"))?.to_owned();<br/>        (to, code)<br/>    };<br/>    let data = req.server_data();<br/>    let to = EmailAddress::new(to.to_owned())?;<br/>    let envelope = Envelope::new(None, vec![to])?;<br/>    let mut params: HashMap&lt;&amp;str, &amp;str&gt; = HashMap::new();<br/>    params.insert("code", &amp;code);<br/>    let mut body: Vec&lt;u8&gt; = Vec::new();<br/>    data.cache.render("templates/confirm.tpl", &amp;mut body, &amp;params)?;<br/>    let email = SendableEmail::new(envelope, "Confirm email".to_string(), Vec::new());<br/>    let sender = data.sender.lock().unwrap().clone();<br/>    sender.send(email).map_err(|_| format_err!("can't send email"))?;<br/>    Ok(())<br/>}</pre>
+<p class="mce-root"/>
+<p>The <kbd>Request</kbd> instance has the <kbd>from_body</kbd> method, which returns query parameters as a <kbd>Params</kbd> struct instance. The <kbd>get</kbd> method of <kbd>Params</kbd> returns a parameter called <kbd>Option</kbd>. If any of the parameters are not provided, we return an <kbd>Err</kbd> value, because the method requires all parameters to be set.</p>
+<p>To get access to a shared server's data, there is the <kbd>server_data</kbd> method of <kbd>Request</kbd>, which returns a <kbd>Data</kbd> instance, because we set this type as a type parameter of a <kbd>Request</kbd> and provided an instance of <kbd>Data</kbd> to the server.</p>
+<p>When we have got all the parameters, we can extract a <kbd>Sender</kbd> instance (used to send tasks to a worker) compose an email using a template from the cache, and send it to a worker. We create an <kbd>EmailAddress</kbd> instance from the <kbd>to</kbd> parameter of the query. Then, we fill <kbd>HashMap</kbd> with parameters for a template that contains the <kbd>code</kbd> parameter with a confirmation code value.</p>
+<p>The parameters have been prepared and we use the <kbd>cache</kbd> field of the <kbd>Data</kbd> instance to get access to <kbd>TemplateCache</kbd>. The <kbd>render</kbd> method of the cache loads a template and fills it with the provided parameters. The <kbd>render</kbd> method expects a buffer to fill the rendered content. After we get it, we create a <kbd>SendableEmail</kbd> instance, we clone a <kbd>Sender</kbd>, and use the cloned instance to send an email to a worker. Let's look at how an email worker is implemented.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Worker for sending emails</h1>
+                </header>
+            
+            <article>
+                
+<p>We use a separate thread that receives <kbd>SendableEmail</kbd> values and send them using the SMTP protocol. The following code creates an instance of <kbd>SmtpClient</kbd> and uses the <kbd>credentials</kbd> method to set the credentials for a connection:</p>
+<pre>fn spawn_sender() -&gt; Sender&lt;SendableEmail&gt; {<br/>    let (tx, rx) = channel();<br/>    let smtp = SmtpClient::new("localhost:2525", ClientSecurity::None)<br/>        .expect("can't start smtp client");<br/>    let credentials = ("admin@example.com", "password").into_credentials();<br/>    let client = smtp.credentials(credentials);<br/>    thread::spawn(move || {<br/>        let mut mailer = SmtpTransport::new(client);<br/>        for email in rx.iter() {<br/>            let result = mailer.send(email);<br/>            if let Err(err) = result {<br/>                println!("Can't send mail: {}", err);<br/>            }<br/>        }<br/>        mailer.close();<br/>    });<br/>    tx<br/>}</pre>
+<p><kbd>StmpClient</kbd> has moved to the new thread's context. It's wrapped with <kbd>SmtpTransport</kbd> and is used to send every received <kbd>SendableEmail</kbd> instance.</p>
+<p>The worker implements a non-transactional email sender. If you want a guarantee of email delivery, you need to implement more diverse interaction with a mail server, or you can even embed an email server, or use a third-party service. I recommend you use as many external services as possible; they will cost you, but you will save much more on maintenance. We implemented the mailer service for demonstration purposes only to show how to integrate multiple services together later.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Compiling and running</h1>
+                </header>
+            
+            <article>
+                
+<p>Before we start our microservice, we need a working SMTP server. Let's create one with Docker. The following command creates a container with a Postfix server instance:</p>
+<pre><strong>docker run -it --rm --name test-smtp -p 2525:25  \</strong><br/><strong>       -e SMTP_SERVER=smtp.example.com \</strong><br/><strong>       -e SMTP_USERNAME=admin@example.com \</strong><br/><strong>       -e SMTP_PASSWORD=password \</strong><br/><strong>       -e SERVER_HOSTNAME=smtp.example.com \</strong><br/><strong>       juanluisbaptiste/postfix</strong></pre>
+<p>The server exposes port <kbd><em>25</em></kbd> and we remap it to local port <kbd><em>2525</em></kbd>. The command sets all the necessary parameters using environment variables and now the mailer microservice is ready to compile and run. Do so using the <kbd>cargo run</kbd> command, and when it starts, check it using the following command:</p>
+<pre><strong>curl -d "to=email@example.com&amp;code=passcode" -X POST http://localhost:8002/send</strong></pre>
+<p>When you call this command, the microservice will build and send an email to the Postfix server. Actually, the email won't be delivered, because our mail server works as a relay only and many mail services will reject emails from this kind of mail server. If you want to receive emails, you need to configure the service accordingly.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Rocket</h1>
+                </header>
+            
+            <article>
+                
+<p>The next framework we will explore is Rocket. It's a simple-to-use framework that uses the nightly compiler's features to provide a tool that converts a set of Rust functions into a complete web service. The Rocket framework is different than the frameworks we've discussed before. It implements application configurations with environment variables and logging. The imperfection of this approach is that tuning and replacing parts is <span>a little complex</span>, but the positive side of this approach is that you spend next to no time coding the logging and configuration capabilities of your microservice.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a microservice</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's create a microservice that implements the commenting features of our application. It will take new comments and store them in a database. Also, a client can request any and all comments from the microservice. To start with, we need to bootstrap a new server with the Rocket framework.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Bootstrapping a server</h1>
+                </header>
+            
+            <article>
+                
+<p>To start a server instance, we have to prepare a database interaction. But it doesn't work directly as it did with the <kbd>diesel</kbd> crate. To connect a database, we have to add the crates we need and activate the necessary features of the <kbd>rocket_contrib</kbd> crate:</p>
+<pre>rocket = "0.4.0-rc.1"<br/>rocket_contrib = { version = "0.4.0-rc.1", features = ["diesel_sqlite_pool"] }<br/>serde = "1.0"<br/>serde_json = "1.0"<br/>serde_derive = "1.0"<br/>diesel = { version = "1.3", features = ["sqlite", "r2d2"] }<br/>diesel_migrations = "1.3"<br/>log = "0.4"</pre>
+<p>We used the <kbd>diesel_sqlite_pool</kbd> feature of the <kbd>rocket_contrib</kbd> crate and <kbd>sqlite</kbd> with <kbd>r2d2</kbd> from the <kbd>diesel</kbd> crate. The following lines of code import macros from all of the crates we need, add the <kbd>comment</kbd> module that we will create later, and import all necessary types:</p>
+<pre>#![feature(proc_macro_hygiene, decl_macro)]<br/><br/>#[macro_use]<br/>extern crate rocket;<br/>#[macro_use]<br/>extern crate diesel;<br/>#[macro_use]<br/>extern crate diesel_migrations;<br/>#[macro_use]<br/>extern crate log;<br/>#[macro_use]<br/>extern crate serde_derive;<br/>#[macro_use]<br/>extern crate rocket_contrib;<br/><br/>mod comment;<br/><br/>use rocket::fairing::AdHoc;<br/>use rocket::request::Form;<br/>use rocket_contrib::json::Json;<br/>use diesel::SqliteConnection;<br/>use comment::{Comment, NewComment};</pre>
+<p>You will also see that we used two features from the nightly release: <kbd>proc_macro_hygiene</kbd> and <kbd>decl_macro</kbd>. Without these features, you can't declare handlers.</p>
+<div class="packt_tip">The nightly Rust compiler contains a lot of cool but unstable features. Unstable doesn't mean you can't use them in production applications; it means the features may be changed or even removed. Their being unstable means that it's risky to use these, because you may need to rewrite your code later. The Rocket framework requires you to use some unstable features. You can find the complete list of unstable features in the Unstable Book: <a href="https://doc.rust-lang.org/stable/unstable-book/">https://doc.rust-lang.org/stable/unstable-book/</a>.</div>
+<p>Now we can connect to SQLite Database in the code. To do so, we create a wrapper for <kbd>SqliteConnection</kbd> and the user database attribute to assign a database connection is set in the <kbd>global.database.sqlite_database</kbd> parameters:</p>
+<pre>#[database("sqlite_database")]<br/>pub struct Db(SqliteConnection);</pre>
+<p>Another feature we used is migration embedding, which includes all of the SQL scripts from the <kbd>migrations</kbd> folder in a program:</p>
+<pre>embed_migrations!();</pre>
+<p>Now we can create and launch a server instance. We create a <kbd>Rocket</kbd> instance with the <kbd>ignite</kbd> method call, but before we launch it, we add two middleware called fairings in the Rocket framework. The first is created for the <kbd>Db</kbd> database wrapper and provides a database pool in requests. The second is the <kbd>AdHoc</kbd> fairing, which tries to run migrations for a database. Look at the following code:</p>
+<pre>fn main() {<br/>    rocket::ignite()<br/>        .attach(Db::fairing())<br/>        .attach(AdHoc::on_attach("Database Migrations", |rocket| {<br/>            let conn = Db::get_one(&amp;rocket).expect("no database connection");<br/>            match embedded_migrations::run(&amp;*conn) {<br/>                Ok(_) =&gt; Ok(rocket),<br/>                Err(err) =&gt; {<br/>                    error!("Failed to run database migrations: {:?}", err);<br/>                    Err(rocket)<br/>                },<br/>            }<br/>        }))<br/>        .mount("/", routes![list, add_new])<br/>        .launch();<br/>}</pre>
+<p>After that, we call the <kbd>mount</kbd> method to add routes to the root path. Routes are created by the <kbd>routes!</kbd> macro, where we include all of the routes defined later in this section. When the <kbd>Rocket</kbd> instance is built, we run it with the <kbd>launch</kbd> method call.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handling requests</h1>
+                </header>
+            
+            <article>
+                
+<p>Our microservice contains two handlers. The first handles the request for the <kbd>/list</kbd> path and returns all comments from a database:</p>
+<pre>#[get("/list")]<br/>fn list(conn: Db) -&gt; Json&lt;Vec&lt;Comment&gt;&gt; {<br/>    Json(Comment::all(&amp;conn))<br/>}</pre>
+<p>As you can see, a handler in the Rocket framework is a function that takes parameters that <kbd><strong>rocket</strong></kbd> automatically binds and expects a function to return a result. Our <kbd>list</kbd> function returns a list of comments in JSON format. We use the <kbd>Comment</kbd> model declared in the <kbd>comment</kbd> module to extract all comments using a connection from a pool provided as an argument of function.</p>
+<p>To declare a method and a path, we add the <kbd>get</kbd> attribute to a function declaration with the path we need. The get attribute allows you to call a handler with the <kbd>GET</kbd> method. Also, there is the <kbd>post</kbd> attribute, which we use for adding the comment handler:</p>
+<pre>#[post("/new_comment", data = "&lt;comment_form&gt;")]<br/>fn add_new(comment_form: Form&lt;NewComment&gt;, conn: Db) {<br/>    let comment = comment_form.into_inner();<br/>    Comment::insert(comment, &amp;conn);<br/>}</pre>
+<p>The preceding function expects two parameters: <kbd>Form</kbd>, which can be parsed to the <kbd>NewComment</kbd> object, and the <kbd>Db</kbd> instance. The <kbd>Form</kbd> wrapper holds the inner value of the provided type. To extract it, we call the <kbd>into_inner</kbd> method, which returns the <kbd>NewComment</kbd> struct in our case. If form doesn't provide a request, the method won't even be called. We set the <kbd>data</kbd> bind in the <kbd>post</kbd> attribute to set an argument that stores the provided data. At the end, we use the insert method of the <kbd>Comment</kbd> type to insert the <kbd>NewComment</kbd> struct into the database using the provided <kbd>Connection</kbd>.</p>
+<p>That's all! The microservice has been declared. It's pretty simple, isn't it? But the final thing we need is a schema declaration. Let's add that.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Database schema and models</h1>
+                </header>
+            
+            <article>
+                
+<p>Comments will be stored in a <kbd>comments</kbd> table that has three fields: the <kbd>id</kbd> of a comment, the <kbd>uid</kbd> of a user, and the <kbd>text</kbd> of a comment:</p>
+<pre>mod schema {<br/>    table! {<br/>        comments {<br/>            id -&gt; Nullable&lt;Integer&gt;,<br/>            uid -&gt; Text,<br/>            text -&gt; Text,<br/>        }<br/>    }<br/>}</pre>
+<p>The <kbd>Comment</kbd> struct has the following declaration:</p>
+<pre>#[table_name="comments"]<br/>#[derive(Serialize, Queryable, Insertable, Debug, Clone)]<br/>pub struct Comment {<br/>    pub id: Option&lt;i32&gt;,<br/>    pub uid: String,<br/>    pub text: String,<br/>}</pre>
+<p>We repeated the same field in the <kbd>Comment</kbd> struct and added the <kbd>NewComment</kbd> struct without <kbd>id</kbd>:</p>
+<pre>#[derive(FromForm)]<br/>pub struct NewComment {<br/>    pub uid: String,<br/>    pub text: String,<br/>}</pre>
+<p>And now for something new—we derive the <kbd>FormForm</kbd> type for the <kbd>NewComment</kbd> struct. It helps Rocket convert a query into a <kbd>Form</kbd> instance. The next <kbd>Comment</kbd> struct implementation adds two methods:</p>
+<pre>impl Comment {<br/>    pub fn all(conn: &amp;SqliteConnection) -&gt; Vec&lt;Comment&gt; {<br/>        all_comments.order(comments::id.desc()).load::&lt;Comment&gt;(conn).unwrap()<br/>    }<br/><br/>    pub fn insert(comment: NewComment, conn: &amp;SqliteConnection) -&gt; bool {<br/>        let t = Comment { id: None, uid: comment.uid, text: comment.text };<br/>        diesel::insert_into(comments::table).values(&amp;t).execute(conn).is_ok()<br/>    }<br/>}</pre>
+<p>We use the generated method with the <kbd>diesel</kbd> crate to interact with a database using a <kbd>Connection</kbd> instance. If you want to know more about the <kbd>diesel</kbd> crate, you can read more in <a href="78b65084-762a-4697-b142-f47b2120e4c6.xhtml">Chapter 8</a>, <em>Interaction to Database with Object-Relational Mapping</em>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Compiling and running</h1>
+                </header>
+            
+            <article>
+                
+<p>To run a microservice created with <kbd>Rocket</kbd>, you need to create a <kbd>Rocket.toml</kbd> configuration file. This allows you to configure a microservice before starting. Look at the following <kbd>Rocket.toml</kbd> contents:</p>
+<pre>[global]<br/>template_dir = "static"<br/>address = "127.0.0.1"<br/>port = 8003<br/><br/>[global.databases.sqlite_database]<br/>url = "test.db"</pre>
+<p>In this configuration, we declared global parameters such as: the <kbd>template_dir</kbd> directory with templates (if we use it), <kbd>address</kbd> and <kbd>port</kbd>, and a <kbd>url</kbd> for a database connection.</p>
+<p>You can override any parameter using environment variables. For example, if we need to set the <kbd>port</kbd> parameter to 80, we can run a microservice with a command:</p>
+<pre><strong>ROCKET_PORT=3721 cargo run</strong></pre>
+<p>The Rocket framework also supports three different types of environment: <kbd>development</kbd>, <kbd>staging</kbd>, and <kbd>production</kbd>. It allows you to have three configurations in one. Add an extra section in addition to the <kbd>global</kbd> section and run a microservice with the corresponding mode:</p>
+<pre><strong>ROCKET_ENV=staging cargo run</strong></pre>
+<p>To test a microservice, it's sufficient to start it with a simple cargo run without extra parameters. When the service starts, we can add a comment with the following command and print a list of all comments:</p>
+<pre><strong>curl -d 'uid=user_id&amp;text="this is a comment"' -X POST http://localhost:8003/new_comment</strong><br/><strong>curl http://localhost:8003/list</strong></pre>
+<p>This command prints all comments in JSON format. As you can see, we don't convert any structs directly to JSON. Rocket does this automatically.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Gotham</h1>
+                </header>
+            
+            <article>
+                
+<p>We have learned how to use three frameworks that simplify writing microservices: Rouille, Nickel, and Rocket. But all of these frameworks are synchronous. If you want to write an asynchronous microservice, you have three paths to choose from: using the <kbd>hyper</kbd> crate directly, as we did in <a href="621dffeb-7f43-4c11-9ac5-00a366dc8d9f.xhtml">Chapter 2</a>, <em>Developing a Microservice with Hyper Crate</em>; using the <kbd>gotham</kbd> crate, which uses <kbd>hyper</kbd> and <kbd>tokio</kbd> internally; or using the <kbd>actix-web</kbd> framework. In this section, we will learn how to use the <kbd>gotham</kbd> crate with the asynchronous <kbd>tokio-postgres</kbd> crate to work with PostgreSQL asynchronously. We will learn about the <kbd>actix-web</kbd> crate later, in <a href="5b7dd2c1-d623-4422-83a7-e05681230ee9.xhtml">Chapter 11</a>, <em>Involving Concurrency with Actors and Actix Crate</em>.</p>
+<p>As an example of using the <kbd>gotham</kbd> crate, we will create a microservice that takes the <kbd>User-Agent</kbd> <kbd>header</kbd> from a request and stores it in a PostgreSQL database. We will create a completely asynchronous application and also learn about the <kbd>tokio-postgres</kbd> crate.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a microservice</h1>
+                </header>
+            
+            <article>
+                
+<p>Create a new binary crate and add the following dependencies:</p>
+<pre>failure = "0.1"<br/>futures = "0.1"<br/>gotham = "0.3"<br/>gotham_derive = "0.3"<br/>hyper = "0.12"<br/>mime = "0.3"<br/>tokio = "0.1"<br/>tokio-postgres = { git = "https://github.com/sfackler/rust-postgres" }</pre>
+<p>As you can see, we added the <kbd>gotham</kbd> and <kbd>gotham_derive</kbd> crates. The first is a framework and the second helps us derive an implementation of the <kbd>StateData</kbd> trait for the shared state with the connection we need. The <kbd>gotham_derive</kbd> crate can also be used to derive the <kbd>NewMiddleware</kbd> trait for middleware, but we don't need special middleware for our example.</p>
+<p>We also added the <kbd>tokio-postgres</kbd> crate to dependencies. It contains an implementation of an asynchronous database connector for PostgreSQL.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Types of framework</h1>
+                </header>
+            
+            <article>
+                
+<p>We need a lot of types for the microservice. Let's talk a little about every type we import here:</p>
+<pre>use failure::{Error, format_err};<br/>use futures::{Future, Stream, future};<br/>use gotham::handler::HandlerFuture;<br/>use gotham::middleware::state::StateMiddleware;<br/>use gotham::pipeline::single::single_pipeline;<br/>use gotham::pipeline::single_middleware;<br/>use gotham::router::Router;<br/>use gotham::router::builder::{DefineSingleRoute, DrawRoutes, build_router};<br/>use gotham::state::{FromState, State};<br/>use gotham_derive::StateData;<br/>use hyper::Response;<br/>use hyper::header::{HeaderMap, USER_AGENT};<br/>use std::sync::{Arc, Mutex};<br/>use tokio::runtime::Runtime;<br/>use tokio_postgres::{Client, NoTls};</pre>
+<p>Most likely, you are familiar with types from <kbd>failure</kbd> and <kbd>futures</kbd> crates, because we used them a lot in the first part of the book. The most interesting are types of the <kbd>gotham</kbd> crate. There are modules that cover different parts of the framework; the <kbd>handler</kbd> module contains <kbd>HandlerFuture</kbd>, which is an alias to the <kbd>Future</kbd> trait with predefined types:</p>
+<pre>type HandlerFuture = dyn Future&lt;<br/>    Item = (State, Response&lt;Body&gt;),<br/>    Error = (State, HandlerError)<br/>    &gt; + Send;</pre>
+<p>We will use this <kbd>Future</kbd> alias in our asynchronous handlers. Also, this module contains the <kbd>IntoHandlerFuture</kbd> trait, which is implemented for a tuple that can be converted into a response.</p>
+<p>The <kbd>middleware</kbd> module contains <kbd>StateMiddleware</kbd>, which we will use to attach a state to our microservice.</p>
+<p>The <kbd>pipeline</kbd> module contains two functions we will use: <kbd>single_middleware</kbd> and <kbd>single_pipeline</kbd>. The first creates a <kbd>Pipeline</kbd> with a single provided middleware inside. The second function is necessary to create a pipeline chain from a single pipeline instance.</p>
+<p>The <kbd>router</kbd> module includes types we need to construct a routing table for our microservice. The <kbd>Router</kbd> struct is a type that contains routes and we have to instantiate and provide it for a server. We will do this with the <kbd>build_router</kbd> function call.</p>
+<p>For the <kbd>DrawRoutes</kbd> trait, we need to have methods of <kbd>Router</kbd> to add paths. It adds <kbd>get</kbd>, <kbd>get_or_head</kbd>, <kbd>put</kbd>, <kbd>post</kbd>, and other methods to register paths with corresponding HTTP methods. Calling those methods returns the <kbd>SingleRouteBuilder</kbd> instance and we need to use the <kbd>DefineSingleRoute</kbd> trait for the <kbd>to</kbd> method, which allows us to map a registered path to a <kbd>Handler</kbd>.</p>
+<p>The <kbd>state</kbd> module provides us with the capability to use generic <kbd>State</kbd> and convert it to a type we need by calling the <kbd>borrow_from</kbd> method of the <kbd>FromState</kbd> trait that implemented the types that implement the <kbd>StateData</kbd> trait.</p>
+<p>Generic <kbd>State</kbd> in <kbd>gotham</kbd> is a very flexible concept and provides the capability to get references to different parts of the environment. You can get a reference to your own state type or to the request data.</p>
+<p>We need some types from the <kbd>hyper</kbd> crate, because the crate is used in the  <kbd>gotham</kbd> implementation and in some types of <kbd>hyper</kbd>. We imported the <kbd>Response</kbd> type to create responses for a client and the <kbd>HeaderMap</kbd> to get access to request headers, because we need to get a value for the <kbd>USER_AGENT</kbd> <kbd>header</kbd>.</p>
+<p>Since we are developing an asynchronous application, we have to use the same reactor to execute all tasks in the same runtime. To do this, we will use a manually created <kbd>Runtime</kbd> from the <kbd>tokio</kbd> crate.</p>
+<p>To connect to a database, we need to import the <kbd>Client</kbd> type from the <kbd>tokio-postgres</kbd> crate and <kbd>NoTls</kbd> to configure a connection.</p>
+<p>Now we have imported all we need to write the <kbd>main</kbd> function of the application.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The main function</h1>
+                </header>
+            
+            <article>
+                
+<p>In the <kbd>main</kbd> function implementation, we create a <kbd>Runtime</kbd> instance, which we will use for database queries and to process HTTP requests. Look at the following code:</p>
+<pre>pub fn main() -&gt; Result&lt;(), Error&gt; {<br/>    let mut runtime = Runtime::new()?;<br/><br/>    let handshake = tokio_postgres::connect("postgres://postgres@localhost:5432", NoTls);<br/>    let (mut client, connection) = runtime.block_on(handshake)?;<br/>    runtime.spawn(connection.map_err(drop));<br/><br/>    // ...<br/>}</pre>
+<p>We create a <kbd>Runtime</kbd> instance. After that, we can create a new database connection by calling the connect function of the <kbd>tokio-postgres</kbd> crate. It returns a <kbd>Future</kbd> that we have to execute immediately. To run a <kbd>Future</kbd>, we will use the same <kbd>Runtime</kbd> we have already created. <kbd>Runtime</kbd> has the <kbd>block_on</kbd> method, which we have already discussed in <a href="ed541ef5-4701-4e70-aabf-14882b4cecb3.xhtml">Chapter 5,</a> <em><span>Understanding Asynchronous Operations with Futures Crate</span></em>. We call it with a <kbd>Connect</kbd> future and take a pair of results: <kbd>Client</kbd> and <kbd>Connection</kbd> instances.</p>
+<p><kbd>Client</kbd> is a type that provides a method to create statements. We will store this instance in <kbd>ConnState</kbd>, which we will declare later in this section.</p>
+<p>The <kbd>Connection</kbd> type is a task that performs actual interaction with a database. We have to spawn this task within <kbd>Runtime</kbd>. If you forget to do this, your database queries will be blocked and will never be sent to a database server.</p>
+<p>Now we can use the <kbd>Client</kbd> instance to execute SQL statements. The first statement we need creates a table to log <kbd>User-Agent</kbd> <kbd>header</kbd> values. The <kbd>Client</kbd> struct has the <kbd>batch_execute</kbd> method, which executes multiple statements from a string. We've used only one statement, but this call is useful if you want to create more than one table:</p>
+<pre>let execute = client.batch_execute(<br/>     "CREATE TABLE IF NOT EXISTS agents (<br/>         agent TEXT NOT NULL,<br/>         timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()<br/>     );");<br/> runtime.block_on(execute)?;</pre>
+<p><kbd>batch_execute</kbd> returns a <kbd>Future</kbd> instance and we have to execute it immediately to initialize the database before inserting a record into it. We use the <kbd>block_on</kbd> method of a <kbd>Runtime</kbd> instance to execute the statement.</p>
+<p>Before we finish implementing the main function, let's look at the <kbd>ConnState</kbd> struct implementation:</p>
+<pre>#[derive(Clone, StateData)]<br/>struct ConnState {<br/>    client: Arc&lt;Mutex&lt;Client&gt;&gt;,<br/>}</pre>
+<p>The struct is very simple and contains the atomic reference counter, <kbd>Arc</kbd>, to a database <kbd>Client</kbd> wrapped with a <kbd>Mutex</kbd>. We need only one method to simplify instance creation:</p>
+<pre>impl ConnState {<br/>    fn new(client: Client) -&gt; Self {<br/>        Self {<br/>            client: Arc::new(Mutex::new(client)),<br/>        }<br/>    }<br/>}</pre>
+<p>But you can also add a method to get the inner value of this state. It's useful if you want to declare a state type in a separate module. We will use the <kbd>client</kbd> field directly.</p>
+<p>Also, you might notice that <kbd>ConnState</kbd> derives <kbd>Clone</kbd> and <kbd>StateData</kbd> traits. The struct has to be cloneable, because a state is cloned by Gotham for every request. <kbd>StateData</kbd> allows us to attach an instance of this struct to <kbd>StateMiddleware</kbd>.</p>
+<p>Now we can finish the <kbd>main</kbd> function implementation:</p>
+<pre>let state = ConnState::new(client);<br/>let router = router(state);<br/> <br/>let addr = "127.0.0.1:7878";<br/>println!("Listening for requests at http://{}", addr);<br/>gotham::start_on_executor(addr, router, runtime.executor());<br/>runtime<br/>    .shutdown_on_idle()<br/>    .wait()<br/>    .map_err(|()| format_err!("can't wait for the runtime"))</pre>
+<p>We created the <kbd>ConnState</kbd> state with a <kbd>Client</kbd> value. We stored the result to the <kbd>state</kbd> variable and used it for the <kbd>router</kbd> function call, which we will declare later.</p>
+<p>After that, we can start a Gotham server by calling the <kbd>start_on_executor</kbd> function. It expects three arguments: the <em>address</em> that we set to the <kbd>"127.0.0.1:7878"</kbd> value, the <em>router</em> value that we created with the <kbd>router</kbd> function call, and the <kbd>TaskExecutor</kbd> instance that we extracted from our <kbd>Runtime</kbd>.</p>
+<p>Actually, the <kbd>start_on_executor</kbd> function call the spawns a task to the asynchronous reactor and we have to start our <kbd>Runtime</kbd> instance. We can do this with the <kbd>shutdown_on_idle</kbd> method call. It returns the <kbd>Shutdown</kbd> future that we run in the current thread using the <kbd>wait</kbd> method call. The <kbd>main</kbd> function ends when all tasks are complete.</p>
+<p>Let's look at the <kbd>router</kbd> function implementation that creates the <kbd>Router</kbd> instance for our application:</p>
+<pre>fn router(state: ConnState) -&gt; Router {<br/>    let middleware = StateMiddleware::new(state);<br/>    let pipeline = single_middleware(middleware);<br/>    let (chain, pipelines) = single_pipeline(pipeline);<br/>    build_router(chain, pipelines, |route| {<br/>        route.get("/").to(register_user_agent);<br/>    })<br/>}</pre>
+<p>In the function implementation, we create a <kbd>StateMiddleware</kbd> instance and provide <kbd>ConnState</kbd> to it. We add a middleware to a pipeline with the <kbd>single_middleware</kbd> call and create a chain by calling the <kbd>single_pipeline</kbd> function call. It returns a pair of a chain and a set of pipelines.</p>
+<p class="mce-root"/>
+<p>We pass these values to the <kbd>build_router</kbd> function, which returns the <kbd>Router</kbd> instance, but we can tune the resulting <kbd>Router</kbd> by calling methods of <kbd>RouterBuilder</kbd> in a closure that we pass as a third argument to the <kbd>build_router</kbd> function.</p>
+<p>We called the get method of <kbd>RouterBuilder</kbd> to set a handler implemented in the <kbd>register_user_agent</kbd> function to the root path, <kbd>/</kbd>. The Gotham framework supports scopes of routes that help you group handlers by a path prefix, like this:</p>
+<pre>route.scope("/checkout", |route| {<br/>    route.get("/view").to(checkout::view);<br/>    route.post("/item").to(checkout::item::create);<br/>    route.get("/item").to(checkout::item::read);<br/>    route.put("/item").to(checkout::item::update);<br/>    route.patch("/item").to(checkout::item::update);<br/>    route.delete("/item").to(checkout::item::delete);<br/>}</pre>
+<p>We now only have to implement a handler.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handler implementation</h1>
+                </header>
+            
+            <article>
+                
+<p>Every handler in Gotham has to return the <kbd>HandlerFuture</kbd> implementation of a tuple that can be converted to <kbd>HandlerFuture</kbd>. Also, a handler has to accept a <kbd>State</kbd> parameter:</p>
+<pre>fn register_user_agent(state: State) -&gt; Box&lt;HandlerFuture&gt; {<br/>    // Implementation<br/>}</pre>
+<p>If you remember, we need to extract the <kbd>User-Agent</kbd> <kbd>header</kbd> from a request. We can do this using a <kbd>State</kbd> value, because we can borrow <kbd>HeaderMap</kbd> from a <kbd>State</kbd> with the <kbd>borrow_from</kbd> method call. It returns a map that we can use to get the <kbd>User-Agent</kbd> HTTP <kbd>header</kbd> by using the <kbd>USER_AGENT</kbd> key imported from the <kbd>hyper</kbd> crate:</p>
+<pre>let user_agent = HeaderMap::borrow_from(&amp;state)<br/>    .get(USER_AGENT)<br/>    .map(|value| value.to_str().unwrap().to_string())<br/>    .unwrap_or_else(|| "&lt;undefined&gt;".into());</pre>
+<p><kbd>HeaderMap</kbd> returns <kbd>HeaderValue</kbd> as a value of <kbd>header</kbd> and we have to get the string value using the <kbd>to_str</kbd> method and convert it to an owned string with the <kbd>to_string</kbd> method. If the <kbd>header</kbd> was not provided, we use the <kbd>"&lt;undefined&gt;"</kbd> value.</p>
+<p class="mce-root"/>
+<p>Now we can borrow the <kbd>ConnState</kbd> value from <kbd>State</kbd> and add a new record to the database:</p>
+<pre>let conn = ConnState::borrow_from(&amp;state);<br/>let client_1 = conn.client.clone();<br/>let client_2 = conn.client.clone();<br/><br/>let res = future::ok(())<br/>    .and_then(move |_| {<br/>        let mut client = client_1.lock().unwrap();<br/>        client.prepare("INSERT INTO agents (agent) VALUES ($1)<br/>                        RETURNING agent")<br/>    })<br/>    .and_then(move |statement| {<br/>        let mut client = client_2.lock().unwrap();<br/>        client.query(&amp;statement, &amp;[&amp;user_agent]).collect().map(|rows| {<br/>            rows[0].get::&lt;_, String&gt;(0)<br/>        })<br/>    })<br/>    .then(|res| {<br/>        let mut builder = Response::builder();<br/>        let body = {<br/>            match res {<br/>                Ok(value) =&gt; {<br/>                    let value = format!("User-Agent: {}", value);<br/>                    builder.status(StatusCode::OK);<br/>                    value.into()<br/>                }<br/>                Err(err) =&gt; {<br/>                    builder.status(StatusCode::INTERNAL_SERVER_ERROR);<br/>                    err.to_string().into()<br/>                }<br/>            }<br/>        };<br/>        let response = builder.body(body).unwrap();<br/>        Ok((state, response))<br/>    });<br/>Box::new(res)</pre>
+<p class="mce-root">We need two references to a <kbd>Client</kbd>, because we have to resolve two futures: one is to prepare a query, the second to execute that query. To prepare a query, we will use the <kbd>prepare</kbd> method, which expects a string with a SQL statement. The method call returns a <kbd>Future</kbd> instance that returns a <kbd>Statement</kbd> instance, but we can't create that <kbd>Future</kbd> directly in the function's body, because we have to lock <kbd>Mutex</kbd> to get access to the <kbd>Client</kbd> and it will be blocked after the <kbd>Future</kbd> statement is resolved.</p>
+<p>To use <kbd>Client</kbd> twice, we need two references to the <kbd>Client</kbd> and use them in separate closures in a chain of futures. We start creating a futures chain with the <kbd>future::ok</kbd> method call, which returns a successful <kbd>Future</kbd>. We use the <kbd>and_then</kbd> method to add the first step: statement preparation. We lock the <kbd>Mutex</kbd> to get a mutable reference to a <kbd>Client</kbd>. Then, we call the <kbd>prepare</kbd> method to create a <kbd>Future </kbd>that returns a <kbd>Statement</kbd>.</p>
+<p>Beyond that, we can add the next step to the futures chain to fill a <kbd>Statement</kbd> with values. We lock the second <kbd>Mutex</kbd> clone to the call query method of a <kbd>Client</kbd>. The method expects a statement as a first parameter and a reference to an array with references to values. Since we know that the statement we're using inserts a new record and returns exactly one row, we extract a <kbd>String</kbd> value from the first position of the first row.</p>
+<p>At the end of the chain, we then use the method to convert a <kbd>Result</kbd> of the query execution into a <kbd>Response</kbd>. We create a new <kbd>Builder</kbd> for a <kbd>Response</kbd>. If the query returns a successful result, we return it to a client. If the query fails, we print an error with the <kbd>500</kbd> status code. The closure returns a tuple with a pair: the <kbd>State</kbd> and <kbd>Response</kbd> instances. Gotham uses this result to return the response to the client.</p>
+<p>The implementation is finished and now we can check it with a database instance.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Running and testing</h1>
+                </header>
+            
+            <article>
+                
+<p>To run this example, we need a PostgreSQL database instance. The simplest way to run it is to start a Docker container. We already did that in <a href="e09a1e76-ae09-41d4-99dc-9bad95fa3de7.xhtml">Chapter 7</a>, <em>Reliable Integration with Databases</em>, where we studied how to use Rust with databases. You can start a new container with a PostgreSQL database instance using the following command:</p>
+<pre><strong>docker run -it --rm --name test-pg -p 5432:5432 postgres</strong></pre>
+<p>When the container is started, run the example server we wrote in this section with the <kbd>cargo run</kbd> command. It prints after compilation and the server is ready to accept requests:</p>
+<pre>Listening for requests at http://127.0.0.1:7878</pre>
+<p>Now you can use the link provided to log visits from your browser. If it is configured successfully, you will see the response in the browser:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/bc7f0d17-5d2d-44d8-b313-1c01b32cc5c4.png" style="width:38.83em;height:15.42em;"/></p>
+<p>Gotham processed the request and returned a result to you. If you shut down the database, the server will return a response with a 500 error code and the <em>"connection closed"</em> string. The last thing we have to do is verify that the server added the records to the database, because we used an asynchronous approach to interact with the database and used the same <kbd>Runtime</kbd> to handle HTTP requests and perform SQL statements. Run the <kbd><strong>psql</strong></kbd> client for the <kbd>postgres://postgres@localhost:5432</kbd> connection and enter a query:</p>
+<pre>postgres=# SELECT * FROM agents;<br/>                                                      agent                                      | timestamp           <br/>-------------------------------------------+-------------------------------<br/> Mozilla/5.0 Gecko/20100101 Firefox/64.0   | 2019-01-10 19:43:59.064265+00<br/> Chrome/71.0.3578.98 Safari/537.36         | 2019-01-10 19:44:08.264106+00<br/>(2 rows)</pre>
+<p>We made two requests from two different browsers and now we have two records in the <kbd>agents</kbd> table.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>This chapter introduced you to comfortable frameworks that greatly simplify the writing of microservices: Rouille, Nickel, and Rocket.</p>
+<p>The Rouille framework is built around the <kbd>router!</kbd> macro and helps you to declare all the paths and methods you need in a simple way. The routing declaration looks similar to how we did it with Hyper, but much, much simpler.</p>
+<p>The Nickel framework is also pretty simple to use and is inspired by the Express framework of JavaScript.</p>
+<p>The Rocket framework is pretty cool and helps you to write a handler in an intuitive, clear style, but it needs the nightly version of the compiler.</p>
+<p>The Gotham framework is an asynchronous framework that's based on the <kbd>tokio</kbd> and <kbd>hyper</kbd> crates. It allows you to use all of the benefits of asynchronous applications: handling thousands of requests in parallel and utilizing all resources completely. We created an example that works with a database by sending queries to it using the asynchronous <kbd>tokio-postgres</kbd> crate.</p>
+<p>But there are many more frameworks and we can't cover all of them. Most frameworks are synchronous and are simple to use. If you want to write an asynchronous microservice, I recommend you use, in most cases, the <kbd>actix-web</kbd> crate, which we will explore in the next chapter.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

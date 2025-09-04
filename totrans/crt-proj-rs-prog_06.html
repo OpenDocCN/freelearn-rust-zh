@@ -1,0 +1,352 @@
+<html><head></head><body>
+        <section>
+
+                            <header class="header-title chapter-title">
+                    Creating a WebAssembly Game Using Quicksilver
+                </header>
+            
+            <article>
+                
+<p>In this chapter, you will see how Rust can be used to build a simple 2D game that can be compiled to run as a desktop app or as a web app. To run it as a web app, we will use the tools seen in the previous chapter to generate a <strong>WebAssembly</strong> (<strong>Wasm</strong>) application. As seen in that chapter, Wasm is a powerful new technology to run applications inside a browser. The appropriate tools translate Rust source code into a pseudo-machine language, named Wasm, that is loaded and run at top speed by browsers. </p>
+<p>The Quicksilver open source framework will be described and used in this chapter. It has the powerful feature of being able to generate the following applications from a single source code:</p>
+<ul>
+<li>A standalone <strong>graphical user interface</strong> (<strong>GUI</strong>) application, to be run in a desktop system such as Windows, macOS, or Linux</li>
+<li>A Wasm app that runs in a JavaScript-enabled web browser</li>
+</ul>
+<p>Quicksilver is oriented toward game programming, and so, as an example, we will develop an interactive graphical game using it: a slalom ski race, in which the player must drive a ski along a slope, entering the gates found along the ski run.</p>
+<p><span>The following topics will be covered in this chapter:</span></p>
+<ul>
+<li>Understanding the animation loop architecture</li>
+<li>Building an animated application (<kbd>ski</kbd>) using the Quicksilver framework</li>
+<li>Building a simple game using the <span>Quicksilver framework</span> (<kbd>silent_slalom</kbd>) </li>
+<li>Adding text and sound to a game (<kbd>assets_slalom</kbd>)</li>
+</ul>
+<h1 id="uuid-684a2762-5908-402f-b188-1d795e53d797">Technical requirements</h1>
+<p>You need to read the section on Wasm of the previous chapter, but no other knowledge is required. To run the projects in this chapter, it is enough to install a Wasm code generator.</p>
+<p><span>The complete source code for this chapter is in the <kbd>Chapter06</kbd> folder of the repository, found at <a href="https://github.com/PacktPublishing/Creative-Projects-for-Rust-Programmers">https://github.com/PacktPublishing/Creative-Projects-for-Rust-Programmers</a>.</span></p>
+<div class="packt_tip"><span>For macOS users, you may struggle to install <kbd>coreaudio-sys</kbd>. Upgrading the patch version of <kbd>coreaudio-sys</kbd> to 0.2.3 resolves this issue.</span></div>
+<h1 id="uuid-26d0f108-ba4e-4a34-8e4a-1e65b0d74aab">Project overview</h1>
+<p>In this chapter, we will see how to develop games to be run in modern web browsers, or in GUI windows.</p>
+<p>For that purpose, we will first describe the typical architecture of any interactive game that is based on the animation loop concept.</p>
+<p>Then, the <span>Quicksilver crate will be introduced. This is a framework that allows us to create a graphical application based on an animation loop. It allows us to generate a Wasm executable to be run in a web browser, or a native executable to be run in a desktop environment.</span></p>
+<p><span>The first project (<kbd>ski</kbd>) will be very simple: just a page containing one ski that can be rotated by pressing arrow keys. This project will show the general architecture of a game, how to draw on a page, and how to handle input.</span></p>
+<p>The second project (<kbd>silent_slalom</kbd>) will add features to the first project, creating a complete—albeit very simple—game. However, it will not use loadable resources such as images, fonts, or sounds.</p>
+<p>The third project (<kbd>assets_slalom</kbd>) will add features to the second project, loading a font and some recorded sounds, and showing how to display some text on the page, and how to play the loaded sound files.</p>
+<h1 id="uuid-1630bcd4-1585-4117-be53-7eb58f862140">Understanding the animation loop architecture</h1>
+<p>As described in the previous chapter, the typical architecture of interactive software is<strong> event-driven architecture</strong>. In such an architecture, the software just waits for input commands, and it responds to such commands when they arrive. Until any command arrives, the software does nothing.</p>
+<p>This architecture is efficient and responsive for many kinds of applications, but it is not optimal for some other kinds of applications, such as the following:</p>
+<ul>
+<li>Games with animations</li>
+<li>Continuous-simulation software</li>
+<li>Multimedia software</li>
+<li>Some kind of educational software </li>
+<li>Machine monitoring software (known as <strong>Human-Machine Interface</strong> (<strong>HMI</strong>) software)</li>
+<li>Systems monitoring software (known as <strong>Supervisory Control and Data Acquisition</strong> (<strong>SCADA</strong>) software)</li>
+</ul>
+<p>In such systems, the software has always something to do, as in the following examples:</p>
+<ul>
+<li>In games with animations, such as sports games or combat games or racing games<span>, both those against other human players and those against machine-simulated players,</span> even if the user does nothing, the opponents move, and time flows; so, the screen must be constantly updated to show what the opponents have done, and what the current time <span>is</span>.</li>
+<li>In continuous-simulation software, such as the graphical simulation of a car crash, the objects continue to move, even if you don't press any key; so, the screen must show the new positions of the objects at any time.</li>
+<li>In multimedia software, such as software that reproduces an audio or video clip, the data continues to flow, until you pause or stop the reproduction.</li>
+<li>There are many kinds of educational software, but some of them are just games with animations, continuous-simulation software, or multimedia software.</li>
+</ul>
+<ul>
+<li>Most mechanical machines, to let a user monitor them, display on a screen a constantly updated representation of their internal status, even when the user does not request an update.</li>
+<li>Many complex systems, such as industrial plants, office buildings, and—recently—also residential buildings, <span>display on a screen a constantly updated representation of the status of the devices</span> operating in the system.</li>
+</ul>
+<p>Actually, such kinds of software can even be developed using an event-driven architecture. It is enough to use a specific widget known as a <em>timer</em>. A timer is a software component that triggers an event at a fixed time interval.</p>
+<p>For example, in an electronic thermometer, there is a timer that executes a routine every minute. Such a routine reads the temperature from a sensor and displays the read value on the small screen.</p>
+<p>For some kinds of applications, the use of an event-driven environment, possibly including one or more timers, is appropriate. For example, event-driven programming is optimal for business applications such as an accounting application. In such applications, the user screen is split into several input widgets, such as labels, buttons, and textboxes. In such software, no application code is run until the user clicks the mouse or presses a key. Such input events trigger the action.</p>
+<p>However, event-driven programming is not quite appropriate for the kind of software that displays a scene that fills the window, with no widgets, and that always has some code running even if the user does not act on input devices.</p>
+<p>For such software, the so-called <strong>animation loop architecture</strong> is more appropriate. Its simplest structure is the following one:</p>
+<ol>
+<li><span>First, a draw </span><span>routine is defined as the one responsible for checking the status of the input devices and for redrawing the screen according to the status.</span></li>
+<li><span>Then, a</span> screen area is defined as a scene, and an update rate is defined for it.</li>
+<li>When the program starts, it first opens a window (or a subwindow) for the scene, and then invokes the draw routine at regular intervals, using an internal timer.</li>
+<li>Such periodic invocations of the draw routine are usually named <em>frames</em>, and the invocation rate is measured in <strong>Frames Per Second</strong> (<strong>FPS</strong>).</li>
+</ol>
+<p>The animation loop is sometimes named <em>game-loop</em>, as it is very often used for games. This is quite a misnomer, however, for the following two reasons:</p>
+<ul>
+<li>There are several other kinds of apps that should use an animation loop, such as continuous-simulation software, industrial machine monitoring software, or multimedia software. So, an animation loop is not only for games.</li>
+<li>There are some games that do not need an animation loop. For example, a chess game, a card game, or an adventure game, provided they are not based on animations, can be <span>implemented </span>perfectly well using an event-driven architecture. So, games are not necessarily based on animation loop.</li>
+</ul>
+<div class="packt_infobox">Notice that, while in an <span>event-driven architecture user input triggers the action, in</span> an animation loop architecture some action happens anyway, but if there is some user input such actions change accordingly.</div>
+<p>Consider a user who presses a keyboard key or a mouse button. In event-driven programming, that input operation sends exactly one command. Instead, in animation loop programming, the program, at any frame, checks whether any key is pressed. If the key is pressed for a very short time, it is possible that such an operation goes unnoticed as, when the keyboard is checked in one cycle, that key has not been pressed yet, and <span>when the keyboard is checked </span>in the next cycle, that key has been already released.</p>
+<p>This is quite unusual, though. Typical frame rates are from 20 to 60 FPS, and so the corresponding intervals are from 50 to 16.7 milliseconds. It is very difficult to press a key for a shorter time than that. Instead, it is quite typical that a key-press is much longer than a frame, and so the key is seen pressed in several successive frames.</p>
+<p>If you use such a key-press to insert text, you would want to allow the user to press a key to insert just one letter. <span>If you use a mouse click to press a button on the screen, you want that screen button to be pressed just once. To avoid such multiple hits, you must disable input for a short time the first time you get it. This is quite a nuisance, and so, for typical widget-based GUI apps, event-driven programming is more appropriate.</span></p>
+<p>Instead, animation loop programming is appropriate whenever a key-press must have an effect proportional to the duration of the press. <span>For example, if the arrow keys are used to move a character on the screen, and if you keep the right arrow pressed for 1 second, that character moves by a short distance; while if you keep pressed that key for 2 seconds, that character moves double that distance.</span> In general, a short press should change little, and a long press should change much.</p>
+<p>Regarding the output, when using event-driven programming, the effect of the operation is usually shown by changing some property of a widget (such as changing the text contents in a textbox, or loading a bitmap in a picture box). After that change, the widget is capable of refreshing itself whenever it needs, using its internal state. The event that triggers refreshing is the invalidation of the screen portion containing the widget. For example, if another window overlaps our window, and then it moves away, the discovered portion of our window is invalidated, and so it must be refreshed.</p>
+<p>This kind of graphic is named <strong>retained-mode</strong>, as there is an inner data structure that retains the information needed to refresh the screen when there is a need. Instead, when using animation loop programming, all the images must be regenerated at every frame, and so there is no need to wait for a specific event. This kind of graphic is named <strong>immediate-mode</strong>, as the drawing is performed immediately by application code when it must be seen.</p>
+<p>In the previous chapter, we saw that for event-driven applications, the <strong>Model-View-Controller</strong> (<strong>MVC</strong>) architectural pattern allows you to give a better structure to your code. Also, for animation loop applications, there is a kind of MVC architectural pattern.</p>
+<div class="packt_infobox">The <strong>Model</strong> is the data structure that contains all the variables that must persist between frames.<br/>
+The <strong>Controller</strong> is a function that has input but no output. It checks the status of input devices (which keyboard keys are pressed; which mouse keys are pressed; where the mouse is; which are the values of possible other input channels), reads the fields of the model, and updates them.<br/>
+The <strong>View</strong> is a function that has output but no input. It reads the fields of the model and draws on the screen according to the read values. </div>
+<p>Here is how the Quicksilver framework implements this pattern.</p>
+<p>The model is any data type, typically a struct, that must implement the <kbd>State</kbd> trait. Such a trait contains the following three functions:</p>
+<ul>
+<li><kbd>fn new() -&gt; Result&lt;Screen&gt;</kbd>: This is the only way to create the model. It will return a valid model (if it can) or an error.</li>
+<li><kbd>fn update(&amp;mut self, window: &amp;mut Window) -&gt; Result&lt;()&gt;</kbd>: This is the controller. It is invoked periodically by the framework. The <kbd>window</kbd> argument allows you to get some context information. In this framework, it is mutable, but in the proper implementation of the MVC pattern, it shouldn't be changed. Instead, <kbd>self</kbd>—that is, the model—is rightly mutable.</li>
+</ul>
+<ul>
+<li><kbd>fn draw(&amp;mut self, window: &amp;mut Window) -&gt; Result&lt;()&gt;</kbd>: This<span> is the view. It is invoked periodically by the framework. The </span><kbd>self</kbd><span> argument allows information to be obtained from the model. In this framework, it is mutable, but in the proper implementation of the MVC pattern, it shouldn't be changed. Instead, the </span><kbd>window</kbd><span> argument—that is, the output device—is rightly mutable.</span></li>
+</ul>
+<p>Now, let's examine the first project in the repository using the Quicksilver framework.</p>
+<h1 id="uuid-82f25e00-e67f-44f3-ac21-fa21506dd1f5">Implementing the ski project</h1>
+<p>The first project we are going to see is quite simple. It just shows a geometric shape on the screen and it allows the user to rotate it using the arrow keys:</p>
+<ol>
+<li>To run it as a desktop app, go into the <kbd>ski</kbd> folder, and type the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>cargo run --release</strong></pre>
+<p style="padding-left: 60px">The <kbd>--release</kbd> argument is recommended to optimize the generated code. For this simple example, it is pointless, but in more complex examples, the code generated without specifying it is so inefficient that the resulting app is <span>noticeably </span>slowed down.</p>
+<ol start="2">
+<li>After a few minutes of download and compilation, the following desktop window will appear:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/e55047b9-f621-40c7-bd6f-1a2dca7d0a3a.png" style="width:24.83em;height:19.33em;"/></p>
+<p style="padding-left: 60px">It is just an 800 x 600-pixels white rectangle, with a small purple rectangle and a <span>small indigo triangle on top of it</span>. They represent a monoski with its pointed end, in a snowy ski slope.</p>
+<ol start="3">
+<li>If you press the left or right arrow keys (<em>←</em>/<em>→</em>) on your keyboard, you will see the ski rotate around its tip.</li>
+<li>Now, close this window using the appropriate command in your windowing environment. Typically, you click on a cross icon in the caption bar or press the <em>Alt</em> + <em>F4</em> key combination.</li>
+<li>Now, let's see another way to launch this application. Type the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>cargo web start --release</strong></pre>
+<p>We saw in the previous chapter that this command helps us to create a Wasm app and to launch a command-line program that serves it through the HTTP protocol.</p>
+<p>At the end of the compilation, a server program starts and suggests the address where you can access the app. On your preferred browser, you can type this address: <kbd>localhost:8000</kbd>. Only modern 64-bit browsers support WebGL2. If this is not true in your case, then nothing happens; instead, if your browser supports this standard, you will see in the browser <span>just t</span>he same graphics that before were shown in the desktop window.</p>
+<p>This is possible as the Quicksilver framework, used by our app, has multi-target capability. When compiled for the Wasm target, it generates a web browser application; and when compiled for a <strong>central processing unit</strong> (<strong>CPU</strong>) target, it generates a desktop application. </p>
+<p>This compile-time portability is very useful for debugging purposes. Actually, it is not easy to debug a Wasm application; but if you first debug the desktop application, a few bugs will remain in the Wasm version.</p>
+<h2 id="uuid-9bbbc146-b75b-4a62-85f2-c89b767f533c">Understanding the code behind this</h2>
+<p>Now, let's see the code used to create such a project.</p>
+<div class="packt_infobox">Before starting the project, a note about this is required. All the projects in this chapter show a monoski on a ski slope. There is a convention about the coordinates of the ski and other objects: the horizontal coordinate, usually named <em>X</em>, is actually named <em>across</em>; and the vertical coordinate, usually named <em>Y</em>, is actually named <em>along</em>.<br/>
+So, the <em>across speed</em> is the speed of a movement from left to right (or vice versa, if negative), and the <em>along speed</em> is the speed of a movement from bottom to top (or vice versa, if negative).</div>
+<p>First of all, the <kbd>Cargo.toml</kbd> file must contain the <kbd>quicksilver = "0.3"</kbd> <span>dependency. </span>Then, there is just a <kbd>main.rs</kbd> source file. It contains some constants, as shown in the following code snippet:</p>
+<pre>const SCREEN_WIDTH: f32 = 800.;<br/>const SCREEN_HEIGHT: f32 = 600.;<br/>const SKI_WIDTH: f32 = 10.;<br/>const SKI_LENGTH: f32 = 50.;<br/>const SKI_TIP_LEN: f32 = 20.;<br/>const STEERING_SPEED: f32 = 3.5;<br/>const MAX_ANGLE: f32 = 75.;</pre>
+<p>Let's look at what the terms suggest in this code, as follows:</p>
+<ul>
+<li><kbd>SCREEN_WIDTH</kbd> and <kbd>SCREEN_HEIGHT</kbd> are the size in pixels of the client area in the desktop window or the size of the canvas in the web page.</li>
+<li><kbd>SKI_WIDTH</kbd>, <kbd>SKI_LENGTH</kbd>, and <kbd>SKI_TIP_LEN</kbd> are the sizes of the ski.</li>
+<li><kbd>STEERING_SPEED</kbd> is the number of degrees by which the ski is rotated at every step. <span>Steps have a frequency (that is, 25 per second), and so this constant represents an</span> angular speed (3.5 degrees per step * 25 steps per second = 87.5 degrees per second).</li>
+<li><kbd>MAX_ANGLE</kbd> is a limit to rotational capability, both to the right and to the left, to ensure the ski is always downhill.</li>
+</ul>
+<p>Then, there is the model of our MVC architecture, as shown in the following code snippet:</p>
+<pre>struct Screen {<br/>    ski_across_offset: f32,<br/>    direction: f32,<br/>}</pre>
+<p>The meaning of these fields is as follows:</p>
+<ul>
+<li><kbd>ski_across_offset</kbd> represents the across displacement of the tip of the ski with respect to the center of the screen. Actually, in this project, it is always zero, as the tip of the ski never moves. It is a variable just because in future projects, it will change.</li>
+<li><kbd>direction</kbd> is the angle in degrees of the ski with respect to the downhill direction. It is initially zero but can vary from -75 to +75. It is the only portion of our model that can change.</li>
+</ul>
+<p>The constructor of the model is quite simple, as illustrated in the following code snippet:</p>
+<pre>Ok(Screen {<br/>    ski_across_offset: 0.,<br/>    direction: 0.,<br/>})</pre>
+<p>It simply initializes <span>to zero</span> both fields of the model. The body of the controller (the <kbd>update</kbd> function) is created with this code:</p>
+<pre>if window.keyboard()[Key::Right].is_down() {<br/>    self.steer(1.);<br/>}<br/>if window.keyboard()[Key::Left].is_down() {<br/>    self.steer(-1.);<br/>}<br/>Ok(())</pre>
+<p>The purpose of this routine is to steer the ski a bit to the right, if the right-arrow key is pressed, and a bit to the left if the left-arrow key is pressed.</p>
+<p>The <kbd>window.keyboard()</kbd> expression gets a reference to the keyboard associated with the current window, and then the<span> </span><kbd>[Key::Right]</kbd><span> expression </span>gets a reference to the right-arrow key of such a keyboard. The <kbd>is_down</kbd> function returns <kbd>true</kbd> if the specified key is in a pressed state in this instant.</p>
+<p>The steering is performed by the <kbd>steer</kbd> method, whose body consists of the following code:</p>
+<pre>self.direction += STEERING_SPEED * side;<br/>if self.direction &gt; MAX_ANGLE {<br/>    self.direction = MAX_ANGLE;<br/>}<br/>else if self.direction &lt; -MAX_ANGLE {<br/>    self.direction = -MAX_ANGLE;<br/>}</pre>
+<p>First, the value of the <kbd>direction</kbd> field of the model is incremented or decremented by the <kbd>STEERING_SPEED</kbd> constant. Then, it is ensured that the new value does not exceed the designed limits.</p>
+<p>The view is more complex. It must redraw all the scene even if it has not changed at all. The first drawing operation is always to draw the white background, as follows:</p>
+<pre>window.clear(Color::WHITE)?;</pre>
+<p>Then, the rectangle is drawn, like this:</p>
+<pre>window.draw_ex(&amp;Rectangle::new((<br/>    SCREEN_WIDTH / 2. + self.ski_across_offset - SKI_WIDTH / 2.,<br/>    SCREEN_HEIGHT * 15. / 16. - SKI_LENGTH / 2.),<br/>    (SKI_WIDTH, SKI_LENGTH)),<br/>    Background::Col(Color::PURPLE),<br/>    Transform::translate(Vector::new(0, - SKI_LENGTH / 2. - SKI_TIP_LEN)) *<br/>        Transform::rotate(self.direction) *<br/>        Transform::translate(Vector::new(0, SKI_LENGTH / 2. <br/>         + SKI_TIP_LEN)),<br/>    0);</pre>
+<p>The <kbd>draw_ex</kbd> method is used to draw shapes. Its first argument is a reference to the shape to draw; in this case, it is <kbd>Rectangle</kbd>. Its second argument, in the fifth line, is the background color of the shape; in this case, it is <kbd>PURPLE</kbd>. Its third argument is a plane <span>affine </span>transformation matrix; in this case, it is a translation, followed by a rotation, followed by a translation. And its fourth argument, in the last line, is a <em>Z</em> elevation; its purpose is to give an overlapping order to shapes. Let's examine these arguments in more detail.</p>
+<p>The <kbd>Rectangle::new</kbd> method receives two arguments. The first argument is a tuple made up of the <em>x</em> and <em>y</em> coordinates on the top-left vertex of the rectangle. The second argument is a tuple made up of the width and height of the rectangle. The origin of the coordinate system is the top left of the window, with the <em>x</em> coordinate that grows toward the right, and the <em>y</em> coordinate that grows downward.</p>
+<p>In those formulas, the only variable is <kbd>self.ski_across_offset</kbd>, which represents the displacement of the ski to the right of the center of the window when positive, and to the left when negative. In this project, it is always zero, and so the ski's <em>x</em> coordinate is always at the center of the window. The vertical position is such that the center of the rectangle is near the bottom of the window, at 15/16 of the height of the window.</p>
+<p>Rectangles are always created with their sides parallel to the sides of the window. To have a rotated angle, a geometric transformation must be applied. There are several elementary transformations that can be combined by multiplying them. To draw a shape in a translated position, a transformation is created using the <kbd>Transform::translate</kbd> method, which receives a <kbd>Vector</kbd> (not a <kbd>Vec</kbd>!) specifying the displacements along <em>x</em> and <em>y</em>. <span>To draw a shape in a rotated position, a transformation is created using the </span><kbd>Transform::rotate</kbd><span> method, which receives an angle in degrees </span><span>specifying the angle by which to rotate the shape.</span></p>
+<p><span>The rotation is performed around the centroid of the shape, but we want to rotate around the tip of the ski. So, we need first to translate the rectangle so that its centroid is where the tip of the ski was, then rotate it around its centroid, and then translate it back to the original centroid. By multiplying the three transformations, a rotation around the tip of the ski is obtained. In the case of a rectangle, the centroid is just the center of the rectangle.</span></p>
+<p>The last argument of<span> </span><kbd>draw_ex</kbd><span> is a <em>z</em> coordinate. This is a 2D framework, and so no <em>z</em> coordinate would be required, but this coordinate allows us to specify the order of the appearance of the shapes. Actually, if two shapes overlap, and they have the same <em>z</em> coordinate, WebGL (used by Quicksilver) does not necessarily draw them in the order in which you have drawn them. The actual order is undefined. To specify that a shape must appear above another, it must have a larger <em>z</em> coordinate. It doesn't matter how much larger.</span></p>
+<p>To draw the triangular-pointed end on top of the rectangle, a similar statement is executed. The <kbd>Triangle::new</kbd> method creates a <kbd>Triangle</kbd> shape, using three <kbd>Vector</kbd> variables as its vertices. To rotate it around its tip, we need to know the centroid of the triangle. With a bit of geometry, you can calculate that the centroid of that triangle is the point above the center of the base of the triangle by a distance equal to one-third of the height of the triangle.</p>
+<p>By the end of the program, there is a <kbd>main</kbd> function that must initialize the app. The body of the function contains this:</p>
+<pre>run::&lt;Screen&gt;("Ski",<br/>    Vector::new(SCREEN_WIDTH, SCREEN_HEIGHT), Settings {<br/>        draw_rate: 40.,<br/>        update_rate: 40.,<br/>        ..Settings::default()<br/>    }<br/>);</pre>
+<p>This statement just runs the model, with some arguments. The first argument is the caption of the title bar, the second one is the size of the window, and the third one is a structure containing some optional settings.</p>
+<p>The following two settings are specified here:</p>
+<ul>
+<li><kbd>draw_rate</kbd>: This is the interval in milliseconds between each successive invocation of the <kbd>draw</kbd> function</li>
+<li><kbd>update_rate</kbd><span>: This is the interval in milliseconds between each successive invocation of the <kbd>update</kbd> function </span></li>
+</ul>
+<p>This project was quite trivial, but it showed many concepts that will be used in the other projects of this chapter.</p>
+<h1 id="uuid-867aa38d-41e6-41b6-9f48-a17aeb1f985e" class="mce-root">Implementing the silent_slalom project</h1>
+<p>The previous project just showed a ski on a ski slope. In this section, we will show a possibly amusing game using a ski—a slalom. For simplicity, no text is displayed and no sound effects are played in this project. Its source code is contained in the <kbd>silent_slalom</kbd> folder.</p>
+<p>After compiling and running its desktop version, a window similar to this will appear to you:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/542d2008-a2b5-436f-ab73-9dc8f2cb70ee.png" style="width:35.83em;height:27.83em;"/></p>
+<p>In addition to the ski, some blue dots are drawn. There are four dots in the middle of the window, and two half dots that come out at the top border. Each pair of blue dots is the poles of a slalom gate. The purpose of the game is to make the ski pass through each of the gates. Now, you can see just three gates, but the course contains seven intermediate gates, plus the finish gate. The remaining five gates will appear when the ski proceeds along the slope.</p>
+<p>The actual position of the poles will be different in your case because their horizontal (across) position is generated at random. If you stop and relaunch the program, you will see other poles' positions. <span>The size of the gates—that is, the distance between the two poles of any gate—is kept constant, though; and also, the distance, along the <em>y</em> coordinate, between any gate and the gate following it is </span>constant.</p>
+<p>To start the game, press the spacebar. The blue dots will begin to move slowly downward, giving the impression of the ski going forward. By rotating the ski, you change its direction, and you should try to ensure that its tip passes between the poles of every gate.</p>
+<p>The finish gate is distinguished by having green poles instead of blue. If you pass through it, the game finishes, showing a window similar to this:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/bdb950e4-4056-4d02-8d02-9c6bfc547c00.png" style="width:38.75em;height:29.92em;"/></p>
+<p>You can restart the game by pressing the <em>R</em> key. If you fail to pass a gate correctly, the game stops and ends. You can restart it by pressing the <em>R</em> key.</p>
+<p>Of course, this project has something in common with the previous project. Let's see the differences within it.</p>
+<p>The first difference is the insertion into the <kbd>Cargo.toml</kbd> file of the <kbd>rand = "0.6"</kbd> dependency. The gates are positioned at a random <em>x</em> position, and so the random number generator contained in this crate is required.</p>
+<p>Then, the following constants are defined:</p>
+<pre>const N_GATES_IN_SCREEN: usize = 3;<br/>const GATE_POLE_RADIUS: f32 = 4.;<br/>const GATE_WIDTH: f32 = 150.;<br/>const SKI_MARGIN: f32 = 12.;<br/>const ALONG_ACCELERATION: f32 = 0.06;<br/>const DRAG_FACTOR: f32 = 0.02;<br/>const TOTAL_N_GATES: usize = 8;</pre>
+<p>Let's have a look at these constants in detail, as follows:</p>
+<ul>
+<li><kbd>N_GATES_IN_SCREEN</kbd> is the number of gates that will appear in the window at once. The along separation between successive gates is the window height divided by this number. Therefore, this number must be positive.</li>
+</ul>
+<ul>
+<li><kbd>GATE_POLE_RADIUS</kbd> is the radius in pixels of each circle drawn to represent a pole.</li>
+</ul>
+<ul>
+<li><kbd>GATE_WIDTH</kbd> is the distance in pixels between the centers of the poles in each gate. This number must be positive.</li>
+</ul>
+<ul>
+<li><kbd>SKI_MARGIN</kbd> is the distance in pixels between the leftmost position that can be reached by the tip of the ski to the left border of the window, and <span>between the rightmost position that can be reached by the tip of the ski to the right border of the window.</span></li>
+</ul>
+<ul>
+<li><kbd>ALONG_ACCELERATION</kbd> is the acceleration, in pixels per frame for each frame, for the movement of the ski, due to the slope, when the ski is in downhill position—that is, vertical. For example, for an acceleration value of 0.06 and an update rate of 40 milliseconds, or 25 frames per second, <span>in a second </span>the speed would go from zero to <em>0.06 * 25 = 1.5</em> pixels per frame—that is, a speed of <em>1.5 * 25 = 37.5</em> pixels per second. The actual acceleration will be lower if the ski has an inclination with respect to the slope.</li>
+</ul>
+<ul>
+<li><kbd>DRAG_FACTOR</kbd> represents the deceleration caused by air friction. The actual deceleration is this factor multiplied by the module of the speed.</li>
+</ul>
+<ul>
+<li><kbd>TOTAL_N_GATES</kbd> is the number of gates, including the finish gate.</li>
+</ul>
+<p>While in the previous project you could do just one thing all the time—that is, rotate the ski—in this project, you can do different things according to the current situation. So, there is a need to distinguish among four possible states, as follows:</p>
+<pre>enum Mode {<br/>    Ready,<br/>    Running,<br/>    Finished,<br/>    Failed,<br/>}</pre>
+<p>The initial mode is <kbd>Ready</kbd>, when you are eager to start the run, at the top of the slope. After the <kbd>start</kbd> command, you are in <kbd>Running</kbd> <span>mode</span>, until you complete the run correctly, ending in <kbd>Finished</kbd> <span>mode, or get out of a gate, ending in <kbd>Failed</kbd> mode.</span></p>
+<p>Some fields have been added to the model of the application, to track some other state information, as illustrated in the following code block:</p>
+<pre>gates: Vec&lt;(f32, f32)&gt;,<br/>forward_speed: f32,<br/>gates_along_offset: f32,<br/>mode: Mode,<br/>entered_gate: bool,<br/>disappeared_gates: usize,</pre>
+<p>The meaning of these fields is described as follows:</p>
+<ul>
+<li><kbd>gates</kbd> is a list of the along positions of the poles. For them, the origin is the center of the window.</li>
+<li><kbd>forward_speed</kbd> is the module of the velocity in pixels per frame.</li>
+<li><kbd>gates_along_offset</kbd> is the <em>Y</em> translation of all the shown gates toward the bottom, which represents the advancement of the ski. It is a number between zero and the along spacing between successive gates.</li>
+<li><kbd>mode</kbd> is the state described previously.</li>
+</ul>
+<ul>
+<li><kbd>entered_gate</kbd> indicates whether the tip of the ski has already entered the lowest gate shown in the window. This flag is initialized as <kbd>false</kbd>; it becomes <kbd>true</kbd> when the ski passes a gate correctly and becomes <kbd>false</kbd> again when that gate exits the window from the bottom because now it refers to the next gate.</li>
+<li><kbd>disappeared_gates</kbd> counts the gates exited from the window. Of course, it is initialized at zero and is incremented every time a gate exits the window.</li>
+</ul>
+<p>A function added to the <kbd>Screen</kbd> type generates a random gate, as illustrated in the following code block:</p>
+<pre>fn get_random_gate(gate_is_at_right: bool) -&gt; (f32, f32) {<br/>    let mut rng = thread_rng();<br/>    let pole_pos = rng.gen_range(-GATE_WIDTH / 2., SCREEN_WIDTH / 2. -<br/>        GATE_WIDTH * 1.5);<br/>    if gate_is_at_right {<br/>        (pole_pos, pole_pos + GATE_WIDTH)<br/>    } else {<br/>        (-pole_pos - GATE_WIDTH, -pole_pos)<br/>    }<br/>}</pre>
+<p>This function receives the <kbd>gate_is_at_right</kbd> flag, which indicates in which part of the slope the generated gate will be. If such an argument is <kbd>true</kbd>, the new gate will be at the right of the center of the window; otherwise, it will be at the left of the center of the window. This function creates a random number generator and uses it to generate a reasonable position for a pole. The other pole position is computed using the argument of the function and the fixed gate size (<kbd>GATE_WIDTH</kbd>).</p>
+<p>Another utility function is <kbd>deg_to_rad</kbd>, which converts angles from degrees to radians. It is needed because Quicksilver uses degrees, but trigonometric functions use radians. The <kbd>new</kbd> method creates all the gates, alternating them at right and at left, and initializes the model. The <kbd>update</kbd> function does a lot more than the function with that name seen in the previous project. Let's look at the following code snippet:</p>
+<pre>match self.mode {<br/>    Mode::Ready =&gt; {<br/>        if window.keyboard()[Key::Space].is_down() {<br/>            self.mode = Mode::Running;<br/>        }<br/>    }</pre>
+<p>According to the current mode, different operations are performed. If the mode is <kbd>Ready</kbd>, it checks whether the spacebar key is pressed, and, in such a case, it sets the current mode to <kbd>Running</kbd>. This means that it starts the race. If the mode is <kbd>Running</kbd>, the following code is executed:</p>
+<pre>Mode::Running =&gt; {<br/>    let angle = deg_to_rad(self.direction);<br/>    self.forward_speed +=<br/>        ALONG_ACCELERATION * angle.cos() - DRAG_FACTOR <br/>         * self.forward_speed;<br/>    let along_speed = self.forward_speed * angle.cos();<br/>    self.ski_across_offset += self.forward_speed * angle.sin();</pre>
+<p>In this mode, a lot of things are computed. First, the ski direction is converted from degrees to radians.</p>
+<p>Then, the forward speed is incremented because of the slope, and it is decremented because of the friction of the air, which is proportional to the speed itself. The net effect is that the speed will tend to a maximum value. In addition, the more the ski direction is rotated with respect to the slope, the slower it is. This effect is implemented using the <kbd>cos</kbd> cosine <span>trigonometric function.</span></p>
+<p>Then, the forward speed is split into its components: the along speed, which causes the downward movement of the poles, and the across speed, which increments the across ski offset. They are computed by applying, respectively, the <kbd>cos</kbd> and <kbd>sin</kbd> trigonometric functions to the forward speed, as shown in the following code snippet:</p>
+<pre>if self.ski_across_offset &lt; -SCREEN_WIDTH / 2. + SKI_MARGIN {<br/>    self.ski_across_offset = -SCREEN_WIDTH / 2. + SKI_MARGIN;<br/>}<br/>if self.ski_across_offset &gt; SCREEN_WIDTH / 2. - SKI_MARGIN {<br/>    self.ski_across_offset = SCREEN_WIDTH / 2. - SKI_MARGIN;<br/>}</pre>
+<p>Then, it checks that the ski position is not too far to the left or to the right, and, if it is so, it is kept within the defined margins, as illustrated in the following code snippet:</p>
+<pre>self.gates_along_offset += along_speed;<br/>let max_gates_along_offset = SCREEN_HEIGHT / N_GATES_IN_SCREEN as f32;<br/>if self.gates_along_offset &gt; max_gates_along_offset {<br/>    self.gates_along_offset -= max_gates_along_offset;<br/>    self.disappeared_gates += 1;<br/>}</pre>
+<p>The new along speed is used to move down the gates, by incrementing the <kbd>gates_along_offset</kbd> field. If its new value is larger than the distance between successive gates, one gate is dropped out of the bottom of the window, and all the gates are moved backward by one step and the number of disappeared gates is incremented, as illustrated in the following code snippet:</p>
+<pre>let ski_tip_along = SCREEN_HEIGHT * 15. / 16. - SKI_LENGTH / 2. - SKI_TIP_LEN;<br/>let ski_tip_across = SCREEN_WIDTH / 2. + self.ski_across_offset;<br/>let n_next_gate = self.disappeared_gates;<br/>let next_gate = &amp;self.gates[n_next_gate];<br/>let left_pole_offset = SCREEN_WIDTH / 2. + next_gate.0 + GATE_POLE_RADIUS;<br/>let right_pole_offset = SCREEN_WIDTH / 2. + next_gate.1 - GATE_POLE_RADIUS;<br/>let next_gate_along = self.gates_along_offset + SCREEN_HEIGHT<br/>    - SCREEN_HEIGHT / N_GATES_IN_SCREEN as f32;</pre>
+<p>Then, the two coordinates of the tip of the ski are computed: <kbd>ski_tip_along</kbd> is the constant <em>y</em> coordinate, from the top of the window, and <kbd>ski_tip_across</kbd> is the variable <em>x</em> coordinate, from the center of the window.</p>
+<p>Then, the positions inside the next gate are computed: <kbd>left_pole_offset</kbd> is the <em>x</em> position of the right side of the left pole, and <kbd>right_pole_offset</kbd> is the <em>x</em> position of the left side of the right pole. These coordinates are computed from the left border of the window. And then, <kbd>next_gate_along</kbd> is the <em>y</em> position of such points, as illustrated in the following code snippet:</p>
+<pre>if ski_tip_along &lt;= next_gate_along {<br/>    if !self.entered_gate {<br/>        if ski_tip_across &lt; left_pole_offset || <br/>         ski_tip_across &gt; right_pole_offset {<br/>            self.mode = Mode::Failed;<br/>        } else if self.disappeared_gates == TOTAL_N_GATES - 1 {<br/>            self.mode = Mode::Finished;<br/>        }<br/>        self.entered_gate = true;<br/>    }<br/>} else {<br/>    self.entered_gate = false;<br/>}</pre>
+<p>If the <em>y</em> coordinate of <span>the tip of the ski (</span><span><kbd>ski_tip_along</kbd>) </span>is less than that of the gate (<kbd>next_gate_along</kbd>), then we can say that the tip of the ski has passed to the next gate. Though, if the <kbd>entered_gate</kbd> field, which records such passing, is still <kbd>false</kbd>, we can say that in the previous frame the ski hadn't yet passed the gate. Therefore, in such a case, we are in the situation in which the ski has just passed a gate. So, we must check whether the gate has been passed correctly or wrongly.</p>
+<p>If the <em>x</em> coordinate of the tip is <em>not</em> between the two coordinates of the poles, we are outside the gate, and so we go into the <kbd>Failed</kbd> mode. Otherwise, we must check whether this gate is the last gate of the course—that is, the finish gate. If it is the case, we go into the <kbd>Finish</kbd> mode; otherwise, we make a note that we have entered the gate, to avoid checking it again at the next frame, and the race goes on.</p>
+<p>If the <em>y</em> coordinate is such that we haven't reached the next gate yet, we take note that <kbd>entered_gate</kbd> is still false. With this, we have completed the computations for the <kbd>Running</kbd> case.</p>
+<p>Two modes remain to be considered, as illustrated in the following code snippet:</p>
+<pre>Mode::Failed | Mode::Finished =&gt; {<br/>    if window.keyboard()[Key::R].is_down() {<br/>        *self = Screen::new().unwrap();<br/>    }<br/>}</pre>
+<p>Both in the <kbd>Failed</kbd> mode and in the <kbd>Finished</kbd> mode, the <em>R</em> key is checked. If it is pressed, the model is reinitialized, going to the same state as when the game was just launched.</p>
+<p>Lastly, the steering key is checked for any mode, just as in the previous project. Regarding the <kbd>draw</kbd> function, what has been added in this project, with respect to the previous project, is the drawing of the poles. The code can be seen in the following snippet:</p>
+<pre>for i_gate in self.disappeared_gates..self.disappeared_gates + N_GATES_IN_SCREEN {<br/>    if i_gate &gt;= TOTAL_N_GATES {<br/>        break;<br/>    }</pre>
+<p>A loop scans the gates that appear in the window. The indices of the gates go from zero to <kbd>TOTAL_N_GATES</kbd>, but we must ski the ones that have already exited from the bottom, whose number is <kbd>self.disappeared_gates</kbd>. We must show at least the <kbd>N_GATES_IN_SCREEN</kbd> gates and must stop at the last gate.</p>
+<p>To show the player which is the finish gate, it has a different color, as can be seen in the following code snippet:</p>
+<pre>let pole_color = Background::Col(if i_gate == TOTAL_N_GATES - 1 {<br/>    Color::GREEN<br/>} else {<br/>    Color::BLUE<br/>});</pre>
+<p>The last gate is green. To compute the <em>y</em> coordinate of the poles of a gate, the following formula is used:</p>
+<pre>let gates_along_pos = self.gates_along_offset<br/>    + SCREEN_HEIGHT / N_GATES_IN_SCREEN as f32<br/>        * (self.disappeared_gates + N_GATES_IN_SCREEN - 1 - i_gate) as f32;</pre>
+<p>It adds the position of the ski between two successive gates (<kbd>gates_along_offset</kbd>) to the initial position of the first three gates.</p>
+<p>And then, two small circles are drawn for each gate. The left circle is drawn by executing the following statement:</p>
+<pre>window.draw(<br/>    &amp;Circle::new(<br/>        (SCREEN_WIDTH / 2. + gate.0, gates_along_pos),<br/>        GATE_POLE_RADIUS,<br/>    ),<br/>    pole_color,<br/>);</pre>
+<p>The argument of the <kbd>Circle</kbd> constructor is a tuple composed of the <em>x</em> and <em>y</em> coordinates of the center and the radius. Here, the <kbd>draw</kbd> method of the window object is used, instead of the <kbd>draw_ex</kbd> method. It is simpler, as it does not require a transformation nor a <em>z</em> coordinate.</p>
+<p>And so, we have examined all the code of this project. In the next project, we'll show how we can add text and sound to our game.</p>
+<h1 id="uuid-50b752b6-f65f-4d6d-9ee5-907ff66e81d9">Implementing the assets_slalom project</h1>
+<p>The previous project built was a valid slalom race, but that game had no sound or text to explain what was happening. This project, contained in the <kbd>assets_slalom</kbd> folder, just adds sound and text to the game of the previous project.</p>
+<p>Here is a screenshot that was taken during a race:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/dcb74ea0-5d42-41a3-80f9-e507c120179b.png" style="width:44.67em;height:30.75em;"/></p>
+<p>In the top left of the window, there is the following information:</p>
+<ul>
+<li><strong><span class="packt_screen">Elapsed time</span></strong>: This tells us how many seconds or hundreds of seconds have elapsed since the start of the current race.</li>
+<li><strong><span class="packt_screen">Speed</span></strong>: This tells us how much is the current forward speed in pixels per second.</li>
+<li><strong><span class="packt_screen">Remaining gates</span></strong>: This tells us how many gates remain to pass.</li>
+</ul>
+<p>Then, a help message explains which commands are available.</p>
+<p>In addition, four sounds have been added, as follows:</p>
+<ul>
+<li>A tick at any start of a race</li>
+<li>A whoosh at any turn</li>
+<li>A bump at any fail</li>
+<li>A chime at any finish</li>
+</ul>
+<p>You have to run the game to hear them. Notice that not all web browsers are equally capable of reproducing sounds.</p>
+<p>Now, let's see how <span>Quicksilver can show text and play sounds. </span>Sounds and text are not so simple to use because of the fact that they need files; for text, one or more font files are needed; and for sounds, a sound file for any sound effect is needed. Such files must be stored in a folder named <kbd>static</kbd> in the root of the project. If you look in the said folder, you'll find the following files:</p>
+<ul>
+<li><kbd>font.ttf</kbd>: This is a font in TrueType format.</li>
+<li><kbd>click.ogg</kbd>: This is a short click sound, to be played at the start of a race.</li>
+<li><kbd>whoosh.ogg</kbd>: This<span> is a short friction sound, to be played when the ski is turning during a race.</span></li>
+<li><kbd>bump.ogg</kbd>: This is a bump sound to express disapproval, t<span>o be played when the ski misses a gate.</span></li>
+<li><kbd>two_notes.ogg</kbd>: This is a pair of notes to express satisfaction, t<span>o be played when the ski passes the finish gate.</span></li>
+</ul>
+<p>Such a <kbd>static</kbd> folder and its contained files must be deployed together with the executable program, as they are loaded at runtime by the program. They are usually also named <em>assets</em> as they are just data, not executable code.</p>
+<p>Quicksilv<span>er has chosen to load such assets in an async</span><span>hronous way, using the</span> <em>future</em> <span><em>concept</em>.</span> <span>To load a sound from a file, the </span><kbd>Sound::load(«filename»)</kbd> expression <span>is used. It receives a value implementing a reference to a path, such as a string, and it returns an object implementing the <kbd>Future</kbd> trait.</span></p>
+<p><span>An asset—that is, an object that encapsulates a future that is loading a file—is created by the <kbd>Asset::new(«future value»)</kbd> expression. It receives a value implementing a future, and it returns an <kbd>Asset</kbd> instance of the specific type. For instance, the <kbd>Asset::new(Sound::load("bump.ogg"))</kbd> expression returns a value of the <kbd>Asset&lt;Sound&gt;</kbd> type. Such a value is an asset that encapsulates a future—that is, reading a sound from the <kbd>bump.ogg</kbd> file. </span><span>The sounds in this project are in the <kbd>.ogg</kbd> format, but Quicksilver is capable of reading several audio formats.</span></p>
+<p>Once you have an asset encapsulating a future loading a file, you can access such a file in an expression such as <kbd>sound_future.execute(|sound_resource| sound<span>_resource</span>.play())</kbd>. Here, the <kbd>sound_future</kbd> variable is our asset. As it is a future, you have to wait for it to be ready. This is done using the <kbd>execute</kbd> method of the <kbd>Asset</kbd> type. It invokes the closure received as an argument, passing to it the encapsulated resource, which in this case is of the <kbd>Sound</kbd> type.</p>
+<p>The <kbd>Sound</kbd> type has the <kbd>play</kbd> method, which starts to reproduce the sound. As usual in multimedia systems, such reproduction is asynchronous: you don't have to wait for the end of the sound to proceed with the game. If you call <kbd>play</kbd> on a sound when the previous sound is still reproducing, the two sounds overlap, and if you play many of them, the resulting volume typically becomes very high. Therefore, you should keep your sounds very short, or play them seldom.</p>
+<p>Similarly, <span>the </span><kbd>Asset::new(Font::load("font.ttf"))</kbd><span> expression returns a value of the </span><kbd>Asset&lt;Font&gt;</kbd><span>. type. Such a value is an asset that encapsulates a future—that is, reading a font from the <kbd>font.ttf</kbd> file. You can use that font with the </span><span><kbd>font_future.execute(|font_resource| image = font_resource.render(&amp;"Hello", &amp;style))</kbd> expression. Here, the <kbd>font_future</kbd> variable is our asset. As it is a future, you have to wait for it using the <kbd>execute</kbd> method of the <kbd>Asset</kbd> type, which invokes the closure received as an argument, passing to it the encapsulated resource, which in this case is of the <kbd>Font</kbd> type.</span></p>
+<p><span>The <kbd>Font</kbd> type has the <kbd>render</kbd> method, which receives a string and a reference to a <kbd>FontStyle</kbd> value and creates an image containing that text, printed using that font and that font style.</span></p>
+<h2 id="uuid-0d840d57-593d-4cbb-8ecc-827266916fc1">Analyzing the code</h2>
+<p><span>And now, let's see all the code of the project that differs from the previous project. </span><span>There is a new constant, as can be seen in the following code snippet:</span></p>
+<pre><span>const MIN_TIME_DURATION: f64 = 0.1;</span></pre>
+<p><span>This is to solve the following problem. If the game has a frame rate of 50 FPS, the window is redrawn 50 times per second, and each time using the latest values of the variables. Regarding time, it is a number that would change so rapidly that it would be impossible to read. Therefore, this constant sets the maximum rate of change of the displayed time.</span></p>
+<p><span>The model has several new fields, as can be seen in the following code snippet:</span></p>
+<pre><span>elapsed_sec: f64,<br/>elapsed_shown_sec: f64,<br/>font_style: FontStyle,<br/>font: Asset&lt;Font&gt;,<br/>whoosh_sound: Asset&lt;Sound&gt;,<br/>bump_sound: Asset&lt;Sound&gt;,<br/>click_sound: Asset&lt;Sound&gt;,<br/>two_notes_sound: Asset&lt;Sound&gt;,</span></pre>
+<p>The meaning of these fields is described as follows:</p>
+<ul>
+<li><span><kbd>elapsed_sec</kbd> is the fractional number of seconds elapsed since the start of the current race, using the maximum resolution available.</span></li>
+<li><kbd>elapsed_shown_sec</kbd> <span>is the fractional number to show to the user as the number of elapsed seconds since the start of the current race.</span></li>
+<li><kbd>font_style</kbd> contains the size and color of the text to print.</li>
+<li><kbd>font</kbd> is the future value of the font to use to print the text of the screen.</li>
+<li><kbd>whoosh_sound</kbd> <span>is the future value of the sound to play during the turns of the running ski.</span></li>
+<li><kbd>bump_sound</kbd><span> </span><span>is the future value of the sound to play when a gate is missed.</span></li>
+<li><span><kbd>click_sound</kbd> </span><span>is the future value of the sound to play when a race is started.</span></li>
+<li><span><kbd>two_notes_sound</kbd> </span><span>is the future value of the sound to play when the finish gate is crossed.</span></li>
+</ul>
+<p>A routine to play sounds has been defined, as follows:</p>
+<pre>fn play_sound(sound: &amp;mut Asset&lt;Sound&gt;, volume: f32) {<br/>    let _ = sound.execute(|sound| {<br/>        sound.set_volume(volume);<br/>        let _ = sound.play();<br/>        Ok(())<br/>    });<br/>}</pre>
+<p>It receives a future value of a sound and a volume. It calls <kbd>execute</kbd> to ensure the sound is loaded, and then sets the specified volume and plays that sound. Notice that the <kbd>execute</kbd> method returns a <kbd>Result</kbd>, to allow for possible errors. As in games sounds are not essential, we want to ignore possible errors regarding sounds, and so, we always return <kbd>Ok(())</kbd>.</p>
+<p><span>In the <kbd>steer</kbd> function, when a turn operation is performed and the ski is not already at an extreme angle, the following statement is performed:</span></p>
+<pre><span>play_sound(&amp;mut self.whoosh_sound, self.forward_speed * 0.1);<br/></span></pre>
+<p>It plays the whoosh sound and a volume that is proportional to the speed of the ski. In this way, if you rotate the ski when you are not running, you are silent.</p>
+<p>The new fields of the model are initialized like this:</p>
+<pre>elapsed_sec: 0.,<br/>elapsed_shown_sec: 0.,<br/>font_style: FontStyle::new(16.0, Color::BLACK),<br/>font: Asset::new(Font::load("font.ttf")),<br/>whoosh_sound: Asset::new(Sound::load("whoosh.ogg")),<br/>bump_sound: Asset::new(Sound::load("bump.ogg")),<br/>click_sound: Asset::new(Sound::load("click.ogg")),<br/>two_notes_sound: Asset::new(Sound::load("two_notes.ogg")),</pre>
+<p>Notice that, as <kbd>font_style</kbd>, a size of 16 points and a black color are set. We already described the other kind of expressions.</p>
+<p>In the <kbd>update</kbd> function, when the race is started by pressing the spacebar, the following statement is executed:</p>
+<pre>play_sound(&amp;mut self.click_sound, 1.)</pre>
+<p>It plays a click sound with a normal volume. When running, the elapsed time is computed like this:</p>
+<pre>self.elapsed_sec += window.update_rate() / 1000.;<br/>if self.elapsed_sec - self.elapsed_shown_sec &gt;= MIN_TIME_DURATION {<br/>    self.elapsed_shown_sec = self.elapsed_sec;<br/>}</pre>
+<p>The <kbd>update_rate</kbd> function actually returns the time between frames, in milliseconds. So, if you divide it by 1,000, you get the seconds between each frame.</p>
+<p>If there is a high frame rate, such as 25 frames per second or more, showing the user different text at any frame can be confusing, as people cannot read a text that changes so rapidly. So, the second statement in the previous code snippet shows a technique to update the text at a lower rate. The <kbd>elapsed_shown_sec</kbd> field keeps the time of the last update, and the <kbd>elapsed_sec</kbd> field keeps the current time.</p>
+<p>The <kbd>MIN_TIME_DURATION</kbd> constant keeps the minimum duration by which a text must remain unchanged on screen before it can be updated. So, if the time elapsed from the time of the previous update to the current time is larger than such minimum duration, the text can be updated. In this particular case, the text to update is just the elapsed time in seconds, and so<span>, if enough time has passed,</span> the <kbd>elapsed_shown_sec</kbd> field is set to the current time. The <kbd>draw</kbd> routine will use that value to print the elapsed time on the screen.</p>
+<p>Two other sounds are emitted. When the <kbd>mode</kbd> becomes <kbd>Failed</kbd>, the <kbd>play_sound</kbd> is called to play a bump sound. And when <span>the </span><kbd>mode</kbd><span> becomes </span><kbd>Finished</kbd><span>, the </span><kbd>play_sound</kbd><span> is called to play a chime.</span></p>
+<p>Then, it's up to the draw routine to print all the text. First, the text is formatted in a new multi-line string, as follows:</p>
+<pre>let elapsed_shown_text = format!(<br/>    "Elapsed time: {:.2} s,\n\<br/>     Speed: {:.2} pixel/s,\n\<br/>     Remaining gates: {}\n\<br/>     Use Left and Right arrow keys to change direction.\n\<br/>     {}",<br/>    self.elapsed_shown_sec,<br/>    self.forward_speed * 1000f32 / window.update_rate() as f32,<br/>    TOTAL_N_GATES - self.disappeared_gates - if self.entered_gate { 1 } else { 0 },<br/>    match self.mode {<br/>        Mode::Ready =&gt; "Press Space to start.",<br/>        Mode::Running =&gt; "",<br/>        Mode::Finished =&gt; "Finished: Press R to reset.",<br/>        Mode::Failed =&gt; "Failed: Press R to reset.",<br/>    }<br/>);</pre>
+<p>The elapsed time and the speed are printed using two decimals; the remaining gates are computed by subtracting the disappeared gates to the total number of gates. In addition, if the current gate has been entered, the count of remaining gates is decremented by one. Then, some different words are printed according to the current mode.</p>
+<p>After having prepared the multiline string, the string is printed on a new image and stored in the <kbd>image</kbd> local variable, and the image is drawn on the window using the <kbd>draw</kbd> method, as a textured background. The method receives as a first argument the rectangular area to print, large as the whole bitmap, and, as a second argument, the <kbd>Img</kbd> variant of the <kbd>Background</kbd> type, constructed using the image, as illustrated in the following code snippet:</p>
+<pre>let style = self.font_style;<br/>self.font.execute(|font| {<br/>    let image = font.render(&amp;elapsed_shown_text, &amp;style).unwrap();<br/>    window.draw(&amp;image.area(), Img(&amp;image));<br/>    Ok(())<br/>})?;</pre>
+<p>So, we have completed our examination of this simple but interesting framework.</p>
+<h1 id="uuid-f039cd82-2407-4d35-aef0-cc4fa6b2aed7">Summary</h1>
+<p>We have seen how a complete game, running both on desktop and on the web, can be built using Rust and the Quicksilver framework, with the web version using the <kbd>cargo-web</kbd> command and the Wasm code generator. This game was structured according to the animation loop architecture and the MVC architectural pattern. We created three apps<span>—</span><kbd>ski</kbd>, <kbd>silent_slalom</kbd>, and <kbd>assets_slalom</kbd>—and understood the implementation behind them.</p>
+<p>In the next chapter, we will be seeing<span> another 2D game framework, the <kbd>ggez</kbd> framework, oriented toward desktop applications</span>.</p>
+<h1 id="uuid-592f80b6-c76b-4cd3-a819-92cee8c052ed">Questions</h1>
+<ol>
+<li>What is the animation loop, and what are its advantages with respect to an event-driven architecture?</li>
+<li>When<span> is an event-driven architecture better than an animation loop architecture</span>?</li>
+<li>Which kinds of software can use the animation loop?</li>
+<li>How can you draw triangles, rectangles, and circles using Quicksilver?</li>
+<li>How can you receive input from the keyboard using Quicksilver?</li>
+<li>How are the controller and the view of MVC implemented using <span>Quicksilver</span>?</li>
+<li>How can you vary the frame rate of animation <span>using </span><span>Quicksilver</span>?</li>
+<li>How can you load assets from files <span>using </span><span>Quicksilver, and where should you keep such assets?</span></li>
+<li>How can you play sounds using <span>Quicksilver</span>?</li>
+<li><span>How can you draw text on the screen using Quicksilver?</span></li>
+</ol>
+<h1 id="uuid-90d5f557-3640-4c3f-9018-009b6ae7f0f0">Further reading</h1>
+<p>The Quicksilver project can be downloaded from here: <a href="https://github.com/ryanisaacg/quicksilver">https://github.com/ryanisaacg/quicksilver</a>. This repository contains a link to a very short tutorial and some examples.</p>
+<p>You can find more information about generating Wasm code from a Rust project at<span> </span><a href="https://github.com/koute/cargo-web">https://github.com/koute/cargo-web</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

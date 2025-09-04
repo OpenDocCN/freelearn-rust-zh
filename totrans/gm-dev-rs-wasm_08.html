@@ -1,0 +1,1021 @@
+<html><head></head><body>
+		<div id="_idContainer083">
+			<h1 id="_idParaDest-94"><em class="italic"><a id="_idTextAnchor139"/>Chapter 6</em>: Creating an Endless Runner</h1>
+			<p><strong class="bold">Red Hat Boy</strong> (<strong class="bold">RHB</strong>) can run, jump on a platform, and even crash into a rock and fall over. But once he starts running to his right, he just goes off the screen and is never seen again. There isn't much to it, and if you wait long enough, the game even crashes with a buffer overflow error. In this chapter, we'll make our game truly endless by generating new scenes as RHB runs that contain new obstacles and challenges. They will even contain randomness, and it all starts with RHB staying in one place! It's a real trick.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Scrolling the background</li>
+				<li>Refactoring for endless running</li>
+				<li>Creating a dynamic level</li>
+			</ul>
+			<p>By the end of this chapter, you'll have a functioning endless runner and be able to create obstacles for RHB to hop over and slide under.</p>
+			<h1 id="_idParaDest-95"><a id="_idTextAnchor140"/>Technical requirements</h1>
+			<p>For this chapter, you'll need all the assets at <a href="https://github.com/PacktPublishing/Game-Development-with-Rust-and-WebAssembly/wiki/Assets">https://github.com/PacktPublishing/Game-Development-with-Rust-and-WebAssembly/wiki/Assets</a>. Just like in the previous chapters, you can find the source code at <a href="https://github.com/PacktPublishing/Game-Development-with-Rust-and-WebAssembly/tree/chapter_6">https://github.com/PacktPublishing/Game-Development-with-Rust-and-WebAssembly/tree/chapter_6</a>.</p>
+			<p>Check out the following video to see the Code in Action: <a href="https://bit.ly/35pES1T">https://bit.ly/35pES1T</a></p>
+			<h1 id="_idParaDest-96"><a id="_idTextAnchor141"/>Scrolling the background </h1>
+			<p>To run RHB<a id="_idIndexMarker479"/> left to right<a id="_idIndexMarker480"/> with an infinite background, we have two choices, as follows:</p>
+			<ul>
+				<li>Procedurally generate a background, based on a pattern or mathematical formula.</li>
+				<li>Use the Hanna-Barbera technique.</li>
+			</ul>
+			<p>While the first option<a id="_idIndexMarker481"/> may appear more interesting or dynamic, the Hanna-Barbera technique<a id="_idIndexMarker482"/> is much simpler, and it's <a id="_idIndexMarker483"/>what we'll be using for Walk the Dog. What is the Hanna-Barbera technique? Well, for starters, it may not even go by that name, but that's what I'm calling it. Hanna-Barbera was an animation studio that ran a series of very popular cartoons from the '50s through to the '90s, including Tom and Jerry, The Flintstones, Scooby-Doo, Yogi Bear, and many more. If you were a child in any of those decades, you would wake up to "Saturday morning cartoons," which were dominated by Hanna-Barbera properties. While the studio was known for their beloved characters, they were also known for cutting costs. They produced a lot of cartoons and needed to maximize the ways they could create them quickly and cheaply.</p>
+			<p>One of the most common traits of Hanna-Barbera cartoons was a repeating background. At the end of an episode of Yogi Bear, for example, Ranger Smith would start chasing Yogi Bear across Jellystone park. However, if you looked closely, Jellystone park appeared to have the same series of trees repeating (see <a href="https://bit.ly/3BNuNXZ">https://bit.ly/3BNuNXZ</a> for an example). This money-saving technique is going to work great for our endless runner. We'll use the same background element we're using now and move it to the left as RHB runs to the right. Immediately after, it will become a copy of the same background, making two <strong class="source-inline">Image</strong> elements with the same source image. Once the first image moves completely off screen, we'll move it so that it's to the right of the second image. These two backgrounds will loop, creating the illusion of the background moving forever:</p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer075">
+					<img alt="Figure 6.1 – Sliding the canvas over the background&#13;&#10;" src="image/Figure_6.01_B17151.jpg"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.1 – Sliding the canvas over the background</p>
+			<p>This technique relies on three things. The first is that the background has to be seamless so that there<a id="_idIndexMarker484"/> is no visible seam between the two images. Fortunately, our background was built for this and it will work fine. The second is that the canvas window needs to be smaller than the background so that the entire background is never shown on screen. If we do this, then the first background can go entirely off screen to the left and then be moved to the right of the second background, all without any noticeable gaps or tearing. This is because this all happens outside the window's boundaries. I like to think of it as being offstage in a play, then scrambling over to the right-hand side behind the curtain.</p>
+			<p>Finally, we must use another illusion and freeze the main character in place. Instead of moving the character from left to right on the screen, the objects will move right to left, almost as if on a treadmill. Visually, this will look the same as if the character were running, and it has the advantage of fixing a bug where if the player keeps running right, their <em class="italic">x</em> position eventually overflows (becomes bigger than the i16 we are using to hold it) and the game crashes. We'll have to adjust our brains by changing the <em class="italic">x</em> velocity from what we expect, but <a id="_idIndexMarker485"/>once you get used to it, you'll find that it works quite easily. Let's get started with our scrolling background.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">For another example of this technique, go to <a href="https://bit.ly/3BPNBGc">https://bit.ly/3BPNBGc</a>, which explains how this works in a game<a id="_idIndexMarker486"/> that continuously moves up, such as Doodle Jump.</p>
+			<h2 id="_idParaDest-97"><a id="_idTextAnchor142"/>Fixing RHB in x </h2>
+			<p>We can scroll the background as much as we want, but if we continue to simultaneously move RHB to the <a id="_idIndexMarker487"/>right<a id="_idIndexMarker488"/> at the same time, the effect will be having him run at double speed. Instead, we want RHB to run in place while the rocks and platforms move toward him as if they were on a conveyor belt. At the end of this section, we will see RHB run to the right into an empty white void as everything passes past him as if he were running past the end of the world.</p>
+			<p>Let's start in the <strong class="source-inline">game::red_hat_boy_states</strong> module and not update <strong class="source-inline">x</strong> in the <strong class="source-inline">update</strong> method of <strong class="source-inline">RedHatBoyContext</strong>:</p>
+			<p class="source-code">impl RedHatBoyContext {</p>
+			<p class="source-code">    fn update(mut self, frame_count: u8) -&gt; Self {</p>
+			<p class="source-code">         ...</p>
+			<p class="source-code">         // DELETE THIS LINE! self.position.x += </p>
+			<p class="source-code">           self.velocity.x</p>
+			<p class="source-code">         self.position.y += self.velocity.y;</p>
+			<p class="source-code">         ...</p>
+			<p>With this change, RHB will<a id="_idIndexMarker489"/> run in place, with nothing moving around<a id="_idIndexMarker490"/> him. We are keeping <strong class="source-inline">velocity</strong> as is because that value is going to be used by the rest of the code base. For ease of use, we'll add a few methods. First, let's add an accessor to the <strong class="source-inline">RedHatBoy</strong> implementation, as shown here:</p>
+			<p class="source-code">impl RedHatBoy {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn walking_speed(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">        self.state_machine.context().velocity.x</p>
+			<p class="source-code">    }</p>
+			<p>This function works similar to several of our other accessors for <strong class="source-inline">RedHatBoy</strong>, making it easier to get at the <strong class="source-inline">context</strong> values. Next, let's add a new implementation – <strong class="source-inline">Walk</strong> for the <strong class="source-inline">Walk</strong> struct:</p>
+			<p class="source-code">impl Walk {</p>
+			<p class="source-code">    fn velocity(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">        -self.boy.walking_speed()</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>The <strong class="source-inline">Walk</strong> implementation is only available when the <strong class="source-inline">WalkTheDog</strong> enum is in the <strong class="source-inline">Loaded</strong> state and it flips <strong class="source-inline">walking_speed</strong> of <strong class="source-inline">boy</strong>. While <strong class="source-inline">boy</strong> is moving to the right, this means everything else is moving to the left. Now, in the <strong class="source-inline">update</strong> function of <strong class="source-inline">WalkTheDog</strong>, we can use that value to move everything else to the left. Right after updating <strong class="source-inline">walk.boy</strong>, we can update the <strong class="source-inline">stone</strong> and <strong class="source-inline">platform</strong> positions so that they match the following code:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            ...</p>
+			<p class="source-code">            walk.boy.update();</p>
+			<p class="source-code">            walk.platform.position.x += walk.velocity();</p>
+			<p class="source-code">            walk.stone.move_horizontally(walk.velocity());</p>
+			<p class="source-code">            ...</p>
+			<p>You should get a<a id="_idIndexMarker491"/> compiler error<a id="_idIndexMarker492"/> because <strong class="source-inline">stone</strong> doesn't have a <strong class="source-inline">move_horizontally</strong> function. <strong class="source-inline">Stone</strong> is of the <strong class="source-inline">Image</strong> type and can be found in the <strong class="source-inline">engine</strong> module, while <strong class="source-inline">position</strong> on <strong class="source-inline">Image</strong> is private. We'll keep things that way, and instead add <strong class="source-inline">move_horizontally</strong> to the <strong class="source-inline">Image</strong> implementation, as shown here:</p>
+			<p class="source-code">impl Image {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    pub fn move_horizontally(&amp;mut self, distance: i16) {</p>
+			<p class="source-code">        self.bounding_box.x += distance as f32;</p>
+			<p class="source-code">        self.position.x += distance;</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Two things may bother you about this code. The first is that we are directly manipulating <strong class="source-inline">position</strong> on <strong class="source-inline">Platform</strong> but used a method on <strong class="source-inline">Image</strong>. This inconsistency is a <em class="italic">smell</em> that tells us that something isn't right with our code – in this case, <strong class="source-inline">stone</strong> and <strong class="source-inline">platform</strong> have two different interfaces to modify their positions, even though the code has been duplicated. For now, we'll leave this as is, but it's a hint regarding changes we may want to make later. The other is that we're updating the <strong class="source-inline">bounding_box</strong> and <strong class="source-inline">position</strong> values<a id="_idIndexMarker493"/> with the same thing. That's a refactoring <a id="_idIndexMarker494"/>we'll leave for the next section (putting a <strong class="source-inline">position</strong> on <strong class="source-inline">Rect Point</strong>), although you can do it now if you're feeling ambitious.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Code smell is a programming term that was coined by Kent Beck and popularized by Martin Fowler in his book <em class="italic">Refactoring</em>. If you're getting paid money to program, gaming or not, you should check this book out.</p>
+			<p>Now, you should see RHB running in place as the rock and platform move beneath him:</p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer076">
+					<img alt="Figure 6.2 – Where did the rock go?&#13;&#10;" src="image/Figure_6.02_B17151.jpg"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.2 – Where did the rock go?</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">Don't forget to restart the server if changes don't seem to be showing up. I had to when deleting code, for some reason.</p>
+			<p>We can start moving the <a id="_idIndexMarker495"/>background<a id="_idIndexMarker496"/> by matching the <strong class="source-inline">stone</strong> and <strong class="source-inline">platform</strong> movement in the <strong class="source-inline">update</strong> function of <strong class="source-inline">WalkTheDogupdate</strong>. This change will look as follows:</p>
+			<p class="source-code">fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">    if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">        ...</p>
+			<p class="source-code">        walk.platform.position.x += walk.velocity();</p>
+			<p class="source-code">        walk.stone.move_horizontally(walk.velocity());</p>
+			<p class="source-code">        <strong class="bold">walk.background.move_horizontally(walk.velocity());</strong></p>
+			<p class="source-code">        ...</p>
+			<p>This small change will mean that RHB can now walk off the edge of the world:</p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer077">
+					<img alt="Figure 6.3 – Look, the empty void!" src="image/Figure_6.03_B17151.jpg"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.3 – Look, the empty void!</p>
+			<p>However, we don't want this, so <a id="_idIndexMarker497"/>let's learn<a id="_idIndexMarker498"/> how to use two tiling backgrounds to simulate an infinite one.</p>
+			<h2 id="_idParaDest-98"><a id="_idTextAnchor143"/>An infinite background </h2>
+			<p>To get an infinite<a id="_idIndexMarker499"/> background, we'll need two background<a id="_idIndexMarker500"/> images instead of one. We'll start by storing <strong class="source-inline">background</strong> as an array instead of just one <strong class="source-inline">Image</strong> in <strong class="source-inline">Walk</strong>, as shown here:</p>
+			<p class="source-code">struct Walk {</p>
+			<p class="source-code">    boy: RedHatBoy,</p>
+			<p class="source-code">    <strong class="bold">backgrounds: [Image; 2],</strong></p>
+			<p class="source-code">    stone: Image,</p>
+			<p class="source-code">    platform: Platform,</p>
+			<p class="source-code">}</p>
+			<p>This will cause several compiler errors because <strong class="source-inline">backgrounds</strong> doesn't exist; even if it did, the code<a id="_idIndexMarker501"/> expects it to be an <strong class="source-inline">Imagearray</strong>. Fortunately, the errors largely <a id="_idIndexMarker502"/>make sense and we can figure out what needs to be done. Moving once again to <strong class="source-inline">initialize</strong> in the <strong class="source-inline">Game</strong> implementation, let's set up an array of <strong class="source-inline">backgrounds</strong> instead of just one when initializing <strong class="source-inline">Walk</strong>, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    async fn initialize(&amp;mut self) -&gt; Result&lt;Box&lt;dyn Game&gt;&gt; {</p>
+			<p class="source-code">        match self {</p>
+			<p class="source-code">            WalkTheDog::Loading =&gt; {</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                let background_width = background.width() </p>
+			<p class="source-code">                 as i16;</p>
+			<p class="source-code">                Ok(Box::new(WalkTheDog::Loaded(Walk {</p>
+			<p class="source-code">                    boy: rhb,</p>
+			<p class="source-code">                    backgrounds: [</p>
+			<p class="source-code">                        Image::new(background.clone(), </p>
+			<p class="source-code">                        Point { x: 0, y: 0 }),</p>
+			<p class="source-code">                        Image::new(</p>
+			<p class="source-code">                            background,</p>
+			<p class="source-code">                            Point {</p>
+			<p class="source-code">                                x: background_width,</p>
+			<p class="source-code">                                y: 0,</p>
+			<p class="source-code">                            },</p>
+			<p class="source-code">                        ),</p>
+			<p class="source-code">                    ],</p>
+			<p class="source-code">                    stone: Image::new(stone, Point { x: </p>
+			<p class="source-code">                     150, y: 546 }),</p>
+			<p class="source-code">                    platform,</p>
+			<p class="source-code">                })))</p>
+			<p class="source-code">                ...</p>
+			<p>There's a little more going on here compared to our previous changes, so let's go through this code in more detail. The first thing<a id="_idIndexMarker503"/> we do is get the <strong class="source-inline">width</strong> property <a id="_idIndexMarker504"/>of <strong class="source-inline">background</strong>. This is the temporary variable that we created when we loaded <strong class="source-inline">HtmlImageElement</strong>, not the <strong class="source-inline">background</strong> property that's attached to <strong class="source-inline">Walk</strong> that we have been using. We have done this to prevent a borrow-after-move error during the initialization of <strong class="source-inline">Walk</strong>. Then. we made <strong class="source-inline">Walk</strong> take an array of <strong class="source-inline">Image</strong> objects, making sure to clone the <strong class="source-inline">background</strong> property the first time we create it. Finally, we made sure to position the second <strong class="source-inline">Image</strong> at <strong class="source-inline">background_width</strong> so that it will be lined up to the right of the first background, off screen.</p>
+			<p>However, we still aren't done with compiler errors. This is because the background is being updated and drawn. We'll make the simplest changes we can so that we can start compiling and running again. First, replace the <strong class="source-inline">move_horizontally</strong> code we just wrote in the <strong class="source-inline">update</strong> function with the following code, which loops through all the backgrounds and moves them:</p>
+			<p class="source-code">fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">   if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">        ...</p>
+			<p class="source-code">        walk.platform.position.x += walk.velocity();</p>
+			<p class="source-code">        walk.stone.move_horizontally(walk.velocity());</p>
+			<p class="source-code"><strong class="bold">        let velocity = walk.velocity();</strong></p>
+			<p class="source-code"><strong class="bold">        walk.backgrounds.iter_mut().for_each(|background| {</strong></p>
+			<p class="source-code"><strong class="bold">            background.move_horizontally(velocity);</strong></p>
+			<p class="source-code"><strong class="bold">        });</strong></p>
+			<p>Make sure you use <strong class="source-inline">iter_mut</strong> so that <strong class="source-inline">background</strong> is mutable. Note that<a id="_idIndexMarker505"/> you'll <a id="_idIndexMarker506"/>need to bind <strong class="source-inline">walk.velocity()</strong> to a temporary variable; otherwise, you'll get a compiler error saying <strong class="source-inline">cannot borrow '*walk' as immutable because it is also borrowed as mutable</strong>. Now, you can update the <strong class="source-inline">draw</strong> function to draw all the backgrounds:</p>
+			<p class="source-code">fn draw(&amp;self, renderer: &amp;Renderer) {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            walk.backgrounds.iter().for_each(|background| {</p>
+			<p class="source-code">                background.draw(renderer);</p>
+			<p class="source-code">            });</p>
+			<p class="source-code">           ...</p>
+			<p>Here, we are looping through <strong class="source-inline">backgrounds</strong> again and drawing them, relying on the canvas to only show the backgrounds that are on screen. If you play the game while running this code, you'll see that RHB runs farther but doesn't run infinitely. This is because we aren't cycling the backgrounds. If you run the game for long enough, you'll see that the game also crashes with a buffer overflow error, but we'll fix that in the next section. First, we need to get the backgrounds cycling. We can do that by replacing the loop in the <strong class="source-inline">update</strong> function with code that explicitly destructures the array, as shown here:</p>
+			<p class="source-code">fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">   if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">       ...</p>
+			<p class="source-code">       walk.platform.position.x += walk.velocity();</p>
+			<p class="source-code">       walk.stone.move_horizontally(walk.velocity());</p>
+			<p class="source-code">       let velocity = walk.velocity();</p>
+			<p class="source-code">       let [first_background, second_background] = &amp;mut </p>
+			<p class="source-code">        walk.backgrounds;</p>
+			<p class="source-code">       first_background.move_horizontally(velocity);</p>
+			<p class="source-code">       second_background.move_horizontally(velocity);</p>
+			<p class="source-code">       if first_background.right() &lt; 0 {</p>
+			<p class="source-code">            first_background.set_x(</p>
+			<p class="source-code">             second_background.right());</p>
+			<p class="source-code">       }</p>
+			<p class="source-code">       if second_background.right() &lt; 0 {</p>
+			<p class="source-code">            second_background.set_x(</p>
+			<p class="source-code">             first_background.right());</p>
+			<p class="source-code">       }</p>
+			<p class="source-code">       ...</p>
+			<p>Here, we start by replacing the <strong class="source-inline">for</strong> loop with <strong class="source-inline">let [first_background, second_background] = &amp;mut walk.backgrounds;</strong> to get access to both backgrounds. Then, we <a id="_idIndexMarker507"/>move them both<a id="_idIndexMarker508"/> to the left, the same as we did in the loop, and we check whether the right-hand side of the image is negative. This means that the image is off screen, so we can go ahead and move it to the right-hand side of the other background. If you type this in, it won't compile because <strong class="source-inline">set_x</strong> and <strong class="source-inline">right</strong> don't exist on the <strong class="source-inline">Image</strong> struct. Open the <strong class="source-inline">engine</strong> module again so that we can add those to <strong class="source-inline">Image</strong>, as follows:</p>
+			<p class="source-code">impl Image {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    pub fn move_horizontally(&amp;mut self, distance: i16) {</p>
+			<p class="source-code">        self.set_x(self.position.x + distance);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn set_x(&amp;mut self, x: i16) {</p>
+			<p class="source-code">        self.bounding_box.x = x as f32;</p>
+			<p class="source-code">        self.position.x = x;</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn right(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">        (self.bounding_box.x + self.bounding_box.width) as </p>
+			<p class="source-code">         i16</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Here, we <a id="_idIndexMarker509"/>added a <strong class="source-inline">set_x</strong> function<a id="_idIndexMarker510"/> that updates <strong class="source-inline">position</strong> and <strong class="source-inline">bounding_box</strong>, just like we did previously, and we had <strong class="source-inline">move_horizontally</strong> call it to avoid duplication. We also added a <strong class="source-inline">right</strong> function that calculates the right-hand side of <strong class="source-inline">bounding_box</strong> based on the current position. With that, RHB now runs to the right, forever! Well, until the buffer overflows and it crashes. Fortunately, we'll take care of that in the next section.</p>
+			<h1 id="_idParaDest-99"><a id="_idTextAnchor144"/>Refactoring for endless running</h1>
+			<p>By now, you've properly noticed a pattern. Every time we add a new feature, we start by refactoring the old code<a id="_idIndexMarker511"/> to make it easier to add it. This is generally a good practice in most forms of software development, and we'll be following that same pattern now. We identified a couple of code smells while creating the infinite background, so let's clean those up now, starting with dealing with all those casts.</p>
+			<h2 id="_idParaDest-100"><a id="_idTextAnchor145"/>f32 versus i16</h2>
+			<p>We had to cast values<a id="_idIndexMarker512"/> several times to go<a id="_idIndexMarker513"/> from <strong class="source-inline">i16</strong> to <strong class="source-inline">f32</strong> and back<a id="_idIndexMarker514"/> again. This isn't a safe operation; the maximum of <strong class="source-inline">f32</strong> is orders of magnitude larger than the maximum of <strong class="source-inline">i16</strong>, so there's the potential for our program to crash on a big <strong class="source-inline">f32</strong>. <strong class="source-inline">HtmlImageElement</strong> uses <strong class="source-inline">u32</strong> types, so all the casting to make the compiler shut up isn't even correct. We have two choices here:</p>
+			<ul>
+				<li>Take our data types (such as <strong class="source-inline">Rect</strong> and <strong class="source-inline">Point</strong>) and make them match <strong class="source-inline">HtmlImageElement</strong>.</li>
+				<li>Set <strong class="source-inline">Rect</strong> and any other domain object to be our preferred, smaller, type and cast to the larger type on demand.</li>
+			</ul>
+			<p>I suppose we've been using the second choice so far – that is, cast at random to get the compiler to compile – but that's hardly ideal. While the first option is tempting as we won't have any casts, I prefer <strong class="source-inline">Rect</strong> and <strong class="source-inline">Point</strong> to be as small as possible, so we'll set those up to use <strong class="source-inline">i16</strong> as their values. This is more than large enough for any of our game objects, and the smaller size is potentially beneficial for performance.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">The WebAssembly specification does not have an <strong class="source-inline">i32</strong> type, so an <strong class="source-inline">i32</strong> would be just as effective here. It also doesn't have an unsigned type, so it may be worth profiling to see which type is fastest. For our purposes, we'll go with the smallest reasonable size – <strong class="source-inline">i16</strong>. As a professor I once had would say, "We got to the moon on 16 bits!"</p>
+			<p>To get started with this approach, change all the fields in <strong class="source-inline">engine::Rect</strong> to be <strong class="source-inline">i16</strong> instead of <strong class="source-inline">f32</strong>. Then, follow the compiler errors. Start by getting it to compile, casting <strong class="source-inline">i16</strong> to <strong class="source-inline">f32</strong> as necessary. After getting it to compile and run again, look for anywhere we can cast from <strong class="source-inline">i16</strong> to <strong class="source-inline">f32</strong>, and remove it if possible. This will include looking at the <strong class="source-inline">Land</strong> event in the <strong class="source-inline">Event</strong> enum, which holds an <strong class="source-inline">f32</strong>, and switching it to an <strong class="source-inline">i16</strong>. Finally, look for anywhere you cast to <strong class="source-inline">i16</strong>, and see whetherit's still necessary. It will end up being in a lot of places but it shouldn't be too painful; in the end, there should only be a few necessary<a id="_idIndexMarker515"/> casts <a id="_idIndexMarker516"/>left. Do this slowly and carefully so that <a id="_idIndexMarker517"/>you don't get stuck as you work through the errors.</p>
+			<h2 id="_idParaDest-101"><a id="_idTextAnchor146"/>A more useful Rect</h2>
+			<p>The <strong class="source-inline">Rect</strong> implementation<a id="_idIndexMarker518"/> only contains the <strong class="source-inline">intersects</strong> method, but there are two<a id="_idIndexMarker519"/> very useful methods it could use: <strong class="source-inline">right</strong> and <strong class="source-inline">bottom</strong>. If you look at the method we just wrote on <strong class="source-inline">Image</strong>, you will see that it's a natural fit for a <strong class="source-inline">right</strong> function. Let's go ahead and add it to <strong class="source-inline">Rect</strong>:</p>
+			<p class="source-code">impl Rect {</p>
+			<p class="source-code">    pub fn intersects(&amp;self, rect: &amp;Rect) -&gt; bool {</p>
+			<p class="source-code">        self.x &lt; rect.right()</p>
+			<p class="source-code">        &amp;&amp; self.right() &gt; rect.x</p>
+			<p class="source-code">        &amp;&amp; self.y &lt; rect.bottom()</p>
+			<p class="source-code">        &amp;&amp; self.bottom() &gt; rect.y</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn right(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">        self.x + self.width</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn bottom(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">        self.y + self.height</p>
+			<p class="source-code">    }</p>
+			<p>Adding the <strong class="source-inline">right</strong> and <strong class="source-inline">bottom</strong> methods will prevent that addition logic from getting smeared across the game logic. We've also refactored <strong class="source-inline">intersects</strong> to use these new methods. Now, let's go back to the <strong class="source-inline">Image</strong> code we just wrote and update it to use the new <strong class="source-inline">right</strong> method, as shown here:</p>
+			<p class="source-code">impl Image {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    pub fn right(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">    <a id="_idTextAnchor147"/>    self.bounding_box.right()</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>While we're in <strong class="source-inline">Image</strong>, let's deal<a id="_idIndexMarker520"/> with the duplication<a id="_idIndexMarker521"/> of <strong class="source-inline">position</strong> and <strong class="source-inline">bounding_box</strong>.</p>
+			<h3>Setting Rect's position</h3>
+			<p>An image<a id="_idIndexMarker522"/> containing a bounding_box <strong class="source-inline">Rect</strong> and a position <strong class="source-inline">Point</strong> is an accident that occurred due to our code evolving. So, the question is, which one do we want to keep? We could always keep <strong class="source-inline">bounding_box</strong> for the image, which would mean constructing a <strong class="source-inline">Point</strong> every time we draw because we need that for the <strong class="source-inline">draw_entire_element</strong> call. We could also create a <strong class="source-inline">Dimens</strong> structure that just has <strong class="source-inline">width</strong> and <strong class="source-inline">height</strong>, and construct a <strong class="source-inline">Rect</strong> every time we need it on the update. While I doubt that the cost of creating those objects is going to be noticeable, the fact that it's on every frame is bothersome.</p>
+			<p>What we'll do instead is give <strong class="source-inline">Rect</strong> a <strong class="source-inline">position</strong> field – after all, that's what the <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong> coordinates of <strong class="source-inline">Rect</strong> are. This is a seemingly minor change but with far-reaching implications because we constantly initialize <strong class="source-inline">Rect</strong> with <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong>. Fortunately, we can use the compiler to make this simpler for us. We'll start by changing <strong class="source-inline">Rect</strong> to hold a <strong class="source-inline">position</strong> field, instead of <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong>:</p>
+			<p class="source-code">pub struct Rect {</p>
+			<p class="source-code">    pub position: Point,</p>
+			<p class="source-code">    pub width: i16,</p>
+			<p class="source-code">    pub height: i16,</p>
+			<p class="source-code">}</p>
+			<p>Adding <strong class="source-inline">position</strong> is going to cause compiler errors all over the place, as expected. We know that we frequently want to both access the <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong> values and create a <strong class="source-inline">Rect</strong> using <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong>, so to make it easier to work with, we'll add two <strong class="source-inline">factory</strong> methods for <strong class="source-inline">Rect</strong>, as shown here:</p>
+			<p class="source-code">impl Rect {</p>
+			<p class="source-code">    pub fn new(position: Point, width: i16, height: i16) -&gt; </p>
+			<p class="source-code">     Self {</p>
+			<p class="source-code">        Rect {</p>
+			<p class="source-code">            position,</p>
+			<p class="source-code">            width,</p>
+			<p class="source-code">            height,</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn new_from_x_y(x: i16, y: i16, width: i16, height: </p>
+			<p class="source-code">     i16) -&gt; Self {</p>
+			<p class="source-code">        Rect::new(Point { x, y }, width, height)</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    ...</p>
+			<p>Now, when we fix <strong class="source-inline">Rect</strong> everywhere, we will stop<a id="_idIndexMarker523"/> creating a <strong class="source-inline">Rect</strong> directly and instead use the new constructor methods. We'll also add getters for <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong> because we access those frequently, as shown here:</p>
+			<p class="source-code">impl Rect {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    pub fn x(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">        self.position.x</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn y(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">        self.position.y</p>
+			<p class="source-code">    }</p>
+			<p>This gives you most of the tools<a id="_idIndexMarker524"/> you will need to fix the compiler errors. I won't reproduce all of them, because there are quite a few and it's repetitive. There are two examples you can use to make take care of all but one error. The first is replacing every reference to <strong class="source-inline">.x</strong> or <strong class="source-inline">.y</strong> with references to the methods. </p>
+			<p>This is how you do that in the <strong class="source-inline">intersects</strong> method of <strong class="source-inline">Rect</strong>:</p>
+			<p class="source-code">impl Rect {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    pub fn intersects(&amp;self, rect: &amp;Rect) -&gt; bool {</p>
+			<p class="source-code">        self.x() &lt; self.right()</p>
+			<p class="source-code">        &amp;&amp; self.right() &gt; rect.x()</p>
+			<p class="source-code">        &amp;&amp; self.y() &lt; rect.bottom()</p>
+			<p class="source-code">        &amp;&amp; self.bottom() &gt; rect.y()</p>
+			<p class="source-code">    }</p>
+			<p>As you can see, it's the same but with <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong> replaced with <strong class="source-inline">x()</strong> and <strong class="source-inline">y()</strong>. In addition to seeing errors while accessing <strong class="source-inline">x</strong> or <strong class="source-inline">y</strong>, you'll see errors around creating <strong class="source-inline">Rect</strong> because the <strong class="source-inline">position</strong> field isn't specified. You'll want to replace creating <strong class="source-inline">Rect</strong> directly with using one of the constructor methods, as shown here in the implementation of <strong class="source-inline">Image</strong>:</p>
+			<p class="source-code">impl Image {</p>
+			<p class="source-code">     pub fn new(element: HtmlImageElement, position: Point) </p>
+			<p class="source-code">      -&gt; Self {</p>
+			<p class="source-code">        let bounding_box = Rect::new(position, </p>
+			<p class="source-code">         element.width() as i16, element.height() as i16);</p>
+			<p class="source-code">        ...</p>
+			<p>Taking care of those compiler errors, which will show up in both the <strong class="source-inline">engine</strong> and <strong class="source-inline">game</strong> modules, will leave you with only one remaining failure. This can be found in the <strong class="source-inline">set_x</strong> method of <strong class="source-inline">Image</strong>. This is because we need to set the <strong class="source-inline">bounding_box.x</strong> value. Rather than using <strong class="source-inline">position.x</strong>, which will compile but expose us to errors if the internals of <strong class="source-inline">Rect</strong> change again, we'll add a setter<a id="_idIndexMarker525"/> to the <strong class="source-inline">Rect</strong> implementation, as shown here:</p>
+			<p class="source-code">impl Rect {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    pub fn set_x(&amp;mut self, x: i16) {</p>
+			<p class="source-code">        self.position.x = x</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Now, in <strong class="source-inline">Image</strong>, we can fix the last compiler error by using <strong class="source-inline">set_x</strong>, as shown here:</p>
+			<p class="source-code">impl Image {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    pub fn set_x(&amp;mut self, x: i16) {</p>
+			<p class="source-code">        self.bounding_box.set_x(x);</p>
+			<p class="source-code">        self.position.x = x;</p>
+			<p class="source-code">    }</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">You may have noticed that the code is inconsistent when it uses setters versus when it uses public variables directly. In general, my rule of thumb is that dumb structures such as <strong class="source-inline">Rect</strong> don't need setters and getters, especially if we keep them immutable. However, if the internal structure changes, which it did here, then it's time to add an abstraction to hide the internals. This change, from <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong> to a position, demonstrated the necessity of the setter after all.</p>
+			<p>At this point, you should see RHB running to the right and jumping on and off the platform again. Make sure you check out this behavior each time you get to a successful compile since it is easy to make a mistake as you make a large number of small changes.</p>
+			<p>Now that we've prepared <strong class="source-inline">Rect</strong> to hold a <strong class="source-inline">position</strong>, we can remove the duplication of that data in <strong class="source-inline">Image</strong>. We'll start<a id="_idIndexMarker526"/> by removing <strong class="source-inline">position</strong> from the <strong class="source-inline">Image</strong> struct, as shown here:</p>
+			<p class="source-code">pub struct Image {</p>
+			<p class="source-code">    element: HtmlImageElement,</p>
+			<p class="source-code">    bounding_box: Rect,</p>
+			<p class="source-code">}</p>
+			<p>Now, let's follow the compiler and remove all references to <strong class="source-inline">position</strong> in the <strong class="source-inline">Image</strong> implementation. Fortunately, there are no longer any references to <strong class="source-inline">position</strong> outside of the <strong class="source-inline">Image</strong> implementation, so we can do this by making a few quick changes. These changes are shown here. Note how wherever we previously used <strong class="source-inline">position</strong>, we are now using <strong class="source-inline">bounding_box.position</strong> or <strong class="source-inline">bounding_box.x()</strong>:</p>
+			<p class="source-code">impl Image {</p>
+			<p class="source-code">    pub fn new(element: HtmlImageElement, position: Point) </p>
+			<p class="source-code">     -&gt; Self {</p>
+			<p class="source-code">        let bounding_box = Rect::new(position, </p>
+			<p class="source-code">         element.width() as i16, element.height() as i16);</p>
+			<p class="source-code">        Self {</p>
+			<p class="source-code">            element,</p>
+			<p class="source-code">            bounding_box,</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn draw(&amp;self, renderer: &amp;Renderer) {</p>
+			<p class="source-code">        renderer.draw_entire_image(&amp;self.element, </p>
+			<p class="source-code">         &amp;self.bounding_box<strong class="bold">.position</strong>)</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn bounding_box(&amp;self) -&gt;&amp;Rect {</p>
+			<p class="source-code">        &amp;self.bounding_box</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn move_horizontally(&amp;mut self, distance: i16) {</p>
+			<p class="source-code">        self.set_x(self.bounding_box<strong class="source-inline">.x()</strong> + distance);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn set_x(&amp;mut self, x: i16) {</p>
+			<p class="source-code">        self.bounding_box.set_x(x);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    ...</p>
+			<p>Now that we've removed the duplication on <strong class="source-inline">Image</strong>, we're ready to get all of the obstacles in a level<a id="_idIndexMarker527"/> into one shared <strong class="source-inline">trait</strong> so that we can use them all in one list. Doing that will allow us to fix a bug that occurs when the buffer overflows due to running infinitely and prepare the code for dynamically <a id="_idTextAnchor148"/>adding many shared segments. Let's get to it!</p>
+			<h2 id="_idParaDest-102"><a id="_idTextAnchor149"/>Obstacle traits</h2>
+			<p>Currently, the stone and the platform are separate objects on the <strong class="source-inline">Walk</strong> struct. If we want to add more obstacles<a id="_idIndexMarker528"/> to the game, we must add more fields to<a id="_idIndexMarker529"/> this struct. This is an issue if we want to have an endlessly generated list of things to jump over and slide under. What we'd like to do instead is keep a list of <strong class="source-inline">Obstacles</strong>, go through each one, and check what to do when <strong class="source-inline">RedHatBoy</strong> intersects them. Why do we want to do that? Let's have a look:</p>
+			<ul>
+				<li>It will eliminate the duplication for knocking out RHB, and eliminate <em class="italic">future</em> duplication that we'd have to create to continue with our current pattern.</li>
+				<li>We want to treat each <strong class="source-inline">Obstacle</strong> as the same so that we can create obstacles on the fly.</li>
+				<li>We'll be able to remove any obstacles that have gone off screen.</li>
+			</ul>
+			<p>We'll start by creating an <strong class="source-inline">Obstacle</strong> trait<a id="_idIndexMarker530"/> in the <strong class="source-inline">game</strong> module, with one new method<a id="_idIndexMarker531"/> named <strong class="source-inline">check_intersection</strong> and two that exist already on <strong class="source-inline">Platform</strong>:</p>
+			<p class="source-code">pub trait Obstacle {</p>
+			<p class="source-code">    fn check_intersection(&amp;self, boy: &amp;mut RedHatBoy);</p>
+			<p class="source-code">    fn draw(&amp;self, renderer: &amp;Renderer);</p>
+			<p class="source-code">    fn move_horizontally(&amp;mut self, x: i16);</p>
+			<p class="source-code">}</p>
+			<p>Why these three methods? <strong class="source-inline">stone</strong> and <strong class="source-inline">platform</strong> are both going to implement <strong class="source-inline">Obstacle</strong>, and we'll need to loop through them, <strong class="source-inline">draw</strong> them, and move them. So, that's why the trait contains <strong class="source-inline">move_horizontally</strong> and <strong class="source-inline">draw</strong>. The new method, <strong class="source-inline">check_intersection</strong>, exists because a <strong class="source-inline">platform</strong> lets you land on it, whereas a <strong class="source-inline">stone</strong> doesn't. So, we'll need an abstraction that can handle intersections differently depending on the type of <strong class="source-inline">Obstacle</strong>. Now that we've created our <strong class="source-inline">trait</strong>, we can implement it on the <strong class="source-inline">Platform</strong> structure. We can start by pulling <strong class="source-inline">draw</strong> out of the <strong class="source-inline">Platform</strong> implementation and creating a <strong class="source-inline">move_horizontally</strong> method, as shown here:</p>
+			<p class="source-code">impl Obstacle for Platform {</p>
+			<p class="source-code">    fn draw(&amp;self, renderer: &amp;Renderer) {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    fn move_horizontally(&amp;mut self, x: i16) {</p>
+			<p class="source-code">        self.position.x += x;</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>I've elided the implementation of <strong class="source-inline">draw</strong> here because this method does not change. Meanwhile, <strong class="source-inline">move_horizontally</strong> mimics the code<a id="_idIndexMarker532"/> that is currently in <strong class="source-inline">update</strong>, which we identified<a id="_idIndexMarker533"/> as a code smell earlier. </p>
+			<p>Finally, let's add the <strong class="source-inline">check_intersection</strong> function, which currently exists in the <strong class="source-inline">update</strong> method of <strong class="source-inline">WalkTheDog</strong>:</p>
+			<p class="source-code">for bounding_box in &amp;walk.platform.bounding_boxes() {</p>
+			<p class="source-code">    if walk.boy.bounding_box().intersects(bounding_box) {</p>
+			<p class="source-code">        if walk.boy.velocity_y() &gt; 0 &amp;&amp; walk.boy.pos_y() &lt; </p>
+			<p class="source-code">         walk.platform.position.y {</p>
+			<p class="source-code">            walk.boy.land_on(bounding_box.y);</p>
+			<p class="source-code">        } else {</p>
+			<p class="source-code">            walk.boy.knock_out();</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>The version that's been implemented for <strong class="source-inline">Platform</strong> should be very similar, without the references to <strong class="source-inline">walk</strong>, as shown here:</p>
+			<p class="source-code">impl Obstacle for Platform {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn check_intersection(&amp;self, boy: &amp;mut RedHatBoy) {</p>
+			<p class="source-code">        if let Some(box_to_land_on) = self</p>
+			<p class="source-code">            .bounding_boxes()</p>
+			<p class="source-code">            .iter()</p>
+			<p class="source-code">            .find(|&amp;bounding_box| boy.bounding_box()</p>
+			<p class="source-code">             .intersects(bounding_box))</p>
+			<p class="source-code">        {</p>
+			<p class="source-code">            if boy.velocity_y() &gt; 0 &amp;&amp; boy.pos_y() &lt; </p>
+			<p class="source-code">             self.position.y {</p>
+			<p class="source-code">                boy.land_on(box_to_land_on.y());</p>
+			<p class="source-code">            } else {</p>
+			<p class="source-code">                boy.knock_out();</p>
+			<p class="source-code">            }</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>This code is largely the same but with one fairly significant optimization: instead of looping through every bounding<a id="_idIndexMarker534"/> box in <strong class="source-inline">Platform</strong>, this code uses <strong class="source-inline">find</strong> to get the first<a id="_idIndexMarker535"/> bounding box that's intersected. If there is one (<strong class="source-inline">if let Some(box_to_land_on)</strong>), then we handle the collision. This prevents redundant checks after a collision is found. The rest of the code is a little bit shorter without the references to <strong class="source-inline">walk</strong>, which is nice. Now, we need to replace <strong class="source-inline">Platform</strong> in <strong class="source-inline">Walk</strong> with a reference to it on the heap, like so:</p>
+			<p class="source-code">struct Walk {</p>
+			<p class="source-code">    boy: RedHatBoy,</p>
+			<p class="source-code">    backgrounds: [Image; 2],</p>
+			<p class="source-code">    stone: Image,</p>
+			<p class="source-code">    <strong class="bold">platform: Box&lt;dyn Obstacle&gt;,</strong></p>
+			<p class="source-code">}</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">We do have an alternative to using a trait object here, which would be using<a id="_idIndexMarker536"/> an enum containing every type of obstacle, just like we did with our state machine. The tradeoff to using dynamic dispatch, via the <strong class="source-inline">dyn</strong> keyword, is that a lookup<a id="_idIndexMarker537"/> table is stored in memory. The benefit of this is that we write less boilerplate code, and the code doesn't need to be updated every time we add an obstacle. In this case, I think <strong class="source-inline">trait</strong> works better in the same way that an enum works better for a state machine, but it's worth keeping that in mind.</p>
+			<p>This will cause two compiler<a id="_idIndexMarker538"/> errors that we can fix by making small<a id="_idIndexMarker539"/> changes. In the <strong class="source-inline">initialize</strong> method of <strong class="source-inline">WalkTheDog</strong>, we are not setting <strong class="source-inline">platform</strong> correctly when we create <strong class="source-inline">Walk</strong>, so let's make a small change, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    async fn initialize(&amp;mut self) -&gt; Result&lt;Box&lt;dyn Game&gt;&gt; {</p>
+			<p class="source-code">        match self {</p>
+			<p class="source-code">            WalkTheDog::Loading =&gt; {</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                Ok(Box::new(WalkTheDog::Loaded(Walk {</p>
+			<p class="source-code">                    ...</p>
+			<p class="source-code">                    <strong class="bold">platform: Box::new(platform)</strong>,</p>
+			<p class="source-code">                })))</p>
+			<p class="source-code">            }</p>
+			<p class="source-code">            ...</p>
+			<p>This is only a one-line change that involves replacing <strong class="source-inline">platform</strong> with <strong class="source-inline">platform: Box::new(platform)</strong>. The other fix is something you'll remember being a smell – setting the position on <strong class="source-inline">x</strong> directly when <strong class="source-inline">stone</strong> uses a method called <strong class="source-inline">move_horizontally</strong>. This is why we created that method on the <strong class="source-inline">Obstacle</strong> trait on the <strong class="source-inline">Platform</strong> struct. This change can be found in the <strong class="source-inline">update</strong> function for <strong class="source-inline">WalkTheDog</strong>, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            ...</p>
+			<p class="source-code">            let velocity = walk.velocity();</p>
+			<p class="source-code">            walk.platform.move_horizontally(velocity);</p>
+			<p class="source-code">            <strong class="bold">walk.stone.move_horizontally(velocity);</strong></p>
+			<p>Having both <strong class="source-inline">platform</strong> and <strong class="source-inline">stone</strong> have a <strong class="source-inline">move_horizontally</strong> function is a sign that those interfaces<a id="_idIndexMarker540"/> can be brought together, which we'll do in a moment. Finally, we must<a id="_idIndexMarker541"/> replace the code that we moved into <strong class="source-inline">check_intersection</strong> with a call to that function. Just a little further down the <strong class="source-inline">update</strong> function, you'll want to update the following code:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            ...</p>
+			<p class="source-code">            if second_background.right() &lt; 0 {</p>
+			<p class="source-code">                second_background.set_x(</p>
+			<p class="source-code">                 first_background.right());</p>
+			<p class="source-code">            }</p>
+			<p class="source-code">            <strong class="bold">walk.platform.check_intersection(&amp;mut </strong></p>
+			<p class="source-code"><strong class="bold">             walk.boy);</strong></p>
+			<p class="source-code">            if walk</p>
+			<p class="source-code">                .boy</p>
+			<p class="source-code">                .bounding_box()</p>
+			<p class="source-code">                .intersects(walk.stone.bounding_box())</p>
+			<p class="source-code">            {</p>
+			<p class="source-code">                 walk.boy.knock_out()</p>
+			<p class="source-code">            }</p>
+			<p>The call to <strong class="source-inline">check_intersection</strong> goes before the check to see whether you've crashed into a stone and after the background<a id="_idIndexMarker542"/> updates. You may notice that the code for checking<a id="_idIndexMarker543"/> for collisions with a stone is different, in the sense that <strong class="source-inline">boy</strong> is always knocked out when you collide with it, but is it also conceptually the same because you are, once again, checking for a collision with an obstacle and then doing something. This is why we need to turn <strong class="source-inline">stone</strong>, which is currently<a id="_idTextAnchor150"/> an <strong class="source-inline">Image type</strong>, into an <strong class="source-inline">Obstacle</strong> type. But what type should it be?</p>
+			<h3>Barriers versus platforms</h3>
+			<p>We need another type of <strong class="source-inline">Obstacle</strong> that cannot<a id="_idIndexMarker544"/> be landed on, and right<a id="_idIndexMarker545"/> now a <strong class="source-inline">stone</strong> is an <strong class="source-inline">Image</strong>. Adding features to <strong class="source-inline">Image</strong> isn't appropriate<a id="_idIndexMarker546"/> because an <strong class="source-inline">Obstacle trait</strong> is a <strong class="source-inline">game</strong> concept and <strong class="source-inline">Image</strong> is part of <strong class="source-inline">engine</strong>. Instead, we'll create a type of <strong class="source-inline">Obstacle</strong> that always causes the user to crash into it, called <strong class="source-inline">Barrier</strong>, and turn <strong class="source-inline">stone</strong> into that. It's a very dangerous stone.</p>
+			<p>We'll start by creating a <strong class="source-inline">Barrier</strong> struct and implementing the <strong class="source-inline">Obstacle</strong> trait with placeholders, as shown here:</p>
+			<p class="source-code">pub struct Barrier {</p>
+			<p class="source-code">    image: Image,</p>
+			<p class="source-code">}</p>
+			<p class="source-code">impl Obstacle for Barrier {</p>
+			<p class="source-code">    fn check_intersection(&amp;self, boy: &amp;mut RedHatBoy) {</p>
+			<p class="source-code">        todo!()</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    fn draw(&amp;self, renderer: &amp;Renderer) {</p>
+			<p class="source-code">        todo!()</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    fn move_horizontally(&amp;mut self, x: i16) {</p>
+			<p class="source-code">        todo!()</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">I generated this skeleton<a id="_idIndexMarker547"/> with <strong class="source-inline">rust-analyzer</strong> while using the <strong class="source-inline">add-missing-members</strong> action. In my<a id="_idIndexMarker548"/> editor (emacs), this is as simple as typing <strong class="source-inline">c v</strong>. In Visual Studio Code, simply click<a id="_idIndexMarker549"/> the lightbulb and choose <strong class="bold">Implement missing members</strong>. The <strong class="source-inline">todo!</strong> macro throws a runtime exception if this code is called without any implementation, and it is meant to signal temporary code that is there to please the compiler.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Right now, all <strong class="source-inline">Barrier</strong> objects have to be an <strong class="source-inline">Image</strong>, whereas a <strong class="source-inline">Platform</strong> uses a sprite sheet. You may want to use sprite sheets for everything, or even one sprite sheet for everything, and that's fine – better, even. We'll leave things as is here because we've redesigned this application enough already.</p>
+			<p>Before we fill in all those <strong class="source-inline">todo!</strong> blocks, let's add a typical <strong class="source-inline">new</strong> method to create the <strong class="source-inline">Barrier</strong> object:</p>
+			<p class="source-code">impl Barrier {</p>
+			<p class="source-code">    pub fn new(image: Image) -&gt; Self {</p>
+			<p class="source-code">        Barrier { image }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Now, we can fill<a id="_idIndexMarker550"/> in the functions. The <strong class="source-inline">draw</strong> and <strong class="source-inline">move_horizontally</strong> functions<a id="_idIndexMarker551"/> can delegate to <strong class="source-inline">Image</strong>, as shown<a id="_idIndexMarker552"/> here:</p>
+			<p class="source-code">impl Obstacle for Barrier {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn draw(&amp;self, renderer: &amp;Renderer) {</p>
+			<p class="source-code">        self.image.draw(renderer);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    fn move_horizontally(&amp;mut self, x: i16) {</p>
+			<p class="source-code">        self.image.move_horizontally(x);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>The final function, <strong class="source-inline">check_intersection</strong>, will be a little different. Unlike a <strong class="source-inline">Platform</strong>, which <strong class="source-inline">boy</strong> can land on, a <strong class="source-inline">Barrier</strong> is always crashed into. The code for this already exists in the <strong class="source-inline">update</strong> method of <strong class="source-inline">WalkTheDog</strong> because it's what we used for <strong class="source-inline">stone</strong>. Let's mimic that implementation here:</p>
+			<p class="source-code">impl Obstacle for Barrier {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn check_intersection(&amp;self, boy: &amp;mut RedHatBoy) {</p>
+			<p class="source-code">        if boy.bounding_box().intersects(</p>
+			<p class="source-code">         self.image.bounding_box()) {</p>
+			<p class="source-code">              boy.knock_out()</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p><strong class="source-inline">Barrier</strong> isn't being used anywhere yet. So, we could start by changing <strong class="source-inline">stone</strong> from an <strong class="source-inline">Image</strong> into a <strong class="source-inline">Barrier</strong>. However, we're going<a id="_idIndexMarker553"/> to go a little further than that. We're going<a id="_idIndexMarker554"/> to create a list in <strong class="source-inline">Walk</strong> that contains <em class="italic">all</em> the <strong class="source-inline">Obstacle</strong> types. This will let<a id="_idIndexMarker555"/> us reduce the amount of specific code in <strong class="source-inline">Walk</strong>, and it will make it far simpler to generate new obstacles on the fly. Remember that's what we're refactoring for. Let's make our list and add it to the <strong class="source-inline">Walk</strong> struct, as shown here:</p>
+			<p class="source-code">struct Walk {</p>
+			<p class="source-code">    boy: RedHatBoy,</p>
+			<p class="source-code">    backgrounds: [Image; 2],</p>
+			<p class="source-code">    <strong class="bold">obstacles: Vec&lt;Box&lt;dyn Obstacle&gt;&gt;,</strong></p>
+			<p class="source-code">}</p>
+			<p>Note that we've removed <strong class="source-inline">platform</strong> and <strong class="source-inline">stone</strong> from <strong class="source-inline">Walk</strong>, we'll need to update the rest of its implementation and replace direct references to <strong class="source-inline">stone</strong> and <strong class="source-inline">platform</strong> with references to the <strong class="source-inline">Obstacle</strong> vector. This doesn't mean we won't ever mention <strong class="source-inline">platform</strong> and <strong class="source-inline">stone</strong> again; we still have to load the image and sprite sheet, but we'll only mention it once. Once again, we'll look at the compiler error messages, which are complaining a lot about the <strong class="source-inline">initialize</strong>, <strong class="source-inline">update</strong>, and <strong class="source-inline">draw</strong> methods in <strong class="source-inline">WalkTheDog</strong>. Let's start by making changes to the <strong class="source-inline">initialize</strong> function, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    async fn initialize(&amp;self) -&gt; Result&lt;Box&lt;dyn Game&gt;&gt; {</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                Ok(Box::new(WalkTheDog::Loaded(Walk {</p>
+			<p class="source-code">                    ...</p>
+			<p class="source-code">                    <strong class="bold">obstacles: vec![</strong></p>
+			<p class="source-code">                        <strong class="bold">Box::new(Barrier::new(Image::new(</strong></p>
+			<p class="source-code"><strong class="bold">                        stone, Point { x: 150, y: 546 }))),</strong></p>
+			<p class="source-code">                        <strong class="bold">Box::new(platform),</strong></p>
+			<p class="source-code">                    <strong class="bold">],</strong></p>
+			<p class="source-code">                })))</p>
+			<p class="source-code">                ...</p>
+			<p>We're only changing the construction of the <strong class="source-inline">Walk</strong> construct, replacing the references to <strong class="source-inline">stone</strong> and <strong class="source-inline">platform</strong> by initializing the <strong class="source-inline">obstacles</strong> vector. The first item in the vector is now a <strong class="source-inline">Barrier</strong> but that's just the <strong class="source-inline">stone</strong> object that we created earlier wrapped in the new <strong class="source-inline">Barrier</strong> struct. The second<a id="_idIndexMarker556"/> is the <strong class="source-inline">platform</strong> object that we created previously. Everything<a id="_idIndexMarker557"/> has to be in a <strong class="source-inline">Box</strong> so that we can use the <strong class="source-inline">Obstacle</strong> trait. The next<a id="_idIndexMarker558"/> few changes we'll make must be done in the <strong class="source-inline">update</strong> method. We'll rearrange the code a little bit to update <strong class="source-inline">boy</strong> first, then our backgrounds, and finally our <strong class="source-inline">obstacles</strong>, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            ...</p>
+			<p class="source-code">            if second_background.right() &lt; 0 {</p>
+			<p class="source-code">                second_background.set_x(</p>
+			<p class="source-code">                 first_background.right());</p>
+			<p class="source-code">            }</p>
+			<p class="source-code">            <strong class="bold">walk.obstacles.iter_mut().for_each(|obstacle| {</strong></p>
+			<p class="source-code">                <strong class="bold">obstacle.move_horizontally(velocity);</strong></p>
+			<p class="source-code">                <strong class="bold">obstacle.check_intersection(&amp;mut walk.boy);</strong></p>
+			<p class="source-code">           <strong class="bold"> });</strong></p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    ...</p>
+			<p>There should be no direct references to <strong class="source-inline">stone</strong> or <strong class="source-inline">platform</strong> in <strong class="source-inline">update</strong>. Now, the code for checking<a id="_idIndexMarker559"/> for the movement of obstacles and whether they intersect<a id="_idIndexMarker560"/> should only be four lines long and be at the bottom<a id="_idIndexMarker561"/> of the <strong class="source-inline">update</strong> method – and that's generously counting the closing brace. Make sure you use the <strong class="source-inline">iter_mut</strong> method since we are mutating <strong class="source-inline">obstacle</strong> in the loop. One of the ways we can tell that we are moving in the right direction in our design is that we're writing <em class="italic">less</em> code that works with <em class="italic">more</em> things. Finally, we will need to draw all our <strong class="source-inline">obstacles</strong>, which can be handled by updating the <strong class="source-inline">draw</strong> method, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn draw(&amp;self, renderer: &amp;Renderer) {</p>
+			<p class="source-code">        ...</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            ...</p>
+			<p class="source-code">            walk.obstacles.iter().for_each(|obstacle| {</p>
+			<p class="source-code">                obstacle.draw(renderer);</p>
+			<p class="source-code">            });</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>In this case, we can use <strong class="source-inline">for_each</strong> and a plain <strong class="source-inline">iter()</strong>. As you may have guessed, when we want to add more obstacles<a id="_idIndexMarker562"/> to the screen, we will just add them to the <strong class="source-inline">obstacles</strong> list. At this point, the code should be working again; RHB should hop his way<a id="_idIndexMarker563"/> over a platform and a stone and then crash<a id="_idIndexMarker564"/> into it. Now, all we need to take ca<a id="_idTextAnchor151"/>re of is the crash that occurs if we let RHB keep running. We'll handle that next.</p>
+			<h2 id="_idParaDest-103"><a id="_idTextAnchor152"/>Removing obstacles as they go off screen</h2>
+			<p>If you let RHB run to the right<a id="_idIndexMarker565"/> for long enough, you'll see a crash<a id="_idIndexMarker566"/> message that looks like this:</p>
+			<p class="source-code">panicked at 'attempt to add with overflow', src/engine.rs:289:20</p>
+			<p class="source-code">Stack:</p>
+			<p>The preceding code is from the log in the browser. Here, the images move farther and farther to the left until they eventually reach the maximum length of the signed 16-bit integer. This is happening because we're never removing an obstacle from the obstacles Vec when they go off screen, and we should. Let's add a line of code to the <strong class="source-inline">update</strong> function that goes right before we move and collide with the obstacles, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            ...</p>
+			<p class="source-code">            <strong class="bold">walk.obstacles.retain(|obstacle| </strong></p>
+			<p class="source-code"><strong class="bold">             obstacle.right() &gt; 0);</strong></p>
+			<p class="source-code">            walk.obstacles.iter_mut().for_each(|obstacle| {</p>
+			<p class="source-code">                obstacle.move_horizontally(velocity);</p>
+			<p class="source-code">                obstacle.check_intersection(&amp;mut walk.boy);</p>
+			<p class="source-code">            });</p>
+			<p class="source-code">            ...</p>
+			<p>The <strong class="source-inline">retain</strong> function will keep any <strong class="source-inline">obstacles</strong> that match the predicate that's been passed in. In this case, this will happen if the rightmost<a id="_idIndexMarker567"/> point of the obstacle is to the right of the left edge of the screen. This means<a id="_idIndexMarker568"/> we're looping through the list of obstacles twice. If we were using the nightly build of Rust, we could use the <strong class="source-inline">drain_filter</strong> function to avoid that, but our <strong class="source-inline">obstacles</strong> list should never be long enough for that to be an issue. For this code to compile, you'll need to add one more method to the <strong class="source-inline">Obstacle</strong> trait – the <strong class="source-inline">right</strong> method for the rightmost point of <strong class="source-inline">Obstacle</strong>. This can be seen in the following code:</p>
+			<p class="source-code">trait Obstacle {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn right(&amp;self) -&gt; i16;</p>
+			<p class="source-code">}</p>
+			<p>This method will need to be added to both the <strong class="source-inline">Platform</strong> and <strong class="source-inline">Barrier</strong> implementations of <strong class="source-inline">Obstacle</strong>. <strong class="source-inline">Barrier</strong> can just delegate to the image it's holding, <strong class="source-inline">Platform</strong> is a little trickier because it has more than one box. We want to use the right edge of the last bounding box, as shown here:</p>
+			<p class="source-code">impl Obstacle for Platform {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn right(&amp;self) -&gt; i16 {</p>
+			<p class="source-code">        self.bounding_boxes()</p>
+			<p class="source-code">            .last()</p>
+			<p class="source-code">            .unwrap_or(<strong class="bold">&amp;Rect::default()</strong>)</p>
+			<p class="source-code">            .right()</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>This code gets the last bounding box with <strong class="source-inline">last</strong> and unwraps it since <strong class="source-inline">last</strong> returns an <strong class="source-inline">Option</strong>. We don't want to return a <strong class="source-inline">Result</strong> and then force everybody to use a <strong class="source-inline">Result</strong>, so we are using <strong class="source-inline">unwrap_or(&amp;Rect::default())</strong> to return an empty <strong class="source-inline">Rect</strong> when <strong class="source-inline">Platform</strong> has no bounding boxes. One empty bounding box is effectively the same as no bounding boxes. Then, we get the rightmost value of the last <strong class="source-inline">Rect</strong> with <strong class="source-inline">right</strong>. </p>
+			<p><strong class="source-inline">Rect</strong> doesn't have a default implementation yet, so we'll need to add a  <strong class="source-inline">#[derive(Default)]</strong> annotation to the <strong class="source-inline">Rect</strong> and <strong class="source-inline">Point</strong> structures in <strong class="source-inline">engine</strong>. The annotation automatically implements the <strong class="source-inline">Default</strong> trait for a <strong class="source-inline">struct</strong> by using the default value of every field in that <strong class="source-inline">struct</strong>. <strong class="source-inline">Point</strong> will need the annotation because it is in the <strong class="source-inline">Rectstructure</strong>, so for the macro to work for <strong class="source-inline">Rect</strong>, it must also work for <strong class="source-inline">Point</strong>. Fortunately, there's no real harm in adding this to them.</p>
+			<p>With that, you can let RHB run<a id="_idIndexMarker569"/> for as long as he wants, with no buffer<a id="_idIndexMarker570"/> overflow. Now, we need to give RHB many platforms to jump on. W<a id="_idTextAnchor153"/>e will start by sharing the sprite sheet. Let's dig into this last piece of refactoring.</p>
+			<h2 id="_idParaDest-104"><a id="_idTextAnchor154"/>Sharing a sprite sheet</h2>
+			<p>Each <strong class="source-inline">Platform</strong> has a reference<a id="_idIndexMarker571"/> to an <strong class="source-inline">Image</strong> and a <strong class="source-inline">Sheet</strong> that we've casually been referring<a id="_idIndexMarker572"/> to as "the sprite sheet." When we start generating more <strong class="source-inline">Platform</strong> objects, we'll want to share a reference to the sheet. So, the time has come<a id="_idIndexMarker573"/> to add a <strong class="source-inline">Sprit<a id="_idTextAnchor155"/>eSheetstruct</strong> to our engine to enable that. Let's open the <strong class="source-inline">engine</strong> module and add that new concept.</p>
+			<h3>Creating a sprite sheet</h3>
+			<p>We will start by creating a <strong class="source-inline">struct</strong> that holds<a id="_idIndexMarker574"/> both <strong class="source-inline">HtmlImageElement</strong> and <strong class="source-inline">Sheet</strong> in the <strong class="source-inline">engine</strong> module:</p>
+			<p class="source-code">pub struct SpriteSheet {</p>
+			<p class="source-code">    sheet: Sheet,</p>
+			<p class="source-code">    image: HtmlImageElement,</p>
+			<p class="source-code">}</p>
+			<p>Now, let's create an implementation that will wrap the common behaviors of the sheet that we're using in <strong class="source-inline">Platform</strong>:</p>
+			<p class="source-code">impl SpriteSheet {</p>
+			<p class="source-code">    pub fn new(sheet: Sheet, image: HtmlImageElement) -&gt; </p>
+			<p class="source-code">     Self {</p>
+			<p class="source-code">        SpriteSheet { sheet, image }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn cell(&amp;self, name: &amp;str) -&gt; Option&lt;&amp;Cell&gt; {</p>
+			<p class="source-code">        self.sheet.frames.get(name)</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    pub fn draw(&amp;self, renderer: &amp;Renderer, source: &amp;Rect, </p>
+			<p class="source-code">     destination: &amp;Rect) {</p>
+			<p class="source-code">        renderer.draw_image(&amp;self.image, source, destination);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>I initially considered having <strong class="source-inline">draw</strong> take the name of the <strong class="source-inline">cell</strong> property we were drawing, but right now, our <strong class="source-inline">Platform</strong> draws more than one <strong class="source-inline">cell</strong> at a time, and we want to keep that functionality. Let's replace <strong class="source-inline">HtmlImageElement</strong> and <strong class="source-inline">Sheet</strong> in <strong class="source-inline">Platform</strong> with<a id="_idIndexMarker575"/> the <strong class="source-inline">SpriteSheet</strong> field, as shown here:</p>
+			<p class="source-code">pub struct Platform {</p>
+			<p class="source-code">    sheet: SpriteSheet,</p>
+			<p class="source-code">    position: Point,</p>
+			<p class="source-code">}</p>
+			<p>Don't forget to import <strong class="source-inline">SpriteSheet</strong> from the <strong class="source-inline">engine</strong> module. Now, you can follow the compiler to simplify <strong class="source-inline">Platform</strong> by removing references to <strong class="source-inline">Sheet</strong> and <strong class="source-inline">HtmlImageElement</strong> and just using <strong class="source-inline">SpriteSheet</strong>. In particular, you'll need to change the <strong class="source-inline">new</strong> function so that it takes one <strong class="source-inline">SpriteSheet</strong> instead of the two parameters. The following code shows how this can be initialized in the <strong class="source-inline">initialize</strong> method of <strong class="source-inline">WalkTheDog</strong>:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    async fn initialize(&amp;mut self) -&gt; Result&lt;Box&lt;dyn Game&gt;&gt; </p>
+			<p class="source-code">    {</p>
+			<p class="source-code">        match self {</p>
+			<p class="source-code">            WalkTheDog::Loading =&gt; {</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                let platform = Platform::new(</p>
+			<p class="source-code">                    SpriteSheet::new(</p>
+			<p class="source-code">                        platform_sheet.into_serde::</p>
+			<p class="source-code">                         &lt;Sheet&gt;()?,</p>
+			<p class="source-code">                        engine::load_image(</p>
+			<p class="source-code">                         "tiles.png").await?,</p>
+			<p class="source-code">                    ),</p>
+			<p class="source-code">                    Point { x: 200, y: 400 },</p>
+			<p class="source-code">                );</p>
+			<p class="source-code">                ...</p>
+			<p>The rest of <strong class="source-inline">Platform</strong> can be modified to fit the new interface. Note how you no longer need to say <strong class="source-inline">frames</strong> and can just call <strong class="source-inline">sheet.cell</strong>. The <strong class="source-inline">draw</strong> method will now delegate to <strong class="source-inline">self.sheet.draw</strong> and pass it the <strong class="source-inline">renderer</strong> instead of an <strong class="source-inline">Image</strong>. This structure is small and wouldn't be worth the effort if we didn't want to share the same <strong class="source-inline">SpriteSheet</strong> across multiple <strong class="source-inline">Platform</strong> objects. But we do want to share one <strong class="source-inline">SpriteSheet</strong>, instead<a id="_idTextAnchor156"/> of duplicating<a id="_idIndexMarker576"/> that memory everywhere. Due to this, we need to make it possible to share it.</p>
+			<h3>Sharing a sprite sheet</h3>
+			<p>To share <strong class="source-inline">SpriteSheet</strong> across more<a id="_idIndexMarker577"/> than one <strong class="source-inline">Platform</strong>, we'll need to store it somewhere that all of the platforms can point to, and designate something to be the owner of <strong class="source-inline">SpriteSheet</strong>. We could give <strong class="source-inline">SpriteSheet</strong> a <strong class="source-inline">static</strong> lifetime, and make it global, but that would mean making it an <strong class="source-inline">Option</strong> since it's not available until <strong class="source-inline">initialize</strong> is used. Instead, we'll store a reference-counted version of <strong class="source-inline">SpriteSheet</strong> in the <strong class="source-inline">Walk</strong> structure. This is a tradeoff since we'll be using reference counting instead of ownership to track when we should delete <strong class="source-inline">SpriteSheet</strong>, but in exchange, we'll only be duplicating the pointer in memory instead of an entire <strong class="source-inline">SpriteSheet</strong>.</p>
+			<p>Let's add <strong class="source-inline">obstacle_sheet</strong> to the <strong class="source-inline">Walk</strong> struct, as shown here:</p>
+			<p class="source-code">struct Walk {</p>
+			<p class="source-code">    obstacle_sheet: Rc&lt;SpriteSheet&gt;,</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">}</p>
+			<p>You'll need to make sure you add <strong class="source-inline">use std::rc::Rc</strong> to the top of the <strong class="source-inline">game</strong> module. We'll also need to make sure that <strong class="source-inline">Platform</strong> can take a reference-counted <strong class="source-inline">SpriteSheet</strong> instead of taking ownership of <strong class="source-inline">SpriteSheet</strong>, as shown here:</p>
+			<p class="source-code">pub struct Platform {</p>
+			<p class="source-code">    sheet: Rc&lt;SpriteSheet&gt;,</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">}</p>
+			<p class="source-code">impl Platform {</p>
+			<p class="source-code">    pub fn new(sheet: Rc&lt;SpriteSheet&gt;, position: Point) -&gt; </p>
+			<p class="source-code">     Self {</p>
+			<p class="source-code">        Platform { sheet, position }</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">    ...</p>
+			<p>Here, we're replacing <strong class="source-inline">SpriteSheet</strong> with <strong class="source-inline">Rc&lt;SpriteSheet&gt;</strong>. This leaves us with one last modification we need<a id="_idIndexMarker578"/> to make – we must initialize the <strong class="source-inline">Walk</strong> struct and set up <strong class="source-inline">obstacle_sheet</strong> and the platform, as shown here:</p>
+			<p class="source-code">#[async_trait(?Send)]</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    async fn initialize(&amp;mut self) -&gt; Result&lt;Box&lt;dyn Game&gt;&gt; </p>
+			<p class="source-code">    {</p>
+			<p class="source-code">        match self {</p>
+			<p class="source-code">            WalkTheDog::Loading =&gt; {</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                let tiles = browser::fetch_json(</p>
+			<p class="source-code">                 "tiles.json").await?;</p>
+			<p class="source-code">                let sprite_sheet = </p>
+			<p class="source-code">                 Rc::new(SpriteSheet::new(</p>
+			<p class="source-code">                    tiles.into_serde::&lt;Sheet&gt;()?,</p>
+			<p class="source-code">                    engine::load_image("tiles.png").await?,</p>
+			<p class="source-code">                ));</p>
+			<p class="source-code">                let platform = Platform::new(</p>
+			<p class="source-code">                    sprite_sheet.clone(),</p>
+			<p class="source-code">                    Point {</p>
+			<p class="source-code">                        x: FIRST_PLATFORM,</p>
+			<p class="source-code">                        y: LOW_PLATFORM,</p>
+			<p class="source-code">                    },</p>
+			<p class="source-code">                );</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                Ok(Box::new(WalkTheDog::Loaded(Walk {</p>
+			<p class="source-code">                    ...</p>
+			<p class="source-code">                    obstacles: vec![</p>
+			<p class="source-code">                        Box::new(Barrier::new(Image::new(</p>
+			<p class="source-code">                        stone, Point { x: 150, y: 546 }))),</p>
+			<p class="source-code">                        Box::new(platform),</p>
+			<p class="source-code">                    ],</p>
+			<p class="source-code">                    <strong class="bold">obstacle_sheet: sprite_sheet</strong>,</p>
+			<p class="source-code">                })))</p>
+			<p>Two sections change in <strong class="source-inline">initialize</strong>. First, after we call <strong class="source-inline">fetch_json</strong> to get <strong class="source-inline">tiles.json</strong>, we use that to create<a id="_idIndexMarker579"/> a reference-counted <strong class="source-inline">SpriteSheet</strong> named <strong class="source-inline">sprite_sheet</strong> with <strong class="source-inline">Rc::new</strong>. Note that we've replaced <strong class="source-inline">let platform_sheet</strong> with <strong class="source-inline">let tiles</strong> because that's a better name – it's loading <strong class="source-inline">tiles.json</strong> after all. Then, when we create <strong class="source-inline">platform</strong> with <strong class="source-inline">Platform::new</strong>, we pass it a clone of the created sprite <strong class="source-inline">_sheet</strong>. Previously, this was done inline, but we're going to need <strong class="source-inline">sprite_sheet</strong> again in a minute.</p>
+			<p>Then, when we're creating the <strong class="source-inline">Walk</strong> struct, we need to pass that created sheet to the <strong class="source-inline">obstacle_sheet</strong> field. This doesn't need to be cloned because <strong class="source-inline">Walk</strong> is the ultimate owner of <strong class="source-inline">sprite_sheet</strong>, so <strong class="source-inline">sprite_sheet</strong> can be moved into it. This will increment the reference counter and will not clone the entire <strong class="source-inline">SpriteSheet</strong>. We will need to clone <strong class="source-inline">obstacle_sheet</strong> every time we create a <strong class="source-inline">Platform</strong> to ensure the references are counted correctly, but don't worry about this – the compiler will force us to do this.</p>
+			<p>With that, we're now ready to reevaluate how our <strong class="source-inline">Platform</strong> object works. Currently, it can only create one <strong class="source-inline">Platform</strong>, but there's no reason it can't creat<a id="_idTextAnchor157"/>e many things the player can stand on. We'll want<a id="_idIndexMarker580"/> that as we generate levels. We'll do that next.</p>
+			<h2 id="_idParaDest-105"><a id="_idTextAnchor158"/>Many different platforms</h2>
+			<p>The current <strong class="source-inline">Platform</strong> struct assumes<a id="_idIndexMarker581"/> it's using the same three cells in the sprite sheet, including calculating the bounding boxes. So, to allow many kinds of platforms to be used, we'll need to pass in the cells we want to be rendered from the sheet, and we'll need to pass in custom bounding boxes for each potential <strong class="source-inline">Platform</strong>. For example, imagine that you wanted to take the provided tileset (<strong class="source-inline">tiles.json</strong>) and arrange them into a little cliff:</p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer078">
+					<img alt="Figure 6.4 – Look out below!&#13;&#10;" src="image/Figure_6.04_B17151.jpg"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.4 – Look out below!</p>
+			<p>This would require passing the <strong class="source-inline">11</strong>, <strong class="source-inline">2</strong>, and <strong class="source-inline">3</strong> platform tiles. Those tiles aren't arranged horizontally or neatly, and the bounding boxes don't match our other platform. When we create this platform, we'll need to look up the tile dimensions in <strong class="source-inline">tiles.json</strong> and work out the bounding boxes from the provided dimensions manually. This means changing the way <strong class="source-inline">Platform</strong> works so that it's less specific.</p>
+			<p>Let's start by changing the <strong class="source-inline">Platform</strong> struct so that it can hold the bounding boxes and a list of the sprites, as shown here:</p>
+			<p class="source-code">pub struct Platform {</p>
+			<p class="source-code">    sheet: Rc&lt;SpriteSheet&gt;,</p>
+			<p class="source-code">    bounding_boxes: Vec&lt;Rect&gt;,</p>
+			<p class="source-code">    sprites: Vec&lt;<strong class="bold">Cell</strong>&gt;,</p>
+			<p class="source-code">    position: Point,</p>
+			<p class="source-code">}</p>
+			<p>While we're changing <strong class="source-inline">Platform</strong> to make it less specific, we're also going to introduce an optimization: <strong class="source-inline">Platform</strong> will hold the sprite cells instead of looking them up every time they are drawn. There are two optimizations<a id="_idIndexMarker582"/> here because we are also storing the bounding boxes for <strong class="source-inline">Platform</strong> instead of calculating them every time they're created.</p>
+			<p>This change will break pretty much everything in the implementation of <strong class="source-inline">Platform</strong>, most notably the <strong class="source-inline">new</strong> constructor, which will need to take a list of sprite names and bounding boxes and then convert the sprite names into cells, as shown here:</p>
+			<p class="source-code">impl Platform {</p>
+			<p class="source-code">    pub fn new(</p>
+			<p class="source-code">        sheet: Rc&lt;SpriteSheet&gt;,</p>
+			<p class="source-code">        position: Point,</p>
+			<p class="source-code">        sprite_names: &amp;[&amp;str],</p>
+			<p class="source-code">        bounding_boxes: &amp;[Rect],</p>
+			<p class="source-code">    ) -&gt; Self {</p>
+			<p class="source-code">        let sprites = sprite_names</p>
+			<p class="source-code">            .iter()</p>
+			<p class="source-code">            .filter_map(|sprite_name| </p>
+			<p class="source-code">             sheet.cell(sprite_name).cloned())</p>
+			<p class="source-code">            .collect();</p>
+			<p class="source-code">        ...</p>
+			<p>This isn't the entire <strong class="source-inline">new</strong> method, just the beginning. We started by changing the signature so that it takes four parameters. <strong class="source-inline">sheet</strong> and <strong class="source-inline">position</strong> were already there but the <strong class="source-inline">new</strong> method now takes a list of sprite names as a reference to an array of string slices. You can take a <strong class="source-inline">Vec</strong> of <strong class="source-inline">String</strong> objects, but it's a lot nicer to use the reference to string slices because it's much easier to call it. Clippy will also object to the code taking a <strong class="source-inline">Vec&lt;String&gt;</strong>, which we will cover in <a href="B17151_09_Final_PG_ePub.xhtml#_idTextAnchor203"><em class="italic">Chapter 9</em></a>, <em class="italic">Testing, Debugging, and Performance</em>.</p>
+			<p>The first thing we do in the constructor <a id="_idIndexMarker583"/>is to use an iterator to look up every <strong class="source-inline">Cell</strong> in the sprite sheet via the <strong class="source-inline">filter_map</strong> call. We use <strong class="source-inline">filter_map</strong> instead of <strong class="source-inline">map</strong> because <strong class="source-inline">sheet.cell</strong> can return <strong class="source-inline">None</strong>, so we'll need to skip any invalid sprite names. <strong class="source-inline">filter_map</strong> combines <strong class="source-inline">filter</strong> and <strong class="source-inline">map</strong> to automatically reject any options that have a value of <strong class="source-inline">None</strong> but <strong class="source-inline">map</strong> the inner value if it is present. The <strong class="source-inline">cloned</strong> method on <strong class="source-inline">Option</strong> will return an <strong class="source-inline">Option&lt;T&gt;</strong> for any <strong class="source-inline">Option&lt;&amp;T&gt;</strong> by cloning the inner value. We use this to take ownership of the inner <strong class="source-inline">Cell</strong>. Let's continue with our constructor:</p>
+			<p class="source-code">        ...</p>
+			<p class="source-code">        let bounding_boxes = bounding_boxes</p>
+			<p class="source-code">            .iter()</p>
+			<p class="source-code">            .map(|bounding_box| {</p>
+			<p class="source-code">                Rect::new_from_x_y(</p>
+			<p class="source-code">                    bounding_box.x() + position.x,</p>
+			<p class="source-code">                    bounding_box.y() + position.y,</p>
+			<p class="source-code">                    bounding_box.width,</p>
+			<p class="source-code">                    bounding_box.height,</p>
+			<p class="source-code">                )</p>
+			<p class="source-code">            })</p>
+			<p class="source-code">            .collect();</p>
+			<p class="source-code">        Platform {</p>
+			<p class="source-code">            sheet,</p>
+			<p class="source-code">            position,</p>
+			<p class="source-code">            sprites,</p>
+			<p class="source-code">            bounding_boxes,</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">    }</p>
+			<p>We continue by taking the passed-in bounding<a id="_idIndexMarker584"/> boxes, which are of the <strong class="source-inline">&amp;[Rect]</strong> type, and converting them into a <strong class="source-inline">Vec&lt;Rect&gt;</strong> to be owned by the <strong class="source-inline">Platform</strong> struct. However, instead of just calling <strong class="source-inline">collect</strong> or <strong class="source-inline">to_owned</strong>, we take each <strong class="source-inline">Rect</strong> and adjust its <strong class="source-inline">position</strong> by the actual <strong class="source-inline">position</strong> of <strong class="source-inline">Platform</strong>. So, <strong class="source-inline">bounding_boxes</strong> will need to be passed in relative to its image, where the image starts at <strong class="source-inline">(0,0)</strong>. Imagine that the image you're drawing is positioned in the top-left corner. The bounding boxes are then "drawn" around them, skipping any transparency that's relative to the top-left corner. Then, everything is moved to the right spot in the game. That's the mental model I use to prevent confusion when I'm specifying the bounding boxes later.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Rust has some pretty good tools for functional-style programming, such as <strong class="source-inline">filter</strong> and <strong class="source-inline">map</strong>. It's worth getting to know them.</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">Having four parameters is a lot for a constructor, so you should probably consider replacing this code with the <strong class="source-inline">Builder</strong> pattern. We did not do this here because it would distract from the topic at hand, but it is a worthwhile code improvement. For an example of this, take a look at the unofficial <em class="italic">Rust Design Patterns</em> book here: <strong class="source-inline">https://bit.ly/3GKxMld</strong>.</p>
+			<p>You'll also need to change the function for retrieving <strong class="source-inline">bounding_boxes</strong>, which gets a lot smaller:</p>
+			<p class="source-code">impl Platform {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn bounding_boxes(&amp;self) -&gt; <strong class="bold">&amp;</strong>Vec&lt;Rect&gt; {</p>
+			<p class="source-code">        &amp;self.bounding_boxes</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Well, that was a lot easier! Make sure you return a reference to <strong class="source-inline">Vec</strong> and not a <strong class="source-inline">Vec</strong>.instance We don't need to make<a id="_idIndexMarker585"/> any more calculations here; <strong class="source-inline">Platform</strong> is being passed its bounding boxes. The rest of the implementation for <strong class="source-inline">Platform</strong> won't be so easy, as we'll need to modify <strong class="source-inline">move_horizontally</strong> and <strong class="source-inline">draw</strong> to account for these changes. The change that needs to be made to <strong class="source-inline">move_horizontally</strong> is shown here:</p>
+			<p class="source-code">impl Obstacle for Platform {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn move_horizontally(&amp;mut self, x: i16) {</p>
+			<p class="source-code">        self.position.x += x;</p>
+			<p class="source-code">        self.bounding_boxes.iter_mut()</p>
+			<p class="source-code">         .for_each(|bounding_box| {</p>
+			<p class="source-code">            bounding_box.set_x(bounding_box.position.x + </p>
+			<p class="source-code">             x);</p>
+			<p class="source-code">        });</p>
+			<p class="source-code">    }</p>
+			<p>The original code only moved position because <strong class="source-inline">bounding_boxes</strong> was calculated on demand. Now that <strong class="source-inline">bounding_boxes</strong> is stored on <strong class="source-inline">Platform</strong>, this needs to be adjusted every time we move <strong class="source-inline">Platform</strong>. Otherwise, you'll have images for <strong class="source-inline">Platform</strong> in one place, the bounding boxes in another, and very strange bugs. Ask me how I know.</p>
+			<p>Finally, let's update the <strong class="source-inline">draw</strong> function for the new structure. Whereas the original implementation assumed that it was three cells wide and looked up each cell on each draw, the new implementation will loop through every cell and draw it individually. It will also need to account for the width of each cell. So, if the cells are <strong class="source-inline">50</strong> pixels wide, then the first cell<a id="_idIndexMarker586"/> will be positioned at <strong class="source-inline">0</strong>, the second at <strong class="source-inline">50</strong>, and so on:</p>
+			<p class="source-code">impl Obstacle for Platform {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn draw(&amp;self, renderer: &amp;Renderer) {</p>
+			<p class="source-code">        let mut x = 0;</p>
+			<p class="source-code">        self.sprites.iter().for_each(|sprite| {</p>
+			<p class="source-code">            self.sheet.draw(</p>
+			<p class="source-code">                renderer,</p>
+			<p class="source-code">                &amp;Rect::new_from_x_y(</p>
+			<p class="source-code">                    sprite.frame.x,</p>
+			<p class="source-code">                    sprite.frame.y,</p>
+			<p class="source-code">                    sprite.frame.w,</p>
+			<p class="source-code">                    sprite.frame.h,</p>
+			<p class="source-code">                ),</p>
+			<p class="source-code">                // Just use position and the standard </p>
+			<p class="source-code">                   widths in the tileset</p>
+			<p class="source-code">                &amp;Rect::new_from_x_y(</p>
+			<p class="source-code">                    self.position.x + x,</p>
+			<p class="source-code">                    self.position.y,</p>
+			<p class="source-code">                    sprite.frame.w,</p>
+			<p class="source-code">                    sprite.frame.h,</p>
+			<p class="source-code">                ),</p>
+			<p class="source-code">            );</p>
+			<p class="source-code">            x += sprite.frame.w;</p>
+			<p class="source-code">        });</p>
+			<p class="source-code">    }</p>
+			<p>This isn't my favorite code<a id="_idIndexMarker587"/> in the world, but it gets the job done. It starts by creating a local, temporary <strong class="source-inline">x</strong> that will calculate the offset from <strong class="source-inline">position</strong> for each <strong class="source-inline">Cell</strong>. Then, it loops through the sprites, drawing each one but adjusting them for both <strong class="source-inline">position</strong> and <strong class="source-inline">x</strong>. Note how, in the destination <strong class="source-inline">Rect</strong>, we advance the <strong class="source-inline">x</strong> position with <strong class="source-inline">self.position.x + x</strong>. This ensures each <strong class="source-inline">cell</strong> is drawn to the right of the previous one. Finally, we calculate the next <strong class="source-inline">x</strong> position based on the width of <strong class="source-inline">cell</strong>. This implementation of <strong class="source-inline">draw</strong> does not use the <strong class="source-inline">destination_box</strong> method, which means nobody uses it, and you can safely delete it.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">This code assumes that <strong class="source-inline">width</strong> is variable but <strong class="source-inline">height</strong> is constant and that the sprites move from left to right. Here, a two-level platform would need to be constructed with two platforms.</p>
+			<p><strong class="source-inline">Platform</strong> should now work with any list of sprites that we can construct it with. Now, all we need to do is initialize <strong class="source-inline">Platform</strong> properly in <strong class="source-inline">WalkTheDog::initialize</strong>, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    async fn initialize(&amp;mut self) -&gt; Result&lt;Box&lt;dyn Game&gt;&gt; </p>
+			<p class="source-code">    {</p>
+			<p class="source-code">        match self {</p>
+			<p class="source-code">            WalkTheDog::Loading =&gt; {</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                let platform = Platform::new(</p>
+			<p class="source-code">                    sprite_sheet.clone(),</p>
+			<p class="source-code">                    Point {</p>
+			<p class="source-code">                        x: FIRST_PLATFORM,</p>
+			<p class="source-code">                        y: LOW_PLATFORM,</p>
+			<p class="source-code">                    },</p>
+			<p class="source-code">                    &amp;["13.png", "14.png", "15.png"],</p>
+			<p class="source-code">                    &amp;[</p>
+			<p class="source-code">                        Rect::new_from_x_y(0, 0, 60, 54),</p>
+			<p class="source-code">                        Rect::new_from_x_y(60, 0, 384 - (60 </p>
+			<p class="source-code">                         * 2), 93),</p>
+			<p class="source-code">                        Rect::new_from_x_y(384 - 60, 0, 60, </p>
+			<p class="source-code">                         54),</p>
+			<p class="source-code">                    ],</p>
+			<p class="source-code">                );</p>
+			<p class="source-code">                ...</p>
+			<p>With that, <strong class="source-inline">Platform</strong> has been created with two more parameters – the list of tiles and the list of bounding boxes – making up<a id="_idIndexMarker588"/> the platform we've had all along. Notice that we can now pass in a simple array of strings for the names of the sprites. This is because we accept the <strong class="source-inline">&amp;[&amp;str]</strong> type as a parameter instead of a <strong class="source-inline">Vec&lt;String&gt;</strong>. You may be wondering where I got the three bounding box rectangles from. After all, previously, we were calculating them in the <strong class="source-inline">bounding_boxes</strong> method, using offsets. I simply looked in <strong class="source-inline">tiles.json</strong> and did the math, factoring in the offsets we used earlier. These are the same measurements as the bounding boxes were when we calculated them. You may also be wondering why these don't use constants, especially after I extolled the virtues of using constants in <a href="B17151_05_Final_PG_ePub.xhtml#_idTextAnchor114"><em class="italic">Chapter 5</em></a>, <em class="italic">Collision Detection</em>. That's because we're going to create those in the next section.</p>
+			<p>At this point, you should be back to where you started – with RHB waiting to jump over a rock. Now, we are ready to create a stream of dynamic segments. At the end of the next section, you'll<a id="_idIndexMarker589"/> have the constructs you will need for an endless runner.</p>
+			<h1 id="_idParaDest-106"><a id="_idTextAnchor159"/>Creating a dynamic level</h1>
+			<p>The initial screen we've been looking<a id="_idIndexMarker590"/> at for so long, with RHB jumping from a stone onto a platform, is what we're going to call a "segment." It's not a technical term, just a concept we've made up for the sake of generating them. As RHB moves to the right (that is, when all the obstacles move to the left), we'll generate new segments to the right, which is just off screen. We'll create these as segments so that we can control what is generated and how they fit together. Think of it like this: if we generated obstacles at random, then our platforms would look messy and would arrange themselves in an unbeatable fashion, like so:</p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer079">
+					<img alt="Figure 6.5 – A truly random level" src="image/Figure_6.05_B17151.jpg"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.5 – A truly random level</p>
+			<p>Instead, what we'll do is create a segment where the first one looks exactly like our one platform and one rock, and have them string together via a "timeline" value that's stored in <strong class="source-inline">Walk</strong>. This timeline will represent the right-hand side of the last segment in <strong class="source-inline">x</strong>. As that value gets closer to the edge of the screen, we'll generate another new segment and move the timeline back out. With this approach, RHB will be able to run for as long as we like, and we will have<a id="_idIndexMarker591"/> the freedom of a level designer. We will be able to create segments that are both easy and <a id="_idTextAnchor160"/>hard to navigate, though we'll need to make sure they all interlock and can be beaten. This is the fun part!</p>
+			<h2 id="_idParaDest-107"><a id="_idTextAnchor161"/>Creating one segment</h2>
+			<p>We'll start by taking the introductory screen<a id="_idIndexMarker592"/> and creating it as a segment. Let's do this by creating<a id="_idIndexMarker593"/> a new file called <strong class="source-inline">segments.rs</strong>, making sure to add <strong class="source-inline">mod segments</strong> to the <strong class="source-inline">lib.rs</strong> file. This module isn't created for the typical software design reasons; usually, it's because <strong class="source-inline">game.rs</strong> is getting pretty long and these segments are closer to being levels than they are true code.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Remember that <strong class="source-inline">game.rs</strong> can be broken down into a module with separate files using a directory with a <strong class="source-inline">mod.rs</strong> file. We're not doing this here because I find it gets harder to explain where new code goes – at least in book form – when we have a large number of files. If you are comfortable with doing this, then feel free to break this down into smaller chunks.</p>
+			<p>Each segment will be a function that returns a list of obstacles. Let's create a public function in <strong class="source-inline">segments.rs</strong> that returns the same list that the game is initialized with:</p>
+			<p class="source-code">pub fn stone_and_platform(</p>
+			<p class="source-code">    stone: HtmlImageElement,</p>
+			<p class="source-code">    sprite_sheet: Rc&lt;SpriteSheet&gt;,</p>
+			<p class="source-code">    offset_x: i16,</p>
+			<p class="source-code">) -&gt; Vec&lt;Box&lt;dyn Obstacle&gt;&gt; {</p>
+			<p class="source-code">    const INITIAL_STONE_OFFSET: i16 = 150;</p>
+			<p class="source-code">    vec![</p>
+			<p class="source-code">        Box::new(Barrier::new(Image::new(</p>
+			<p class="source-code">            stone,</p>
+			<p class="source-code">            Point {</p>
+			<p class="source-code">                x: offset_x + INITIAL_STONE_OFFSET,</p>
+			<p class="source-code">                y: STONE_ON_GROUND,</p>
+			<p class="source-code">            },</p>
+			<p class="source-code">        ))),</p>
+			<p class="source-code">        Box::new(<strong class="bold">create_floating_platform</strong>(</p>
+			<p class="source-code">            sprite_sheet,</p>
+			<p class="source-code">            Point {</p>
+			<p class="source-code">                x: offset_x + FIRST_PLATFORM,</p>
+			<p class="source-code">                y: LOW_PLATFORM,</p>
+			<p class="source-code">            },</p>
+			<p class="source-code">        )),</p>
+			<p class="source-code">    ]</p>
+			<p class="source-code">}</p>
+			<p>Look, constants! We want the segments<a id="_idIndexMarker594"/> module to look as data-driven as possible, so we'll be using<a id="_idIndexMarker595"/> constants throughout this file. This section of code doesn't compile because the <strong class="source-inline">create_floating_platform</strong> function doesn't exist yet, but it does the same things that the corresponding code in the <strong class="source-inline">initialize</strong> method of <strong class="source-inline">WalkTheDog</strong> does. The only differences are that it uses the <strong class="source-inline">create_floating_platform</strong> function, which doesn't exist, and some constants that also do not exist.</p>
+			<p>The function itself takes <strong class="source-inline">HtmlImageElement</strong> from <strong class="source-inline">stone</strong> and <strong class="source-inline">Rc&lt;SpriteSheet&gt;</strong> to create <strong class="source-inline">Barrier</strong> and <strong class="source-inline">Platform</strong>, respectively, but it also takes an <strong class="source-inline">offset_x value</strong>. That's because while the first <strong class="source-inline">Barrier</strong> and <strong class="source-inline">Platform</strong> may be at <strong class="source-inline">150</strong> and <strong class="source-inline">200</strong>, respectively, in the future, we'll want those to be that many pixels away from the timeline. It returns a vector of obstacles, which we can use in the <strong class="source-inline">initialize</strong> method of <strong class="source-inline">WalkTheDog</strong> and anywhere else that we generate segments.</p>
+			<p class="callout-heading">Information</p>
+			<p class="callout">You may have noticed that we used an <strong class="source-inline">Rc</strong> for <strong class="source-inline">SpriteSheet</strong> but just take ownership of <strong class="source-inline">HtmlImageElement</strong>, which may need to be cloned when it's called. Nice catch! You may wish to consider making <strong class="source-inline">HtmlImageElement</strong> an <strong class="source-inline">Rc</strong> as well. <strong class="source-inline">HtmlImageElement</strong> is small enough that it's probably fine if we clone it, but it may be worth investigating in <a href="B17151_09_Final_PG_ePub.xhtml#_idTextAnchor203"><em class="italic">Chapter 9</em></a>, <em class="italic">Testing, Debugging, and Performance</em>.</p>
+			<p>Let's continue by creating<a id="_idIndexMarker596"/> the function<a id="_idIndexMarker597"/> that's missing – that is, <strong class="source-inline">create_floating_platform</strong>: </p>
+			<p class="source-code">fn create_floating_platform(sprite_sheet: Rc&lt;SpriteSheet&gt;, position: Point) -&gt; Platform {</p>
+			<p class="source-code">    Platform::new(</p>
+			<p class="source-code">        sprite_sheet,</p>
+			<p class="source-code">        position,</p>
+			<p class="source-code">        &amp;FLOATING_PLATFORM_SPRITES,</p>
+			<p class="source-code">        &amp;FLOATING_PLATFORM_BOUNDING_BOXES,</p>
+			<p class="source-code">    )</p>
+			<p class="source-code">}</p>
+			<p>This is a pretty small function in that it just delegates to the <strong class="source-inline">Platform</strong> constructor and passes along important information. As you can see, there are two new constants to go along with the others in <strong class="source-inline">stone_and_platform</strong>. I told you that the constants would come back!</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">If you want to use <strong class="source-inline">Rect::new_from_x_y</strong> when you're declaring <strong class="source-inline">FLOATING_PLATFORM_BOUNDING_BOXES</strong>, you'll need to declare it and <strong class="source-inline">Rect::new</strong> as <strong class="source-inline">pub const fn</strong>.</p>
+			<p>The rest of the segments<a id="_idIndexMarker598"/> module consists of constants and <strong class="source-inline">use</strong> statements. You can infer<a id="_idIndexMarker599"/> the values for all the constants from the code we used earlier, or just check out <a href="https://github.com/PacktPublishing/Game-Development-with-Rust-and-WebAssembly/blob/chapter_6/src/segments.rs">https://github.com/PacktPublishing/Game-Development-with-Rust-and-WebAssembly/blob/chapter_6/src/segments.rs</a>. Reproducing that code here would amount to padding. By putting all the values in constants, the code looks increasingly data-driven, with functions just returning the data we want for every segment.</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">It's possible to serialize these segments into JSON using <strong class="source-inline">serde</strong> and then read them in from JSON files instead of having the levels be written in Rust code. This is an experiment that you can undertake; I prefer the Rust code version.</p>
+			<p>Once you've filled in the constants and the <strong class="source-inline">use</strong> statements, you can use the new <strong class="source-inline">stone_and_platform</strong> function in the <strong class="source-inline">initialize</strong> method of <strong class="source-inline">WalkTheDog</strong>. Yeah, that one again. Let's replace the hardcoded list of obstacles with a call to this new function:</p>
+			<p class="source-code">#[async_trait(?Send)]</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    async fn initialize(&amp;mut self) -&gt; Result&lt;Box&lt;dyn Game&gt;&gt; </p>
+			<p class="source-code">    {</p>
+			<p class="source-code">        match self {</p>
+			<p class="source-code">            WalkTheDog::Loading =&gt; {</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                Ok(Box::new(WalkTheDog::Loaded(Walk {</p>
+			<p class="source-code">                    ...</p>
+			<p class="source-code">                    <strong class="bold">obstacles: stone_and_platform(stone, </strong></p>
+			<p class="source-code"><strong class="bold">                    sprite_sheet.clone(), 0),</strong></p>
+			<p class="source-code">                    obstacle_sheet: sprite_sheet,</p>
+			<p class="source-code">                })))</p>
+			<p>Make sure you import <strong class="source-inline">stone_and_platform</strong> from <strong class="source-inline">segments</strong>! Now that we've got a function to create<a id="_idIndexMarker600"/> the initial scene, we can add a timeline and start generating scenes<a id="_idIndexMarker601"/> again and again. Let's get started.</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">You may have noticed that this puts a circular dependency between <strong class="source-inline">segments</strong> and <strong class="source-inline">game</strong>. You're right. To fix this, take anything that <strong class="source-inline">segments</strong> depends on that is in <strong class="source-inline">game</strong> and put it in another module that both <strong class="source-inline">game</strong> and <strong class="source-inline">segments</strong> depend on. This has been left as an exercise for you.</p>
+			<h2 id="_idParaDest-108"><a id="_idTextAnchor162"/>Adding a timeline </h2>
+			<p>We need to initialize the timeline<a id="_idIndexMarker602"/> at the width of a segment. We can calculate this by finding<a id="_idIndexMarker603"/> the right-most point in the list of obstacles, and we'll use those cool functional constructs we used earlier. This will be a standalone function that we can keep in the <strong class="source-inline">game</strong> module, which looks like this:</p>
+			<p class="source-code">fn rightmost(obstacle_list: &amp;Vec&lt;Box&lt;dyn Obstacle&gt;&gt;) -&gt; i16 {</p>
+			<p class="source-code">    obstacle_list</p>
+			<p class="source-code">        .iter()</p>
+			<p class="source-code">        .map(|obstacle| obstacle.right())</p>
+			<p class="source-code">        .max_by(|x, y| x.cmp(&amp;y))</p>
+			<p class="source-code">        .unwrap_or(0)</p>
+			<p class="source-code">}</p>
+			<p>This function goes through a <strong class="source-inline">vec</strong> of <strong class="source-inline">Obstacle</strong> and gets its <strong class="source-inline">right</strong> value. Then, it uses the <strong class="source-inline">max_by</strong> function<a id="_idIndexMarker604"/> to figure out the maximum<a id="_idIndexMarker605"/> value on the right. Finally, it uses <strong class="source-inline">unwrap_or</strong> because while <strong class="source-inline">max_by</strong> can technically return <strong class="source-inline">None</strong>, if it does that here, then we have completely screwed up and may as well shove all the graphics onto the leftmost part of the screen. Now that we have this function, we can add a <strong class="source-inline">timeline</strong> value to the <strong class="source-inline">Walk</strong> struct, as shown here:</p>
+			<p class="source-code">struct Walk {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    stone: HtmlImageElement,</p>
+			<p class="source-code">    timeline: i16,</p>
+			<p class="source-code">}</p>
+			<p>We also added a reference to <strong class="source-inline">HtmlImageElement</strong> because we'll need that later. We will now initialize <strong class="source-inline">Walk</strong> – yes, we're back in that function again – with <strong class="source-inline">stone</strong> and <strong class="source-inline">timeline</strong>. We'll have to tweak the code slightly to deal with the borrow checker:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    async fn initialize(&amp;mut self) -&gt; Result&lt;Box&lt;dyn Game&gt;&gt; </p>
+			<p class="source-code">    {</p>
+			<p class="source-code">        match self {</p>
+			<p class="source-code">            WalkTheDog::Loading =&gt; {</p>
+			<p class="source-code">                ...</p>
+			<p class="source-code">                let starting_obstacles = stone_and_platform</p>
+			<p class="source-code">                 (stone.clone(), sprite_sheet.clone(), 0);</p>
+			<p class="source-code">                let timeline = rightmost(</p>
+			<p class="source-code">                 &amp;starting_obstacles);</p>
+			<p class="source-code">                Ok(Box::new(WalkTheDog::Loaded(Walk {</p>
+			<p class="source-code">                    ...</p>
+			<p class="source-code">                    obstacles: starting_obstacles,</p>
+			<p class="source-code">                    obstacle_sheet: sprite_sheet,</p>
+			<p class="source-code">                    stone,</p>
+			<p class="source-code">                    timeline,</p>
+			<p class="source-code">                })))</p>
+			<p class="source-code">            }</p>
+			<p>Here, we bind <strong class="source-inline">starting_obstacles</strong> and <strong class="source-inline">timeline</strong> before we initialize <strong class="source-inline">Walk</strong> since we wouldn't be able to get <strong class="source-inline">timeline</strong> as we've moved <strong class="source-inline">obstacles</strong> already. Note how<a id="_idIndexMarker606"/> we now clone <strong class="source-inline">stone</strong> when we pass it into <strong class="source-inline">stone_and_platform</strong>. We'll need to do<a id="_idIndexMarker607"/> this from now on because each <strong class="source-inline">Barrier</strong> obstacle owns an <strong class="source-inline">Image</strong> and, ultimately, its <strong class="source-inline">HtmlImageElement</strong>. Finally, we pass <strong class="source-inline">stone</strong> and <strong class="source-inline">timeline</strong> into the <strong class="source-inline">Walk</strong> struct. Now that we have a <strong class="source-inline">timeline field</strong> we can update it, by moving the rightmost edge of the generated obstacles to the left on each update, and respond to it by generating more obstacles as necessary. Our <strong class="source-inline">Canvas</strong> is still <strong class="source-inline">600</strong> pixels wide, so let's say that if there are no obstacles at the rightmost point past <strong class="source-inline">1000</strong>, we need to generate more.</p>
+			<p>These changes belong in the <strong class="source-inline">update</strong> method of <strong class="source-inline">WalkTheDog</strong>, at the end of the update logic:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            ...</p>
+			<p class="source-code">            walk.obstacles.iter_mut().for_each(|obstacle| {</p>
+			<p class="source-code">                obstacle.move_horizontally(velocity);</p>
+			<p class="source-code">                obstacle.check_intersection(&amp;mut walk.boy);</p>
+			<p class="source-code">            });</p>
+			<p class="source-code">            if walk.timeline &lt; TIMELINE_MINIMUM {</p>
+			<p class="source-code">                let mut next_obstacles = </p>
+			<p class="source-code">                 stone_and_platform(</p>
+			<p class="source-code">                    walk.stone.clone(),</p>
+			<p class="source-code">                    walk.obstacle_sheet.clone(),</p>
+			<p class="source-code">                    walk.timeline + OBSTACLE_BUFFER,</p>
+			<p class="source-code">                );</p>
+			<p class="source-code">                walk.timeline = rightmost(&amp;next_obstacles);</p>
+			<p class="source-code">                walk.obstacles.append(&amp;mut next_obstacles);</p>
+			<p class="source-code">            } else {</p>
+			<p class="source-code">                walk.timeline += velocity;</p>
+			<p class="source-code">            }</p>
+			<p class="source-code">        }</p>
+			<p>After moving the obstacles, we check whether <strong class="source-inline">walk.timeline</strong> is <strong class="source-inline">&lt; TIMELINE_MINIMUM</strong>, which is set to <strong class="source-inline">1000</strong> at the top<a id="_idIndexMarker608"/> of the module. If it is, we create<a id="_idIndexMarker609"/> another <strong class="source-inline">stone_and_platform</strong> segment at <strong class="source-inline">walk.timeline + OBSTACLE_BUFFER</strong>, which is another constant that's set to <strong class="source-inline">20</strong>. Why <strong class="source-inline">20</strong>? We needed a little buffer to make sure the segments weren't right on top of each other, and <strong class="source-inline">20</strong> seemed fine. You could use a larger number or none at all. Then, we update <strong class="source-inline">walk.timeline</strong> to the <strong class="source-inline">rightmost</strong> point of the new obstacles, and we append those obstacles to the list, ready to be drawn.</p>
+			<p>If <strong class="source-inline">walk.timeline</strong> is beyond <strong class="source-inline">TIMELINE_MINIMUM</strong>, we simply decrease it by RHB's walking speed until the next update. Upon adding this code, you should see something similar to the following:</p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer080">
+					<img alt="Figure 6.6 – As one platform ends, another beckons" src="image/Figure_6.06_B17151.jpg"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.6 – As one platform ends, another beckons</p>
+			<p>That's right – you have an endless<a id="_idIndexMarker610"/> runner! So, how come we're only halfway through this book? Well, our runner<a id="_idIndexMarker611"/> is a little dull, seeing as it only has the same two objects over and over again. How about we add some randomness and creativity with multiple segments?</p>
+			<h2 id="_idParaDest-109"><a id="_idTextAnchor163"/>Creating segments </h2>
+			<p>Creating random segments<a id="_idIndexMarker612"/> means using the random library<a id="_idIndexMarker613"/> to choose a different segment each time one is needed. Let's start by extracting the code we wrote previously into a function, as shown here:</p>
+			<p class="source-code">impl Game for WalkTheDog {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn update(&amp;mut self, keystate: &amp;KeyState) {</p>
+			<p class="source-code">        if let WalkTheDog::Loaded(walk) = self {</p>
+			<p class="source-code">            ...</p>
+			<p class="source-code">            if walk.timeline &lt; TIMELINE_MINIMUM {</p>
+			<p class="source-code">                walk.generate_next_segment()</p>
+			<p class="source-code">            } else {</p>
+			<p class="source-code">                walk.timeline += velocity;</p>
+			<p class="source-code">            }</p>
+			<p class="source-code">        }</p>
+			<p class="source-code">        ...</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p class="source-code">impl Walk {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn generate_next_segment(&amp;mut self) {</p>
+			<p class="source-code">        let mut next_obstacles = stone_and_platform(</p>
+			<p class="source-code">            self.stone.clone(),</p>
+			<p class="source-code">            self.obstacle_sheet.clone(),</p>
+			<p class="source-code">            self.timeline + OBSTACLE_BUFFER,</p>
+			<p class="source-code">        );</p>
+			<p class="source-code">        self.timeline = rightmost(&amp;next_obstacles);</p>
+			<p class="source-code">        self.obstacles.append(&amp;mut next_obstacles);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p class="callout-heading">Information</p>
+			<p class="callout"><strong class="source-inline">WalkTheDog</strong> has a bad case of <strong class="bold">feature envy</strong>, another one of those code<a id="_idIndexMarker614"/> smells we talked about previously. You can read more about this at <a href="https://bit.ly/3ytptHA">https://bit.ly/3ytptHA</a>, but as this game gets extended, we'll want to move more code out of <strong class="source-inline">WalkTheDog</strong> and into <strong class="source-inline">Walk</strong>.</p>
+			<p>Now that <strong class="source-inline">Walk</strong> can generate<a id="_idIndexMarker615"/> the next segment, we'll use the <strong class="source-inline">random</strong> crate<a id="_idIndexMarker616"/> from <a href="B17151_01_Final_PG_ePub.xhtml#_idTextAnchor015"><em class="italic">Chapter 1</em></a>, <em class="italic">Hello WebAssembly</em>, to choose the next segment. Of course, we only have one segment, so that won't mean much. It looks like this:</p>
+			<p class="source-code">impl Walk {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn generate_next_segment(&amp;mut self) {</p>
+			<p class="source-code">        let mut rng = thread_rng();</p>
+			<p class="source-code">        let next_segment = rng.gen_range(0..1);</p>
+			<p class="source-code">        let mut next_obstacles = match next_segment {</p>
+			<p class="source-code">            0 =&gt; stone_and_platform(</p>
+			<p class="source-code">                self.stone.clone(),</p>
+			<p class="source-code">                self.obstacle_sheet.clone(),</p>
+			<p class="source-code">                self.timeline + OBSTACLE_BUFFER,</p>
+			<p class="source-code">            ),</p>
+			<p class="source-code">            _ =&gt;vec![],</p>
+			<p class="source-code">        };</p>
+			<p class="source-code">        self.timeline = rightmost(&amp;next_obstacles);</p>
+			<p class="source-code">        self.obstacles.append(&amp;mut next_obstacles);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Don't forget to add <strong class="source-inline">use rand::prelude::*;</strong> at the top of the file. This generates a random number between <strong class="source-inline">0</strong> and, well, <strong class="source-inline">0</strong>. Then, it matches that value and generates the selected<a id="_idIndexMarker617"/> segment, which in this case will always be <strong class="source-inline">stone_and_platform</strong>. There's a default<a id="_idIndexMarker618"/> case here, but that's just to quiet the compiler – it can't happen. I'll create a second segment called <strong class="source-inline">platform_and_stone</strong> that is the same as the first one except it flips the position of <strong class="source-inline">stone</strong> and <strong class="source-inline">platform</strong>, and then puts the platform higher by using the <strong class="source-inline">HIGH_PLATFORM</strong> constant we created earlier. Now, the <strong class="source-inline">generate_next_segment</strong> function looks like this:</p>
+			<p class="source-code">impl Walk {</p>
+			<p class="source-code">    ...</p>
+			<p class="source-code">    fn generate_next_segment(&amp;mut self) {</p>
+			<p class="source-code">        let mut rng = thread_rng();</p>
+			<p class="source-code">        let next_segment = rng.gen_range(0..<strong class="bold">2</strong>);</p>
+			<p class="source-code">        let mut next_obstacles = match next_segment {</p>
+			<p class="source-code">            0 =&gt; stone_and_platform(</p>
+			<p class="source-code">                self.stone.clone(),</p>
+			<p class="source-code">                self.obstacle_sheet.clone(),</p>
+			<p class="source-code">                self.timeline + OBSTACLE_BUFFER,</p>
+			<p class="source-code">            ),</p>
+			<p class="source-code">            1 =&gt; platform_and_stone(</p>
+			<p class="source-code">                self.stone.clone(),</p>
+			<p class="source-code">                self.obstacle_sheet.clone(),</p>
+			<p class="source-code">                self.timeline + OBSTACLE_BUFFER,</p>
+			<p class="source-code">            ),</p>
+			<p class="source-code">            _ =&gt;vec![],</p>
+			<p class="source-code">        };</p>
+			<p class="source-code">        self.timeline = rightmost(&amp;next_obstacles);</p>
+			<p class="source-code">        self.obstacles.append(&amp;mut next_obstacles);</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>Here, you can see that I get two segments, both of which are called<a id="_idIndexMarker619"/> in the same way. Make sure <strong class="source-inline">gen_range</strong> now generates a number from <strong class="source-inline">0</strong> to <strong class="source-inline">2</strong>. Upon running<a id="_idIndexMarker620"/> this code, I get to see a new segment:</p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer081">
+					<img alt="Figure 6.7 – Who moved that rock?" src="image/Figure_6.07_B17151.jpg"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.7 – Who moved that rock?</p>
+			<p>If you try to copy/paste the preceding code, it won't work since you don't have <strong class="source-inline">platform_and_stone</strong>. This hasn't been included here because you have all the knowledge you need to create your <em class="italic">own</em> segments. You can start by copying/pasting <strong class="source-inline">stone_and_platform</strong> and tweaking its values. Then, you can try creating platforms with the sprite sheet. Remember that you're not limited to just the three images in our sprite sheet. The entire sheet looks like this:</p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer082">
+					<img alt="Figure 6.8 – The sprite sheet" src="image/Figure_6.08_B17151.jpg"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.8 – The sprite sheet</p>
+			<p>You can use this to make larger <a id="_idIndexMarker621"/>platforms, steps, and even cliffs. Try making<a id="_idIndexMarker622"/> a few different shapes. Try making smaller platforms by skipping the middle tile in the platform we've been using. RHB can slide; can you make something for him to slide under?</p>
+			<p>For a real challenge, take a look at the water sprites. Currently, RHB can't fall through the ground sinc<a id="_idTextAnchor164"/>e we're using a <strong class="source-inline">FLOOR</strong> variable, but what if we didn't? Could RHB drown? Fall off a cliff, perhaps? It's time to become a game designer!</p>
+			<h1 id="_idParaDest-110"><a id="_idTextAnchor165"/>Summary</h1>
+			<p>It's time for a confession. If you're like me, a programmer, that means you're probably sitting in a room with a bunch of books like this one behind you. Of those books, you've probably only opened half of them, and you've probably only read one or two of them cover-to-cover. Harry Potter notwithstanding.</p>
+			<p>Great news! At this point, you've made an endless runner. It's got no sound, the collision boxes are pretty big (have you tried to go under a platform yet?), and there's no menu system, but at this point, you have a game. You have the skeleton to make it more fun as you play around, and you're welcome to use this to make even larger or completely different endless runners. I wouldn't hold it against you if you stopped following along at this point, because you've learned a ton.</p>
+			<p>But if you do decide to stick around for the next chapter, we'll be adding a requirement for immersion that's required for any game – <em class="italic">sound</em>. Don't you want to hear what RHB sounds like?</p>
+		</div>
+		<div>
+			<div id="_idContainer084">
+			</div>
+		</div>
+	</body></html>

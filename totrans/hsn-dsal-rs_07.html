@@ -1,0 +1,725 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Collections in Rust</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">In the previous chapters, we implemented a range of data structures, something that rarely happens in reality. Especially in Rust, the excellent <kbd>Vec&lt;T&gt;</kbd> covers a lot of cases, and if a map type structure is required, the <kbd>HashMap&lt;T&gt;</kbd> covers most of these too. So what else is there? How are they implemented? Why were they implemented if they won't be used? These are all great questions, and they'll get answered in this chapter. You can look forward to learning about the following:</p>
+<ul>
+<li>Sequence data types such as <kbd>LinkedList&lt;T&gt;</kbd>, <kbd>Vec&lt;T&gt;</kbd>, or <kbd>VecDeque&lt;T&gt;</kbd></li>
+<li>Rust's <kbd>BinaryHeap&lt;T&gt;</kbd> implementation</li>
+<li><kbd>HashSet&lt;T&gt;</kbd> and <kbd>BTreeSet&lt;T&gt;</kbd></li>
+<li>How to map things with the <kbd>BTreeMap&lt;T&gt;</kbd> and <kbd>HashMap&lt;T&gt;</kbd></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Sequences</h1>
+                </header>
+            
+            <article>
+                
+<p>Lists of any kind are the most essential data structure in a typical program; they provide flexibility and can be used as a queue, as a stack, as well as a searchable structure. Yet the limitations and the operations make a huge of difference between different data structures, which is why the documentation for <kbd>std::collections</kbd> offers a decision tree to find out the collection type that is actually required to solve a particular problem.</p>
+<p>The following were discussed in <a href="1a6971bb-ec24-47d5-b44c-cfb4da7d5b24.xhtml">Chapter 4</a>, <em>Lists, Lists, More Lists</em>:</p>
+<ul>
+<li><strong>Dynamic arrays</strong> (<kbd>Vec&lt;T&gt;</kbd>) are the most universal and straightforward to use sequential data structure. They capture the speed and accessibility of an array, the dynamic sizing of a list, and they are the fundamental building block for higher order structures (such as stacks, heaps, or even trees). So, when in doubt a <kbd>Vec&lt;T&gt;</kbd> is always a good choice.</li>
+<li><kbd>VecDeque&lt;T&gt;</kbd> <span>is a close relative of the <kbd>Vec&lt;T&gt;</kbd>, implemented as a <strong>ring buffer</strong>—a dynamic array that wraps around the ends end, making it look like a circular structure. Since the underlying structure is still the same as</span> <kbd>Vec&lt;T&gt;</kbd><span>, many of its aspects also apply here.</span></li>
+<li>The <kbd>LinkedList&lt;T&gt;</kbd> <span>is very limited in its functionality in Rust. Direct index access will be inefficient (it's a counted iteration</span><span>), which is probably why it can only iterate, merge and split, and insert or retrieve from the back and front.</span></li>
+</ul>
+<p class="mce-root">This was a nice primer, so let's look deeper into each of Rust's data structures in <kbd>std::collections</kbd>!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Vec&lt;T&gt; and VecDeque&lt;T&gt;</h1>
+                </header>
+            
+            <article>
+                
+<p>Just like the dynamic array in <a href="1a6971bb-ec24-47d5-b44c-cfb4da7d5b24.xhtml">Chapter 4</a>, <em>Lists, Lists, More Lists</em>, <kbd>Vec&lt;T&gt;</kbd> and <kbd>VecDeque&lt;T&gt;</kbd> are growable, list-like data structures with support for indexing and based on a heap-allocated array. Other than the previously implemented dynamic array, it is generic by default without any constraints for the generic type, allowing literally any type to be used.</p>
+<p><kbd>Vec&lt;T&gt;</kbd> aims to have as little overhead as possible, while providing a few guarantees. At its core, it is a triple of (<kbd>pointer</kbd>, <kbd>length</kbd>, <kbd>capacity</kbd>) that provides an API to modify these elements. The <kbd>capacity</kbd> is the amount of memory that is allocated to hold items, which means that it fundamentally differs from <kbd>length</kbd>, the number of elements currently held. In case a zero-sized type or no initial length is provided, <kbd>Vec&lt;T&gt;</kbd> won't actually allocate any memory. The <kbd>pointer</kbd> only points to the reserved area in memory that is encapsulated as a <kbd>RawVec&lt;T&gt;</kbd> structure.</p>
+<p>The main drawback of <kbd><span>Vec&lt;T&gt;</span></kbd> is its lack of efficient insertion at the front, which is what <kbd>VecDeque&lt;T&gt;</kbd> aims to provide. It is implemented as a ring, which wraps around the edges of the array, creating a more complex situation when the memory has to be expanded, or an element is to be inserted at a specified position. Since the implementations of <kbd>Vec&lt;T&gt;</kbd> <span>and</span> <kbd>VecDeque&lt;T&gt;</kbd> are quite similar, they can be used in similar contexts. This can be shown in their architecture.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Architecture</h1>
+                </header>
+            
+            <article>
+                
+<p>Both structures, <kbd>Vec&lt;T&gt;</kbd> and <kbd>RawVec&lt;T&gt;</kbd>, allocate memory in the same way: by using the <kbd>RawVec&lt;T&gt;</kbd> type. This structure is a wrapper around lower level functions to allocate, reallocate, or deallocate an array in the heap part of the memory, built for use in higher level data structures. Its primary goal is to avoid capacity overflows, out-of-memory errors, and general overflows, which saves the developer a lot of boilerplate code.</p>
+<p>The use of this buffer by <kbd><span>Vec&lt;T&gt;</span></kbd> is straightforward. Whenever the length threatens to exceed capacity, allocate more memory and transfer all elements, shown in the following code:</p>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn reserve(&amp;mut self, additional: usize) {<br/>    self.buf.reserve(self.len, additional);<br/>}</pre>
+<p>So this goes on to call the <kbd>reserve()</kbd> function, followed by the <kbd>try_reserve()</kbd>, followed by the <kbd>amortized_new_size()</kbd> <span>of</span> <span><kbd>RawVec&lt;T&gt;</kbd>,</span> which also makes the decision about the size:</p>
+<pre>fn amortized_new_size(&amp;self, used_cap: usize, needed_extra_cap: usize)<br/>    -&gt; Result&lt;usize, CollectionAllocErr&gt; {<br/><br/>    // Nothing we can really do about these checks :(<br/>    let required_cap = used_cap.checked_add(needed_extra_cap).ok_or(CapacityOverflow)?;<br/>    // Cannot overflow, because `cap &lt;= isize::MAX`, and type of `cap` is `usize`.<br/>    let double_cap = self.cap * 2;<br/>    // `double_cap` guarantees exponential growth.<br/>    Ok(cmp::max(double_cap, required_cap))<br/>}</pre>
+<p>Let's take a look at <kbd>VecDeque&lt;T&gt;</kbd>. On top of memory allocation, <kbd>VecDeque&lt;T&gt;</kbd> has to deal with wrapping the data around the ring, which adds considerable complexity to inserting an element at a specified position, or when the capacity has to increase. Then, the old elements need to be copied to the new memory area, starting with the shortest part of a wrapped list.</p>
+<p>Like the <kbd>Vec&lt;T&gt;</kbd>, the <kbd>VecDeque&lt;T&gt;</kbd> doubles its buffer in size if it is full, but uses the <kbd>double()</kbd> function to do so. <em>Be aware that doubling is not a guaranteed strategy and might change.</em></p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p><em>However, whatever replaces it will have to retain the runtime complexities of the operations.</em> The following are the functions used to determine whether the data structure is full and if it needs to grow in size:</p>
+<pre>#[inline]<br/>fn is_full(&amp;self) -&gt; bool {<br/>    self.cap() - self.len() == 1<br/>}<br/><br/>#[inline]<br/>fn grow_if_necessary(&amp;mut self) {<br/>    if self.is_full() {<br/>        let old_cap = self.cap();<br/>        self.buf.double();<br/>        unsafe {<br/>            self.handle_cap_increase(old_cap);<br/>        }<br/>        debug_assert!(!self.is_full());<br/>    }<br/>}</pre>
+<p>The <kbd>handle_cap_increase()</kbd> function will then decide where the new ring should live and how the copying into the new buffer is handled, prioritizing copying as little data as possible. Other than <kbd>Vec&lt;T&gt;</kbd>, calling the <kbd>new()</kbd> function on <kbd>VecDeque&lt;T&gt;</kbd> allocates at <kbd>RawVec&lt;T&gt;</kbd> with enough space for seven elements, which then can be inserted without growing the underlying memory, therefore it is not a zero-size structure when empty.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Insert</h1>
+                </header>
+            
+            <article>
+                
+<p>There are two ways to add elements to <kbd>Vec&lt;T&gt;</kbd>: <kbd>insert()</kbd> and <kbd>push()</kbd>. The former takes two parameters: an index of where to insert the element and the data. Before inserting, the position on the index will be freed by moving all succeeding elements towards the end (to the right<span class="underline">)</span>. Therefore, if an element is inserted at the front, every element has to be shifted by one. <kbd>Vec&lt;T&gt;</kbd> code shows the following:</p>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn insert(&amp;mut self, index: usize, element: T) {<br/>    let len = self.len();<br/>    assert!(index &lt;= len);<br/><br/>    // space for the new element<br/>    if len == self.buf.cap() {<br/>        self.reserve(1);<br/>    }<br/><br/>    unsafe {<br/>        // infallible<br/>        // The spot to put the new value<br/>        {<br/>            let p = self.as_mut_ptr().add(index);<br/>            // Shift everything over to make space. (Duplicating the<br/>            // `index`th element into two consecutive places.)<br/>            ptr::copy(p, p.offset(1), len - index);<br/>            // Write it in, overwriting the first copy of the `index`th<br/>            // element.<br/>            ptr::write(p, element);<br/>        }<br/>        self.set_len(len + 1);<br/>    }<br/>}</pre>
+<p><span>While shifting is done efficiently, by calling</span> <kbd>push()</kbd><span>, the new item can be added without moving data around, shown as follows:</span></p>
+<pre class="rust">#[inline]<br/>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn push(&amp;mut self, value: T) {<br/>    // This will panic or abort if we would allocate &gt; isize::MAX bytes<br/>    // or if the length increment would overflow for zero-sized types.<br/>    if self.len == self.buf.cap() {<br/>        self.reserve(1);<br/>    }<br/>    unsafe {<br/>        let end = self.as_mut_ptr().offset(self.len as isize);<br/>        ptr::write(end, value);<br/>        self.len += 1;<br/>    }<br/>}</pre>
+<p>The main drawback of regular <kbd>Vec&lt;T&gt;</kbd> is the inability of efficiently adding data to the front, which is where <kbd>VecDeque&lt;T&gt;</kbd> excels. The code for doing this is nice and short, shown as follows:</p>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn push_front(&amp;mut self, value: T) {<br/>    self.grow_if_necessary();<br/><br/>    self.tail = self.wrap_sub(self.tail, 1);<br/>    let tail = self.tail;<br/>    unsafe {<br/>        self.buffer_write(tail, value);<br/>    }<br/>}</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p>With the use of <kbd>unsafe {}</kbd> in these functions, the code is much shorter and faster than it would be using safe Rust exclusively.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Look up</h1>
+                </header>
+            
+            <article>
+                
+<p>One major upside of using array-type data allocation is the simple and fast element access, which <kbd>Vec&lt;T&gt;</kbd> and <kbd>VecDeque&lt;T&gt;</kbd> share. The formal way to implement the direct access using brackets (<kbd>let my_first_element= v[0];</kbd>) is provided by the <kbd>Index&lt;I&gt;</kbd> trait.</p>
+<p>Other than direct access, iterators are provided to search, fold, map, and so on the data. Some are equivalent to the <kbd>LinkedList&lt;T&gt;</kbd> part of this section.</p>
+<p>As an example, the <kbd>Vec&lt;T&gt;</kbd>'s owning iterator (<kbd>IntoIter&lt;T&gt;</kbd>) owns the pointer to the buffer and moves a pointer to the current element forward. There is also a catch though: if the size of an element is zero bytes, how should the pointer be moved? What data is returned? The <kbd>IntoIter&lt;T&gt;</kbd> structure comes up with a clever solution (<strong>ZSTs</strong> are <strong>zero-sized types</strong>, so types that don't actually take up space):</p>
+<pre class="rust"><span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">IntoIter</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
+    <span class="ident">buf</span>: <span class="ident">NonNull</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span>,
+    <span class="ident">phantom</span>: <span class="ident">PhantomData</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span>,
+    <span class="ident">cap</span>: <span class="ident">usize</span>,
+    <span class="ident">ptr</span>: <span class="kw-2">*</span><span class="kw">const</span> <span class="ident">T</span>,
+    <span class="ident">end</span>: <span class="kw-2">*</span><span class="kw">const</span> <span class="ident">T</span>,
+}<br/>// ...<br/><br/><span class="attribute">#[<span class="ident">stable</span>(<span class="ident">feature</span> <span class="op">=</span> <span class="string">"rust1"</span>, <span class="ident">since</span> <span class="op">=</span> <span class="string">"1.0.0"</span>)]</span>
+<span class="kw">impl</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> <span class="ident">Iterator</span> <span class="kw">for</span> <span class="ident">IntoIter</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
+    <span class="kw">type</span> <span class="ident">Item</span> <span class="op">=</span> <span class="ident">T</span>;
+
+    <span class="attribute">#[<span class="ident">inline</span>]</span>
+    <span class="kw">fn</span> <span class="ident">next</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>) <span class="op">-&gt;</span> <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
+        <span class="kw">unsafe</span> {
+            <span class="kw">if</span> <span class="self">self</span>.<span class="ident">ptr</span> <span class="kw">as</span> <span class="kw-2">*</span><span class="kw">const</span> <span class="kw">_</span> <span class="op">==</span> <span class="self">self</span>.<span class="ident">end</span> {
+                <span class="prelude-val">None</span>
+            } <span class="kw">else</span> {
+                <span class="kw">if</span> <span class="ident">mem</span>::<span class="ident">size_of</span>::<span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span>() <span class="op">==</span> <span class="number">0</span> {
+                    <span class="comment">// purposefully don't use 'ptr.offset' because for</span>
+                    <span class="comment">// vectors with 0-size elements this would return the</span>
+                    <span class="comment">// same pointer.</span>
+                    <span class="self">self</span>.<span class="ident">ptr</span> <span class="op">=</span> <span class="ident">arith_offset</span>(<span class="self">self</span>.<span class="ident">ptr</span> <span class="kw">as</span> <span class="kw-2">*</span><span class="kw">const</span> <span class="ident">i8</span>, <span class="number">1</span>) <span class="kw">as</span> <span class="kw-2">*</span><span class="kw-2">mut</span> <span class="ident">T</span>;
+
+                    <span class="comment">// Make up a value of this ZST.</span>
+                    <span class="prelude-val">Some</span>(<span class="ident">mem</span>::<span class="ident">zeroed</span>())
+                } <span class="kw">else</span> {
+                    <span class="kw">let</span> <span class="ident">old</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">ptr</span>;
+                    <span class="self">self</span>.<span class="ident">ptr</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">ptr</span>.<span class="ident">offset</span>(<span class="number">1</span>);
+
+                    <span class="prelude-val">Some</span>(<span class="ident">ptr</span>::<span class="ident">read</span>(<span class="ident">old</span>))
+                }
+            }
+        }
+    }<br/>// ...<br/>}</pre>
+<p>The comments already state what's happening, the iterator avoids returning the same pointer over and over again, and instead, increments it by one and returns a zeroed out memory. This is clearly something that the Rust compiler would not tolerate, so <kbd>unsafe</kbd> is a great choice here. Furthermore, the regular iterator (<kbd>vec![].iter()</kbd>) is generalized in the <kbd>core::slice::Iter</kbd> implementation, which works on generic, array-like parts of the memory.</p>
+<p>Contrary to that, the iterator of <kbd><span>VecDeque&lt;T&gt;</span></kbd> resorts to moving an index around the ring until a full circle is reached. Here is its implementation, shown in the following code:</p>
+<pre class="rust"><span class="attribute">#[<span class="ident">stable</span>(<span class="ident">feature</span> <span class="op">=</span> <span class="string">"rust1"</span>, <span class="ident">since</span> <span class="op">=</span> <span class="string">"1.0.0"</span>)]</span>
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">Iter</span><span class="op">&lt;</span><span class="lifetime">'a</span>, <span class="ident">T</span>: <span class="lifetime">'a</span><span class="op">&gt;</span> {
+    <span class="ident">ring</span>: <span class="kw-2">&amp;</span><span class="lifetime">'a</span> [<span class="ident">T</span>],
+    <span class="ident">tail</span>: <span class="ident">usize</span>,
+    <span class="ident">head</span>: <span class="ident">usize</span>,
+}<br/>// ...<br/><span class="attribute">#[<span class="ident">stable</span>(<span class="ident">feature</span> <span class="op">=</span> <span class="string">"rust1"</span>, <span class="ident">since</span> <span class="op">=</span> <span class="string">"1.0.0"</span>)]</span>
+<span class="kw">impl</span><span class="op">&lt;</span><span class="lifetime">'a</span>, <span class="ident">T</span><span class="op">&gt;</span> <span class="ident">Iterator</span> <span class="kw">for</span> <span class="ident">Iter</span><span class="op">&lt;</span><span class="lifetime">'a</span>, <span class="ident">T</span><span class="op">&gt;</span> {
+    <span class="kw">type</span> <span class="ident">Item</span> <span class="op">=</span> <span class="kw-2">&amp;</span><span class="lifetime">'a</span> <span class="ident">T</span>;
+
+    <span class="attribute">#[<span class="ident">inline</span>]</span>
+    <span class="kw">fn</span> <span class="ident">next</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>) <span class="op">-&gt;</span> <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="kw-2">&amp;</span><span class="lifetime">'a</span> <span class="ident">T</span><span class="op">&gt;</span> {
+        <span class="kw">if</span> <span class="self">self</span>.<span class="ident">tail</span> <span class="op">==</span> <span class="self">self</span>.<span class="ident">head</span> {
+            <span class="kw">return</span> <span class="prelude-val">None</span>;
+        }
+        <span class="kw">let</span> <span class="ident">tail</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">tail</span>;
+        <span class="self">self</span>.<span class="ident">tail</span> <span class="op">=</span> <span class="ident">wrap_index</span>(<span class="self">self</span>.<span class="ident">tail</span>.<span class="ident">wrapping_add</span>(<span class="number">1</span>), <span class="self">self</span>.<span class="ident">ring</span>.<span class="ident">len</span>());
+        <span class="kw">unsafe</span> { <span class="prelude-val">Some</span>(<span class="self">self</span>.<span class="ident">ring</span>.<span class="ident">get_unchecked</span>(<span class="ident">tail</span>)) }
+    }<br/>//...<br/>}</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>Among other traits, both implement the <kbd>DoubleEndedIterator&lt;T&gt;</kbd> work on both ends, a special function called <kbd>DrainFilter&lt;T&gt;</kbd>, in order to retrieve items in an iterator only if a predicate applies.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Remove</h1>
+                </header>
+            
+            <article>
+                
+<p><kbd>Vec&lt;T&gt;</kbd> and <kbd>VecDeque&lt;T&gt;</kbd> both remain efficient when removing items. Although, they don't change the amount of memory allocated to the data structure, both types provide a function called <kbd>shrink_to_fit()</kbd> to readjust the capacity to the length it has.</p>
+<p>On <kbd>remove</kbd>, <kbd>Vec&lt;T&gt;</kbd> shifts the remaining elements toward the start of the sequence. Like the <kbd>insert()</kbd> function, it simply copies the entire remaining data with an offset, shown as follows:</p>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn remove(&amp;mut self, index: usize) -&gt; T {<br/>    let len = self.len();<br/>    assert!(index &lt; len);<br/>    unsafe {<br/>        // infallible<br/>        let ret;<br/>        {<br/>            // the place we are taking from.<br/>            let ptr = self.as_mut_ptr().add(index);<br/>            // copy it out, unsafely having a copy of the value on<br/>            // the stack and in the vector at the same time.<br/>            ret = ptr::read(ptr);<br/><br/>            // Shift everything down to fill in that spot.<br/>            ptr::copy(ptr.offset(1), ptr, len - index - 1);<br/>        }<br/>        self.set_len(len - 1);<br/>        ret<br/>    }<br/>} </pre>
+<p>For <kbd>VecDeque&lt;T&gt;</kbd>, the situation is much more complex: since the data can wrap around the ends of the underlying buffer (for example, the tail is on index three, head on index five, so the space from three to five is considered empty), it can't blindly copy in one direction. Therefore, there is some logic that deals with these different situations, but it is much too long to add here.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">LinkedList&lt;T&gt;</h1>
+                </header>
+            
+            <article>
+                
+<p>Rust's <kbd>std::collection::LinkedList&lt;T&gt;</kbd> is a doubly linked list that uses an <kbd>unsafe</kbd> pointer operation to get around the <kbd>Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;</kbd> unpacking we had to do in <a href="1a6971bb-ec24-47d5-b44c-cfb4da7d5b24.xhtml">Chapter 4</a>, <em>Lists, Lists, and More Lists</em>. While unsafe, this is a great solution to that problem, since the pointer operations are easy to comprehend and provide significant benefits. Let's look at the following code:</p>
+<pre class="rust"><span class="attribute">#[<span class="ident">stable</span>(<span class="ident">feature</span> <span class="op">=</span> <span class="string">"rust1"</span>, <span class="ident">since</span> <span class="op">=</span> <span class="string">"1.0.0"</span>)]</span>
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">LinkedList</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
+    <span class="ident">head</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">NonNull</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">tail</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">NonNull</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">len</span>: <span class="ident">usize</span>,
+    <span class="ident">marker</span>: <span class="ident">PhantomData</span><span class="op">&lt;</span><span class="ident">Box</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+}
+
+<span class="kw">struct</span> <span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
+    <span class="ident">next</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">NonNull</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">prev</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">NonNull</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">element</span>: <span class="ident">T</span>,
+}</pre>
+<p><kbd>NonNull</kbd> is a structure that originates from <kbd>std::ptr::NonNull</kbd>, which provides a non-zero pointer to a portion of heap memory in unsafe territory. Hence, the interior mutability pattern can be skipped at this fundamental level, eliminating the need for runtime checks.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Architecture</h1>
+                </header>
+            
+            <article>
+                
+<p>Fundamentally, <kbd>LinkedList</kbd> is built just the way we built the doubly linked list in <a href="1a6971bb-ec24-47d5-b44c-cfb4da7d5b24.xhtml">Chapter 4</a>, <em>Lists, Lists, and More Lists</em>, with the addition of a <kbd>PhantomData&lt;T&gt;</kbd> type pointer. Why? This is necessary to inform the compiler about the properties of the type that contains the marker when generics are involved. With it, the compiler can determine a range of things, including drop behavior, lifetimes, and so on. The <kbd>PhantomData&lt;T&gt;</kbd> pointer is a zero-size addition, and pretends to own type <kbd>T</kbd> content, so the compiler can reason about that.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Insert</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>std::collections::LinkedList</kbd> employs several unsafe methods in order to avoid the <kbd>Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;</kbd> and <kbd>next.as_ref().unwrap().borrow()</kbd> calls that we saw when implementing a doubly linked list in a safe way. This also means that adding a node at either end entails the use of <kbd>unsafe</kbd> to set these pointers.</p>
+<p class="mce-root"/>
+<p>In this case, the code is easy to read and comprehend, which is important to avoid sudden crashes due to unsound code being executed. This is the core function to add a node in the front, shown as follows:</p>
+<pre class="rust">fn push_front_node(&amp;mut self, mut node: Box&lt;Node&lt;T&gt;&gt;) {<br/>    unsafe {<br/>        node.next = self.head;<br/>        node.prev = None;<br/>        let node = Some(Box::into_raw_non_null(node));<br/><br/>        match self.head {<br/>            None =&gt; self.tail = node,<br/>            Some(mut head) =&gt; head.as_mut().prev = node,<br/>        }<br/><br/>        self.head = node;<br/>        self.len += 1;<br/>    }<br/>}</pre>
+<p>This code is wrapped by the publicly facing <kbd>push_front()</kbd> function, shown in the following code snippet:</p>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn push_front(&amp;mut self, elt: T) {<br/>    self.push_front_node(box Node::new(elt));<br/>}</pre>
+<p class="mce-root">The <kbd>push_back()</kbd> function, which performs the same action but on the end of the list, works just like this. Additionally, the linked list can append another list just as easily, since it is almost the same as adding a single node, but with additional semantics (such as: is the list empty?) to take care of:</p>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn append(&amp;mut self, other: &amp;mut Self) {<br/>    match self.tail {<br/>        None =&gt; mem::swap(self, other),<br/>        Some(mut tail) =&gt; {<br/>            if let Some(mut other_head) = other.head.take() {<br/>                unsafe {<br/>                    tail.as_mut().next = Some(other_head);<br/>                    other_head.as_mut().prev = Some(tail);<br/>                }<br/><br/>                self.tail = other.tail.take();<br/>                self.len += mem::replace(&amp;mut other.len, 0);<br/>            }<br/>        }<br/>    }<br/>}</pre>
+<p>Adding things is one of the strong suits of a linked list. But how about looking up elements?</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Look up</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>collections::LinkedList</kbd> relies a lot on the <kbd>Iterator</kbd> trait to look up various items, which is great since it saves a lot of effort. This is achieved by extensively implementing various iterator traits using several structures, like the following:</p>
+<ul>
+<li><kbd>Iter</kbd></li>
+<li><kbd>IterMut</kbd></li>
+<li><kbd>IntoIter</kbd></li>
+</ul>
+<p>Technically, <kbd>DrainFilter</kbd> also implements <kbd>Iterator</kbd>, but it's really a convenience wrapper. The following is the <kbd>Iter</kbd> structure declaration that the <kbd>LinkedList</kbd> uses:</p>
+<pre class="rust"><span class="attribute">#[<span class="ident">stable</span>(<span class="ident">feature</span> <span class="op">=</span> <span class="string">"rust1"</span>, <span class="ident">since</span> <span class="op">=</span> <span class="string">"1.0.0"</span>)]</span>
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">Iter</span><span class="op">&lt;</span><span class="lifetime">'a</span>, <span class="ident">T</span>: <span class="lifetime">'a</span><span class="op">&gt;</span> {
+    <span class="ident">head</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">NonNull</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">tail</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">NonNull</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">len</span>: <span class="ident">usize</span>,
+    <span class="ident">marker</span>: <span class="ident">PhantomData</span><span class="op">&lt;</span><span class="kw-2">&amp;</span><span class="lifetime">'a</span> <span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span>,
+}</pre>
+<p class="mce-root">If you remember the list's declaration earlier, it will become obvious that they are very similar! In fact, they are the same, which means that when iterating over a linked list, you are essentially creating a new list that gets shorter with every call to <kbd>next()</kbd>. As expected, this is a very efficient process that is employed here, since no data is copied and the <kbd>Iter</kbd> structures' head can move back and forth with the <kbd>prev</kbd>/<kbd>next</kbd> pointers of the current head.</p>
+<p><kbd>IterMut</kbd> and <kbd>IntoIter</kbd> have a slightly different structure, due to their intended purposes. <kbd>IntoIter</kbd> takes ownership of the entire list, and just calls <kbd>pop_front()</kbd> or <kbd>pop_back()</kbd> as requested.</p>
+<p><kbd>IterMut</kbd> has to retain a mutable reference to the original list in order to provide mutable references to the caller, but other than that, it's basically an <kbd>Iter</kbd> type structure.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p class="mceNonEditable"/>
+<p>The other structure that also does iteration is <kbd>DrainFilter</kbd>, which as the name suggests, removes items.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Remove</h1>
+                </header>
+            
+            <article>
+                
+<p>The linked list contains two functions: <kbd>pop_front()</kbd> and <kbd>pop_back()</kbd>, and they simply wrap around an "inner" function called <kbd>pop_front_node()</kbd>:</p>
+<pre>#[inline]<br/>fn pop_front_node(&amp;mut self) -&gt; Option&lt;Box&lt;Node&lt;T&gt;&gt;&gt; {<br/>    self.head.map(|node| unsafe {<br/>        let node = Box::from_raw(node.as_ptr());<br/>        self.head = node.next;<br/><br/>        match self.head {<br/>            None =&gt; self.tail = None,<br/>            Some(mut head) =&gt; head.as_mut().prev = None,<br/>        }<br/><br/>        self.len -= 1;<br/>        node<br/>    })<br/>}</pre>
+<p>This way, removing a specific element from <kbd>LinkedList&lt;T&gt;</kbd> has to be done either by splitting and appending the list (skipping the desired element), or by using <kbd>drain_filter()</kbd> function, which does almost exactly that.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Wrap up</h1>
+                </header>
+            
+            <article>
+                
+<p><kbd>Vec&lt;T&gt;</kbd> and <kbd>VecDeque&lt;T&gt;</kbd> both build on a heap-allocated array, and perform very well on <kbd>insert</kbd> and <kbd>find</kbd> operations, thanks to the elimination of several steps. However, the dynamic array implementation from earlier in the book can actually hold its own against these.</p>
+<p>The doubly-linked list implemented previously does not look good against the <kbd>LinkedList&lt;T&gt;</kbd> provided by <kbd>std::collections</kbd>, which is built far simpler and does not use <kbd>RefCells</kbd> that do runtime borrow checking:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/870e3231-79b6-4d11-b995-18007bf90028.png"/></p>
+<p>Clearly, if you need a linked list, do not implement it yourself, <kbd>std::collections::LinkedList&lt;T&gt;</kbd> is excellent as far as linked lists go. Commonly, <kbd>Vec&lt;T&gt;</kbd> will perform better while providing more features, so unless the linked list is absolutely necessary, <kbd>Vec&lt;T&gt;</kbd> should be the default choice.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Maps and sets</h1>
+                </header>
+            
+            <article>
+                
+<p>Rust's maps and sets are based largely on two strategies: B-Tree search and hashing. They are very distinct implementations, but achieve the same results: associating a key with a value (map) and providing a fast unique collection based on keys (set).</p>
+<p>Hashing in Rust works with a <kbd>Hasher</kbd> trait, which is a universal, stateful hasher, to create a hash value from an arbitrary byte stream. By repeatedly calling the appropriate <kbd>write()</kbd> function, data can be added to the hasher's internal state and finished up with the <kbd>finish()</kbd> function.</p>
+<p>Unsurprisingly the B-Tree in Rust is highly optimized. The <kbd>BTreeMap</kbd> documentation provides rich details on why the regular implementation (as previously shown) is cache inefficient and not optimized for modern CPU architectures. Hence, they provide a more efficient implementation, which is definitely fascinating, and you should check it out in the source code.</p>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">HashMap and HashSet</h1>
+                </header>
+            
+            <article>
+                
+<p>Both <kbd>HashMap</kbd> and <kbd>HashSet</kbd> use a hashing algorithm to produce the unique key required for storing and retrieving values. Hashes are created with an instance of the <kbd>Hasher</kbd> trait (<kbd>DefaultHasher</kbd> if nothing is specified) for each key that implements the <kbd>Hash</kbd> and <kbd>Eq</kbd> traits. They allow a <kbd>Hasher</kbd> instance to be passed into the <kbd>Hash</kbd> implementor to generate the required output and the data structure to compare keys for equality.</p>
+<p>If a custom structure is to be used as a hashed key (for the map, or simply to store in the set), this implementation can be derived as well, which adds every field of the structure to the <kbd>Hasher</kbd>'s state. In case the trait is implemented by hand, it has to create equal hashes whenever two keys are equal.</p>
+<p class="mce-root">Since both data structures build on keys having implemented this trait, and both should be highly optimized, one question comes up: why bother with two variants?</p>
+<p>Let's take a look into the source, shown as follows:</p>
+<pre class="rust"><span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>)]</span>
+<span class="attribute">#[<span class="ident">stable</span>(<span class="ident">feature</span> <span class="op">=</span> <span class="string">"rust1"</span>, <span class="ident">since</span> <span class="op">=</span> <span class="string">"1.0.0"</span>)]</span>
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">HashSet</span><span class="op">&lt;</span><span class="ident">T</span>, <span class="ident">S</span> <span class="op">=</span> <span class="ident">RandomState</span><span class="op">&gt;</span> {
+    <span class="ident">map</span>: <span class="ident">HashMap</span><span class="op">&lt;</span><span class="ident">T</span>, (), <span class="ident">S</span><span class="op">&gt;</span>,
+}</pre>
+<p>The rest of this section will only talk about <kbd>HashMap</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Architecture</h1>
+                </header>
+            
+            <article>
+                
+<p><kbd>HashMap</kbd> is a highly optimized data structure that employs a performance heuristic called <strong>Robin Hood hashing</strong> <span>to improve caching behavior, and thereby lookup times.</span></p>
+<p>Robin Hood hashing is best explained together with the insertion algorithm linear probing, which is somewhat similar to the algorithm used in the hash map of the previous chapter. However, instead of an array of arrays (or <kbd>Vec&lt;Vec&lt;(K, V)&gt;&gt;</kbd>), the basic data structure is a flat array wrapped (together with all unsafe code) in a structure called <kbd>RawTable&lt;K, V&gt;</kbd>.</p>
+<p>The table organizes its data into buckets (empty or full) that represent the data at a particular hash. Linear probing means that whenever a collision occurs (two hashes are equal without their keys being equal), the algorithm keeps looking into ("probing") the following buckets until an empty bucket is found.</p>
+<p class="mce-root"/>
+<p>The Robin Hood part is to count the steps from the original (ideal) position, and whenever an element in a bucket is closer to its ideal position (that is, richer), the bucket content is swapped, and the search continues with the element that was swapped out of its bucket. Thus, the search takes from the rich (with only a few steps removed from their ideal spot) and gives to the poor (those that are further away from their ideal spot).</p>
+<p>This strategy organizes the array into clusters around the hash values and greatly reduces the key variance, while improving CPU cache-friendliness. Another main factor that influences this behavior is the size of the table and how many buckets are occupied (called <strong>load factor</strong>). <kbd>DefaultResizePolicy</kbd> of <kbd>HashMap</kbd> changes the table's size to a higher power of two at a load factor of 90.9%—a number that provides ideal results for the Robin Hood bucket stealing. There are also some great ideas on how to manage that growth without having to reinsert every element, but they would certainly exceed the scope of this chapter. It's recommended to read the source's comments if you are interested (see <em>Further reading</em> section).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Insert</h1>
+                </header>
+            
+            <article>
+                
+<p>The Robin Hood hashing strategy already describes a large portion of the <kbd>insert</kbd> mechanism: hash the key value, look for an empty bucket, and reorder elements along the way according to their probing distance:</p>
+<pre>pub fn insert(&amp;mut self, k: K, v: V) -&gt; Option&lt;V&gt; {<br/>    let hash = self.make_hash(&amp;k);<br/>    self.reserve(1);<br/>    self.insert_hashed_nocheck(hash, k, v)<br/>}</pre>
+<p>This function only does the first step and expands the basic data structure—if needed. The <kbd><span>insert_hashed_nocheck()</span></kbd> function provides the next step by searching for the hash in the existing table, and returning the appropriate bucket for it. The element is responsible for inserting itself into the right spot. The steps necessary to do that depend on whether the bucket is full or empty, which is modeled as two different structures: <kbd>VacantEntry</kbd> and <kbd>OccupiedEntry</kbd>. While the latter simply replaces the value (this is an update), <kbd>VacantEntry</kbd> has to find a spot not too far from the assigned bucket:</p>
+<pre>pub fn insert(self, value: V) -&gt; &amp;'a mut V {<br/>    let b = match self.elem {<br/>        NeqElem(mut bucket, disp) =&gt; {<br/>            if disp &gt;= DISPLACEMENT_THRESHOLD {<br/>                bucket.table_mut().set_tag(true);<br/>            }<br/>            robin_hood(bucket, disp, self.hash, self.key, value)<br/>        },<br/>        NoElem(mut bucket, disp) =&gt; {<br/>            if disp &gt;= DISPLACEMENT_THRESHOLD {<br/>                bucket.table_mut().set_tag(true);<br/>            }<br/>            bucket.put(self.hash, self.key, value)<br/>        },<br/>    };<br/>    b.into_mut_refs().1<br/>}</pre>
+<p>The call to <kbd>robin_hood()</kbd> executes the search and swap described earlier. One interesting variable here is the <kbd>DISPLACEMENT_THRESHOLD</kbd>. Does this mean that there is an upper limit of how many displacements a value can have? Yes! This value is <kbd>128</kbd> (so <kbd>128</kbd> misses are required), but it wasn't chosen randomly. In fact, the code comments go into the details of why and how it was chosen, shown as follows:</p>
+<pre>// The threshold of 128 is chosen to minimize the chance of exceeding it.<br/> // In particular, we want that chance to be less than 10^-8 with a load of 90%.<br/> // For displacement, the smallest constant that fits our needs is 90, // so we round that up to 128.<br/> //<br/>// At a load factor of α, the odds of finding the target bucket after exactly n<br/> // unsuccessful probes[1] are<br/> //<br/> // Pr_α{displacement = n} =<br/> //       (1 - α) / α * ∑_{k≥1} e^(-kα) * (kα)^(k+n) / (k + n)! * (1 - kα / (k + n + 1))<br/> //<br/> // We use this formula to find the probability of triggering the adaptive behavior<br/> //<br/> // Pr_0.909{displacement &gt; 128} = 1.601 * 10^-11<br/> //<br/> // 1. Alfredo Viola (2005). Distributional analysis of Robin Hood linear probing // hashing with buckets.</pre>
+<p>As the comment states, the chance is <em>very</em> low that an element actually exceeds that threshold. Once a spot was found for every element, a look up can take place.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Lookup</h1>
+                </header>
+            
+            <article>
+                
+<p>Looking up entries is part of the insert process of <kbd>HashMap</kbd> and it relies on the same functions to provide a suitable entry instance to add data. Just like the insertion process, the lookup process does almost the same, save some steps in the end, listed as follows:</p>
+<ul>
+<li>Create a hash of the key</li>
+<li>Find the hash's bucket in the table</li>
+<li>Move away from the bucket comparing keys (linear search) until found</li>
+</ul>
+<p>Since all of this has already been implemented for use in other functions, <kbd>get()</kbd> is pretty short, shown in the following code:</p>
+<pre>pub fn get&lt;Q: ?Sized&gt;(&amp;self, k: &amp;Q) -&gt; Option&lt;&amp;V&gt;<br/>    where K: Borrow&lt;Q&gt;,<br/>            Q: Hash + Eq<br/>{<br/>    self.search(k).map(|bucket| bucket.into_refs().1)<br/>}</pre>
+<p>Similarly, the <kbd>remove</kbd> function requires <kbd>search</kbd>, and removal is implemented on the entry type.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Remove</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>remove</kbd> function looks a lot like the <kbd>search</kbd> function, shown as follows:</p>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn remove&lt;Q: ?Sized&gt;(&amp;mut self, k: &amp;Q) -&gt; Option&lt;V&gt;<br/>    where K: Borrow&lt;Q&gt;,<br/>            Q: Hash + Eq<br/>{<br/>    self.search_mut(k).map(|bucket| pop_internal(bucket).1)<br/>}</pre>
+<p>There is one major difference: <kbd>search</kbd> returns a mutable bucket from which the key can be removed (or rather, the entire bucket since it's now empty). <kbd>HashMap</kbd> turns out to be an impressive piece of code; can <kbd>BTreeMap</kbd> compete?</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">BTreeMap and BTreeSet</h1>
+                </header>
+            
+            <article>
+                
+<div>
+<p><span>Talking about B-Trees in <a href="84f203ac-a9f6-498b-90ff-e069c41aaca0.xhtml"/><a href="84f203ac-a9f6-498b-90ff-e069c41aaca0.xhtml">Chapter 5</a>, <em>Robust Trees</em>, their purpose is storing key-value pairs—ideal for a map-type data structure. Their ability to find and retrieve these pairs is achieved by effectively minimizing the number of comparisons required to get to (or rule out) a key. Additionally, a tree keeps the keys in order, which means iteration is going to be implicitly ordered. Compared to <kbd>HashMap</kbd>, this can be an advantage since it skips a potentially expensive step.</span></p>
+<p><span>Since—just like <kbd>HashSet</kbd>—<kbd>BTreeSet</kbd> simply uses <kbd>BTreeMap</kbd> with an empty value (only the key) underneath, only the latter is discussed in this section since the working is assumed to be the same. Again, let's start with the architecture.</span></p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Architecture</h1>
+                </header>
+            
+            <article>
+                
+<div>
+<p><span>Rust's <kbd>BTreeMap</kbd> chose an interesting approach to maximize performance for search by creating large individual nodes. Recalling the typical sizes of nodes (that is, the number of children they have), they were more than two (root only), or half the tree's level to the tree's level number of children. In a typical B-Tree, the level rarely exceeds 10, meaning that the nodes stay rather small, and the number of comparisons within a node do too.</span></p>
+<p><span>The implementors of the Rust <kbd>BTreeMap</kbd> chose a different strategy in order to improve caching behavior. In order to improve cache-friendliness and reduce the number of heap allocations required, Rusts' <kbd>BTreeMap</kbd> stores from <em>level - 1</em> to <em>2 * level - 1</em> number of elements per node, which results in a rather large array of keys.</span></p>
+<p><span>While the opposite—small arrays of keys—fit the CPU's cache well enough, the tree itself has a larger number of them, so more nodes might need to be looked at. If the number of key-value pairs in a single node is higher, the overall node count shrinks, and if the key array still fits into the CPU's cache, these comparisons are as fast as they can be. The downside of larger arrays to search the key in is mitigated by using more intelligent searches (like binary search), so the overall performance gain of having fewer nodes outweighs the downside.</span></p>
+<p><span>In general, when comparing the B-Tree from earlier in this book to <kbd>BTreeMap</kbd>, only a few similarities stand out, one of them being inserting a new element.</span></p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Insert</h1>
+                </header>
+            
+            <article>
+                
+<p>Like every B-Tree, inserts are done by first searching a spot to insert, and then applying the split procedure in case the node has more than the expected number of values (or children). Insertion is split into three parts and it starts with the first method to be called, which glues everything together and <span>returns an expected result:</span></p>
+<pre class="mce-root">#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn insert(&amp;mut self, key: K, value: V) -&gt; Option&lt;V&gt; {<br/>    match self.entry(key) {<br/>        Occupied(mut entry) =&gt; Some(entry.insert(value)),<br/>        Vacant(entry) =&gt; {<br/>            entry.insert(value);<br/>            None<br/>        }<br/>    }<br/>}</pre>
+<div>
+<p><span>The second step is finding the handle for the node that the pair can be inserted into, shown as follows:</span></p>
+</div>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn entry(&amp;mut self, key: K) -&gt; Entry&lt;K, V&gt; {<br/>    // FIXME(@porglezomp) Avoid allocating if we don't insert<br/>    self.ensure_root_is_owned();<br/>    match search::search_tree(self.root.as_mut(), &amp;key) {<br/>        Found(handle) =&gt; {<br/>            Occupied(OccupiedEntry {<br/>                handle,<br/>                length: &amp;mut self.length,<br/>                _marker: PhantomData,<br/>            })<br/>        }<br/>        GoDown(handle) =&gt; {<br/>            Vacant(VacantEntry {<br/>                key,<br/>                handle,<br/>                length: &amp;mut self.length,<br/>                _marker: PhantomData,<br/>            })<br/>        }<br/>    }<br/>}</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<div>
+<p><span>Once the handle is known, the entry (which is either a structure modeling a vacant or occupied spot) inserts the new key-value pair. If the entry was occupied before, the value is simply replaced—no further steps required. If the spot was vacant, the new value could trigger a tree rebalancing where the changes are bubbled up the tree:</span></p>
+</div>
+<pre>#[stable(feature = "rust1", since = "1.0.0")]<br/>pub fn insert(self, value: V) -&gt; &amp;'a mut V {<br/>    *self.length += 1;<br/><br/>    let out_ptr;<br/><br/>    let mut ins_k;<br/>    let mut ins_v;<br/>    let mut ins_edge;<br/><br/>    let mut cur_parent = match self.handle.insert(self.key, value) {<br/>        (Fit(handle), _) =&gt; return handle.into_kv_mut().1,<br/>        (Split(left, k, v, right), ptr) =&gt; {<br/>            ins_k = k;<br/>            ins_v = v;<br/>            ins_edge = right;<br/>            out_ptr = ptr;<br/>            left.ascend().map_err(|n| n.into_root_mut())<br/>        }<br/>    };<br/><br/>    loop {<br/>        match cur_parent {<br/>            Ok(parent) =&gt; {<br/>                match parent.insert(ins_k, ins_v, ins_edge) {<br/>                    Fit(_) =&gt; return unsafe { &amp;mut *out_ptr },<br/>                    Split(left, k, v, right) =&gt; {<br/>                        ins_k = k;<br/>                        ins_v = v;<br/>                        ins_edge = right;<br/>                        cur_parent = left.ascend().map_err(|n| n.into_root_mut());<br/>                    }<br/>                }<br/>            }<br/>            Err(root) =&gt; {<br/>                root.push_level().push(ins_k, ins_v, ins_edge);<br/>                return unsafe { &amp;mut *out_ptr };<br/>            }<br/>        }<br/>    }<br/>}</pre>
+<div>
+<p><span>Looking up keys is already part of the insert process, but it deserves a closer look too.</span></p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Look up</h1>
+                </header>
+            
+            <article>
+                
+<p>In a tree structure, inserts and deletes are based on looking up the keys that are being modified. In the case of <kbd>BTreeMap</kbd>, this is done by a function called <kbd>search_tree()</kbd> which is imported from the parent module:</p>
+<pre>pub fn search_tree&lt;BorrowType, K, V, Q: ?Sized&gt;(<br/>    mut node: NodeRef&lt;BorrowType, K, V, marker::LeafOrInternal&gt;,<br/>    key: &amp;Q<br/>) -&gt; SearchResult&lt;BorrowType, K, V, marker::LeafOrInternal, marker::Leaf&gt;<br/>        where Q: Ord, K: Borrow&lt;Q&gt; {<br/><br/>    loop {<br/>        match search_node(node, key) {<br/>            Found(handle) =&gt; return Found(handle),<br/>            GoDown(handle) =&gt; match handle.force() {<br/>                Leaf(leaf) =&gt; return GoDown(leaf),<br/>                Internal(internal) =&gt; {<br/>                    node = internal.descend();<br/>                    continue;<br/>                }<br/>            }<br/>        }<br/>    }<br/>}<br/><br/>pub fn search_node&lt;BorrowType, K, V, Type, Q: ?Sized&gt;(<br/>    node: NodeRef&lt;BorrowType, K, V, Type&gt;,<br/>    key: &amp;Q<br/>) -&gt; SearchResult&lt;BorrowType, K, V, Type, Type&gt;<br/>        where Q: Ord, K: Borrow&lt;Q&gt; {<br/><br/>    match search_linear(&amp;node, key) {<br/>        (idx, true) =&gt; Found(<br/>            Handle::new_kv(node, idx)<br/>        ),<br/>        (idx, false) =&gt; SearchResult::GoDown(<br/>            Handle::new_edge(node, idx)<br/>        )<br/>    }<br/>}</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>The code itself is very easy to read, which is a good sign. It also avoids the use of recursion and uses a <kbd>loop{}</kbd> construct instead, which is a benefit for large lookups since Rust does not expand tail-recursive calls into loops (yet?). In any case, this function returns the node that the key resides in, letting the caller do the work of extracting the value and key from it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Remove</h1>
+                </header>
+            
+            <article>
+                
+<div>
+<p><span>The <kbd>remove</kbd> function wraps the occupied node's <kbd>remove_kv()</kbd> function, which removes a key-value pair from the handle that <kbd>search_tree()</kbd> unearthed. This removal also triggers a merging of nodes if a node now has less than the minimum amount of children.</span></p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Wrap up</h1>
+                </header>
+            
+            <article>
+                
+<div>
+<p><span>As shown in this section, maps and sets have a lot in common and there are two ways that the Rust collections library provides them. <kbd>HashMap</kbd> and <kbd>HashSet</kbd> use a smart approach to finding and inserting values into buckets called Robin Hood hashing. Recalling the comparison benchmarks from <a href="95653045-6e1c-4ef7-bd0c-8e45b1ccfa1d.xhtml"/><a href="95653045-6e1c-4ef7-bd0c-8e45b1ccfa1d.xhtml">Chapter 6</a>, <em>Exploring Maps and Sets</em>, it provided a more stable and significantly better performance over a naive implementation:</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/6182aa28-e48e-4ff7-91cb-9b6846b469db.png"/></p>
+<p><span><kbd>BTreeMap</kbd> and <kbd>BTreeSet</kbd> are based on a different, more efficient implementation of a B-Tree. How much more efficient (and effective)? Let's find out!</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/624801cf-0f59-4aea-9923-88f54cce1df4.png"/></p>
+<p>For a naive implementation of a B-Tree (from <a href="84f203ac-a9f6-498b-90ff-e069c41aaca0.xhtml">Chapter 5</a>, <em>Robust Trees</em>), the performance is not that bad. However, while there might be some tweaks to be added here and there, evidence shows that there is a better and faster tree out there, so why not use that?</p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>The Rust standard library features a great collections part, providing a few highly optimized implementations of basic data structures.</p>
+<p>We started with <kbd>Vec&lt;T&gt;</kbd> and <kbd>VecDeque&lt;T&gt;</kbd>, both based on a heap-allocated array and wrapped in the <kbd>RawVec&lt;T&gt;</kbd> structure. They show excellent performance while memory efficiency remains high, thanks to the array base and <kbd>unsafe</kbd> operations based on pointers.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p><kbd>LinkedList&lt;T&gt;</kbd> is a doubly-linked list that performs really well, thanks to direct data manipulation and the lack of runtime checking. While it excels at splitting and merging, most other operations are slower than <kbd>Vec&lt;T&gt;</kbd> and it lacks some useful features.</p>
+<p><kbd>HashSet</kbd> and <kbd>HashMap</kbd> are based on the same implementation (<kbd>HashMap</kbd>) and—unless specified differently—use <kbd>DefaultHasher</kbd> to generate a hashed key of an object. This key is stored (and later retrieved) using the Robin Hood hashing method, which provides major performance benefits over a naive implementation.</p>
+<p>Alternatively, <kbd>BTreeSet</kbd> and <kbd>BTreeMap</kbd> use a B-Tree structure to organize keys and values. This implementation is also specialized and geared towards CPU-cache friendliness, and reducing the number of nodes (thereby minimizing the number of allocations) in order to create the high performance data structure that it is.</p>
+<p>In the next chapter, we will decrypt the O notation, something that has been used sparingly up until this point, but is necessary for what follows: algorithms.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Questions</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li>Which <kbd>std::collections</kbd> data structure is not discussed here?</li>
+<li>How does <kbd>Vec&lt;T&gt;</kbd> or <kbd>VecDeque&lt;T&gt;</kbd> grow as of 2018?</li>
+<li>Is <kbd>LinkedList&lt;T&gt;</kbd> a good default data structure?</li>
+<li>What hashing implementation does the 2018 <kbd>HashMap</kbd> use by default?</li>
+<li>What are three benefits of <kbd>BTreeMap</kbd> over a <kbd>HashMap</kbd>?</li>
+<li>Is a <kbd>BTreeMap</kbd> internal tree wider or higher?</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<p>You can refer to the following links for more information on topics covered in this chapter:</p>
+<ul>
+<li><a href="https://doc.rust-lang.org/std/collections/index.html">https://doc.rust-lang.org/std/collections/index.html</a></li>
+<li><a href="http://cglab.ca/~abeinges/blah/rust-btree-case/">http://cglab.ca/~abeinges/blah/rust-btree-case/</a></li>
+<li><a href="https://doc.rust-lang.org/src/std/collections/hash/map.rs.html#148">https://doc.rust-lang.org/src/std/collections/hash/map.rs.html#148</a></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

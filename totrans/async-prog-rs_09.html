@@ -1,0 +1,791 @@
+<html><head></head><body>
+		<div id="_idContainer044">
+			<h1 id="_idParaDest-157" class="chapter-number"><a id="_idTextAnchor156"/>9</h1>
+			<h1 id="_idParaDest-158"><a id="_idTextAnchor157"/>Coroutines, Self-Referential Structs, and Pinning</h1>
+			<p>In this chapter, we’ll start by improving our coroutines by adding the ability to store variables across state changes. We’ll see how this leads to our coroutines needing to take references to themselves and the issues that arise as a result of that. The reason for dedicating a whole chapter to this topic is that it’s an integral part of getting async/await to work in Rust, and also a topic that is somewhat difficult to get a good <span class="No-Break">understanding of.</span></p>
+			<p>The reason for this is that the whole concept of pinning is foreign to many developers and just like the Rust ownership system, it takes some time to get a good and working mental model <span class="No-Break">of it.</span></p>
+			<p>Fortunately, the concept of pinning is not that difficult to understand, but how it’s implemented in the language and how it interacts with Rust’s type system is abstract and hard <span class="No-Break">to grasp.</span></p>
+			<p>While we won’t cover absolutely everything about pinning in this chapter, we’ll try to get a good and sound understanding of it. The major goal here is to feel confident with the topic and understand why we need it and how to <span class="No-Break">use it.</span></p>
+			<p>As mentioned previously, this chapter is not only about pinning in Rust, so the first thing we’ll do is make some important improvements where we left off by improving the final example in <a href="B20892_08.xhtml#_idTextAnchor138"><span class="No-Break"><em class="italic">Chapter </em></span><span class="No-Break"><em class="italic">8</em></span></a><span class="No-Break">.</span></p>
+			<p>Then, we’ll explain what self-referential structs are and how they’re connected to futures before we explain how pinning can solve <span class="No-Break">our problems.</span></p>
+			<p>This chapter will cover the following <span class="No-Break">main topics</span></p>
+			<ul>
+				<li>Improving our example 1 – <span class="No-Break">variables</span></li>
+				<li>Improving our example 2 – <span class="No-Break">references</span></li>
+				<li>Improving our example 3 – this is… <span class="No-Break">not… good…</span></li>
+				<li>Discovering <span class="No-Break">self-referential structs</span></li>
+				<li>Pinning <span class="No-Break">in Rust</span></li>
+				<li>Improving our example 4 – pinning to <span class="No-Break">the rescue</span></li>
+			</ul>
+			<h1 id="_idParaDest-159"><a id="_idTextAnchor158"/>Technical requirements</h1>
+			<p>The examples in this chapter will build on the code from the previous chapter, so the requirements are the same. The examples will all be cross-platform and work on all platforms that Rust (<a href="https://doc.rust-lang.org/stable/rustc/platform-support.html">https://doc.rust-lang.org/stable/rustc/platform-support.html</a>) and mio (<a href="https://github.com/tokio-rs/mio#platforms">https://github.com/tokio-rs/mio#platforms</a>) support. The only thing you need is Rust installed and this book’s GitHub repository downloaded locally. All the code in this chapter can be found in the <span class="No-Break"><strong class="source-inline">ch09</strong></span><span class="No-Break"> folder.</span></p>
+			<p>To follow the examples step by step, you’ll also need <strong class="source-inline">corofy</strong> installed on your machine. If you didn’t install it in <a href="B20892_07.xhtml#_idTextAnchor122"><span class="No-Break"><em class="italic">Chapter 7</em></span></a>, install it now by going into the <strong class="source-inline">ch</strong><strong class="source-inline">07</strong><strong class="source-inline">/corofy</strong> folder in the repository and running <span class="No-Break">the following:</span></p>
+			<pre class="source-code">
+cargo install --force --path .</pre>			<p>We’ll also use <strong class="source-inline">delayserver</strong> in this example, so you need to open a separate terminal, enter the <strong class="source-inline">delayserver</strong> folder at the root of the repository, and write <strong class="source-inline">cargo run</strong> so that it’s ready and available for the examples <span class="No-Break">going forward.</span></p>
+			<p>Remember to change the port number in the code if you have to change what port <strong class="source-inline">delayserver</strong> <span class="No-Break">listens on.</span></p>
+			<h1 id="_idParaDest-160"><a id="_idTextAnchor159"/>Improving our example 1 – variables</h1>
+			<p>So, let’s recap what we have at this point by continuing where we left off in the previous chapter. We have <span class="No-Break">the </span><span class="No-Break"><a id="_idIndexMarker541"/></span><span class="No-Break">following:</span></p>
+			<ul>
+				<li>A <span class="No-Break"><strong class="source-inline">Future</strong></span><span class="No-Break"> trait</span></li>
+				<li>A coroutine implementation using coroutine/await syntax and <span class="No-Break">a preprocessor</span></li>
+				<li>A reactor based <span class="No-Break">on </span><span class="No-Break"><strong class="source-inline">mio::Poll</strong></span></li>
+				<li>An executor that allows us to spawn as many top-level tasks as we want and schedules the ones that are ready <span class="No-Break">to run</span></li>
+				<li>An HTTP client that only makes HTTP GET requests to our local <span class="No-Break">delayserver instance</span></li>
+			</ul>
+			<p>It’s not that bad – we might argue that our HTTP client is a <em class="italic">little</em> bit limited, but that’s not the focus of this book, so we can live with that. Our coroutine implementation, however, is severely<a id="_idIndexMarker542"/> limited. Let’s take a look at how we can make our coroutines slightly <span class="No-Break">more useful.</span></p>
+			<p>The biggest downside with our current implementation is that nothing – and I mean nothing – can live across wait points. It makes sense to tackle this <span class="No-Break">problem first.</span></p>
+			<p>Let’s start by setting up <span class="No-Break">our example.</span></p>
+			<p>We’ll use the “library” code from <strong class="source-inline">d-multiple-threads example</strong> in <a href="B20892_08.xhtml#_idTextAnchor138"><span class="No-Break"><em class="italic">Chapter </em></span><span class="No-Break"><em class="italic">8</em></span></a><em class="italic"> </em>(our last version of the example), but we’ll change the <strong class="source-inline">main.rs</strong> file by adding a shorter and <span class="No-Break">simpler example.</span></p>
+			<p>Let’s set up the base example that we’ll iterate on and improve in <span class="No-Break">this chapter.</span></p>
+			<h2 id="_idParaDest-161"><a id="_idTextAnchor160"/>Setting up the base example</h2>
+			<p class="callout-heading">Note</p>
+			<p class="callout">You can find this <a id="_idIndexMarker543"/>example in this book’s GitHub repository <span class="No-Break">under </span><span class="No-Break"><strong class="source-inline">ch</strong></span><span class="No-Break"><strong class="source-inline">09</strong></span><span class="No-Break"><strong class="source-inline">/a-coroutines-variables</strong></span><span class="No-Break">.</span></p>
+			<p>Perform the <span class="No-Break">following steps:</span></p>
+			<ol>
+				<li>Create a folder <span class="No-Break">called </span><span class="No-Break"><strong class="source-inline">a-coroutines-variables</strong></span><span class="No-Break">.</span></li>
+				<li>Enter the folder and run <span class="No-Break"><strong class="source-inline">cargo init</strong></span><span class="No-Break">.</span></li>
+				<li>Delete the default <strong class="source-inline">main.rs</strong> file and copy everything from the <strong class="source-inline">ch</strong><strong class="source-inline">08</strong><strong class="source-inline">/d-multiple-threads/src</strong> folder into the <span class="No-Break"><strong class="source-inline">ch10/a-coroutines-variables/src</strong></span><span class="No-Break"> folder.</span></li>
+				<li>Open <strong class="source-inline">Cargo.toml</strong> and add the dependency on <strong class="source-inline">mio</strong> to the <span class="No-Break">dependencies section:</span><pre class="source-code">
+mio = {version = "0.8", features = ["net", "os-poll"]}</pre></li>			</ol>
+			<p>You should now have a folder structure that looks <span class="No-Break">like this:</span></p>
+			<pre class="console">
+src
+  |-- runtime
+       |-- executor.rs
+       |-- reactor.rs
+  |-- future.rs
+  |-- http.rs
+  |-- main.rs
+  |-- runtime.rs</pre>			<p>We’ll use <strong class="source-inline">corofy</strong> one last time <a id="_idIndexMarker544"/>to generate our boilerplate state machine for us. Copy the following <span class="No-Break">into </span><span class="No-Break"><strong class="source-inline">main.rs</strong></span><span class="No-Break">:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/a-coroutines-variables/src/main.rs</p>
+			<pre class="source-code">
+mod future;
+mod http;
+mod runtime;
+use crate::http::Http;
+use future::{Future, PollState};
+use runtime::Waker;
+fn main() {
+    let mut executor = runtime::init();
+    executor.block_on(async_main());
+}
+coroutine fn async_main() {
+    println!("Program starting");
+    let txt = Http::get("/600/HelloAsyncAwait").wait;
+    println!("{txt}");
+    let txt = Http::get("/400/HelloAsyncAwait").wait;
+    println!("{txt}");
+}</pre>			<p>This time, let’s take a <a id="_idIndexMarker545"/>shortcut and write our <em class="italic">corofied</em> file directly back to <strong class="source-inline">main.rs</strong> since we’ve compared the files side by side enough times at this point. Assuming you’re in the base folder, <strong class="source-inline">a-coroutine-variables</strong>, write <span class="No-Break">the following:</span></p>
+			<pre class="console">
+corofy ./src/main.rs ./src/main.rs</pre>			<p>The last step is to fix the fact that <strong class="source-inline">corofy</strong> doesn’t know about <strong class="source-inline">Waker</strong>. You can let the compiler guide you to where you need to make changes by writing <strong class="source-inline">cargo check</strong>, but to help you along the way, there are three minor changes to make (note that the line number is the one reported by re-writing the same code that we <span class="No-Break">wrote previously):</span></p>
+			<pre class="source-code">
+64: fn poll(&amp;mut self<strong class="bold">, waker: &amp;Waker</strong>)
+82: match f1.poll(<strong class="bold">waker</strong>)
+102: match f2.poll(<strong class="bold">waker</strong>)</pre>			<p>Now, check that everything is working as expected by writing <span class="No-Break"><strong class="source-inline">cargo run</strong></span><span class="No-Break">.</span></p>
+			<p>You should see the following output (the output has been abbreviated to save a little bit <span class="No-Break">of space):</span></p>
+			<pre class="console">
+Program starting
+FIRST POLL - START OPERATION
+main: 1 pending tasks. Sleep until notified.
+HTTP/1.1 200 OK
+<strong class="bold">[==== ABBREVIATED ====]</strong>
+HelloAsyncAwait
+main: All tasks are finished</pre>			<p class="callout-heading">Note</p>
+			<p class="callout">Remember that we need <strong class="source-inline">delayserver</strong> running in a terminal window so that we get a response to our HTTP GET requests. See the <em class="italic">Technical requirements</em> section for <span class="No-Break">more information.</span></p>
+			<p>Now that we’ve got the<a id="_idIndexMarker546"/> boilerplate out of the way, it’s time to start making the improvements we <span class="No-Break">talked about.</span></p>
+			<h2 id="_idParaDest-162"><a id="_idTextAnchor161"/>Improving our base example</h2>
+			<p>We want to see how we can improve <a id="_idIndexMarker547"/>our state machine so that it allows us to hold variables across wait points. To do that, we need to store them somewhere and restore the variables that are needed when we enter each state in our <span class="No-Break">state machine.</span></p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">Pretend that these rewrites are done by <strong class="source-inline">corofy</strong> (or the compiler). Even though <strong class="source-inline">corofy</strong> can’t do these rewrites, it’s possible to automate this process <span class="No-Break">as well.</span></p>
+			<p>Or coroutine/wait program looks <span class="No-Break">like this:</span></p>
+			<pre class="source-code">
+coroutine fn async_main() {
+    println!("Program starting");
+    let txt = Http::get("/600/HelloAsyncAwait").wait;
+    println!("{txt}");
+    let txt = Http::get("/400/HelloAsyncAwait").wait;
+    println!("{txt}");
+}</pre>			<p>We want to change it so that it looks <span class="No-Break">like this:</span></p>
+			<pre class="source-code">
+coroutine fn async_main() {
+    <strong class="bold">let mut counter = 0;</strong>
+    println!("Program starting");
+    let txt = http::Http::get("/600/HelloAsyncAwait").wait;
+    println!("{txt}");
+    <strong class="bold">counter += 1;</strong>
+    let txt = http::Http::get("/400/HelloAsyncAwait").wait;
+    println!("{txt}");
+    <strong class="bold">counter += 1;</strong>
+    <strong class="bold">println!("Received {} responses.", counter);</strong>
+}</pre>			<p>In this version, we simply create a <strong class="source-inline">counter</strong> variable at the top of our <strong class="source-inline">async_main</strong> function and increase the <a id="_idIndexMarker548"/>counter for each response we receive from the server. At the end, we print out how many responses <span class="No-Break">we received.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">For brevity, I won’t present the entire code base going forward; instead, I will only present the relevant additions and changes. Remember that you can always refer to the same example in this book’s <span class="No-Break">GitHub repository.</span></p>
+			<p>The way we implement this is to add a new field called <strong class="source-inline">stack</strong> to our <span class="No-Break"><strong class="source-inline">Coroutine0</strong></span><span class="No-Break"> struct:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/a-coroutines-variables/src/main.rs</p>
+			<pre class="source-code">
+struct Coroutine0 {
+    <strong class="bold">stack: Stack0,</strong>
+    state: State0,
+}</pre>			<p>The stack fields hold a <strong class="source-inline">Stack0</strong> struct that<a id="_idIndexMarker549"/> we also need <span class="No-Break">to define:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/a-coroutines-variables/src/main.rs</p>
+			<pre class="source-code">
+#[derive(Default)]
+struct Stack0 {
+    counter: Option&lt;usize&gt;,
+}</pre>			<p>This struct will only hold one field since we only have one variable. The field will be of the <strong class="source-inline">Option&lt;usize&gt;</strong> type. We also derive the <strong class="source-inline">Default</strong> trait for this struct so that we can initialize <span class="No-Break">it easily.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Futures created by async/await in Rust store this data in a slightly more efficient manner. In our example, we store every variable in a separate struct since I think it’s easier to reason about, but it also means that the more variables we need to store, the more space our coroutine will need. It will grow linearly with the number of different variables that need to be stored/restored between state changes. This could be a lot of data. For example, if we have 100 state changes that each need one distinct <strong class="source-inline">i64</strong>-sized variable to be stored to the next state, that would require a struct that takes up 100 * 8b = 800 bytes <span class="No-Break">in memory.</span></p>
+			<p class="callout">Rust optimizes this by implementing coroutines as enums, where each state only holds the data it needs to restore in the <em class="italic">next</em> state. This way, the size of a coroutine is not dependent on the <em class="italic">total number of variables</em>; it’s only dependent on the <em class="italic">size of the largest state that needs to be saved/restored</em>. In the preceding example, the size would be reduced to 8 bytes since the largest space any single state change needed is enough to hold one <strong class="source-inline">i64</strong>-sized variable. The same space will be reused over <span class="No-Break">and over.</span></p>
+			<p class="callout">The fact that this design allows for this optimization is significant and it’s an advantage that stackless coroutines have over stackful coroutines when it comes to <span class="No-Break">memory efficiency.</span></p>
+			<p>The next thing we need <a id="_idIndexMarker550"/>to change is the <strong class="source-inline">new</strong> method <span class="No-Break">on </span><span class="No-Break"><strong class="source-inline">Coroutine0</strong></span><span class="No-Break">:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/a-coroutines-variables/src/main.rs</p>
+			<pre class="source-code">
+impl Coroutine0 {
+    fn new() -&gt; Self {
+        Self {
+            state: State0::Start,
+            <strong class="bold">stack: Stack0::default(),</strong>
+        }
+    }
+}</pre>			<p>The default value for <strong class="source-inline">stack</strong> is not relevant to us since we’ll overwrite <span class="No-Break">it anyway.</span></p>
+			<p>The next few steps are the ones of most interest to us. In the <strong class="source-inline">Future</strong> implementation for <strong class="source-inline">Coroutine0</strong>, we’ll pretend that <strong class="source-inline">corofy</strong> added the following code to initialize, store, and restore the stack variables for us. Let’s take a look at what happens on the first call to <span class="No-Break"><strong class="source-inline">poll</strong></span><span class="No-Break"> now:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/a-coroutines-variables/src/main.rs</p>
+			<pre class="source-code">
+State0::Start =&gt; {
+                    <strong class="bold">// initialize stack (hoist variables)</strong>
+                    <strong class="bold">self.stack.counter = Some(0);</strong>
+                    // ---- Code you actually wrote ----
+                    println!("Program starting");
+                    // ---------------------------------
+                    let fut1 = Box::new( http::Http::get("/600/HelloAsyncAwait"));
+                    self.state = State0::Wait1(fut1);
+                    <strong class="bold">// save stack</strong>
+                }</pre>			<p>Okay, so there are some important changes here that I’ve highlighted. Let’s go <span class="No-Break">through them:</span></p>
+			<ul>
+				<li>The first thing we do when we’re in the <strong class="source-inline">Start</strong> state is add a segment at the top where we initialize our stack. One of the things we do is <em class="italic">hoist</em> all variable declarations for the relevant<a id="_idIndexMarker551"/> code section (in this case, before the first <strong class="source-inline">wait</strong> point) to the top of <span class="No-Break">the function.</span></li>
+				<li>In our example, we also initialize the variables to their initial value, which in this case <span class="No-Break">is </span><span class="No-Break"><strong class="source-inline">0</strong></span><span class="No-Break">.</span></li>
+				<li>We also added a comment stating that we should save the stack, but since all that happens before the first wait point is the initialization of <strong class="source-inline">counter</strong>, there is nothing to <span class="No-Break">store here.</span></li>
+			</ul>
+			<p>Let’s take a look at what happens after the first <span class="No-Break">wait point:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/a-coroutines-variables/src/main.rs</p>
+			<pre class="source-code">
+State0::Wait1(ref mut f1) =&gt; {
+                    match f1.poll(waker) {
+                        PollState::Ready(txt) =&gt; {
+                            <strong class="bold">// Restore stack</strong>
+<strong class="bold">                            let mut counter = self.stack.counter.take().unwrap();</strong>
+                            // ---- Code you actually wrote ----
+                            println!("{txt}");
+                            <strong class="bold">counter += 1;</strong>
+                            // ---------------------------------
+                            let fut2 = Box::new( http::Http::get("/400/HelloAsyncAwait"));
+                            self.state = State0::Wait2(fut2);
+                            <strong class="bold">// save stack</strong>
+<strong class="bold">                            self.stack.counter = Some(counter);</strong>
+                        }
+                        PollState::NotReady =&gt; break PollState::NotReady,
+                    }
+                }</pre>			<p>Hmm, this is interesting. I’ve highlighted<a id="_idIndexMarker552"/> the changes we need <span class="No-Break">to make.</span></p>
+			<p> The first thing we do is to <em class="italic">restore</em> the stack by taking ownership over the counter (<strong class="source-inline">take()</strong>replaces the value currently stored in <strong class="source-inline">self.stack.counter</strong> with <strong class="source-inline">None</strong> in this case) and writing it to a variable with the same name that we used in the code segment (<strong class="source-inline">counter</strong>). Taking ownership and placing the value back in later is not an issue in this case and it mimics the code we wrote in our <span class="No-Break">coroutine/wait example.</span></p>
+			<p>The next change is simply the segment that takes all the code after the first wait point and pastes it in. In this case, the <a id="_idIndexMarker553"/>only change is that the <strong class="source-inline">counter</strong> variable is increased <span class="No-Break">by </span><span class="No-Break"><strong class="source-inline">1</strong></span><span class="No-Break">.</span></p>
+			<p>Lastly, we save the stack state back so that we hold onto its updated state between the <span class="No-Break">wait points.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">In <a href="B20892_05.xhtml#_idTextAnchor092"><span class="No-Break"><em class="italic">Chapter 5</em></span></a>, we saw how we needed to store/restore the register state in our fibers. Since <a href="B20892_05.xhtml#_idTextAnchor092"><span class="No-Break"><em class="italic">Chapter 5</em></span></a> showed an example of a <em class="italic">stackful coroutine</em> implementation, we didn’t have to care about stack state at all since all the needed state was stored in the stacks <span class="No-Break">we created.</span></p>
+			<p class="callout">Since our coroutines are <em class="italic">stackless</em>, we don’t store the entire call stack for each coroutine, but we do need to store/restore the parts of the stack that will be used <em class="italic">across wait points</em>. Stackless coroutines still need to save some information from the stack, as we’ve <span class="No-Break">done here.</span></p>
+			<p>When we enter the <strong class="source-inline">State0::Wait2</strong> state, we start the <span class="No-Break">same way:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/a-coroutines-variables/src/main.rs</p>
+			<pre class="source-code">
+State0::Wait2(ref mut f2) =&gt; {
+                    match f2.poll(waker) {
+                        PollState::Ready(txt) =&gt; {
+                            <strong class="bold">// Restore stack</strong>
+<strong class="bold">                            let mut counter = self.stack.counter.take().unwrap();</strong>
+                            // ---- Code you actually wrote ----
+                            println!("{txt}");
+                            <strong class="bold">counter += 1;</strong>
+                            <strong class="bold">println!(«Received {} responses.», counter);</strong>
+                            // ---------------------------------
+                            self.state = State0::Resolved;
+                            <strong class="bold">// Save stack (all variables set to None already)</strong>
+                            break PollState::Ready(String::new());
+                        }
+                        PollState::NotReady =&gt; break PollState::NotReady,
+                    }
+                }</pre>			<p>Since there are no more wait points in our program, the rest of the code goes into this segment and since we’re done with <strong class="source-inline">counter</strong> at this point, we can simply <strong class="source-inline">drop</strong> it by letting it go out of <a id="_idIndexMarker554"/>scope. If our variable held onto any resources, they would be released here <span class="No-Break">as well.</span></p>
+			<p>With that, we’ve given our coroutines the power of saving variables across wait points. Let’s try to run it by writing <span class="No-Break"><strong class="source-inline">cargo run</strong></span><span class="No-Break">.</span></p>
+			<p>You should see the following output (I’ve removed the parts of the output that <span class="No-Break">remain unchanged):</span></p>
+			<pre class="console">
+…
+HelloAsyncAwait
+<strong class="bold">Received 2 responses.</strong>
+main: All tasks are finished</pre>			<p>Okay, so our program works and does what’s <span class="No-Break">expected. Great!</span></p>
+			<p>Now, let’s take a look at an<a id="_idIndexMarker555"/> example that needs to store <em class="italic">references</em> across wait points since that’s an important aspect of having our coroutine/wait functions behave like “<span class="No-Break">normal” functions.</span></p>
+			<h1 id="_idParaDest-163"><a id="_idTextAnchor162"/>Improving our example 2 – references</h1>
+			<p>Let’s set everything up for<a id="_idIndexMarker556"/> our next version of <span class="No-Break">this example:</span></p>
+			<ul>
+				<li>Create a new folder called <strong class="source-inline">b-coroutines-references</strong> and copy everything from <strong class="source-inline">a-coroutines-variables</strong> over <span class="No-Break">to it</span></li>
+				<li>You can change the name of the project so that it corresponds with the folder by changing the <strong class="source-inline">name</strong> attribute in the <strong class="source-inline">package</strong> section in <strong class="source-inline">Cargo.toml</strong>, but it’s not something you need to do for the example <span class="No-Break">to work</span></li>
+			</ul>
+			<p class="callout-heading">Note</p>
+			<p class="callout">You can find this example in this book’s GitHub repository in the <span class="No-Break"><strong class="source-inline">ch10/b-coroutines-references</strong></span><span class="No-Break"> folder.</span></p>
+			<p>This time, we’ll learn how to store references to variables in our coroutines by using the following coroutine/wait <span class="No-Break">example program:</span></p>
+			<pre class="source-code">
+use std::fmt::Write;
+coroutine fn async_main() {
+    <strong class="bold">let mut buffer = String::from(</strong><strong class="bold">"</strong><strong class="bold">\nBUFFER:\n----\n</strong><strong class="bold">"</strong><strong class="bold">);</strong>
+<strong class="bold">    let writer = &amp;mut buffer;</strong>
+    println!("Program starting");
+    let txt = http::Http::get("/600/HelloAsyncAwait").wait;
+    <strong class="bold">writeln!(writer, </strong><strong class="bold">"</strong><strong class="bold">{txt}</strong><strong class="bold">"</strong><strong class="bold">).unwrap();</strong>
+    let txt = http::Http::get("/400/HelloAsyncAwait").wait;
+    <strong class="bold">writeln!(writer, </strong><strong class="bold">"</strong><strong class="bold">{txt}</strong><strong class="bold">"</strong><strong class="bold">).unwrap();</strong>
+    <strong class="bold">println!(</strong><strong class="bold">"</strong><strong class="bold">{}</strong><strong class="bold">"</strong><strong class="bold">, buffer);</strong>
+}</pre>			<p>So, in this example, we create a <strong class="source-inline">buffer</strong> variable of the <strong class="source-inline">String</strong> type that we initialize with some text, and we<a id="_idIndexMarker557"/> take a <strong class="source-inline">&amp;mut</strong> reference to that and store it in a <span class="No-Break"><strong class="source-inline">writer</strong></span><span class="No-Break"> variable.</span></p>
+			<p>Every time we receive a response, we write the response to the buffer through the <strong class="source-inline">&amp;mut</strong> reference we hold in <strong class="source-inline">writer</strong> before we print the buffer to the terminal at the end of <span class="No-Break">the program.</span></p>
+			<p>Let’s take a look at what we need to do to get <span class="No-Break">this working.</span></p>
+			<p>The first thing we do is pull in the <strong class="source-inline">fmt::Write</strong> trait so that we can write to our buffer using the <span class="No-Break"><strong class="source-inline">writeln!</strong></span><span class="No-Break"> macro.</span></p>
+			<p>Add this to the top <span class="No-Break">of </span><span class="No-Break"><strong class="source-inline">main.rs</strong></span><span class="No-Break">:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/b-coroutines-references/src/main.rs</p>
+			<pre class="source-code">
+use std::fmt::Write;</pre>			<p>Next, we need to change our <strong class="source-inline">Stack0</strong> struct so that it represents what we must store across wait points in our <span class="No-Break">updated example:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US"> ch09/b-coroutines-references/src/main.rs</p>
+			<pre class="source-code">
+#[derive(Default)]
+struct Stack0 {
+    buffer: Option&lt;String&gt;,
+    writer: Option&lt;*mut String&gt;,
+}</pre>			<p>An important thing to note here is that <strong class="source-inline">writer</strong> can’t be <strong class="source-inline">Option&lt;&amp;mut String&gt;</strong> since we know it will be referencing the buffer field in the same struct. A struct where a field takes a reference on <strong class="source-inline">&amp;self</strong> is <a id="_idIndexMarker558"/>called a <strong class="bold">self-referential</strong> struct and there is no way to represent that in Rust since the lifetime of the self-reference is impossible <span class="No-Break">to express.</span></p>
+			<p>The solution is to cast the <strong class="source-inline">&amp;mut</strong> self-reference to a pointer instead and ensure that we manage the lifetimes <a id="_idIndexMarker559"/><span class="No-Break">correctly ourselves.</span></p>
+			<p>The only other thing we need to change is the <span class="No-Break"><strong class="source-inline">Future::poll</strong></span><span class="No-Break"> implementation:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/b-coroutines-references/src/main.rs</p>
+			<pre class="source-code">
+State0::Start =&gt; {
+                    // initialize stack (hoist variables)
+<strong class="bold">                    self.stack.buffer = Some(String::from("\nBUFFER:\n----\n"));</strong>
+<strong class="bold">                    self.stack.writer = Some(self.stack.buffer.as_mut().unwrap());</strong>
+                    // ---- Code you actually wrote ----
+                    println!("Program starting");
+                    // ---------------------------------
+                    let fut1 = Box::new(http::Http::get("/600/HelloAsyncAwait"));
+                    self.state = State0::Wait1(fut1);
+                    // save stack
+                }</pre>			<p>Okay, so this looks a bit odd. The first line we change is pretty straightforward. We initialize our <strong class="source-inline">buffer</strong> variable to a new <strong class="source-inline">String</strong> type, just like we did at the top of our <span class="No-Break">coroutine/wait program.</span></p>
+			<p>The next line, however, looks a <span class="No-Break">bit dangerous.</span></p>
+			<p>We cast the <strong class="source-inline">&amp;mut</strong> reference<a id="_idIndexMarker560"/> to our <strong class="source-inline">buffer</strong> to a <strong class="source-inline">*</strong><span class="No-Break"><strong class="source-inline">mut</strong></span><span class="No-Break"> pointer.</span></p>
+			<p class="callout-heading">Important</p>
+			<p class="callout">Yes, I know we could have chosen another way of doing this since we can take a reference to buffer everywhere we need to instead of storing it in its variable, but that’s only because our example is very simple. Imagine that we use a library that needs to borrow data that’s local to the async function and we somehow have to manage the lifetimes manually like we do here but in a much more <span class="No-Break">complex scenario.</span></p>
+			<p>The <strong class="source-inline">self.stack.buffer.as_mut().unwrap()</strong> line returns a <strong class="source-inline">&amp;mut</strong> reference to the <strong class="source-inline">buffer</strong> field. Since <strong class="source-inline">self.stack.writer</strong> is of the <strong class="source-inline">Option&lt;*mut String&gt;</strong> type, the reference will be <em class="italic">coerced</em> to a pointer (meaning that Rust does this cast implicitly by inferring it from <span class="No-Break">the context).</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">We take <strong class="source-inline">*mut String</strong> here since we deliberately don’t want a <em class="italic">string slice</em> (<strong class="source-inline">&amp;str</strong>), which is often what we get (and want) when using a reference to a <strong class="source-inline">String</strong> type <span class="No-Break">in Rust.</span></p>
+			<p>Let’s take a look at what happens after the first <span class="No-Break">wait point:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/b-coroutines-references/src/main.rs</p>
+			<pre class="source-code">
+State0::Wait1(ref mut f1) =&gt; {
+                    match f1.poll(waker) {
+                        PollState::Ready(txt) =&gt; {
+                            // Restore stack
+                            <strong class="bold">let writer = unsafe { &amp;mut *self.stack.writer.take().unwrap() };</strong>
+                            // ---- Code you actually wrote ----
+                            <strong class="bold">writeln!(writer, «{txt}»).unwrap();</strong>
+                            // ---------------------------------
+                            let fut2 = Box::new(http::Http::get("/400/HelloAsyncAwait"));
+                            self.state = State0::Wait2(fut2);
+                            // save stack
+                            <strong class="bold">self.stack.writer = Some(writer);</strong>
+                        }
+                        PollState::NotReady =&gt; break PollState::NotReady,
+                    }
+                }</pre>			<p>The first change we make is<a id="_idIndexMarker561"/> regarding how we restore our stack. We need to restore our <strong class="source-inline">writer</strong> variable so that it holds a <strong class="source-inline">&amp;mut String</strong> type that points to our buffer. To do this, we have to write some <strong class="source-inline">unsafe</strong> code that dereferences our pointer and lets us take a <strong class="source-inline">&amp;mut</strong> reference to <span class="No-Break">our </span><span class="No-Break"><strong class="source-inline">buffer</strong></span><span class="No-Break">.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Casting a reference to a pointer is safe. The unsafe part is dereferencing <span class="No-Break">the pointer.</span></p>
+			<p>Next, we add the line of code that writes the response. We can keep this the same as how we wrote it in our <span class="No-Break">coroutine/wait function.</span></p>
+			<p>Lastly, we save the stack <a id="_idIndexMarker562"/>state back since we need both variables to live across the <span class="No-Break">wait point.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">We don’t have to take ownership over the pointer stored in the <strong class="source-inline">writer</strong> field to use it since we can simply copy it, but to be somewhat consistent, we take ownership over it, just like we did in the first example. It also makes sense since if there is no need to store the pointer for the next await point, we can simply let it go out of scope by not storing <span class="No-Break">it back.</span></p>
+			<p>The last part is when we’ve reached <strong class="source-inline">Wait2</strong> and our future <span class="No-Break">returns </span><span class="No-Break"><strong class="source-inline">PollState::Ready</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+State0::Wait2(ref mut f2) =&gt; {
+                    match f2.poll(waker) {
+                        PollState::Ready(txt) =&gt; {
+                            // Restore stack
+                            <strong class="bold">let buffer = self.stack.buffer.as_ref().take().unwrap();</strong>
+<strong class="bold">                            let writer = unsafe { &amp;mut *self.stack.writer.take().unwrap() };</strong>
+                            // ---- Code you actually wrote ----
+                            <strong class="bold">writeln!(writer, «{txt}»).unwrap();</strong>
+<strong class="bold">                            println!("{}", buffer);</strong>
+                            // ---------------------------------
+                            self.state = State0::Resolved;
+                  // Save stack / free resources
+                  <strong class="bold">let _ = self.stack.buffer.take();</strong>
+                            break PollState::Ready(String::new());
+                        }
+                        PollState::NotReady =&gt; break PollState::NotReady,
+                    }
+                }</pre>			<p>In this segment, we restore both variables since we write the last response through our writer variable, and then print everything that’s stored in our <strong class="source-inline">buffer</strong> to <span class="No-Break">the terminal.</span></p>
+			<p>I want to point out that the <strong class="source-inline">println!("{}", buffer);</strong> line takes a reference in the original coroutine/wait example, even though it might look like we pass in <strong class="source-inline">an</strong> <strong class="source-inline">owned</strong> <strong class="source-inline">String</strong>. Therefore, it makes sense that we restore the buffer to a <strong class="source-inline">&amp;String</strong> type, and not the owned version. Transferring ownership would also invalidate<a id="_idIndexMarker563"/> the pointer in our <span class="No-Break"><strong class="source-inline">writer</strong></span><span class="No-Break"> variable.</span></p>
+			<p>The last thing we do is <strong class="source-inline">drop</strong> the data we don’t need anymore. Our <strong class="source-inline">self.stack.writer</strong> field is already set to <strong class="source-inline">None</strong> since we took ownership over it when we restored the stack at the start, but we need to take ownership over the <strong class="source-inline">String</strong> type that <strong class="source-inline">self.stack.buffer</strong> holds as well so that it gets dropped at the end of this scope too. If we didn’t do that, we would hold on to the memory that’s been allocated to our <strong class="source-inline">String</strong> until the entire coroutine is dropped (which could be <span class="No-Break">much later).</span></p>
+			<p>Now, we’ve made all our changes. If the rewrites we did previously were implemented in <strong class="source-inline">corofy</strong>, our coroutine/wait implementation could, in theory, support much more complex <span class="No-Break">use cases.</span></p>
+			<p>Let’s take a look at what happens <a id="_idIndexMarker564"/>when we run our program by writing <span class="No-Break"><strong class="source-inline">cargo run</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+Program starting
+FIRST POLL - START OPERATION
+main: 1 pending tasks. Sleep until notified.
+FIRST POLL - START OPERATION
+main: 1 pending tasks. Sleep until notified.
+BUFFER:
+----
+HTTP/1.1 200 OK
+content-length: 15
+connection: close
+content-type: text/plain; charset=utf-8
+date: Thu, 30 Nov 2023 22:48:11 GMT
+HelloAsyncAwait
+HTTP/1.1 200 OK
+content-length: 15
+connection: close
+content-type: text/plain; charset=utf-8
+date: Thu, 30 Nov 2023 22:48:11 GMT
+HelloAsyncAwait
+main: All tasks are finished</pre>			<p>Puh, great. All that <a id="_idIndexMarker565"/>dangerous <strong class="source-inline">unsafe</strong> turned out to work just fine, didn’t it? Good job. Let’s make one small improvement before <span class="No-Break">we finish.</span></p>
+			<h1 id="_idParaDest-164"><a id="_idTextAnchor163"/>Improving our example 3 – this is… not… good…</h1>
+			<p>Pretend you haven’t read this section title and enjoy the fact that our previous example compiled and showed the <span class="No-Break">correct result.</span></p>
+			<p>I think our coroutine implementation is so<a id="_idIndexMarker566"/> good now that we can look at some optimizations instead. There is one optimization in our executor in particular that I want to <span class="No-Break">do immediately.</span></p>
+			<p>Before we get ahead of ourselves, let’s set <span class="No-Break">everything up:</span></p>
+			<ul>
+				<li>Create a new folder called <strong class="source-inline">c-coroutines-problem</strong> and copy everything from <strong class="source-inline">b-coroutines-references</strong> over <span class="No-Break">to it</span></li>
+				<li>You can change the name of the project so that it corresponds with the folder by changing the <strong class="source-inline">name</strong> attribute in the <strong class="source-inline">package</strong> section in <strong class="source-inline">Cargo.toml</strong>, but it’s not something you need to do for the example <span class="No-Break">to work</span></li>
+			</ul>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">This example is located in this book’s GitHub repository in the <span class="No-Break"><strong class="source-inline">ch</strong></span><span class="No-Break"><strong class="source-inline">09</strong></span><span class="No-Break"><strong class="source-inline">/c-coroutines-problem</strong></span><span class="No-Break"> folder.</span></p>
+			<p>With that, everything has been <span class="No-Break">set up.</span></p>
+			<p>Back to the optimization. You see, new insights into the workload our runtime will handle in real life indicate that most futures will return <strong class="source-inline">Ready</strong> on the first poll. So, in theory, we can just poll the future we receive in <strong class="source-inline">block_on</strong> once and it will resolve immediately most of <span class="No-Break">the time.</span></p>
+			<p>Let’s navigate to <strong class="source-inline">src/runtime/executor.rs</strong> and take a look at how we can take advantage of this by adding a few lines <span class="No-Break">of code.</span></p>
+			<p>If you navigate to our <strong class="source-inline">Executor::block_on</strong> function, you’ll see that the first thing we do is <strong class="source-inline">spawn</strong> the future before we poll it. Spawning the future means that we allocate space for it in the heap and store the pointer to its location in a <span class="No-Break"><strong class="source-inline">HashMap</strong></span><span class="No-Break"> variable.</span></p>
+			<p>Since the future will most likely return <strong class="source-inline">Ready</strong> on the first <strong class="source-inline">poll</strong>, this is unnecessary work that could be avoided. Let’s add this<a id="_idIndexMarker567"/> little optimization at the start of the <strong class="source-inline">block_on</strong> function to take advantage <span class="No-Break">of this:</span></p>
+			<pre class="source-code">
+pub fn block_on&lt;F&gt;(&amp;mut self, future: F)
+    where
+        F: Future&lt;Output = String&gt; + 'static,
+    {
+        // ===== OPTIMIZATION, ASSUME READY
+        <strong class="bold">let waker = self.get_waker(usize::MAX);</strong>
+<strong class="bold">        let mut future = future;</strong>
+<strong class="bold">        match future.poll(&amp;waker) {</strong>
+<strong class="bold">            PollState::NotReady =&gt; (),</strong>
+<strong class="bold">            PollState::Ready(_) =&gt; return,</strong>
+<strong class="bold">        }</strong>
+        // ===== END
+        spawn(future);
+        loop {
+            …</pre>			<p>Now, we simply poll the future immediately, and if the future resolves on the first poll, we return since we’re all done. This way, we only spawn the future if it’s something we need to <span class="No-Break">wait on.</span></p>
+			<p>Yes, this assumes we never reach <strong class="source-inline">usize::MAX</strong> for our IDs, but let’s pretend this is only a proof of concept. Our <strong class="source-inline">Waker</strong> will be discarded and replaced by a new one if the future is spawned and polled again anyway, so that shouldn’t be <span class="No-Break">a problem.</span></p>
+			<p>Let’s try to run our program and see what <span class="No-Break">we get:</span></p>
+			<pre class="console">
+Program starting
+FIRST POLL - START OPERATION
+main: 1 pending tasks. Sleep until notified.
+FIRST POLL - START OPERATION
+main: 1 pending tasks. Sleep until notified.
+/400/HelloAsyn
+free(): double free detected in tcache 2
+Aborted</pre>			<p><span class="No-Break">Wait, what?!?</span></p>
+			<p>That doesn’t sound good! Okay, that’s <a id="_idIndexMarker568"/>probably a kernel bug in Linux, so let’s try it on <span class="No-Break">Windows instead:</span></p>
+			<pre class="console">
+…
+error: process didn't exit successfully: `target\release\c-coroutines-
+problem.exe` (exit code: 0xc0000374, STATUS_HEAP_CORRUPTION)</pre>			<p>That sounds even worse!! What <span class="No-Break">happened here?</span></p>
+			<p>Let’s take a closer look at exactly what happened with our async system when we made our <span class="No-Break">small optimization.</span></p>
+			<h1 id="_idParaDest-165"><a id="_idTextAnchor164"/>Discovering self-referential structs</h1>
+			<p>What happened is that we<a id="_idIndexMarker569"/> created a self-referential struct, initialized it so that it took a pointer to itself, and then moved it. Let’s take a <span class="No-Break">closer look:</span></p>
+			<ol>
+				<li>First, we received a future object as an argument to <strong class="source-inline">block_on</strong>. This is not a problem since the future isn’t self-referential yet, so we can move it around wherever we want to without issues (this is also why moving futures before they’re polled is perfectly fine using <span class="No-Break">proper async/await).</span></li>
+				<li>Then, we polled the future once. The optimization we did made one essential change. The future was located on the stack (inside the stack frame of our <strong class="source-inline">block_on</strong> function) when we polled it the <span class="No-Break">first time.</span></li>
+				<li>When we polled the future the first time, we initialized the variables to their initial state. Our <strong class="source-inline">writer</strong> variable took a pointer to our <strong class="source-inline">buffer</strong> variable (stored as a part of our coroutine) and made it <em class="italic">self-referential</em> at <span class="No-Break">this point.</span></li>
+				<li>The first time we polled the future, it <span class="No-Break">returned </span><span class="No-Break"><strong class="source-inline">NotReady</strong></span></li>
+				<li>Since it returned <strong class="source-inline">NotReady</strong>, we spawned the future, which moves it into the tasks collection with the <strong class="source-inline">HashMap&lt;usize, Box&lt;dyn Future&lt;Output = String&gt;&gt;&gt;</strong> type in our <strong class="source-inline">Executor</strong>. The future is now placed in <strong class="source-inline">Box</strong>, which moves it to <span class="No-Break">the heap.</span></li>
+				<li>The next time we poll the future, we restore the stack by dereferencing the pointer we hold for our <strong class="source-inline">writer</strong> variable. However, there’s a big problem: the pointer is now pointing to the old location on the stack where the future was located at the <span class="No-Break">first poll.</span></li>
+				<li>That can’t end well, and it doesn’t in <span class="No-Break">our case.</span></li>
+			</ol>
+			<p>You’ve now seen firsthand the problem with self-referential structs, how this applies to futures, and why we need something that prevents this <span class="No-Break">from happening.</span></p>
+			<p>A <strong class="bold">self-referential struct</strong> is a struct that takes a reference to <em class="italic">self</em> and stores it in a field. Now, the term <em class="italic">reference</em> here is a little bit unprecise since there is no way to take a reference to <em class="italic">self</em> in Rust and store that<a id="_idIndexMarker570"/> reference in <em class="italic">self</em>. To do this in safe Rust, you have to cast the reference to a <em class="italic">pointer</em> (remember that references are just pointers with a special meaning in the <span class="No-Break">programming language).</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">When we create visualizations in this chapter, we’ll disregard <em class="italic">padding</em>, even though we know structs will likely have some padding between fields, as we discussed in <a href="B20892_04.xhtml#_idTextAnchor081"><span class="No-Break"><em class="italic">Chapter 4</em></span></a><span class="No-Break">.</span></p>
+			<p>When this value is moved to another location in memory, the pointer is not updated and points to the “<span class="No-Break">old” location.</span></p>
+			<p>If we take a look at a move from one location on the stack to another one, it looks something <span class="No-Break">like this:</span></p>
+			<div>
+				<div id="_idContainer039" class="IMG---Figure">
+					<img src="image/B20892_09_11.jpg" alt="Figure 9.1 – Moving a self-referential struct"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.1 – Moving a self-referential struct</p>
+			<p>In the preceding figure, we can see the memory addresses to the left with a representation of the stack next to it. Since the pointer was not updated when the value was moved, it now points to the old location, which can cause <span class="No-Break">serious problems.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">It can be very hard to detect these issues, and creating simple examples where a move like this causes serious issues is surprisingly difficult. The reason for this is that even though we move everything, the old values are not zeroed or overwritten immediately. Often, they’re still there, so<a id="_idIndexMarker571"/> dereferencing the preceding pointer would <em class="italic">probably</em> produce the correct value. The problem only arises when you change the value of <strong class="source-inline">x</strong> in the new location, and expect <strong class="source-inline">y</strong> to point to it. Dereferencing <strong class="source-inline">y</strong> still produces a valid value in this case, but it’s the <span class="No-Break"><em class="italic">wrong</em></span><span class="No-Break"> value.</span></p>
+			<p class="callout">Optimized builds often optimize away needless moves, which can make bugs even harder to detect since most of the program will seem to work just fine, even though it contains a <span class="No-Break">serious bug.</span></p>
+			<h2 id="_idParaDest-166"><a id="_idTextAnchor165"/>What is a move?</h2>
+			<p>A <em class="italic">move</em> in Rust is one of <a id="_idIndexMarker572"/>those concepts that’s unfamiliar to many programmers coming from C#, Javascript, and similar garbage-collected languages, and different from what you’re used to for C and C++ programmers. The definition of <em class="italic">move</em> in Rust is closely related to its <span class="No-Break">ownership system.</span></p>
+			<p>Moving means transferring<a id="_idIndexMarker573"/> ownership. In Rust, a <em class="italic">move</em> is the default way of passing values around and it happens every time you change ownership over an object. If the object you move only consists of copy types (types that implement the <strong class="source-inline">Copy</strong> trait), this is as simple as copying the data over to a new location on <span class="No-Break">the stack.</span></p>
+			<p>For non-copy types, a move will copy all copy types that it contains over just like in the first example, but now, it will also copy <strong class="bold">pointers</strong> to resources <a id="_idIndexMarker574"/>such as heap allocations. The moved-from object is left <strong class="bold">inaccessible</strong> to us (for example, if you try to use the moved-from object, the compilation will fail and let you know that the object has moved), so there is only one owner over the allocation at any point <span class="No-Break">in time.</span></p>
+			<p>In contrast to <em class="italic">cloning</em>, it does not recreate any resources and make a clone <span class="No-Break">of them.</span></p>
+			<p>One more important thing is that the compiler makes sure that <strong class="source-inline">drop</strong> is never called on the moved-from object so that the only thing that can free the resources is the new object that took ownership <span class="No-Break">over everything.</span></p>
+			<p><span class="No-Break"><em class="italic">Figure 9</em></span><em class="italic">.2</em> provides a simplified visual overview of the difference between move, clone, and copy (we’ve excluded any<a id="_idIndexMarker575"/> internal padding of the struct in this <a id="_idIndexMarker576"/>visualization). Here, we assume that we have a struct that holds two fields – a copy type, <strong class="source-inline">a</strong>, which is an <strong class="source-inline">i64</strong> type, and a non-copy type, <strong class="source-inline">b</strong>, which is a <span class="No-Break"><strong class="source-inline">Vec&lt;u8&gt;</strong></span><span class="No-Break"> type:</span></p>
+			<div>
+				<div id="_idContainer040" class="IMG---Figure">
+					<img src="image/B20892_10_2.jpg" alt="Figure 9.2 – Move, clone, and copy"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.2 – Move, clone, and copy</p>
+			<p>A move will in many ways be like a deep<a id="_idIndexMarker577"/> copy of everything in our struct<a id="_idIndexMarker578"/> that’s located on the stack. This is problematic when you have a pointer that points to <strong class="source-inline">self</strong>, like we have with self-referential structs, since <strong class="source-inline">self</strong> will start at a new memory address after the move but the pointer to <strong class="source-inline">self</strong> won’t be adjusted to reflect <span class="No-Break">that change.</span></p>
+			<p>Most of the time, when programming Rust, you probably won’t think a lot about moves since it’s part of the language <a id="_idIndexMarker579"/>you never explicitly use, but it’s important to know what it is and what <span class="No-Break">it does.</span></p>
+			<p>Now that we’ve got a good <a id="_idIndexMarker580"/>understanding of what the problem is, let’s take a closer look at how Rust solves this by using its type system to prevent us from moving structs that rely on a stable place in memory to <span class="No-Break">function correctly.</span></p>
+			<h1 id="_idParaDest-167"><a id="_idTextAnchor166"/>Pinning in Rust</h1>
+			<p>The following diagram <a id="_idIndexMarker581"/>shows a slightly more complex self-referential struct so that we have<a id="_idIndexMarker582"/> something visual to help <span class="No-Break">us understand:</span></p>
+			<div>
+				<div id="_idContainer041" class="IMG---Figure">
+					<img src="image/B20892_10_3.jpg" alt="Figure 9.3 – Moving a self-referential struct with three fields"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.3 – Moving a self-referential struct with three fields</p>
+			<p>At a very high level, pinning makes it possible to rely on data that has a stable memory address by disallowing any operation that might <span class="No-Break">move it:</span></p>
+			<div>
+				<div id="_idContainer042" class="IMG---Figure">
+					<img src="image/B20892_09_41.jpg" alt="Figure 9.4 – Moving a pinned struct"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.4 – Moving a pinned struct</p>
+			<p>The concept of pinning<a id="_idIndexMarker583"/> is pretty simple. The complex part is how it’s implemented in the language and how <span class="No-Break">it’s used.</span></p>
+			<h2 id="_idParaDest-168"><a id="_idTextAnchor167"/>Pinning in theory</h2>
+			<p>Pinning is a part of Rust’s standard <a id="_idIndexMarker584"/>library and consists of two parts: the type, <strong class="bold">Pin</strong>, and the marker-trait, <strong class="bold">Unpin</strong>. Pinning is only a language construct. There is no special kind of location or <a id="_idIndexMarker585"/>memory that you move values to so they get pinned. There is no syscall to ask the operating system to ensure a value stays the same place in memory. It’s only a part of the type system that’s designed to prevent us from being able to move <span class="No-Break">a value.</span></p>
+			<p><strong class="source-inline">Pin</strong> does not remove the need for <strong class="source-inline">unsafe</strong> – it just gives the user of <strong class="source-inline">unsafe</strong> a guarantee that the value has a stable location in memory, so long as the user that pinned the value only uses <em class="italic">safe</em> Rust. This allows us to write self-referential types that are safe. It makes sure that all operations that can lead to problems must <span class="No-Break">use </span><span class="No-Break"><strong class="source-inline">unsafe</strong></span><span class="No-Break">.</span></p>
+			<p>Back to our coroutine example, if we were to move the struct, we’d have to write <strong class="source-inline">unsafe</strong> Rust. That is how Rust upholds its safety guarantee. If you somehow know that the future you created never takes a self-reference, you could choose to move it using <strong class="source-inline">unsafe</strong>, but the blame now falls on you if you get <span class="No-Break">it wrong.</span></p>
+			<p>Before we<a id="_idIndexMarker586"/> dive a bit deeper into pinning, we need to define several terms that we’ll need <span class="No-Break">going</span><span class="No-Break"><a id="_idIndexMarker587"/></span><span class="No-Break"> forward.</span></p>
+			<h2 id="_idParaDest-169"><a id="_idTextAnchor168"/>Definitions</h2>
+			<p>Here are the definitions we <span class="No-Break">must understand:</span></p>
+			<ul>
+				<li><strong class="bold">Pin&lt;T&gt;</strong> is the type it’s all <a id="_idIndexMarker588"/>about. You’ll find this as a part of Rust’s standard library under the <strong class="source-inline">std::pin</strong> module. <strong class="source-inline">Pin</strong> wrap types that implement the <strong class="source-inline">Deref</strong> trait, which in practical terms means that it wraps <em class="italic">references and </em><span class="No-Break"><em class="italic">smart pointers</em></span><span class="No-Break">.</span></li>
+				<li><strong class="bold">Unpin</strong> is a <em class="italic">marker trait</em>. If a type implements <strong class="source-inline">Unpin</strong>, <em class="italic">pinning will have no effect on that type</em>. You read that<a id="_idIndexMarker589"/> right – no effect. The type will still be wrapped in <strong class="source-inline">Pin</strong> but you can simply take it <span class="No-Break">out again.</span><p class="list-inset">The impressive thing is that almost everything implements <strong class="source-inline">Unpin</strong> by default, and if you manually want to mark a type as <strong class="source-inline">!Unpin</strong>, you have to add a marker trait called <strong class="source-inline">PhantomPinned</strong> to your type. Having a type, <strong class="source-inline">T</strong>, implement <strong class="source-inline">!Unpin</strong> is the only way for something such as <strong class="source-inline">Pin&lt;&amp;mut T&gt;</strong> to have <span class="No-Break">any effect.</span></p></li>
+				<li><strong class="bold">Pinning a type that’s !Unpin</strong> will guarantee that the value remains at the same location in memory until it gets dropped, so long as you stay in <span class="No-Break">safe Rust.</span></li>
+				<li><strong class="bold">Pin projections</strong> are helper<a id="_idIndexMarker590"/> methods on a type that’s pinned. The syntax often gets a little weird since they’re only valid on pinned instances of <strong class="source-inline">self</strong>. For example, they often look like <strong class="source-inline">fn foo(self: </strong><span class="No-Break"><strong class="source-inline">Pin&lt;&amp;mut self&gt;)</strong></span><span class="No-Break">.</span></li>
+				<li><strong class="bold">Structural pinning</strong> is connected to <em class="italic">pin projections</em> in the sense that, if you have <strong class="source-inline">Pin&lt;&amp;mut T&gt;</strong> where <strong class="source-inline">T</strong> has<a id="_idIndexMarker591"/> one field, <strong class="source-inline">a</strong>, that can be moved freely and one that can’t be moved, <strong class="source-inline">b</strong>, you can do <span class="No-Break">the following:</span><ul><li>Write a <em class="italic">pin projection</em> for <strong class="source-inline">a</strong> with the <strong class="source-inline">fn a(self: Pin&lt;&amp;mut self&gt;) -&gt; &amp;A</strong> signature. In this case, we say that pinning is <span class="No-Break"><em class="italic">not structural</em></span><span class="No-Break">.</span></li><li>Write a projection for <strong class="source-inline">b</strong> that looks like <strong class="source-inline">fn b(self: Pin&lt;&amp;mut self&gt;) -&gt; Pin&lt;&amp;mut B&gt;</strong>, in which case we say that pinning is <em class="italic">structural</em> for <strong class="source-inline">b</strong> since it’s pinned <a id="_idIndexMarker592"/>when the struct, <strong class="source-inline">T</strong>, <span class="No-Break">is pinned.</span></li></ul></li>
+			</ul>
+			<p>With the most important definitions out of the way, let’s look at the two ways we can pin <span class="No-Break">a value.</span></p>
+			<h2 id="_idParaDest-170"><a id="_idTextAnchor169"/>Pinning to the heap</h2>
+			<p class="callout-heading">Note</p>
+			<p class="callout">The small code snippets we’ll present<a id="_idIndexMarker593"/> here can be found in this book’s GitHub repository in the <strong class="source-inline">ch</strong><strong class="source-inline">09</strong><strong class="source-inline">/d-pin</strong> folder. The different examples are implemented as <a id="_idIndexMarker594"/>different methods that you comment/uncomment in the <span class="No-Break"><strong class="source-inline">main</strong></span><span class="No-Break"> function.</span></p>
+			<p>Let’s write a small example to illustrate the different ways of pinning <span class="No-Break">a value:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/d-pin/src/main.rs</p>
+			<pre class="source-code">
+use std::{marker::PhantomPinned, pin::Pin};
+   #[derive(Default)]
+    struct Foo {
+    a: MaybeSelfRef,
+    b: String,
+}</pre>			<p>So, we want to be able to create an instance using <strong class="source-inline">MaybeSelfRef::default()</strong> that we can move around as we wish, but then at some point <em class="italic">initialize</em> it to a state where it references itself; moving it would <span class="No-Break">cause problems.</span></p>
+			<p>This is very much like futures that are not self-referential until they’re polled, as we saw in our previous<a id="_idIndexMarker595"/> example. Let's write the <strong class="source-inline">impl</strong> block for <strong class="source-inline">MaybeSelfRef</strong> and take a look at <span class="No-Break">the code:</span><span class="No-Break">:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/d-pin/src/main.rs</p>
+			<pre class="source-code">
+impl MaybeSelfRef {
+    fn init(self: Pin&lt;&amp;mut Self&gt;) {
+        unsafe {
+            let Self { a, b, .. } = self.get_unchecked_mut();
+            *b = Some(a);
+        }
+    }
+    fn b(self: Pin&lt;&amp;mut Self&gt;) -&gt; Option&lt;&amp;mut usize&gt; {
+        unsafe { self.get_unchecked_mut().b.map(|b| &amp;mut *b) }
+    }
+}</pre>			<p>As you can see, <strong class="source-inline">MaybeStelfRef</strong> will only <a id="_idIndexMarker596"/>be self-referential after we call <strong class="source-inline">init</strong> <span class="No-Break">on it.</span></p>
+			<p>We also define one more method that casts the pointer stored in <strong class="source-inline">b</strong> to <strong class="source-inline">Option&lt;&amp;mut usize&gt;</strong>, which is a mutable reference <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">a</strong></span><span class="No-Break">.</span></p>
+			<p>One thing to note is that both our functions require <strong class="source-inline">unsafe</strong>. Without <strong class="source-inline">Pin</strong>, the only method requiring unsafe would be <strong class="source-inline">b</strong> since we dereference a pointer there. Acquiring a mutable reference to a pinned value always require <strong class="source-inline">unsafe</strong>, since there is nothing preventing us from moving the pinned value at <span class="No-Break">that point.</span></p>
+			<p>Pinning to the heap is <a id="_idIndexMarker597"/>usually done by pinning a <strong class="source-inline">Box</strong>. There is even a convenient method on <strong class="source-inline">Box</strong> that allows us to get <strong class="source-inline">Pin&lt;Box&lt;...&gt;&gt;</strong>. Let’s look at a <span class="No-Break">short example:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/d-pin/src/main.rs</p>
+			<pre class="source-code">
+fn main() {
+    let mut x = Box::<strong class="bold">pin</strong>(MaybeSelfRef::default());
+    x.as_mut().init();
+    println!("{}", x.as_ref().a);
+    *x.as_mut().b().unwrap() = 2;
+    println!("{}", x.as_ref().a);
+}</pre>			<p>Here, we pin <strong class="source-inline">MaybeSelfRef</strong> to the heap and initialize it. We print out the value of <strong class="source-inline">a</strong> and then mutate the data through the self-reference in <strong class="source-inline">b</strong>, and set its value to <strong class="source-inline">2</strong>. If we look at the output, we’ll see that everything looks <span class="No-Break">as expected:</span></p>
+			<pre class="console">
+    Finished dev [unoptimized + debuginfo] target(s) in 0.56s
+     Running `target\debug\x-pin-experiments.exe`
+0
+2</pre>			<p>The pinned value can never move and as <em class="italic">users</em> of <strong class="source-inline">MaybeSelfRef</strong>, we didn’t have to write any <strong class="source-inline">unsafe</strong> code. Rust can guarantee that we never (in safe Rust) get a mutable reference to <strong class="source-inline">MaybeSelfRef</strong> since <strong class="source-inline">Box</strong> took ownership <span class="No-Break">of it.</span></p>
+			<p>Heap pinning being safe is not so surprising since, in contrast to the stack, a heap allocation will be stable <a id="_idIndexMarker598"/>throughout the program, regardless of where we<a id="_idIndexMarker599"/> <span class="No-Break">create it.</span></p>
+			<p class="callout-heading">Important</p>
+			<p class="callout">This is the preferred way to pin values in Rust. Stack pinning is for those cases where you don’t have a heap to work with or can’t accept the cost of that <span class="No-Break">extra allocation.</span></p>
+			<p>Let’s take a look at stack pinning while we’re <span class="No-Break">at it.</span></p>
+			<h2 id="_idParaDest-171"><a id="_idTextAnchor170"/>Pinning to the stack</h2>
+			<p>Pinning to the stack can be <a id="_idIndexMarker600"/>somewhat difficult. In <a href="B20892_05.xhtml#_idTextAnchor092"><span class="No-Break"><em class="italic">Chapter 5</em></span></a>, we saw how the stack worked and we know that it grows and shrinks as values are popped and pushed to <a id="_idIndexMarker601"/><span class="No-Break">the stack.</span></p>
+			<p>So, if we’re going to pin to the stack, we have to pin it somewhere “high” on the stack. This means that if we pin a value to the stack inside a function call, we can’t return from that function, and expect the value to still be pinned there. That would <span class="No-Break">be impossible.</span></p>
+			<p>Pinning to the stack is hard since we pin by taking <strong class="source-inline">&amp;mut T</strong>, and we have to guarantee that we won’t move <strong class="source-inline">T</strong> until it’s dropped. If we’re not careful, this is easy to get wrong. Rust can’t help us here, so it’s up to us to uphold that guarantee. This is why stack pinning <span class="No-Break">is </span><span class="No-Break"><strong class="source-inline">unsafe</strong></span><span class="No-Break">.</span></p>
+			<p>Let’s look at the same example using <span class="No-Break">stack pinning:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/d-pin/src/main.rs</p>
+			<pre class="source-code">
+fn stack_pinning_manual() {
+    let mut x = MaybeSelfRef::default();
+    let mut x = unsafe { Pin::new_unchecked(&amp;mut x) };
+    x.as_mut().init();
+    println!("{}", x.as_ref().a);
+    *x.as_mut().b().unwrap() = 2;
+    println!("{}", x.as_ref().a);
+}</pre>			<p>The noticeable difference here is that it’s <strong class="source-inline">unsafe</strong> to pin to the stack, so now, we need <strong class="source-inline">unsafe</strong> both as users of <strong class="source-inline">MaybeSelfRef</strong> and <span class="No-Break">as implementors.</span></p>
+			<p>If we run the example <a id="_idIndexMarker602"/>with <strong class="source-inline">cargo run</strong>, the output will be the same as in our <span class="No-Break">first </span><span class="No-Break"><a id="_idIndexMarker603"/></span><span class="No-Break">example:</span></p>
+			<pre class="console">
+    Finished dev [unoptimized + debuginfo] target(s) in 0.58s
+     Running `target\debug\x-pin-experiments.exe`
+0
+2</pre>			<p>The reason stack pinning requires <strong class="source-inline">unsafe</strong> is that it’s rather easy to accidentally break the guarantees that <strong class="source-inline">Pin</strong> is supposed to provide. Let’s take a look at <span class="No-Break">this example:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/d-pin/src/main.rs</p>
+			<pre class="source-code">
+use std::mem::swap;
+fn stack_pinning_manual_problem() {
+    let mut x = MaybeSelfRef::default();
+    let mut y = MaybeSelfRef::default();
+    {
+        let mut x = unsafe { Pin::new_unchecked(&amp;mut x) };
+        x.as_mut().init();
+        *x.as_mut().b().unwrap() = 2;
+    }
+    swap(&amp;mut x, &amp;mut y);
+    println!("
+     x: {{
+  +-----&gt;a: {:p},
+  |      b: {:?},
+  |  }}
+  |
+  |  y: {{
+  |      a: {:p},
+  +-----|b: {:?},
+     }}",
+        &amp;x.a,
+        x.b,
+        &amp;y.a,
+        y.b,
+    );
+}</pre>			<p>In this example, we create two instances of <strong class="source-inline">MaybeSelfRef</strong> called <strong class="source-inline">x</strong> and <strong class="source-inline">y</strong>. Then, we create a scope where we pin <strong class="source-inline">x</strong> and set the value of <strong class="source-inline">x.a</strong> to <strong class="source-inline">2</strong> by dereferencing the self-reference in <strong class="source-inline">b</strong>, as we <span class="No-Break">did previously.</span></p>
+			<p>Now, when we exit the scope, <strong class="source-inline">x</strong> isn’t pinned anymore, which means we can take a mutable reference to it without <span class="No-Break">needing </span><span class="No-Break"><strong class="source-inline">unsafe</strong></span><span class="No-Break">.</span></p>
+			<p>Since this is safe Rust and we <a id="_idIndexMarker604"/>should be able to do what we want, we swap <strong class="source-inline">x</strong> <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">y</strong></span><span class="No-Break">.</span></p>
+			<p>The output prints out the<a id="_idIndexMarker605"/> pointer address of the <strong class="source-inline">a</strong> field of both structs and the value of the pointer stored <span class="No-Break">in </span><span class="No-Break"><strong class="source-inline">b</strong></span><span class="No-Break">.</span></p>
+			<p>When we look at the output, we should see the <span class="No-Break">problem immediately:</span></p>
+			<pre class="console">
+Finished dev [unoptimized + debuginfo] target(s) in 0.58s
+     Running `target\debug\x-pin-experiments.exe`
+     x: {
+  +-----&gt;a: 0xe45fcff558,
+  |      b: None,
+  |  }
+  |
+  |  y: {
+  |      a: 0xe45fcff570,
+  +-----|b: Some(0xe45fcff558),
+     }</pre>			<p>Although the pointer values will differ from run to run, it’s pretty evident that <strong class="source-inline">y</strong> doesn’t hold a pointer to <span class="No-Break"><strong class="source-inline">self</strong></span><span class="No-Break"> anymore.</span></p>
+			<p>Right now, it points<a id="_idIndexMarker606"/> somewhere in <strong class="source-inline">x</strong>. This is very bad and will cause the exact memory<a id="_idIndexMarker607"/> safety issues Rust is supposed <span class="No-Break">to prevent.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">For this reason, the standard library has a <strong class="source-inline">pin!</strong> macro that helps us with safe stack pinning. The macro uses <strong class="source-inline">unsafe</strong> under the hood but makes it impossible for us to reach the pinned <span class="No-Break">value again.</span></p>
+			<p>Now that we’ve seen all the pitfalls of stack pinning, my clear recommendation is to avoid it unless you need to use it. If you have to use it, then use the <strong class="source-inline">pin!</strong> macro so that you avoid the issues we’ve <span class="No-Break">described here.</span></p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">In this book’s GitHub repository, you’ll find a function called <strong class="source-inline">stack_pinning_macro()</strong> in the <strong class="source-inline">ch</strong><strong class="source-inline">09</strong><strong class="source-inline">/d-pin/src/main.rs</strong> file. This function shows the preceding example but using Rust’s <span class="No-Break"><strong class="source-inline">pin!</strong></span><span class="No-Break"> macro.</span></p>
+			<h2 id="_idParaDest-172"><a id="_idTextAnchor171"/>Pin projections and structural pinning</h2>
+			<p>Before we leave the<a id="_idIndexMarker608"/> topic of pinning, we’ll quickly explain what pin projections and<a id="_idIndexMarker609"/> structural pinning are. Both sound complex, but they are very simple in practice. The following diagram shows how these terms <span class="No-Break">are connected:</span></p>
+			<div>
+				<div id="_idContainer043" class="IMG---Figure">
+					<img src="image/B20892_09_51.jpg" alt="Figure 9.5 – Pin projection and structural pinning"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.5 – Pin projection and structural pinning</p>
+			<p>Structural pinning means that if a struct is pinned, so is the field. We expose this through pin projections, as we’ll see in the following <span class="No-Break">code example.</span></p>
+			<p>If we continue with our example and create a struct called <strong class="source-inline">Foo</strong> that holds both <strong class="source-inline">MaybeSelfRef</strong> (field <strong class="source-inline">a</strong>) and a <strong class="source-inline">String</strong> type (field <strong class="source-inline">b</strong>), we could write two projections that return a pinned version of <strong class="source-inline">a</strong> and a regular mutable reference <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">b</strong></span><span class="No-Break">:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/d-pin/src/main.rs</p>
+			<pre class="source-code">
+    #[derive(Default)]
+    struct Foo {
+        a: MaybeSelfRef,
+        b: String,
+    }
+    impl Foo {
+        fn a(self: Pin&lt;&amp;mut Self&gt;) -&gt; Pin&lt;&amp;mut MaybeSelfRef&gt; {
+            unsafe {
+                self.map_unchecked_mut(|s| &amp;mut s.a)
+            }
+        }
+        fn b(self: Pin&lt;&amp;mut Self&gt;) -&gt; &amp;mut String {
+            unsafe {
+                &amp;mut self.get_unchecked_mut().b
+            }
+        }
+    }</pre>			<p>Note that these methods will only be <a id="_idIndexMarker610"/>callable when <strong class="source-inline">Foo</strong> is pinned. You won’t be able to call either of these methods<a id="_idIndexMarker611"/> on a regular instance <span class="No-Break">of </span><span class="No-Break"><strong class="source-inline">Foo</strong></span><span class="No-Break">.</span></p>
+			<p>Pin projections do have a few subtleties that you should be aware of, but they’re explained in quite some detail in the official documentation (https://doc.rust-lang.org/stable/std/pin/index.html), so I’ll refer you there for more information about the precautions you must take when <span class="No-Break">writing projections.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Since pin projections can be a bit error-prone to create yourself, there is a popular create for making pin<a id="_idIndexMarker612"/> projections called <strong class="bold">pin_project</strong> (https://docs.rs/pin-project/latest/pin_project/). If you ever end up having to make pin projections, it’s worth <span class="No-Break">checking out.</span></p>
+			<p>With that, we’ve pretty<a id="_idIndexMarker613"/> much covered all the advanced topics in async Rust. However, before<a id="_idIndexMarker614"/> we go on to our last chapter, let’s see how pinning will prevent us from making the big mistake we made in the last iteration of our <span class="No-Break">coroutine example.</span></p>
+			<h1 id="_idParaDest-173"><a id="_idTextAnchor172"/>Improving our example 4 – pinning to the rescue</h1>
+			<p>Fortunately, the changes we <a id="_idIndexMarker615"/>need to make are small, but before we continue and make the changes, let’s create a new folder and copy everything we had in our previous example over to <span class="No-Break">that folder:</span></p>
+			<ul>
+				<li>Copy the entire <strong class="source-inline">c-coroutines-problem</strong> folder and name the new <span class="No-Break">copy </span><span class="No-Break"><strong class="source-inline">e-coroutines-pin</strong></span></li>
+				<li>Open <strong class="source-inline">Cargo.toml</strong> and rename the name of the <span class="No-Break">package </span><span class="No-Break"><strong class="source-inline">e-coroutines-pin</strong></span></li>
+			</ul>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">You’ll find the example code we’ll go through here in this book’s GitHub repository under the <span class="No-Break"><strong class="source-inline">ch</strong></span><span class="No-Break"><strong class="source-inline">09</strong></span><span class="No-Break"><strong class="source-inline">/e-coroutines-pin</strong></span><span class="No-Break"> folder.</span></p>
+			<p>Now that we have a new folder set up, let’s start making the necessary changes. The logical place to start is our <strong class="source-inline">Future</strong> definition <span class="No-Break">in </span><span class="No-Break"><strong class="source-inline">future.rs</strong></span><span class="No-Break">.</span></p>
+			<h2 id="_idParaDest-174"><a id="_idTextAnchor173"/>future.rs</h2>
+			<p>The first thing we’ll do is pull in <strong class="source-inline">Pin</strong> from the standard library at the <span class="No-Break">very top:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/future.rs</p>
+			<pre class="source-code">
+use std::pin::Pin;</pre>			<p>The only other change we <a id="_idIndexMarker616"/>need to make is in the definition of <strong class="source-inline">poll</strong> in our <span class="No-Break"><strong class="source-inline">Future</strong></span><span class="No-Break"> trait:</span></p>
+			<pre class="source-code">
+fn poll(<strong class="bold">self: Pin&lt;&amp;mut Self&gt;</strong>, waker: &amp;Waker) -&gt; PollState&lt;Self::Output&gt;;</pre>			<p>That’s pretty <span class="No-Break">much it.</span></p>
+			<p>However, the implications of this change are noticeable pretty much everywhere poll is called, so we need to fix that <span class="No-Break">as well.</span></p>
+			<p>Let’s start <span class="No-Break">with </span><span class="No-Break"><strong class="source-inline">http.rs</strong></span><span class="No-Break">.</span></p>
+			<h2 id="_idParaDest-175"><a id="_idTextAnchor174"/>http.rs</h2>
+			<p>The first thing we<a id="_idIndexMarker617"/> need to do is pull in <strong class="source-inline">Pin</strong> from the standard library. The start of the file should look <span class="No-Break">like this:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/http.rs</p>
+			<pre class="source-code">
+use crate::{future::PollState, runtime::{self, reactor, Waker}, Future};
+use mio::Interest;
+use std::{io::{ErrorKind, Read, Write}, pin::Pin};</pre>			<p>The only other place we need to make some changes is in the <strong class="source-inline">Future</strong> implementation for <strong class="source-inline">HttpGetFuture</strong>, so let’s locate that. We’ll start by changing the arguments <span class="No-Break">in </span><span class="No-Break"><strong class="source-inline">poll</strong></span><span class="No-Break">:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/http.rs</p>
+			<pre class="source-code">
+fn poll(<strong class="bold">mut self: Pin&lt;&amp;mut Self&gt;</strong>, waker: &amp;Waker) -&gt; PollState&lt;Self::Output&gt;</pre>			<p>Since <strong class="source-inline">self</strong> is now <strong class="source-inline">Pin&lt;&amp;mut Self&gt;</strong>, there are several small changes we need to make so that the borrow checker <a id="_idIndexMarker618"/>stays happy. Let’s start from <span class="No-Break">the top:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/http.rs</p>
+			<pre class="source-code">
+<strong class="bold">let id = self.id;</strong>
+        if self.stream.is_none() {
+            println!("FIRST POLL - START OPERATION");
+            self.write_request();
+            let stream = <strong class="bold">(&amp;mut self)</strong>.stream.as_mut().unwrap();
+            runtime::reactor().register(stream, Interest::READABLE, <strong class="bold">id</strong>);
+            runtime::reactor().set_waker(waker, self.id);
+        }</pre>			<p>The reason for assigning <strong class="source-inline">id</strong> to a variable at the top is that the borrow checker gives us some minor trouble when trying to pass in both <strong class="source-inline">&amp;mut self</strong> and <strong class="source-inline">&amp;self</strong> as arguments to the register/deregister functions, so we just assign <strong class="source-inline">id</strong> to a variable at the top and everyone <span class="No-Break">is happy.</span></p>
+			<p>There are only two more lines to change, and that is where we create a <strong class="source-inline">String</strong> type from our internal buffer and deregister interest with <span class="No-Break">the reactor:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/http.rs</p>
+			<pre class="source-code">
+let s = String::from_utf8_lossy(&amp;self.buffer)<strong class="bold">.to_string()</strong>;
+runtime::reactor().deregister(self.stream.as_mut().unwrap(), <strong class="bold">id</strong>);
+break PollState::Ready(<strong class="bold">s</strong>);</pre>			<p class="callout-heading">Important</p>
+			<p class="callout">Notice that this future is <strong class="source-inline">Unpin</strong>. There is nothing that makes it <strong class="source-inline">unsafe</strong> to move <strong class="source-inline">HttpGetFuture</strong> around, and this is indeed the case for most futures like this. Only the ones created by async/await are self-referential by design. That means there is no need for any <span class="No-Break"><strong class="source-inline">unsafe</strong></span><span class="No-Break"> here.</span></p>
+			<p>Next, let’s move on to <strong class="source-inline">main.rs</strong> since<a id="_idIndexMarker619"/> there are some important changes we need to <span class="No-Break">make there.</span></p>
+			<h2 id="_idParaDest-176"><a id="_idTextAnchor175"/>Main.rs</h2>
+			<p>Let’s start from the top and <a id="_idIndexMarker620"/>make sure we have the <span class="No-Break">correct imports:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/main.rs</p>
+			<pre class="source-code">
+mod future;
+mod http;
+mod runtime;
+use future::{Future, PollState};
+use runtime::Waker;
+use std::{fmt::Write, <strong class="bold">marker::PhantomPinned, pin::Pin</strong>};</pre>			<p>This time, we need both the <strong class="source-inline">PhantomPinned</strong> marker <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">Pin</strong></span><span class="No-Break">.</span></p>
+			<p>The next thing we need to change is in our <strong class="source-inline">State0</strong> enum. The futures we hold between states are <span class="No-Break">now pinned:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/main.rs</p>
+			<pre class="source-code">
+ Wait1(Pin&lt;Box&lt;dyn Future&lt;Output = String&gt;&gt;&gt;),
+ Wait2(Pin&lt;Box&lt;dyn Future&lt;Output = String&gt;&gt;&gt;),</pre>			<p>Next up is an important change. We need to make our coroutines <strong class="source-inline">!Unpin</strong> so that they can’t be moved once they have <a id="_idIndexMarker621"/>been pinned. We can do this by adding a marker trait to our <span class="No-Break"><strong class="source-inline">Coroutine0</strong></span><span class="No-Break"> struct:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/main.rs</p>
+			<pre class="source-code">
+struct Coroutine0 {
+    stack: Stack0,
+    state: State0,
+    <strong class="bold">_pin: PhantomPinned,</strong>
+}</pre>			<p>We also need to add the <strong class="source-inline">PhantomPinned</strong> marker to our <span class="No-Break">new function:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/main.rs</p>
+			<pre class="source-code">
+impl Coroutine0 {
+    fn new() -&gt; Self {
+        Self {
+            state: State0::Start,
+            stack: Stack0::default(),
+            <strong class="bold">_pin: PhantomPinned,</strong>
+        }
+    }
+}</pre>			<p>The last thing we need to change is the <strong class="source-inline">poll</strong> method. Let’s start with the <span class="No-Break">function signature:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/main.rs</p>
+			<pre class="source-code">
+fn poll(<strong class="bold">self: Pin&lt;&amp;mut Self&gt;</strong>, waker: &amp;Waker) -&gt; PollState&lt;Self::Output&gt;</pre>			<p>The easiest way I found to<a id="_idIndexMarker622"/> change our code was to simply define a new variable at the very top of the function called <strong class="source-inline">this</strong>, which replaces <strong class="source-inline">self</strong> everywhere in the <span class="No-Break">function body.</span></p>
+			<p>I won’t go through every line since the change is so trivial, but after the first line, it’s a simple search and replace everywhere <strong class="source-inline">self</strong> was used earlier, and change it <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">this</strong></span><span class="No-Break">:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/main.rs</p>
+			<pre class="source-code">
+<strong class="bold">let this = unsafe { self.get_unchecked_mut() };</strong>
+        loop {
+            match <strong class="bold">this.state</strong> {
+                State0::Start =&gt; {
+                    // initialize stack (hoist declarations - no stack yet)
+                    <strong class="bold">this</strong>.stack.buffer = Some(String::from("\nBUFFER:\n----\n"));
+                    <strong class="bold">this</strong>.stack.writer = Some(<strong class="bold">this</strong>.stack.buffer.as_mut().unwrap());
+                    // ---- Code you actually wrote ----
+                    println!("Program starting");
+...</pre>			<p>The important line here was <strong class="source-inline">let this = unsafe { self.get_unchecked_mut() };</strong>. Here, we had to use <strong class="source-inline">unsafe</strong> since the pinned value is <strong class="source-inline">!Unpin</strong> because of the marker trait <span class="No-Break">we added.</span></p>
+			<p>Getting to the pinned value is <strong class="source-inline">unsafe</strong> since there is no way for Rust to guarantee that we won’t move the <span class="No-Break">pinned value.</span></p>
+			<p>The nice thing about this is that if we encounter any such problems later, we know we can search for the places where we used <strong class="source-inline">unsafe</strong> and that the problem must <span class="No-Break">be there.</span></p>
+			<p>The next thing we need to change is to have the futures we store in our wait states pinned. We can do this by calling <strong class="source-inline">Box::pin</strong> instead <span class="No-Break">of </span><span class="No-Break"><strong class="source-inline">Box::new</strong></span><span class="No-Break">:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/main.rs</p>
+			<pre class="source-code">
+let fut1 = Box::<strong class="bold">pin</strong>(http::Http::get("/600/HelloAsyncAwait"));
+let fut2 = Box::<strong class="bold">pin</strong>(http::Http::get("/400/HelloAsyncAwait"));</pre>			<p>The last place in <strong class="source-inline">main.rs</strong> where <a id="_idIndexMarker623"/>we need to make changes is in the locations where we poll our child futures since we now have to go through the <strong class="source-inline">Pin</strong> type to get a <span class="No-Break">mutable reference:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/main.rs</p>
+			<pre class="source-code">
+match f1<strong class="bold">.as_mut()</strong>.poll(waker)
+match f2<strong class="bold">.as_mut()</strong>.poll(waker)</pre>			<p>Note that we don’t need <strong class="source-inline">unsafe</strong> here since these futures <span class="No-Break">are </span><span class="No-Break"><strong class="source-inline">!Unpin</strong></span><span class="No-Break">.</span></p>
+			<p>The last place we need to change a few lines of code is in <strong class="source-inline">executor.rs</strong>, so let’s head over there as our <span class="No-Break">last stop.</span></p>
+			<h2 id="_idParaDest-177"><a id="_idTextAnchor176"/>executor.rs</h2>
+			<p>The first thing we must do is make<a id="_idIndexMarker624"/> sure our dependencies are correct. The only change we’re making here is adding <strong class="source-inline">Pin</strong> from the <span class="No-Break">standard library:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/runtime/executor.rs</p>
+			<pre class="source-code">
+...
+    thread::{self, Thread}, <strong class="bold">pin::Pin</strong>,
+};</pre>			<p> The next line we’ll change is our <strong class="source-inline">Task</strong> type alias so that it now refers <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">Pin&lt;Box</strong></span><span class="No-Break"><strong class="source-inline">&lt;</strong></span><span class="No-Break"><strong class="source-inline">…&gt;&gt;</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+type Task = <strong class="bold">Pin&lt;</strong>Box&lt;dyn Future&lt;Output = String&gt;&gt;<strong class="bold">&gt;</strong>;</pre>			<p>The last line we’ll change for now is in our spawn function. We have to pin the futures to <span class="No-Break">the heap:</span></p>
+			<pre class="source-code">
+e.tasks.borrow_mut().insert(id, Box::<strong class="bold">pin</strong>(future));</pre>			<p>If we try to run our example now, it <a id="_idIndexMarker625"/>won’t even compile and give us the <span class="No-Break">following error:</span></p>
+			<pre class="console">
+error[E0599]: no method named `poll` found for struct `Pin&lt;Box&lt;dyn future::Future&lt;Output = String&gt;&gt;&gt;` in the current scope
+  --&gt; src\runtime\executor.rs:89:30</pre>			<p>It won’t even let us poll the future anymore without us pinning it first since <strong class="source-inline">poll</strong> is only callable for <strong class="source-inline">Pin&lt;&amp;mut Self&gt;</strong> types and not <strong class="source-inline">&amp;mut </strong><span class="No-Break"><strong class="source-inline">self</strong></span><span class="No-Break"> anymore.</span></p>
+			<p>So, we have to decide whether we pin the value to the stack or the heap before we even try to poll it. In our case, our whole executor works by heap allocating futures, so that’s the only thing that makes sense <span class="No-Break">to do.</span></p>
+			<p>Let’s remove our optimization entirely and change one line of code to make our executor <span class="No-Break">work again:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ch09/e-coroutines-pin/src/runtime/executor.rs</p>
+			<pre class="source-code">
+match future.<strong class="bold">as_mut()</strong>.poll(&amp;waker) {</pre>			<p>If you try to run the program again by writing <strong class="source-inline">cargo run</strong>, you should get the expected output back and not have to worry about the coroutine/wait generated futures being moved again (the output has been <span class="No-Break">abbreviated slightly):</span></p>
+			<pre class="console">
+Finished dev [unoptimized + debuginfo] target(s) in 0.02s
+     Running `target\debug\e-coroutines-pin.exe`
+Program starting
+FIRST POLL - START OPERATION
+main: 1 pending tasks. Sleep until notified.
+FIRST POLL - START OPERATION
+main: 1 pending tasks. Sleep until notified.
+BUFFER:
+----
+HTTP/1.1 200 OK
+content-length: 15
+<strong class="bold">[=== ABBREVIATED ===]</strong>
+date: Sun, 03 Dec 2023 23:18:12 GMT
+HelloAsyncAwait
+main: All tasks are finished</pre>			<p>You now have self-referential coroutines that can safely store both data and references across wait <span class="No-Break">points. Congratulations!</span></p>
+			<p>Even though making these changes took up quite a few pages, the changes themselves were part pretty trivial for the most part. Most of the changes were due to <strong class="source-inline">Pin</strong> having a different API than what <a id="_idIndexMarker626"/>we had when using <span class="No-Break">references before.</span></p>
+			<p>The good thing is that this sets us up nicely for migrating our whole runtime over to futures created by async/await instead of our own futures created by coroutine/wait with very <span class="No-Break">few changes.</span></p>
+			<h1 id="_idParaDest-178"><a id="_idTextAnchor177"/>Summary</h1>
+			<p>What a ride, huh? If you’ve got to the end of this chapter, you’ve done a fantastic job, and I have good news for you: you pretty much know everything about how Rust’s futures work and what makes them special already. All the complicated topics <span class="No-Break">are covered.</span></p>
+			<p>In the next, and last, chapter, we’ll switch over from our hand-made coroutines to proper async/await. This will seem like a breeze compared to what you’ve gone through <span class="No-Break">so far.</span></p>
+			<p>Before we continue, let’s stop for a moment and take a look at what we’ve learned in <span class="No-Break">this chapter.</span></p>
+			<p>First, we expanded our coroutine implementation so that we could store variables across wait points. This is pretty important if our coroutine/wait syntax is going to rival regular synchronous code in readability <span class="No-Break">and ergonomics.</span></p>
+			<p>After that, we learned how we could store and restore variables that held references, which is just as important as being able to <span class="No-Break">store data.</span></p>
+			<p>Next, we saw firsthand something that we’ll <em class="italic">never</em> see in Rust unless we implement an asynchronous system, as we did in this chapter (which is quite the task just to prove a single point). We saw how moving coroutines that hold self-references caused serious memory safety issues, and exactly why we need something to <span class="No-Break">prevent them.</span></p>
+			<p>That brought us to pinning and self-referential structs, and if you didn’t know about these things already, you do now. In addition to that, you should at least know what a pin projection is and what we mean by <span class="No-Break">structural pinning.</span></p>
+			<p>Then, we looked at the differences between pinning a value to the stack and pinning a value to the heap. You even saw how easy it was to break the <strong class="source-inline">Pin</strong> guarantee when pinning something to the stack and why you should be very careful when doing <span class="No-Break">just that.</span></p>
+			<p>You also know about some tools that are widely used to tackle both pin projections and stack pinning and make both much safer and easier <span class="No-Break">to use.</span></p>
+			<p>Next, we got firsthand experience with how we could use pinning to prevent the issues we had with our <span class="No-Break">coroutine implementation.</span></p>
+			<p>If we take a look at what we’ve built so far, that’s pretty impressive as well. We have <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>A coroutine implementation we’ve <span class="No-Break">created ourselves</span></li>
+				<li>Coroutine/wait syntax and a preprocessor that helps us with the boilerplate for <span class="No-Break">our coroutines</span></li>
+				<li>Coroutines that can safely store both data and references across <span class="No-Break">wait points</span></li>
+				<li>An efficient runtime that stores, schedules, and polls the tasks <span class="No-Break">to completion</span></li>
+				<li>The ability to spawn new tasks onto the runtime so that one task can spawn hundreds of new tasks that will <span class="No-Break">run concurrently</span></li>
+				<li>A reactor that uses <strong class="source-inline">epoll</strong>/<strong class="source-inline">kqueue</strong>/IOCP under the hood to efficiently wait for and respond to new events reported by the <span class="No-Break">operating system</span></li>
+			</ul>
+			<p>I think this is <span class="No-Break">pretty cool.</span></p>
+			<p>We’re not quite done with this book yet. In the next chapter, you’ll see how we can have our runtime run futures created by async/await instead of our own coroutine implementation with just a few changes. This enables us to leverage all the advantages of async Rust. We’ll also take some time to discuss the state of async Rust today, the different runtimes you’ll encounter, and what we might expect in <span class="No-Break">the future.</span></p>
+			<p>All the heavy lifting is done now. <span class="No-Break">Well done!</span></p>
+		</div>
+	</body></html>

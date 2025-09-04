@@ -1,0 +1,338 @@
+<html><head></head><body>
+        <section>
+
+                            <header class="header-title chapter-title">
+                    Creating a Linux Kernel Module
+                </header>
+            
+            <article>
+                
+<p class="CDPAlignLeft CDPAlign">Any decent operating system can be extended by loadable modules. This is required to support hardware that is not specifically supported by the organization that created the operating system, and so these <span>loadable</span> modules are often named <strong>device drivers</strong>.</p>
+<p class="CDPAlignLeft CDPAlign">However, this extensibility of operating systems can <span>also </span>be exploited for other purposes. <span>For example, a specific filesystem or network protocol can be supported by the kernel itself through </span><span>loadable</span><span> </span><span>modules without changing and recompiling the actual kernel.</span></p>
+<p class="mce-root"><span>In this chapter, we will look at how to build</span> <span>a</span> <span>kernel-</span><span>loadable</span><span> module</span><span>, specifically for the Linux operating system and the x86_64 CPU architecture. The concepts and commands that are described here are </span><span>also </span><span>applicable to other CPU architectures.</span></p>
+<p><span>The following topics will be covered in this chapter:</span></p>
+<ul>
+<li>Preparing the environment </li>
+<li>Creating a boilerplate module</li>
+<li>Using the global variable</li>
+<li>Allocating memory</li>
+<li>Creating a driver for a character device</li>
+</ul>
+<p>By the end of this chapter, you will have learned some general concepts regarding operating system-extension modules and, in particular, <span>how to create, manage, and debug Linux kernel modules.</span></p>
+<h1 id="uuid-8b002860-7b24-43e4-92e4-c13406fe98cf">Technical requirements</h1>
+<p>To understand<span> this chapter, some concepts of the Linux operating system should be known. In particular, you need to know the following:</span></p>
+<ul>
+<li><span>How to use the Linux command interpreter (that is, the <strong>shell</strong>)</span></li>
+<li><span>How to understand C language source code</span></li>
+<li><span>How to use the GCC compiler or the Clang compiler</span></li>
+</ul>
+<p><span>If you don't have this knowledge, you can refer to the following web resources:</span></p>
+<ul>
+<li>There are many tutorials that teach you how to use the Linux command interpreter. One that is suitable for beginners of the Ubuntu Linux distribution can be found at <a href="https://ubuntu.com/tutorials/command-line-for-beginners#1-overview">https://ubuntu.com/tutorials/command-line-for-beginners#1-overview</a>. A more advanced and complete free book can be found at <a href="https://wiki.lib.sun.ac.za/images/c/ca/TLCL-13.07.pdf">https://wiki.lib.sun.ac.za/images/c/ca/TLCL-13.07.pdf</a>.</li>
+<li>There are many tutorials that teach you about the C programming language. One of them is <a href="https://www.tutorialspoint.com/cprogramming/index.htm">https://www.tutorialspoint.com/cprogramming/index.htm</a><span>.</span></li>
+<li>A reference for the Clang compiler can be found at <a href="https://clang.llvm.org/docs/ClangCommandLineReference.html">https://clang.llvm.org/docs/ClangCommandLineReference.html</a>.</li>
+</ul>
+<p><span>The code examples in this chapter have </span><span>only</span><span> </span><span>been developed and tested on a specific version of Linux—</span><span>a </span><span>Linux Mint distribution with the</span><span> 4.15.0-72-generic</span><span> kernel version</span><span>—and so they are only guaranteed to work with this version.</span> <span>The Mint distribution is derived from the Debian distribution and so it shares most of Debian's commands. The desktop environment is irrelevant.</span></p>
+<p><span>To run the examples in this chapter, you should have access as a superuser (root) to a system running the preceding distribution based on a CPU with the x86_64 architecture.</span></p>
+<p>To build a kernel module, a lot of boilerplate code needs to be written. This work has already been done for you in an open source project available on GitHub at<span> </span><a href="https://github.com/lizhuohua/linux-kernel-module-rust">https://github.com/<span>lizhuohua/linux-kernel-module-rust</span></a><span>.</span> Parts of this GitHub project have been copied into a framework to write Linux kernel modules, which will be used in this chapter. This can be found in the<span> </span><kbd>linux-fw</kbd><span> </span>folder of the repository associated with this chapter.</p>
+<p class="mce-root">Also, for simplicity, no cross-compilation will be done—that is, the kernel module will be built in the same operating system in which it will be used. This is a bit unusual as often, loadable modules are developed for operating systems or architectures that are not suitable for software development; in some cases, the target system is too constrained to run a convenient development environment, such as a micro-controller.</p>
+<p class="mce-root">In other cases, the opposite applies—the<span> target system is too costly to be used by a single developer, such as a supercomputer.</span></p>
+<p><span>The complete source code for this chapter can be found in the</span> <kbd>Chapter10</kbd> <span>folder </span><span>of the repository at </span><a href="https://github.com/PacktPublishing/Creative-Projects-for-Rust-Programmers">https://github.com/PacktPublishing/Creative-Projects-for-Rust-Programmers</a><span>.</span></p>
+<h1 id="uuid-0b1cc31b-1b6a-43f4-9084-e33e13b487fa">Project overview</h1>
+<p>In this chapter, we'll look at four projects that will show you how to build increasingly complex Linux kernel modules: </p>
+<ul>
+<li><kbd>boilerplate</kbd>: An extremely simple kernel module that shows the minimal requirements to build your own module</li>
+<li><kbd>state</kbd>: A module that keeps some global static variables—that is, a<span> </span><strong>static</strong> state</li>
+<li><kbd>allocating</kbd>: <span>A module that allocates heap memory—that is, a <strong>dynamic</strong> state</span></li>
+<li><kbd>dots</kbd>: A module that implements a read-only character device that can be associated with a filesystem pathname, and then it can be read as a file</li>
+</ul>
+<h1 id="uuid-ca0ef443-6bfc-4c3c-862d-93f8c1367582">Understanding kernel modules</h1>
+<p class="mce-root"><span>Kernel modules must satisfy certain requirements imposed by the operating system, and so it is quite unreasonable to try to write a kernel module in an application-oriented programming language, such as Java or JavaScript. </span><span>Usually, kernel modules are </span><span>only</span><span> </span><span>written in assembly language or in C, and sometimes in C++. However, Rust is designed to be a system programming language, and so it is actually possible to write</span> <span>kernel-</span><span>loadable</span><span> modules</span> <span>in Rust.</span></p>
+<p class="mce-root">While Rust is <span>usually</span><span> </span><span>a portable programming language—the same source code can be recompiled for different CPU architectures and for different operating systems—this is not the case for kernel modules. A specific kernel module must be designed and implemented for a specific operating system. In addition, a specific machine architecture must</span><span> usually</span><span> be targeted, although the core logic can be architecture-independent. So, the examples in this chapter will </span><span>only</span><span> </span><span>target the Linux operating system and the x86_64 CPU architecture.</span></p>
+<h2 id="uuid-0edb88f9-2628-4325-ba30-f31b850b18cf">Preparing the environment</h2>
+<p>Some of the installation work must be performed with superuser privileges. So, you should prefix the <kbd>sudo</kbd> <span>command</span><span> </span><span>before any command that installs a system-wide package or that changes something in the kernel. Alternatively, you should </span><span>routinely</span><span> </span><span>work as a superuser. Needless to say, this is dangerous as you can jeopardize the whole system with a wrong command. To work as a superuser, type the following command into a terminal:</span></p>
+<pre><strong>su root</strong></pre>
+<p>Then, type in your superuser password.</p>
+<p>The Linux operating system expects its modules to <span>only</span><span> </span><span>be written in C. If you want to write a kernel module in Rust, a glue software must be used to interface your Rust code to the C language of Linux.</span></p>
+<p>So, a C compiler must be used to build this glue software. Here the <kbd>clang</kbd> compiler will be used. This is part of the <strong>Low-Level Virtual Machine</strong> <strong>(</strong><strong>LLVM</strong>) project.</p>
+<div class="packt_infobox">The Rust compiler also uses libraries of the LLVM project to generate machine code.</div>
+<p>You can install the <kbd>clang</kbd> compiler in your Linux system by typing the following commands:</p>
+<pre class="mce-root"><strong>sudo apt update<br/>sudo apt install llvm clang</strong></pre>
+<p>Notice that the <kbd>apt</kbd> command is typical of Debian-derived distributions and is not available on many Linux distributions, nor on other operating systems.</p>
+<p class="mce-root">Then, you need to ensure that the C language headers of your current operating system are installed. You can discover what the version of your current operating system is by typing <span>the </span><kbd>uname -r</kbd><span> command. This will print something similar to </span><kbd>4.15.0-72-generic</kbd><span>. You can install the headers for the specific version of the kernel by </span>using a command similar to the following:</p>
+<pre class="mce-root"><strong>sudo apt install linux-headers-4.15.0-72-generic</strong></pre>
+<p>You can combine the two commands by typing the following command:</p>
+<pre class="mce-root"><strong>sudo apt install linux-headers-"$(uname -r)"</strong></pre>
+<p>This will generate the correct command for your system.</p>
+<p class="mce-root">At the time of writing, Linux kernel modules can <span>only</span><span> </span><span>be created using the</span> <kbd>nightly</kbd> <span>version of the Rust compiler. To install the latest version of this compiler,</span> type the following<span>:</span></p>
+<pre class="mce-root"><strong>rustup toolchain install nightly</strong></pre>
+<p class="mce-root">Also, the source code of the Rust compiler and the tool to format Rust source code are needed. You can ensure they are installed by typing the following command:</p>
+<pre class="mce-root"><strong>rustup component add --toolchain=nightly rust-src rustfmt<br/></strong></pre>
+<p class="mce-root">To ensure that the <kbd>nightly</kbd> toolchain of Rust for the x86_64 architecture and Linux will be used by default, run this command:</p>
+<pre class="mce-root"><strong>rustup default nightly-x86_64-unknown-linux-gnu</strong></pre>
+<p>This can be shortened to <kbd>rustup default nightly</kbd> if there are no other target platforms installed on your system.</p>
+<p>We know that the <kbd>cargo</kbd> utility has several subcommands, such as <kbd>new</kbd>, <kbd>build</kbd>, and <kbd>run</kbd>. For this project, an additional <kbd>cargo</kbd><span> </span><span>subcommand </span><span>will be needed—the</span> <kbd>xbuild</kbd> <span>subcommand. This name stands for <strong>cross-build</strong></span><span>, which means to compile for another platform. Actually, it is used to generate machine code for a platform different from the one running the compiler. In this case, it means that while the compiler we are running is a standard executable that is running in user space, the code we are generating will run in kernel space, and so it will need a different standard library. You can install that subcommand by typing this line:</span></p>
+<pre>cargo install cargo-xbuild</pre>
+<p>Then, after you have downloaded the source code associated with this chapter <span>from GitHub</span>, you are ready to run the examples.</p>
+<div class="packt_quote packt_tip">Notice that in the downloaded <span>source </span>code, there is a folder for every project, plus a folder named <kbd>linux-fw</kbd>. This contains the framework to develop Linux kernel modules, and the examples assume that it is located in this position.</div>
+<h1 id="uuid-cd24241d-f97f-408b-9f08-2b339b52b978">A boilerplate module</h1>
+<p>The first project is the minimal, loadable kernel module, and so it is called <strong>boilerplate</strong>. It will just print a message when the module is loaded and another message when it is unloaded.</p>
+<p>In the <kbd>boilerplate</kbd> folder, there are the following source files:</p>
+<ul>
+<li><kbd>Cargo.toml</kbd>: The build directives for the Rust project</li>
+<li><kbd>src/lib.rs</kbd>: The Rust source code</li>
+<li><kbd>Makefile</kbd>: The build directives to generate and compile the C language glue code and to link the generated object code into a kernel module</li>
+<li><kbd>bd</kbd>: A shell script to build a debug configuration of the kernel module</li>
+<li><kbd>br</kbd>:<span> A shell script to build a released configuration of the kernel module</span></li>
+</ul>
+<p>Let's start with building the kernel module. </p>
+<h2 id="uuid-64cbc38a-1774-4be7-b370-9562ff24a6ef">Building and running the kernel module</h2>
+<p>To build the kernel module for debugging purposes, open the <kbd>boilerplate</kbd> folder and type in this command:</p>
+<pre><strong>./bd</strong></pre>
+<p>Of course, this file must have executable permissions. However, it should already have them when it is installed from the GitHub repository.</p>
+<p>The first time you run this script, it will build the framework itself, and so it will take quite a while. After that, it will build the <kbd>boilerplate</kbd> project in a couple of minutes.</p>
+<p>After the completion of the <kbd>build</kbd> command, several files should appear in the current folder. Among them is one named <kbd>boilerplate.ko</kbd>, where <kbd>ko</kbd> (short for <strong>kernel object</strong>) is the kernel module we want to install. Its size is huge because it contains a lot of debugging information.</p>
+<p>A Linux command that gives information about a Linux module file is <kbd>modinfo</kbd>. You can use it by typing the following command:</p>
+<pre><strong>modinfo boilerplate.ko</strong></pre>
+<p>This should print some information about the specified file. To load the module into the kernel, type the following command:</p>
+<pre><strong>sudo insmod boilerplate.ko</strong></pre>
+<p>The <kbd>insmod</kbd> <span>(</span><span>insert module) </span>command loads <span>a Linux module from </span>the specified file and adds it to the running kernel. Of course, this is a privileged operation that can jeopardize the safety and security of the whole computer system, and so only a superuser can run it. This explains the need to use the <kbd>sudo</kbd> command. If the command is successful; nothing is printed to the terminal.</p>
+<p>The <kbd>lsmod</kbd> <span>(list module) </span>command prints a list of all the currently loaded modules. To select the one you are interested in, you can filter the output using the <kbd>grep</kbd> utility. So, you can type the following command:</p>
+<pre><strong>lsmod | grep -w boilerplate</strong></pre>
+<p>If <kbd>boilerplate</kbd> is loaded, you will get a line similar to the following:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/d6593d77-acd5-453f-ac0c-05c578940982.png" style="width:18.25em;height:1.33em;"/></p>
+<p>This line contains the name of the module, the memory used by it in bytes, and the number of current uses of these modules.</p>
+<p>To unload the loaded module, you can type the following command:</p>
+<pre><strong>sudo rmmod boilerplate</strong></pre>
+<p>The <kbd>rmmod</kbd> <span>(remove module)</span><span> </span>command unloads the specified module from the running Linux kernel. If the module is not currently loaded, this command prints an error message and does nothing.</p>
+<p>Now, let's look at the behavior of this module. Linux has a memory-only log area called the <strong>kernel buffer</strong>. Kernel modules can append lines of text to this buffer. When the <kbd>boilerplate</kbd> module is loaded, it appends the <kbd>boilerplate: Loaded</kbd> <span>text</span><span> </span><span>to the kernel buffer. When the <kbd>boilerplate</kbd> module is unloaded, it appends the</span> <kbd>boilerplate: Unloaded</kbd><span> text</span><span>. </span><span>Only the kernel and its modules can write to it, but everyone can read it using the <kbd>dmesg</kbd> (short for <strong>display messages</strong>) utility.</span></p>
+<p class="mce-root">If you type<span> </span><kbd>dmesg</kbd><span> </span>into the terminal, the whole content of the kernel buffer will be printed to the terminal. Typically, there are thousands of messages in the kernel buffer, written by several modules since the last reboot of the system, but the last two lines should be those appended by the <kbd>boilerplate</kbd> module. To view just the last 10 lines while keeping their colors, type the following:</p>
+<pre><strong>dmesg --color=always | tail</strong></pre>
+<p class="mce-root">The last two lines should look something like the following:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/98cc4ca1-f1c6-4db5-9ff7-0c97923ff550.png" style="width:21.67em;height:2.42em;"/></p>
+<p>The first part of any line, enclosed in brackets, is a <strong>timestamp </strong>written by the kernel. This is the time in seconds and microseconds since the start of the kernel. The rest of the line is written by the module code.</p>
+<p>Now, we can see how the <kbd>bd</kbd> script built this kernel module.</p>
+<h2 id="uuid-0b990635-1d2d-4a85-b987-1752754c721b">The build commands</h2>
+<p>The <kbd>bd</kbd> script has the following content:</p>
+<pre>#!/bin/sh<br/>cur_dir=$(pwd)<br/>cd ../linux-fw<br/>cargo build<br/>cd $cur_dir<br/>RUST_TARGET_PATH=$(pwd)/../linux-fw cargo xbuild --target x86_64-linux-kernel-module &amp;&amp; make</pre>
+<p>Let's see what happened in the code:</p>
+<ul>
+<li>The first line declares that this is a shell script, and so the Bourne shell program will be used to run it.</li>
+<li>The second line saves the path of the current folder in a temporary variable.</li>
+<li>The third, fourth, and fifth lines enter the framework folder, build the <span>framework</span> <span><span>for a debug configuration, and return back to the original folder.</span></span></li>
+<li>The last line builds the module itself. Notice that it ends with <kbd>&amp;&amp; make</kbd><span>. This means that after having successfully run the command in the first part of the line, the command in the second part (the</span> <kbd>make</kbd> <span>command) must be run. Instead, if the command in the first part fails, the second command will not be run. The line begins with the <kbd>RUST_TARGET_PATH=$(pwd)/../linux-fw</kbd><span> </span><span>clause</span><span>. It creates an environment variable named</span> <kbd>RUST_TARGET_PATH</kbd><span>, which is only valid for the rest of the command line. It contains the absolute pathname of the</span> <kbd>framework</kbd> <span>folder. Then, the <kbd>cargo</kbd> tool is invoked, with an <kbd>xbuild --target x86_64-linux-kernel-module</kbd><span> argument. This is an <kbd>xbuild</kbd> subcommand to compile for a different platform than the current one, </span></span></span>and the rest of the command specifies that the target is <kbd>x86_64-linux-kernel-module</kbd><span>.</span> <span>This target is specific to the framework we are using. To explain how this target is used, it is necessary to examine the</span> <kbd>Cargo.toml</kbd> <span>file, which consists of the following code:</span></li>
+</ul>
+<pre style="padding-left: 60px">[package]<br/>name = "boilerplate"<br/>version = "0.1.0"<br/>authors = []<br/>edition = "2018"<br/><br/>[lib]<br/>crate-type = ["staticlib"]<br/><br/>[dependencies]<br/>linux-kernel-module = { path = "../linux-fw" }<br/><br/>[profile.release]<br/>panic = "abort"<br/>lto = true<br/><br/>[profile.dev]<br/>panic = "abort"</pre>
+<p>The <kbd>package</kbd> section is the usual one. The <kbd>crate-type</kbd> item of the <kbd>lib</kbd> section specifies that the target of the compilation is a static-link library.</p>
+<p>The <kbd>linux-kernel-module</kbd> module of the <kbd>dependencies</kbd> section specifies the relative path of the folder containing the framework. If you prefer to install the <kbd>framework</kbd> folder in another position relative to this project or with another name, you should change this path, as well as the <kbd>RUST_TARGET_PATH</kbd> environment variable.</p>
+<p>Thanks to this directive, it is possible to use the target specified in the <kbd>cargo</kbd> command line.</p>
+<p>The remaining sections specify that in case of panic, an immediate abort should be done (with no output) and that <span>in the release configuration,</span> <strong>Link-Time Optimization</strong> (<strong>LTO</strong>) should be activated.</p>
+<p>After completing this <kbd>cargo</kbd> command, the<span> </span><kbd>target/x86_64-linux-kernel-module/debug/libboilerplate.a</kbd><span> </span><span>static-link library</span><span> </span><span>should have been created. As with any other Linux static-link library, its name starts with</span> <kbd>lib</kbd><span> and ends with</span> <kbd>.a</kbd><span>.</span></p>
+<p>The last part of the command line runs the <kbd>make</kbd> utility, which is a <kbd>build</kbd> tool used mainly when developing in C. Just as the <kbd>cargo</kbd> tool uses the <kbd>Cargo.toml</kbd> file to know what to do, the <kbd>make</kbd> tool uses the <kbd>Makefile</kbd> file for the same purposes.</p>
+<p>Here, we don't examine <kbd>Makefile</kbd>, but we just say that it reads the static library generated by <kbd>cargo</kbd> and encapsulates it with some C language glue code to generate the <kbd>boilerplate.ko</kbd> file, which is the kernel module.</p>
+<p>In addition to the <kbd>bd</kbd> file, there is a <kbd>br</kbd> file, which is similar but runs both <kbd>cargo</kbd> and <kbd>make</kbd> with a <kbd>release</kbd> option, and so it generates an optimized kernel module. You can run it by typing the following:</p>
+<pre><strong>./br</strong></pre>
+<p>The generated module will overwrite the <kbd>boilerplate.ko</kbd> file, which was created by <kbd>bd</kbd>. You can see that the new file is much smaller on disk and, using the <kbd>lsmod</kbd> utility, you can see that it is also much smaller in memory.</p>
+<h2 id="uuid-044c7b4f-5863-4e9a-86b7-f78b3bbf2d93">The source code of the boilerplate module</h2>
+<p>Now, let's examine the Rust source code of this project. It is contained in the <kbd>src/lib.rs</kbd> file. The first line is as follows:</p>
+<pre>#![no_std]</pre>
+<p>This is a directive to avoid loading the Rust standard library in this project. Actually, many routines of the standard library assume to be run as application code—<span>in user-space, </span>not inside a kernel—and so they cannot be used in this project. Of course, after this directive, many Rust functions that we are accustomed to using are no longer automatically available.</p>
+<p>In particular, no heap memory allocator is included by default and so, by default, vectors and strings that need heap memory allocation are not allowed. If you try to use <kbd>Vec</kbd> or the <kbd>String</kbd> type, you will get a <kbd>use of undeclared type or module</kbd> error message.</p>
+<p>The next lines are as follows:</p>
+<pre>use linux_kernel_module::c_types;<br/>use linux_kernel_module::println;</pre>
+<p>These lines import <span>some names </span>into the current source file. These names are defined in the framework.</p>
+<p>The first line imports the declarations of some data types corresponding to the C language <span>data types. They are needed </span>to interface with the kernel, which expects that modules are written in C. After this declaration, you can use, for example, the <kbd>c_types::c_int</kbd><span> expression</span><span>, which corresponds to the C language</span><span> </span><kbd>int</kbd><span> data type</span><span>.</span></p>
+<p>The second line imports a macro named <kbd>println</kbd>, just like that of the standard library, which is no longer available. Actually, it can be used in the same way, but instead of printing on the terminal, it appends a line to the kernel buffer, prefixed by a timestamp.</p>
+<p>Then, there are two entry points of the module—the <kbd>init_module</kbd> function, which is invoked by the kernel when the module is loaded, and the <kbd>cleanup_module</kbd> function, which is invoked by the kernel when the module is unloaded. They are defined by the following code:</p>
+<pre>#[no_mangle]<br/>pub extern "C" fn init_module() -&gt; c_types::c_int {<br/>    println!("boilerplate: Loaded");<br/>    0<br/>}<br/><br/>#[no_mangle]<br/>pub extern "C" fn cleanup_module() {<br/>    println!("boilerplate: Unloaded");<br/>}</pre>
+<p>Their <kbd>no_mangle</kbd> attribute is a directive to the linker to keep this exact function name so that the kernel can find this function by its name. Its <kbd>extern "C"</kbd> clause specifies that the <em>function-calling</em> convention must be the one normally used by C.</p>
+<p>These functions get no arguments, but the first one returns a value that indicates the outcome of the initialization. A <kbd>0</kbd> result represents success and a <kbd>1</kbd> result represents failure. It is specified by Linux that the type of this value is the C language <kbd>int</kbd> variable and the <kbd>c_types::c_int</kbd> type of the framework represents just that binary type.</p>
+<p>Both functions print the messages that we saw in the previous section <span>to the kernel buffer</span>. Also, both functions are optional, but if the <kbd>init_module</kbd> function is absent, a warning is emitted by the linker.</p>
+<p>The last two lines of the file are as follows:</p>
+<pre>#[link_section = ".modinfo"]<br/>pub static MODINFO: [u8; 12] = *b"license=GPL\0";</pre>
+<p>They define a string resource for the linker to insert into the resulting executable.<span> </span>The<span> </span>name of that string resource is<span> </span><kbd>.modinfo</kbd> and its value is<span> </span><kbd>licence=GPL</kbd>. That value must be a null-terminated ASCII string because that is the string type normally used in C. This section is not required, but if it is absent, a warning is emitted by the linker.</p>
+<h1 id="uuid-1d83a35a-e8f5-4c56-acfe-8da93f106220">Using global variables</h1>
+<p>The module boilerplate of the preceding project just printed some static text. However, it is quite typical for a module to have some variables that must be accessed during the lifetime of the module. Usually, Rust does not use mutable global variables because they are not safe and just defines them in the <kbd>main</kbd> function and passes them as arguments to the functions <span>called by <kbd>main</kbd></span>. However, kernel modules do not have a <kbd>main</kbd> function. They have entry points called by the kernel and so, to keep shared mutable variables, some unsafe code must be used.</p>
+<p>The <kbd>State</kbd> project shows you how to define and use shared mutable variables. To run it, enter the <kbd>state</kbd> folder and type <kbd>./bd</kbd>. Then, type the following four commands:</p>
+<pre><strong>sudo insmod state.ko</strong><br/><strong>lsmod | grep -w state</strong><br/><strong>sudo rmmod state</strong><br/><strong>dmesg --color=always | tail</strong></pre>
+<p>Let's see what we did there:</p>
+<ul>
+<li>The first command will load the module into the kernel with no output to the console.</li>
+<li>The second command will show that the module is loaded by fetching all the loaded modules and filtering the one called <kbd>state</kbd>. </li>
+<li>The third command will unload the module from the kernel with no output to the console.</li>
+<li>The last command will show the two lines added by this module to the kernel buffer. They will look like this:</li>
+</ul>
+<pre style="padding-left: 60px" class="mce-root"><strong>[123456.789012] state: Loaded</strong><br/><strong>[123463.987654] state: Unloaded 1001</strong></pre>
+<p>Apart from the timestamps, they differ from the <kbd>boilerplate</kbd> example due to the name of the module and the addition of the number <kbd>1001</kbd> to the second line.</p>
+<p>Let's see the source code of this project, showing the differences compared with <span>the boilerplate source code. </span>The <kbd>lib.rs</kbd> file contains the following additional lines:</p>
+<pre>struct GlobalData { n: u16 }<br/><br/>static mut GLOBAL: GlobalData = GlobalData { n: 1000 };</pre>
+<p>The first line defines a data structure type, named <kbd>GlobalData</kbd>, containing only a 16-bit unsigned number. The second line defines and initializes a static mutable variable of this type, named <kbd>GLOBAL</kbd> .</p>
+<p>Then, the <kbd>init_module</kbd> function contains the following additional statement:</p>
+<pre>unsafe { GLOBAL.n += 1; }</pre>
+<p>This increments the global variable. As it was initialized to <kbd>1000</kbd>, after the module is loaded, the value of this variable is <kbd>1001</kbd>.</p>
+<p>Finally, the statement in the<span> </span><kbd>cleanup_module</kbd><span> </span>function is replaced by the following:</p>
+<pre>println!("state: Unloaded {}", unsafe { GLOBAL.n });</pre>
+<p>This formats and prints the value of the global variable. Notice that both reading and writing a global variable is an <em>unsafe operation</em> as it provides access to a mutable static object.</p>
+<p>The <kbd>bd</kbd> and <kbd>br</kbd> files are identical to those in the <kbd>boilerplate</kbd> project. The <kbd>Cargo.toml</kbd> and <kbd>Makefile</kbd> files differ from those in the <kbd>boilerplate</kbd> project due to the replacement of the <kbd>boilerplate</kbd> <span>string </span><span>with the </span><kbd>state</kbd><span> </span><span>string</span><span>.</span></p>
+<h1 id="uuid-73252938-5c0a-4772-b030-59c761ee44b1">Allocating memory</h1>
+<p>The preceding project defined a global variable, but it did not carry out memory allocation. Even in kernel modules, it is possible to allocate memory, as shown in the <kbd>allocating</kbd> project.</p>
+<p>To run this project, open the<span> </span><kbd>allocating</kbd><span> </span>folder and type in<span> </span><kbd>./bd</kbd>. Then, type the following four commands:</p>
+<pre><strong>sudo insmod allocating.ko</strong><br/><strong>lsmod | grep -w allocating</strong><br/><strong>sudo rmmod allocating</strong><br/><strong>dmesg --color=always | tail</strong></pre>
+<p>These commands have a behavior quite similar to the corresponding commands for the preceding project, but the last one will print a line that, after the timestamp, will contain the following text:</p>
+<pre>allocating: Unloaded 1001 abcd 500000</pre>
+<p>Let's examine the source code of this project and see its differences compared with the <kbd>boilerplate</kbd> source code. The <kbd>lib.rs</kbd> file contains the following additional lines:</p>
+<pre>extern crate alloc;<br/>use crate::alloc::string::String;<br/>use crate::alloc::vec::Vec;</pre>
+<p>The first line <span>explicitly</span><span> </span><span>declares that a memory allocator is needed. Otherwise, as the standard library is not used, no memory allocator will be linked to the executable module.</span></p>
+<p>The second and third lines are required to include the <kbd>String</kbd> and <kbd>Vec</kbd> types<span> </span><span>in the source code</span><span>, respectively. Otherwise, they will not be available to the source code. Then, there are the following global declarations:</span></p>
+<pre>struct GlobalData {<br/>    n: u16,<br/>    msg: String,<br/>    values: Vec&lt;i32&gt;,<br/>}<br/><br/>static mut GLOBAL: GlobalData = GlobalData {<br/>    n: 1000,<br/>    msg: String::new(),<br/>    values: Vec::new(),<br/>};</pre>
+<p>Now, the data structure contains three fields. Two of them, <kbd>msg</kbd> and <kbd>values</kbd>, <span>use heap memory when they are not empty, and</span> the <kbd>GLOBAL</kbd><span> </span><span>variable</span><span> initializes all of them. Here, no memory allocation is allowed, and so these dynamic fields must be empty.</span></p>
+<p>In the <kbd>init_module</kbd> function, as in other entry points, allocations are allowed, and so the following code is valid:</p>
+<pre>unsafe {<br/>    GLOBAL.n += 1;<br/>    GLOBAL.msg += "abcd";<br/>    GLOBAL.values.push(500_000);<br/>}</pre>
+<p>This changes all the fields of the global variable, allocating memory for both the <kbd>msg</kbd> <span>string</span><span> </span><span>and the </span><kbd>values</kbd><span> </span><span>vector</span><span>. Finally, the global variable is accessed to print its values by using the following statement in the</span> <kbd>cleanup_module</kbd> <span>function:</span></p>
+<pre>unsafe {<br/>    println!("allocating: Unloaded {} {} {}",<br/>        GLOBAL.n,<br/>        GLOBAL.msg,<br/>        GLOBAL.values[0]<br/>    );<br/>}</pre>
+<p>The rest of the code is unchanged.</p>
+<h1 id="uuid-bc0c32e1-fcc0-41f3-9ab3-c1570e5107f2">A character device</h1>
+<p>Unix-like systems are famous for their feature that maps I/O devices to the filesystem. In addition to the predefined I/O devices, it is possible to define your own devices as kernel modules. A kernel device can be attached to real hardware or it can be <strong>virtual</strong>. In this project, we will build a virtual device.</p>
+<p>In Unix-like systems, there are two kinds of I/O devices: <strong>block devices</strong> and <strong>character devices</strong>. The former handle packets of bytes in a single operation (that is, they are buffered), while the latter can handle only one byte at a time, with no buffering.</p>
+<p>In general, a device can be read, written, or both. Our device will be a read-only device. So, we are going to build a filesystem-mapped, virtual, read-only character device.</p>
+<h2 id="uuid-14484ed1-2c80-4154-8ea4-dc356ddc63d9">Building the character device</h2>
+<p>Here, we are going to build a character device driver (or <strong>character device</strong> for short). A character device is a device driver that can handle only one byte at a time with no buffering. The behavior of our device will be quite simple— for every byte read from it, it will return a dot character, but for every 10 characters, an asterisk will be returned instead of a dot.</p>
+<p>To build it, open the <kbd>dots</kbd> <span>folder</span><span> </span><span>and type in </span><kbd>./bd</kbd><span>. Several files will be created in the current folder, including the </span><kbd>dots.ko</kbd> <span>file, which is our kernel module.</span></p>
+<p>To install it and check whether it is loading, type the following:</p>
+<pre><strong>sudo insmod dots.ko</strong><br/><strong>lsmod | grep -w dots</strong></pre>
+<p>Now, the kernel module is loaded as a character device, but it is not yet mapped to a special file. However, you can find it among the loaded devices by using the following command:</p>
+<pre><strong>grep -w dots /proc/devices</strong></pre>
+<p>The <kbd>/proc/devices</kbd> <span>virtual file </span>contains a list of all the loaded device modules. Among them, in the <kbd>Character devices</kbd> section, there should be a line like this:</p>
+<pre>236 dots</pre>
+<p>This means that there is a loaded character device driver named <kbd>dots</kbd> whose internal identifier is <kbd>236</kbd>. This internal identifier is also named a <strong>major number</strong> because it is the first number of a pair of numbers that actually identifies the device. The other number, known as a <strong>minor number</strong>, is not used but can be set to <kbd>0</kbd>.</p>
+<p>The major number may vary from system to system and from loading to loading because it is assigned by the kernel when the module is loaded. Anyway, it is a small, positive integer number.</p>
+<p>Now, we must associate these device drivers with a special file, which is an entry point in the filesystem, that can be used as a file, but is <span>actually</span><span> </span><span>a handle to a device driver. This operation is performed by the following command, in which you should replace</span> <kbd>236</kbd><span> with the major number you found in the</span> <kbd>/proc/devices</kbd> <span>file:</span></p>
+<pre><strong>sudo mknod /dev/dots1 c 236 0</strong></pre>
+<p>The <kbd>mknod</kbd> Linux command creates a special <span>device</span><span> </span><span>file</span><span>. </span><span>The preceding command creates a special file named </span><kbd>dots1</kbd><span> in the </span><kbd>dev</kbd><span> folder. </span></p>
+<p>This is a privileged command for two reasons:</p>
+<ul>
+<li>Only a superuser can create special files.</li>
+<li>Only a superuser can create a file in the <kbd>dev</kbd> folder.</li>
+</ul>
+<p>The <kbd>c</kbd> character means that the created device will be a character device. The <span>following</span><span> </span><span>two numbers—</span><kbd>236</kbd> <span>and</span> <kbd>0</kbd><span>—are the major and minor numbers of the new virtual device.</span></p>
+<p>Notice that the name of the special file (<kbd>dots1</kbd>) can be different from the name of the device (<kbd>dots</kbd>) because the association between the special file and the device driver is performed through the major number.</p>
+<p>After creating the special file, you can read some bytes from it. The <kbd>head</kbd> command reads the first lines or bytes of a text file. So, type the following:</p>
+<pre><strong>head -c42 /dev/dots1</strong></pre>
+<p>This will print the following text to the console:</p>
+<pre><strong>.........*.........*.........*.........*..</strong></pre>
+<p>This command reads the first 42 bytes from the specified file.</p>
+<p>When asked for the first byte, the module returns a dot. When asked for the second byte, the module returns another dot, and so on for the first nine bytes. However, when asked for the 10<sup>th</sup> byte, the module returns an asterisk. Then, this behavior is repeated—after nine dots, an asterisk is returned over and over again. In fact, only 42 characters are returned because the <kbd>head</kbd> command requested 42 characters from our device.</p>
+<p>In other words, if the character generated by the module has an ordinal number that is a multiple of 10, then it is an asterisk; otherwise, it is a dot.</p>
+<p>You can create other special files based on the <kbd>dots</kbd> module. For example, type the following:</p>
+<pre><strong>sudo mknod /dev/dots2 c 236 0</strong></pre>
+<p>Then, type the following command:</p>
+<pre><strong>head -c12 /dev/dots2</strong></pre>
+<p>This will print the following text to the console:</p>
+<pre><strong>.......*....</strong></pre>
+<p>Notice that 12 characters are printed, as requested by the <kbd>head</kbd> command, but this time, the asterisk is at the 8<sup>th</sup> character, instead of the 10<sup>th</sup>. This happens because both the <kbd>dots1</kbd> and <kbd>dots2</kbd> special files are associated with the same kernel module, with an identifier (<kbd>236, 0</kbd>) and the name <kbd>dots</kbd>. This module remembers it has already generated 42 characters, and so after it has generated seven dots, it has to generate its 50<sup>th</sup> character, which must be an asterisk as it is a multiple of 10.</p>
+<p>You can try to type the whole file, but these operations will never end spontaneously because the module will continue to generate characters, as if it were an infinite file. Try to type the following command, and then stop it by pressing <em>Ctrl</em> +<em> C</em>:</p>
+<pre><strong>cat /dev/dots1</strong></pre>
+<p>A fast stream of characters will be printed until you stop it.</p>
+<p>You can remove the special files by typing the following command:</p>
+<pre><strong>sudo rm /dev/dots1 /dev/dots2</strong></pre>
+<p>You can unload the module by typing the following:</p>
+<pre><strong>sudo rmmod dots</strong></pre>
+<p>If you unload the module without removing the special files, they will be invalid. If you then try to use one of them, such as by typing <kbd>head -c4 /dev/dots1</kbd>, you will get the following error message:</p>
+<pre><strong>head: cannot open '/dev/dots1' for reading: No such device or address</strong></pre>
+<p>Now, let's see what has been appended to the kernel buffer by typing the following:</p>
+<pre><strong>dmesg --color=always | tail</strong></pre>
+<p>You will see that the last two lines that are printed will be similar to the following:</p>
+<pre><strong>[123456.789012] dots: Loaded with major device number 236</strong><br/><strong>[123463.987654] dots: Unloaded 54</strong></pre>
+<p>The first line, printed at module loading, also shows the major number of the module. The last line, printed at module unloading, also <span>shows</span><span> </span><span>the total number of bytes generated by the module (</span><em>42 + 12 = 54</em><span>, if you didn't run the</span> <kbd>cat</kbd> <span>command). Now, let's see the implementation of this module.</span></p>
+<h2 id="uuid-b452aa52-88c3-4329-83b3-485dfff946af">The source code of the dots module</h2>
+<p>The only relevant differences that you will find from the other projects are in the <kbd>src/lib.rs</kbd> file.</p>
+<p>First, the <kbd>src/lib.rs</kbd> file declares the use of the <kbd>Box</kbd> generic type, which is not included by default, similar to <kbd>String</kbd> and <kbd>Vec</kbd> in the preceding project. Then, it declares some other bindings to the kernel:</p>
+<pre>use linux_kernel_module::bindings::{<br/>    __register_chrdev, __unregister_chrdev, _copy_to_user, file, file_operations, loff_t,<br/>};</pre>
+<p>Their meanings are as follows:</p>
+<ul>
+<li><kbd>__register_chrdev</kbd>: The function to register a character device in the kernel.</li>
+<li><kbd>__unregister_chrdev</kbd><span>: The function to unregister a character device from the kernel.</span></li>
+<li><kbd>_copy_to_user</kbd>: The function to copy a sequence of bytes from kernel space to user space.</li>
+<li><kbd>file</kbd>: The data type representing a file. This is not really used in this project.</li>
+<li><kbd>file_operations</kbd>: The data type<span> containing the implemented operation on files. Only the <kbd>read</kbd> operation is implemented by this module. Consider this to be the perspective of the user code. When the user code <em>reads</em>, the kernel module <em>writes</em>.</span></li>
+<li><kbd>loff_t</kbd>: The data type representing a long memory offset, as used by the kernel. This is n<span>ot really used in this project.</span></li>
+</ul>
+<h3 id="uuid-fc73e1e3-191e-4cfd-8e6d-24707c334cd8">The global information</h3>
+<p>The global information is kept in the following data type:</p>
+<pre>struct CharDeviceGlobalData {<br/>    major: c_types::c_uint,<br/>    name: &amp;'static str,<br/>    fops: Option&lt;Box&lt;file_operations&gt;&gt;,<br/>    count: u64,<br/>}</pre>
+<p>Let's understand the preceding code:</p>
+<ul>
+<li>The first field (<kbd>major</kbd>) is the major number of the device.</li>
+<li>The second field (<kbd>name</kbd><span>) is the name of the module.</span></li>
+<li>The third field (<kbd>fops</kbd><span>, short for <strong>file operations</strong>) is the set of references to the functions that implement the required file operations. This set</span><span> of references will be allocated to the heap, and so it is encapsulated in a <kbd>Box</kbd> object. Any <kbd>Box</kbd> object must encapsulate a valid value since its creation, but the set of references to file operations referenced by the <kbd>fops</kbd> field can only be created when the kernel initializes the module; so, this field is encapsulated in an <kbd>Option</kbd> object, which will be initialized as <kbd>None</kbd> by Rust and will receive a <kbd>Box</kbd> object when the kernel initializes the module.</span></li>
+<li>The last field (<kbd>count</kbd><span>) is the counter of generated bytes.</span></li>
+</ul>
+<p>As anticipated, the following is the declaration and initialization of the global object:</p>
+<pre>static mut GLOBAL: CharDeviceGlobalData = CharDeviceGlobalData {<br/>    major: 0,<br/>    name: "dots\0",<br/>    fops: None,<br/>    count: 0,<br/>};</pre>
+<p>The module contains only three functions: <kbd>init_module</kbd>, <kbd>cleanup_module</kbd>, and <kbd>read_dot</kbd>. The first two functions are the ones invoked by the kernel when the module is loaded and unloaded, respectively. The third function is called by the kernel every time some user code tries to read a byte from this module.</p>
+<p>While the<span> </span><kbd>init_module</kbd><span> and </span><kbd>cleanup_module</kbd><span> functions are linked using their name (so they must have exactly these names) and must be preceded by the <kbd>#[no_mangle]</kbd> directive to avoid that their name is changed by Rust, the <kbd>read_dot</kbd> function will be passed to the kernel through its address, and not its name. Therefore, it can have any name you like, and the <kbd>#[no_mangle]</kbd> directive is not required for it.</span></p>
+<h3 id="uuid-f0e88ce5-d730-42c4-b0c6-b6377b8c7f83">The initialization call</h3>
+<p>Let's see the first part of the body of <span>the</span><span> </span><kbd>init_module</kbd> function:</p>
+<pre>let mut fops = Box::new(file_operations::default());<br/>fops.read = Some(read_dot);<br/>let major = unsafe {<br/>    __register_chrdev(<br/>        0,<br/>        0,<br/>        256,<br/>        GLOBAL.name.as_bytes().as_ptr() as *const i8,<br/>        &amp;*fops,<br/>    )<br/>};</pre>
+<p>In the first statement, a <kbd>file_operations</kbd> structure, containing the references to the file operations, is created with default values and put into a <kbd>Box</kbd> object.</p>
+<p>The default value of any file operation is <kbd>None</kbd>, meaning that nothing is performed when this kind of operation is required. We will use just the <kbd>read</kbd> file operation and we will need this operation to call the <kbd>read_dot</kbd> function. Therefore, in the second statement, this function is assigned to the <kbd>read</kbd> field of the newly created structure.</p>
+<p>The third statement calls the <kbd>__register_chrdev</kbd><span> </span><span>kernel function</span><span>, which registers a character device. This function is officially documented on a web page, available at </span><a href="https://www.kernel.org/doc/html/latest/core-api/kernel-api.html?highlight=__register_chrdev#c.__register_chrdev">https://www.kernel.org/doc/html/latest/core-api/kernel-api.html?highlight=__register_chrdev#c.__register_chrdev</a><span>. The five arguments of this function have the following purposes:</span></p>
+<ul>
+<li>The first argument is the required major number of the device. However, if it is <kbd>0</kbd>, as in our case, a major number will be generated by the kernel and returned by the function.</li>
+<li>The second argument is the value to start from in order to generate the minor number. We will start from <kbd>0</kbd>.</li>
+<li>The third argument is the number of minor numbers that we request to allocate. We will allocate 256 minor numbers, from <kbd>0</kbd> to <kbd>255</kbd>.</li>
+<li>The fourth argument is the name of the range of devices we are registering. The kernel expects a null-terminated ASCII string. Therefore, the <kbd>name</kbd> field has been declared with an ending binary of <kbd>0</kbd>, and here, a rather complex expression just changes the data type of this name. The <kbd>as_bytes()</kbd> call converts the string slice into a byte slice. The <kbd>as_ptr()</kbd> call gets the address of the first byte of this slice. The <kbd>as *const i8</kbd> clause converts this Rust pointer into a raw pointer to bytes.</li>
+<li>The fifth argument is the address of the file operation structure. Only its <kbd>read</kbd> field will be used by the kernel when a read operation is performed.</li>
+</ul>
+<p>Now, let's see the rest of the body of the <kbd>init_module</kbd> function:</p>
+<pre>if major &lt; 0 {<br/>    return 1;<br/>}<br/>unsafe {<br/>    GLOBAL.major = major as c_types::c_uint;<br/>}<br/>println!("dots: Loaded with major device number {}", major);<br/>unsafe {<br/>    GLOBAL.fops = Some(fops);<br/>}<br/>0</pre>
+<p>The major number returned by the call to <kbd>__register_chrdev</kbd> should be a non-negative number generated by the kernel. It <span>is </span><span>only</span><span> </span><span>a negative number in the case of an error. As we want to fail the loading of the module in case of a registration fail, we return <kbd>1</kbd>—in this case, meaning there has been a failure in the loading of the module.</span></p>
+<p>In case of success, the major number is stored in the <kbd>major</kbd> field of our global structure. Then, a success message is added to the kernel buffer, containing the generated major number.</p>
+<p>Finally, the <kbd>fops</kbd> file operation structure is stored in the global structure.</p>
+<p>Notice that after the registration call, the kernel keeps the address of the <kbd>fops</kbd> structure, and so this address should never be changed while the function is registered. This holds, however, because this structure is allocated by the <kbd>Box::new</kbd> call and the assignment of <kbd>fops</kbd> moves just the <kbd>Box</kbd> object, which is the pointer to the heap object, not the <span>heap object itself. This explains why a <kbd>Box</kbd> object has been used.</span></p>
+<h3 id="uuid-0ed0add4-db7b-4125-b6ef-c227282e0de7">The cleanup call</h3>
+<p>Now, let's look at the body of the <kbd>cleanup_module</kbd> function:</p>
+<pre>unsafe {<br/>    println!("dots: Unloaded {}", GLOBAL.count);<br/>    __unregister_chrdev(<br/>        GLOBAL.major,<br/>        0,<br/>        256,<br/>        GLOBAL.name.as_bytes().as_ptr() as *const i8,<br/>    )<br/>}</pre>
+<p>The first statement prints the unloading message to the kernel buffer, including the total count of bytes read from this module since its loading.</p>
+<p>The second statement calls the <kbd>__unregister_chrdev</kbd><span> </span><span>kernel function</span><span>, which unregisters a previously registered character device. This function is officially documented on a web page, available at</span> <a href="https://www.kernel.org/doc/html/latest/core-api/kernel-api.html?highlight=__unregister_chrdev#c.__unregister_chrdev">https://www.kernel.org/doc/html/latest/core-api/kernel-api.html?highlight=__unregister_chrdev#c.__unregister_chrdev</a><span>.</span></p>
+<p>Its arguments are quite similar to the first four arguments of the function used to register the device. They must be identical to the corresponding registered values. However, while, in the registering function, we specified <kbd>0</kbd> as the major number, here we must specify the actual major number.</p>
+<h3 id="uuid-0736860f-f824-4601-9cc7-d92abd5c1267" class="mce-root">The reading function</h3>
+<p>Finally, let's see the definition of the function that will be invoked by the kernel every time some user code tries to read a byte from this module:</p>
+<pre>extern "C" fn read_dot(<br/>    _arg1: *mut file,<br/>    arg2: *mut c_types::c_char,<br/>    _arg3: usize,<br/>    _arg4: *mut loff_t,<br/>) -&gt; isize {<br/>    unsafe {<br/>        GLOBAL.count += 1;<br/>        _copy_to_user(<br/>            arg2 as *mut c_types::c_void,<br/>            if GLOBAL.count % 10 == 0 { "*" } else { "." }.as_ptr() as *const c_types::c_void,<br/>            1,<br/>        );<br/>        1<br/>    }<br/>}</pre>
+<p>Also, this function must be decorated by the <kbd>extern "C"</kbd> clause to ensure that its calling convection is the same as the one used by the kernel, which is the one used by the system's C language compiler.</p>
+<p>This function has four arguments, but we will <span>only</span><span> </span><span>use the second one. This argument is a pointer to a structure in user-space where the generated character must be written. The body of the function contains only three statements.</span></p>
+<p>The first statement increments the total count of bytes read by the user code (which is written by the kernel module).</p>
+<p>The second statement is a call to the <kbd>_copy_to_user</kbd> kernel function. This is the function to use when you want to copy one or more bytes from a memory area controlled by kernel code to a memory area controlled by the user code because a simple assignment is not allowed for this operation. <span>This function is officially documented at </span><a href="https://www.kernel.org/doc/htmldocs/kernel-api/API---copy-to-user.html">https://www.kernel.org/doc/htmldocs/kernel-api/API---copy-to-user.html</a></p>
+<p>Its first argument is the <span>destination</span> address, which is the memory position where we want to write our byte. In our case, this is simply the second argument of the <kbd>read_dot</kbd> function, converted into the proper data type.</p>
+<p>The second argument is the source address, which is the memory position where we put the byte we want to return to the user. In our case, we want to return an asterisk after every nine dots. So, we check whether the total number of read characters is a multiple of <kbd>10</kbd>. For this case, we use a static string slice containing only an asterisk: otherwise, we have a string slice containing a dot. The call to <kbd>as_ptr()</kbd> gets the address of the first byte of the string slice and the <kbd>as *const c_types::c_void</kbd> <span>clause </span>converts it into the expected data type that corresponds to the <kbd>const void *</kbd> <span>C language data type.</span></p>
+<p>The third argument is the number of bytes to copy. Of course, in our case, this is <kbd>1</kbd>.</p>
+<p>That's all that is needed to emit dots and asterisks.</p>
+<h1 id="uuid-441e636a-094b-4c87-a502-a187da1e7475">Summary</h1>
+<p>In this chapter, we looked at the tools and techniques that can be used to create loadable modules for the kernel of the Linux operating system using Rust, instead of the typical C programming language.</p>
+<p>In particular, we saw the sequence of commands that can be used in a Mint distribution on an x86_64 architecture to configure the appropriate environment to build and test loadable kernel modules. We also looked at the <kbd>modinfo</kbd>, <kbd>lsmod</kbd><span><span>, </span></span><kbd>insmod</kbd>, <kbd>rmmod</kbd><span>,</span><span><span> </span></span><kbd>dmesg</kbd><span><span>, and </span></span><kbd>mknod</kbd><span> </span><span>command-line tools</span><span>.</span></p>
+<p>We saw that to create a kernel module, it is useful to have a framework of code that implements a target framework for the Rust compiler. The Rust source code is compiled to a Linux static library<span> </span><span>using this target</span><span>. Then, this library is linked with some C language glue code into a loadable kernel module.</span></p>
+<p>We created four projects of increasing complexity—<kbd>boilerplate</kbd>, <kbd>state</kbd>, <kbd>allocating</kbd>, and <kbd>dots</kbd>. In particular, the <kbd>dots</kbd> project created a module that can be mapped to a special file using the <kbd>mknod</kbd> command; after this mapping, when this special file is read, a stream of dots and asterisks is generated.</p>
+<p>In the next and final chapter, we'll consider the advancements of the <span>Rust ecosystem over </span>the next few years—the language, the standard library, the standard tooling, and the freely available libraries and tools. A description of the newly supported asynchronous programming is also included.</p>
+<h1 id="uuid-2a7977b6-d8e3-4656-a76d-1f5485b4144b">Questions</h1>
+<ol>
+<li>What is a Linux loadable kernel module?</li>
+<li>What is the programming language expected to be used by the Linux kernel for its modules?</li>
+<li>What is the <span>kernel buffer and what is the </span>first part of every line in it?</li>
+<li>What is the purpose of the <kbd>modinfo</kbd>, <kbd>lsmod</kbd>, <kbd>insmod</kbd>, and <kbd>rmmod</kbd> Linux commands?</li>
+<li>Why, by default, are the <kbd>String</kbd>, <kbd>Vec</kbd>, and <kbd>Box</kbd> data types not available to Rust code for building kernel modules?</li>
+<li>What is the purpose of the <kbd>#[no_mangle]</kbd><span> </span>Rust directive?</li>
+<li>What is the purpose of the <kbd>extern "C"</kbd><span> </span>Rust clause?</li>
+<li>What is the purpose of the <kbd>init_module</kbd> and <kbd>cleanup_module</kbd> functions?</li>
+<li>What is the purpose of the <kbd>__register_chrdev</kbd> and <kbd>__unregister_chrdev</kbd> functions?</li>
+<li><span>Which function should be used to copy a sequence of bytes from kernel space memory to user-space memory?</span></li>
+</ol>
+<h1 id="uuid-b520c337-cbd8-44ca-aed6-b4e35cd87955">Further reading</h1>
+<p>The framework used for the projects in this chapter is a modification of the open source repository that can be found at<span> </span><a href="https://github.com/lizhuohua/linux-kernel-module-rust">https://github.com/<span>lizhuohua/linux-kernel-module-rust</span></a><span>. This repository contains further examples and documentation pertaining to this topic.</span></p>
+<p>The documentation for the Linux kernel can be found at <a href="https://www.kernel.org/doc/html/latest/">https://www.kernel.org/doc/html/latest/</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

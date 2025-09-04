@@ -1,0 +1,826 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Developing a Microservice with the Hyper Crate</h1>
+                </header>
+            
+            <article>
+                
+<p>This chapter will provide a short introduction to creating microservices using Rust the and <kbd>hyper</kbd> crate. We will look at the basics of the HTTP protocol and the principles of routing. We'll also describe a minimal REST service written <span>completely</span><span> </span><span>with Rust, using a simple method.</span></p>
+<p>In this chapter, we'll cover the following topics:</p>
+<ul>
+<li>Using <kbd>hyper</kbd></li>
+<li>Handling HTTP requests</li>
+<li>Using regular expressions for routing</li>
+<li>Getting parameters from the environment</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">Because we're starting to write code in this chapter, you'll need to have certain software in order to compile and run examples:</p>
+<ul>
+<li class="mce-root"><span>I recommend you use the </span><kbd>rustup</kbd> <span>tool, which will keep your Rust instance up to date. If you don't have this tool, you can get it from</span> <a href="https://rustup.rs/">https://rustup.rs/</a><span>. When it's installed, run the </span><kbd>rustup update</kbd> <span>command to update the current installation.</span></li>
+<li>The Rust compiler, at least version 1.31.</li>
+<li>The <kbd>hyper</kbd> crate, which we'll use to compile the code, requires the OpenSSL (<a href="https://www.openssl.org/">https://www.openssl.org/</a>) library. The most popular operating systems already include the OpenSSL package and you can follow the manual of your package manager to install it.</li>
+</ul>
+<p>You can get the examples shown in this chapter from GitHub at <a href="https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter02">https://github.com/PacktPublishing/Hands-On-Microservices-with-Rust/tree/master/Chapter02</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Binding a Tiny Server</h1>
+                </header>
+            
+            <article>
+                
+<p>In this section, we'll create a Tiny Server from scratch. We'll start with the necessary dependencies, declare a main function, and then try to build and run it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding necessary dependencies</h1>
+                </header>
+            
+            <article>
+                
+<p>First, we need to create a new folder where we'll add the necessary dependencies to create our first microservice. Use <kbd>cargo</kbd> to make a new project called <kbd>hyper-microservice</kbd>:</p>
+<pre class="mce-root">&gt; <strong>cargo new hyper-microservice</strong></pre>
+<p>Open the created folder and add dependencies to your <kbd>Cargo.toml</kbd> file:</p>
+<pre>[dependencies]<br/>hyper = "0.12"</pre>
+<p>The single dependency is the <kbd>hyper</kbd> crate. The latest release of this crate is asynchronous and lies on top of the <kbd>futures</kbd> crate. It also uses the <kbd>tokio</kbd> crate for runtime, which includes the scheduler, reactor, and asynchronous sockets. Some of the necessary types of the <kbd>tokio</kbd> crate are re-exported in the <kbd>hyper::rt</kbd> module. The main purpose of <kbd>hyper</kbd> is to operate with the HTTP protocol, which means that the crate can support other runtimes in the future.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The main function of the server</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's start with the main function and add the necessary dependencies one by one, looking in detail at why we need each one. A minimal HTTP server needs the following:</p>
+<ul>
+<li>An address to bind to</li>
+<li>A <kbd>server</kbd> instance to handle incoming requests</li>
+<li>A default handler for any request</li>
+<li>A reactor (runtime) where the <kbd>server</kbd> instance will operate</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Address of the server</h1>
+                </header>
+            
+            <article>
+                
+<p>The first thing we need is an address. A socket address consists of an IP address and a port number. We'll use IPv4 in this book because it's widely supported. In <a href="fd4bf12a-bb05-469b-a230-163cee412261.xhtml">Chapter 6</a>, <em><span>Reactive Microservices – Increasing Capacity and Performance,</span></em> where we'll discuss scaling and the intercommunication of microservices, I'll show a few examples using IPv6.</p>
+<p>The standard Rust library contains an <kbd>IpAddr</kbd> type to represent the IP address. We'll use the <kbd>SocketAddr</kbd> struct, which contains both the <kbd>IpAddr</kbd> and the <kbd>u16</kbd> for the port number. We can construct the <kbd>SocketAddr</kbd> from a tuple of the <kbd>([u8; 4], u16)</kbd> type. Add the following code to our main function:</p>
+<pre>let addr = ([127, 0, 0, 1], 8080).into();</pre>
+<p>We used an implementation of the <kbd>impl&lt;I: Into&lt;IpAddr&gt;&gt; From&lt;(I, u16)&gt; for SocketAddr</kbd> trait here, which, in turn, uses <kbd>impl From&lt;[u8; 4]&gt; for IpAddr</kbd>. This lets us use the <kbd>.into()</kbd> method call to construct a socket address from the tuple. Similarly, we can create new <kbd>SocketAddr</kbd> instances with a constructor. In production applications, we will parse the socket addresses from external strings (command-line parameters or environment variables), and if no variants are set, we'll create <kbd>SocketAddr</kbd> from a tuple with default values.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Server instances</h1>
+                </header>
+            
+            <article>
+                
+<p>Now we can create a <kbd>server</kbd> instance and bind to this address:</p>
+<pre>let builder = Server::bind(&amp;addr);</pre>
+<p class="CDPAlignLeft CDPAlign">The preceding line creates a <kbd>hyper::server::Server</kbd> instance with a <kbd>bind</kbd> constructor that actually returns <kbd>Builder</kbd>, not a <kbd>Server</kbd> instance. The <kbd>Server</kbd> struct implements the <kbd>Future</kbd> trait. It has similar role to <kbd>Result</kbd>, but describes a value that isn't available immediately. You'll learn more about <kbd>Future</kbd> and other traits of the <kbd>futures</kbd> crate in <a href="ed541ef5-4701-4e70-aabf-14882b4cecb3.xhtml">Chapter 5</a>, <em>Understanding Asynchronous Operations with the Futures Crate</em>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Setting the requests handler</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>Builder</kbd> struct provides methods to tweak the parameters of the <kbd>server</kbd> <span>created</span><span>. For example,</span> hyper<span>'s <kbd>server</kbd> supports both <kbd>HTTP1</kbd> and <kbd>HTTP2</kbd>. You can use a <kbd>builder</kbd> value to choose either one protocol or both. In the following example, we're using <kbd>builder</kbd> to attach a service for handling incoming HTTP requests using the</span> <kbd>serve</kbd> <span>method:</span></p>
+<pre>let server = builder.serve(|| {<br/>    service_fn_ok(|_| {<br/>        Response::new(Body::from("Almost microservice..."))<br/>    })<br/>});</pre>
+<p>Here, we're using the builder instance to attach a function that generates a <kbd>Service</kbd> instance. This function implements the <kbd>hyper::service::NewService</kbd> trait. The generated item then has to implement the <kbd>hyper::service::Service</kbd> trait. A service in a <kbd>hyper</kbd> crate is a function that takes a request and gives a response back. We haven't implemented this trait in this example; instead, we'll use the <kbd>service_fn_ok</kbd> function, which turns a function with suitable types into a service handler.</p>
+<p>There are two corresponding structs: <kbd>hyper::Request</kbd> and <kbd>hyper::Response</kbd>. In the preceding code, we ignored a request argument and constructed the same response for every request. The response contains a body of static text.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding the server instance to a runtime</h1>
+                </header>
+            
+            <article>
+                
+<p>Since we now have a handler, we can start the server. The runtime expects a <kbd>Future</kbd> instance with the <kbd>Future&lt;Item = (), Error = ()&gt;</kbd><span> type, but the </span><kbd>Server</kbd> <span>struct implements a </span><kbd>Future</kbd> <span>with the</span> <kbd>hyper::Error</kbd><span> error type. We can use this error to inform the user about issues, but in our example we'll just drop any error. As you might remember, the drop function expects a single argument of any type and returns a </span><kbd>unit</kbd> <span>empty type. The </span><kbd>Future</kbd> <span>trait uses the</span> <kbd>map_err</kbd><span> method.</span><span> It changes the error type using a function, which expects the original error type and returns a new one. Drop an error from the <kbd>server</kbd> using the following:</span></p>
+<pre>let server = server.map_err(drop);</pre>
+<p>We now have everything we need and can start the <kbd>server</kbd> with the specific runtime. Use the <kbd>hyper::rt::run</kbd> function to start the <kbd>server</kbd>:</p>
+<pre>hyper::rt::run(server);</pre>
+<p>Don't compile it yet, because we haven't imported types. Add it to the head of a source file:</p>
+<pre>use hyper::{Body, Response, Server};<br/>use hyper::rt::Future;<br/>use hyper::service::service_fn_ok;</pre>
+<p>We need to import the different <kbd>hyper</kbd> types that we are using: <kbd>Server</kbd>, <kbd>Response</kbd>, and <kbd>Body</kbd>. In the final line, we're using the <kbd>service_fn_ok</kbd> function. The <kbd>Future</kbd> import needs special attention; it's the re-exported trait of the <kbd>futures</kbd> crate and it's used everywhere in the <kbd>hyper</kbd> crate. In the next chapter, we'll examine this trait in detail.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Building and running</h1>
+                </header>
+            
+            <article>
+                
+<p>You can now compile the code and start the server with the following command:</p>
+<pre><strong>cargo run</strong></pre>
+<p>Use your browser to connect to the server. Enter <a href="http://localhost:8080/">http://localhost:8080/</a> in the <span>browser's address bar</span> <span>and the browser will connect to your server and show you a page with the text you entered in the previous code:</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/f86b61f1-bd9e-4751-8bca-fcf2182ad351.png" style="width:33.58em;height:12.67em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Rebuilding on changes</h1>
+                </header>
+            
+            <article>
+                
+<p>When you're working on developing web servers, it's useful to have instant access to compiled and running applications. It's tiresome to have to restart <kbd>cargo run</kbd> manually whenever you change the code. I recommend that you install and use the <kbd>cargo-watch</kbd> subcommand on <kbd>cargo</kbd>. This will monitor the changes made to the files of your project and restart the other commands you have chosen.</p>
+<p>To install <kbd>cargo-watch</kbd>, perform the following steps:</p>
+<ol>
+<li>Type the following command in the console:</li>
+</ol>
+<pre><strong>cargo install cargo-watch</strong></pre>
+<ol start="2">
+<li>Use the <kbd>run</kbd> command with <kbd>watch</kbd>:</li>
+</ol>
+<pre><strong>cargo watch -x "run"</strong></pre>
+<p>You can add extra arguments to the <kbd>run</kbd> command between quotes or add extra arguments after the <kbd>--</kbd> characters.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Handling incoming requests</h1>
+                </header>
+            
+            <article>
+                
+<p>We've created a server, but it isn't very useful until it can respond to real requests. In this section, we'll add handlers to the requests and use the principles of REST.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding a service function</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">In the previous section, we implemented simple services based on <kbd>service_fn_ok</kbd> functions, which expect the service function not to throw any errors. There are also <kbd>service_fn</kbd> functions, which can be used to create handlers that can return an error. These are more suitable for asynchronous <kbd>Future</kbd> results. As we saw previously, the <kbd>Future</kbd> trait has two associated types: one for a successful result and one for an error. The <kbd>service_fn</kbd> function expects the result to be converted into future with the <kbd>IntoFuture</kbd> trait. You can read more about the <kbd>futures</kbd> crate and its types in the next chapter.</p>
+<p>Let's change the previous service function into one that returns the <kbd>Future</kbd> instance:</p>
+<pre>let server = builder.serve(|| service_fn(microservice_handler));</pre>
+<p>Then add this unimplemented service function:</p>
+<pre>fn microservice_handler(req: Request&lt;Body&gt;)<br/>    -&gt; impl Future&lt;Item=Response&lt;Body&gt;, Error=Error&gt;<br/>{<br/>    unimplemented!();<br/>}</pre>
+<p>Similar to the previous one, this function expects a <kbd>Request</kbd>, but it doesn't return a simple <kbd>Response</kbd> instance. Instead, it returns a future result. Since <kbd>Future</kbd> is a trait (which doesn't have a size), we can't return an unsized entity from the function and we have to wrap it in a <kbd>Box</kbd>. However, in this case, we used a brand new approach, which is the <kbd>impl</kbd> trait. This allows us to return an implementation of the trait by value, rather than by reference. Our <kbd>future</kbd> can be resolved to a <kbd>hyper::Response&lt;Body&gt;</kbd> item or a <kbd>hyper::Error</kbd> error type. You should import the necessary types if you've started a project from scratch and aren't using the code examples included with this book:</p>
+<pre>use futures::{future, Future};<br/>use hyper::{Body, Error, Method, Request, Response, Server, StatusCode};<br/>use hyper::service::service_fn;</pre>
+<p>We also imported the <kbd>Future</kbd> trait from the <kbd>futures</kbd> crate. Make sure you're either using <kbd>edition = "2018"</kbd> in the <kbd>Cargo.toml</kbd> file, or importing the crates in <kbd>main.rs</kbd>:</p>
+<pre>extern crate futures;<br/>extern crate hyper;</pre>
+<p>We started by importing the types to the code, but we still have to import the crates in the <kbd>Cargo.toml</kbd> file.  Add these crates in the dependency list of your <kbd>Cargo.toml</kbd>:</p>
+<pre>[dependencies]<br/>futures = "0.1"<br/>hyper = "0.12"</pre>
+<div><span>Everything is now ready to implement a service handler.</span></div>
+<div class="packt_infobox">I prefer to order dependencies from generic to more specific. Alternatively, you can use alphabetical order.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Implementing a service function</h1>
+                </header>
+            
+            <article>
+                
+<p>Our service function will support two kinds of requests:</p>
+<ul>
+<li><kbd>GET</kbd> requests to the <kbd>/</kbd> path with an index page response</li>
+<li>Other requests with a <kbd>NOT_FOUND</kbd> response</li>
+</ul>
+<p>To detect the corresponding method and path, we can use the methods of the <kbd>Request</kbd> object. See the following code:</p>
+<pre>fn microservice_handler(req: Request&lt;Body&gt;)<br/>    -&gt; impl Future&lt;Item=Response&lt;Body&gt;, Error=Error&gt;<br/>{<br/>        match (req.method(), req.uri().path()) {<br/>            (&amp;Method::GET, "/") =&gt; {<br/>                future::ok(Response::new(INDEX.into()))<br/>            },<br/>            _ =&gt; {<br/>                let response = Response::builder()<br/>                    .status(StatusCode::NOT_FOUND)<br/>                    .body(Body::empty())<br/>                    .unwrap();<br/>                future::ok(response)<br/>            },<br/>        }<br/>}</pre>
+<div class="mce-root CDPAlignLeft CDPAlign">I used a <kbd>match</kbd> expression to detect the corresponding method returned from the <kbd>req.method()</kbd>  function, and also the path of the URI of the <kbd>Request</kbd> returned by the <kbd>req.uri().path()</kbd> method's chain call.</div>
+<p>The <kbd>method()</kbd> function returns a reference to the <kbd>Method</kbd> instance. <kbd>Method</kbd> is an enumeration that contains all supported HTTP methods. Instead of other popular languages, which return strings for methods, Rust uses a strict set of methods from a finite enumeration. This helps to detect typos during compilation.</p>
+<p>The <kbd>Future</kbd> instances created with the <kbd>future::ok</kbd> function are also returned. This function immediately resolves the future to a successful result with an item of the corresponding type. This is useful for static values; we don't need to wait to create them.</p>
+<p>The future object is a long operation that won't return a result immediately. The runtime will poll the future until it returns the result. It's useful to perform asynchronous requests on a database. We'll do this in <a href="e09a1e76-ae09-41d4-99dc-9bad95fa3de7.xhtml">Chapter 7</a>, <em>Reliable Integration with Databases</em>.</p>
+<p>We can also return streams instead of a whole result. The <kbd>futures</kbd> crate contains a <kbd>Stream</kbd> trait for those cases. We'll look at this further in <a href="ed541ef5-4701-4e70-aabf-14882b4cecb3.xhtml">Chapter 5</a>, <em>Understanding Asynchronous Operations with the Futures Crate</em>.</p>
+<p>In our match expression, we used  <kbd>Method::GET</kbd> and the <kbd>"/"</kbd> path to detect requests of the index page. In this case, we'll return a <kbd>Response</kbd> that constructs a <kbd>new</kbd> function and an HTML string as an argument.</p>
+<p>In case no pages were found that match the <kbd>_</kbd> pattern, we'll return a response with the <kbd>NOT_FOUND</kbd> status code from the <kbd>StateCode</kbd> enumeration. This contains all of the status codes of the HTTP protocol.</p>
+<p>We use the <kbd>body</kbd> method to construct the response, and we used an empty <kbd>Body</kbd> as an argument for that function. To check that we haven't used it before, we use <kbd>unwrap</kbd> to unpack the <kbd>Response</kbd> from the <kbd>Result</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Index pages</h1>
+                </header>
+            
+            <article>
+                
+<p>The last thing we need is an index page. It's considered good form to return some information about a microservice when requested, but you may hide it for security reasons.</p>
+<p>Our index page is a simple string with HTML content inside:</p>
+<pre>const INDEX: &amp;'static str = r#"<br/> &lt;!doctype html&gt;<br/> &lt;html&gt;<br/>     &lt;head&gt;<br/>         &lt;title&gt;Rust Microservice&lt;/title&gt;<br/>     &lt;/head&gt;<br/>     &lt;body&gt;<br/>         &lt;h3&gt;Rust Microservice&lt;/h3&gt;<br/>     &lt;/body&gt;<br/> &lt;/html&gt;<br/> "#;</pre>
+<p>This is a constant value that can't be modified. Рay attention to the start of the string, <kbd>r#"</kbd>, if you haven't used it before. This is a kind of multiline string in Rust that has to end with <kbd>"#</kbd>.</p>
+<p>Now you can compile the code and view the pages with a browser. I opened Developer Tools to show the status codes of the requests:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/ee617eec-f560-40cc-9c47-7c5b5b7d1193.png" style="width:38.42em;height:21.92em;"/></p>
+<p>If you try to get a nonexistent resource, you'll get a <kbd>404</kbd> status code, which we set with the <kbd>StatusCode::NOT_FOUND</kbd> constant:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/ddae2db0-0394-4eb1-a2cf-69d26e7c669b.png" style="width:42.67em;height:24.25em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Implementing the REST principles</h1>
+                </header>
+            
+            <article>
+                
+<p>If everyone were to create rules of interaction with microservices from scratch, we'd have an excess of private standards of intercommunication. REST isn't a strict set of rules, but it's an architectural style intended to make interacting with microservices simple. It provides a suggested set of HTTP methods to create, read, update, and delete data; and perform actions. We'll add methods to our service and fit them to REST principles.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding a shared state</h1>
+                </header>
+            
+            <article>
+                
+<p>You may have already heard that shared data is a bad thing and a potential cause of bottlenecks, if it has to be changed from separate threads. However, shared data can be useful if we want to share the address of a channel or if we don't need frequent access to it. In this section, we need a user database. In the following example, I'll show you how to add a shared state to our generator function. This approach can be used for a variety of reasons, such as keeping a connection to a database.</p>
+<p>A user database will <span>obviously hold</span><span> data about users. Let's add some types to handle this:</span></p>
+<pre>type UserId = u64;<br/>struct UserData;</pre>
+<p><kbd>UserId</kbd> represents the user's unique identifier. <kbd>UserData</kbd> represents the stored data, but we use an empty struct for serialization and parsing streams in this example.</p>
+<p class="CDPAlignLeft CDPAlign">Our database will be as follows:</p>
+<pre class="CDPAlignLeft CDPAlign">type UserDb = Arc&lt;Mutex&lt;Slab&lt;UserData&gt;&gt;&gt;;</pre>
+<p><kbd>Arc</kbd> is an atomic reference counter that provides multiple references to a single instance of data (in our case, this is the <kbd>Mutex</kbd> over the slab of data). Atomic entities can be safely used with multiple threads. It uses native atomic operations to prohibit the cloning of the reference. This is because two or more threads can corrupt the reference counter and can cause segmentation faults, leading to data loss or a memory leak if the counter was greater than the references in the code.</p>
+<p><kbd>Mutex</kbd> is a mutual-exclusion wrapper that controls access to mutable data. <kbd>Mutex</kbd> is an atomic flag that checks that only one thread has access to the data and other threads have to wait until the thread that has locked the mutex releases it.</p>
+<div class="packt_infobox">You have take into account that if you have a locked <kbd>Mutex</kbd> in one thread and that thread panics, the <kbd>Mutex</kbd> instance become poisoned, and if you try to lock it from another thread, you'll get an error.</div>
+<p>You may be wondering why we reviewed these types if the asynchronous server can work in a single thread. There are two reasons. First, you may need to run the server in multiple threads for scaling. Second, all types that provide interaction facilities, such as Sender objects (from a standard library, a <kbd>futures</kbd> crate, or anywhere else) or database connections, are often wrapped with these types to make them compatible with a multithreading environment. It can be useful to know what's going on under the hood.</p>
+<p>You might be familiar with <span>standard library </span><span>types, but </span><kbd>Slab</kbd> <span>may seem a little different. This type can be thought of as a silver bullet in web-server development. Most pools use this appliance. Slab is an allocator that can store and remove any value identified by an ordered number. It can also reuse the slots of removed items. It's similar to the  </span><kbd>Vec</kbd><span> type, which won't resize if you remove the element, but will reuse free space automatically. For servers, it's useful to keep connections or requests, such as in the JSON-RPC protocol implementation.</span></p>
+<p>In this case, we use <kbd>Slab</kbd> to allocate new IDs for users and to keep the data with the user. We use <kbd>Arc</kbd> with the <kbd>Mutex</kbd> pair to protect our database of data race, because different responses can be processed in different threads, which can bot<span>h</span><span> </span>try to access the database. <span>In fact, Rust won't let you compile the code without these wrappers.</span></p>
+<p>We have to add an extra dependency, because the <kbd>Slab</kbd> type is available in the external <kbd>slab</kbd> crate. Add this using <kbd>Cargo.toml</kbd>:</p>
+<pre>[dependencies]<br/>slab = "0.4"<br/>futures = "0.1"<br/>hyper = "0.12"</pre>
+<p>Import these necessary types in the <kbd>main.rs</kbd> file:</p>
+<pre>use std::fmt;<br/>use std::sync::{Arc, Mutex};<br/>use slab::Slab;<br/>use futures::{future, Future};<br/>use hyper::{Body, Error, Method, Request, Response, Server, StatusCode};<br/>use hyper::service::service_fn;</pre>
+<p>Let's write a handler and a <kbd>main</kbd> function in the following section.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Accessing a shared state from a service function</h1>
+                </header>
+            
+            <article>
+                
+<p>To get access to a shared state, you need to provide a reference to the shared data. This is simple, because we've already wrapped our state with <kbd>Arc</kbd>, which provides us with a <kbd>clone()</kbd> function to duplicate the reference to the shared object.</p>
+<p>Since our service function needs extra parameters, we have to rewrite the definition and call our <kbd>microservice_handler</kbd> function. Now it has an extra argument, which is the reference to the shared state:</p>
+<pre>fn microservice_handler(req: Request&lt;Body&gt;, user_db: &amp;UserDb)<br/>    -&gt; impl Future&lt;Item=Response&lt;Body&gt;, Error=Error&gt;</pre>
+<p>We also have to send this expected reference to the <kbd>main</kbd> function:</p>
+<pre>fn main() {<br/>     let addr = ([127, 0, 0, 1], 8080).into();<br/>     let builder = Server::bind(&amp;addr);<br/>     let user_db = Arc::new(Mutex::new(Slab::new()));<br/>     let server = builder.serve(move || {<br/>         let user_db = user_db.clone();<br/>         service_fn(move |req| microservice_handler(req, &amp;user_db))<br/>     });<br/>     let server = server.map_err(drop);<br/>     hyper::rt::run(server);<br/> }</pre>
+<p>As you can see, we created a <kbd>Slab</kbd> and wrapped it with <kbd>Mutex</kbd> and <kbd>Arc</kbd>. After that, we  moved the object, called <kbd>user_db</kbd>, into the <kbd>serve</kbd> function call of the <kbd>server</kbd> builder that's using the <kbd>move</kbd> keyword. When the reference moves into the closure, we can send it to <kbd>microservice_handler</kbd>. This is a handler function called by a closure sent to the <kbd>service_fn</kbd> call. We have to clone the reference to move it to a nested closure, because that closure can be called multiple times. We shouldn't move the object completely, however, because a closure sent to the <kbd>serve</kbd> function can be called multiple times and so the runtime might need the object <span>again </span><span>later.</span></p>
+<p>In other words, both closures can be called multiple times. The closure of <kbd>service_fn</kbd> will be called in the same thread as the runtime, and we can use a reference for the value inside it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Parsing paths in a microservice</h1>
+                </header>
+            
+            <article>
+                
+<p>A common task in web development is to use functions that work with persistent storage. These functions are often called <strong>create</strong>, <strong>read</strong>, <strong>update</strong>, <strong>and delete</strong> (<strong>CRUD</strong>) functions. They are the most common operations with data.</p>
+<p>We can implement a CRUD set for our service, but first we have to identify the entity that we want to work with. Imagine that we need three types of entities: users, articles, and comments. In this case, I recommend that you separate the microservices, because the users microservice is responsible for identity, the articles microservice is responsible for the content, and the comments microservice handles content. However, you would get more benefits if you could reuse these entities for more than one context.</p>
+<p>Before we implement all the handlers, we need a helper function that creates empty responses with the corresponding HTTP status codes:</p>
+<pre>fn response_with_code(status_code: StatusCode) -&gt; Response&lt;Body&gt; {<br/>    Response::builder()<br/>        .status(status_code)<br/>        .body(Body::empty())<br/>        .unwrap()<br/>}</pre>
+<p>This function carries out a few simple actions <span>–</span> it expects a status code, creates a new response builder, sets that status, and adds an empty body.</p>
+<p>We can now add a new request handler that checks three path variants:</p>
+<ul>
+<li>The index page (path <kbd>/</kbd>)</li>
+<li>Actions with user data (prefix <kbd>/user/</kbd>)</li>
+<li>Other paths</li>
+</ul>
+<p>We can use the <kbd>match</kbd> expression to fulfill all of these cases. Add the following code to the <kbd>microservices_handler</kbd> function:</p>
+<pre class="mce-root">    let response = {<br/>        match (req.method(), req.uri().path()) {<br/>            (&amp;Method::GET, "/") =&gt; {<br/>                Response::new(INDEX.into())<br/>            },<br/>            (method, path) if path.starts_with(USER_PATH) =&gt; {<br/>                unimplemented!();<br/>            },<br/>            _ =&gt; {<br/>                response_with_code(StatusCode::NOT_FOUND)<br/>            },<br/>        }<br/>    };<br/>    future::ok(response)</pre>
+<p>As you can see, we used an <kbd>if</kbd> expression in the second branch to detect that the path starts with the <kbd>/user/</kbd> prefix. This prefix is actually stored in the <kbd>USER_PATH</kbd> constant:</p>
+<pre>const USER_PATH: &amp;str = "/user/";</pre>
+<p>Unlike the previous example, in this case we'll use our brand new <kbd>response_with_code</kbd> function to return a <kbd>NOT_FOUND</kbd> HTTP response. We also assign a response to the <kbd>response</kbd> variable and use it to create a <kbd>Future</kbd> instance with the <kbd>future::ok</kbd> function.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Implementing REST methods</h1>
+                </header>
+            
+            <article>
+                
+<p>Our microservices can <span>already</span><span> </span><span>distinguish between different paths. All that's left is to implement request handling for the users' data. All incoming requests have to contain the</span> <kbd>/user/</kbd> <span>prefix in their paths.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Extracting the user's identifier</h1>
+                </header>
+            
+            <article>
+                
+<p>To modify a specific user, we need their identifier. REST specifies that you need to get the IDs from a path, because REST maps data entities to URLs.</p>
+<p>We can extract a user's identifier using the tail of the path, which we already have. This is  why we use the <kbd>starts_with</kbd> method of the string, instead of checking for strong equality with <kbd>USER_PATH</kbd> to the path tails.</p>
+<p>We previously declared the <kbd>UserId</kbd> type, which equals the <kbd>u64</kbd> unsigned number. Add this code to the second branch of the previously-declared <kbd>match</kbd> expression with the <kbd>(method, path)</kbd> pattern to extract the user's identifier from the path:</p>
+<pre>let user_id = path.trim_left_matches(USER_PATH)<br/>        .parse::&lt;UserId&gt;()<br/>        .ok()<br/>        .map(|x| x as usize);</pre>
+<p>The <kbd>str::trim_left_matches</kbd> method removes the part of the string if it matches a provided string from the argument. After that, we use the <kbd>str::parse</kbd> method, which tries to convert a string (the remaining tail) to a type that implements the <kbd>FromStr</kbd> trait of the standard library. <kbd>UserId</kbd> already implements this, because it's equal to the <kbd>u64</kbd> type, which can be parsed from the string.</p>
+<p>The parse method returns <kbd>Result</kbd>. We convert this to an <kbd>Option</kbd> instance with <kbd>Result::ok</kbd> functions. We won't try to handle errors with the IDs. The <kbd>None</kbd> value represents either the absence of a value or a wrong value.</p>
+<p>We can also use a map of the returned <kbd>Option</kbd> instance to convert a value to the <kbd>usize</kbd> type. This is because <kbd>Slab</kbd> uses <kbd>usize</kbd> for IDs, but the real size of the <kbd>usize</kbd> type depends on the platform architecture, which can be different. It can be <kbd>u32</kbd> or <kbd>u64</kbd> depending on the largest memory address that you can use.</p>
+<p>Why can't we use <kbd>usize</kbd> for <kbd>UserId</kbd> since it implements the <kbd>FromStr</kbd> trait? This is because a client expects the same behavior as an HTTP server, which doesn't depend on the architecture platform. It's bad practice to use unpredictable size parameters in HTTP requests.</p>
+<p>Sometimes, it can be difficult to choose a type to identify the data. We use <kbd>map</kbd> to convert the <kbd>u64</kbd> value to <kbd>usize</kbd>. This doesn't work, however, for architectures where <kbd>usize</kbd> equals <kbd>u32</kbd>, because <kbd>UserId</kbd> can be larger than the memory limit. It's safe in cases where the microservices are tiny, but this is an important point to bear in mind for microservices that you'll use in production. Often, this problem will be simple to solve, because you can use the ID type of a database.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Getting access to the shared data</h1>
+                </header>
+            
+            <article>
+                
+<p>In this user handler, we need access to a database with users. Because the database is a <kbd>Slab</kbd> instance that's wrapped with a <kbd>Mutex</kbd> instance, we have to lock the mutex to have exclusive access to a slab. There's a <kbd>Mutex::lock</kbd> function that returns <kbd>Result&lt;MutexGuard, PoisonError&lt;MutexGuard&gt;&gt;</kbd>. <kbd>MutexGuard</kbd> is a scoped lock, which means it leaves the code block or scope in, and it implements the <kbd>Deref</kbd> and <kbd>DerefMut</kbd> traits to provide transparent access to data under the guard object.</p>
+<p>It's a good practice to report all errors in the handler. You can log errors and return a <kbd>500</kbd> (Internal Error) HTTP code to the client. To keep it simple, we'll use an <kbd>unwrap</kbd> method and expect the mutex to lock correctly:</p>
+<pre>let mut users = user_db.lock().unwrap();</pre>
+<p>Here, we locked the <kbd>Mutex</kbd> for the<span> </span><span>duration of generating the request. In this case, where we're creating whole responses immediately, this is normal. In cases where the result is delayed or when we work with a stream, we shouldn't lock the mutex all time. This will create a bottleneck for all requests because the <kbd>server</kbd> can't process requests in parallel if all of them depend on a single shared object. For cases where you don't have results immediately, you can clone the reference to the mutex and lock it for the short time you need access to the data.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">REST methods</h1>
+                </header>
+            
+            <article>
+                
+<p>We want to cover all basic CRUD operations. Using the principles of REST, there are suitable HTTP methods that fit these operations—<kbd>POST</kbd>, <kbd>GET</kbd>, <kbd>PUT</kbd>, and <kbd>DELETE</kbd>. We can use the <kbd>match</kbd> expression to detect the corresponding HTTP method:</p>
+<pre>match (method, user_id) {<br/>    // Put other branches here<br/>    _ =&gt; {<br/>        response_with_code(StatusCode::METHOD_NOT_ALLOWED)<br/>    },<br/>}</pre>
+<p>Here, we used a tuple with two values—a method and a user identifier, which is represented by the <kbd>Option&lt;UserId&gt;</kbd> type. There is a default branch that returns the <kbd>METHOD_NOT_ALLOWED</kbd> message (the 405 HTTP status code) if a client requests an unsupported method.</p>
+<p>Let's discuss every branch of match expression for every operation.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">POST – Creating data</h1>
+                </header>
+            
+            <article>
+                
+<p>When the <kbd>server</kbd> has just started, it doesn't contain any data. To support data creation, we use the <kbd>POST</kbd> method without the user's ID. Add the following branch to the <kbd>match (method, user_id)</kbd> expression:</p>
+<pre>(&amp;Method::POST, None) =&gt; {<br/>    let id = users.insert(UserData);<br/>    Response::new(id.to_string().into())<br/>}</pre>
+<p>This code adds a <kbd>UserData</kbd> instance to the user database and sends the associated ID of the user in a response with the <kbd>OK</kbd> status (an HTTP status code of 200). This code was set by the <kbd>Response::new</kbd> function by default.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<div class="packt_tip"><kbd>UserData</kbd> is an empty struct in this case. In real applications, however, it would have to contain real data. We use an empty struct to avoid serialization, but you can read more about serialization and deserialization based on the <kbd>serde</kbd> crate in <a href="be6bf2c7-c1dd-4d9f-b036-bbb12e1de809.xhtml"/><a href="be6bf2c7-c1dd-4d9f-b036-bbb12e1de809.xhtml">Chapter 4</a>, <em><span class="cdp-organizer-chapter-title"><span class="cdp-organize-title-label">Data Serialization and Deserialization with the Serde Crate</span></span></em>.</div>
+<p>What if the client sets the ID with a <kbd>POST</kbd> request? You can interpret this case in two ways—ignore it or try to use the provided ID. In our example, we'll inform the client that the request was wrong. Add the following branch to handle this case:</p>
+<pre>(&amp;Method::POST, Some(_)) =&gt; {<br/>    response_with_code(StatusCode::BAD_REQUEST)<br/>}</pre>
+<p>This code returns a response with the <kbd>BAD_REQUEST</kbd> status code (a <kbd>400</kbd> HTTP status code).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">GET – Reading data</h1>
+                </header>
+            
+            <article>
+                
+<p>When data is created, we need to be able to read it. For this case, we can use the HTTP <kbd>GET</kbd> method. Add the following branch to the code:</p>
+<pre>(&amp;Method::GET, Some(id)) =&gt; {<br/>     if let Some(data) = users.get(id) {<br/>         Response::new(data.to_string().into())<br/>     } else {<br/>         response_with_code(StatusCode::NOT_FOUND)<br/>     }<br/> }</pre>
+<p>This code uses the user database to try to find the user by the ID that's provided in the path. If the user is found, we'll convert its data to a <kbd>String</kbd> and into a <kbd>Body</kbd> to send with a <kbd>Response</kbd>.</p>
+<p>If the user isn't found, the handler branch will respond with the <kbd>NOT_FOUND</kbd> status code (the classic <kbd>404</kbd> error).</p>
+<p>To make the <kbd>UserData</kbd> convertible to a <kbd>String</kbd>, we have to implement the <kbd>ToString</kbd> trait for that type. However, it's typically more useful to implement the <kbd>Display</kbd> trait, because <kbd>ToString</kbd> will be derived automatically for every type that implements the <kbd>Display</kbd> trait. Add this code somewhere in the <kbd>main.rs</kbd> source file:</p>
+<pre>impl fmt::Display for UserData {<br/>    fn fmt(&amp;self, f: &amp;mut fmt::Formatter) -&gt; fmt::Result {<br/>        f.write_str("{}")<br/>    }<br/>}</pre>
+<p>In this implementation, we return a string with an empty JSON object <kbd>"{}"</kbd>. Real microservices have to use the <kbd>serde</kbd> trait for such conversions.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">PUT – Updating data</h1>
+                </header>
+            
+            <article>
+                
+<p>Once the data is saved, we might want to provide the ability to modify it. This is a task for the <kbd>PUT</kbd> method. Use this method to handle changes to the data:</p>
+<pre>(&amp;Method::PUT, Some(id)) =&gt; {<br/>    if let Some(user) = users.get_mut(id) {<br/>        *user = UserData;<br/>        response_with_code(StatusCode::OK)<br/>    } else {<br/>        response_with_code(StatusCode::NOT_FOUND)<br/>    }<br/>},</pre>
+<p>This code tries to find a <kbd>user</kbd> instance in the user database with the <kbd>get_mut</kbd> method. This returns a mutable reference wrapped with either a <kbd>Some</kbd> option, or a <kbd>None</kbd> option if the corresponding value isn't found. We can use a dereference operator, <kbd>*</kbd>, to replace the data in the storage.</p>
+<p>If the user's data was found and replaced, the branch returns an <kbd>OK</kbd> status code. If there's no user with the requested ID, the branch returns <kbd>NOT_FOUND</kbd>. </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">DELETE – Deleting data</h1>
+                </header>
+            
+            <article>
+                
+<p>When we don't need data anymore, we can delete it. This is the purpose of the <kbd>DELETE</kbd> method. Use it in the branch as follows:</p>
+<pre>(&amp;Method::DELETE, Some(id)) =&gt; {<br/>    if users.contains(id) {<br/>        users.remove(id);<br/>        response_with_code(StatusCode::OK)<br/>    } else {<br/>        response_with_code(StatusCode::NOT_FOUND)<br/>    }<br/>},</pre>
+<p>This code checks whether the <kbd>Slab</kbd> contains the data and removes it with the <kbd>remove</kbd> method. We don't use the <kbd>remove</kbd> method right away because this expects the data to exist in the storage beforehand, and therefore panics if the data is absent.</p>
+<div class="packt_infobox">Often, web services don't actually remove data and instead just mark it as deleted. This is a reasonable thing to do because it allows you to explore the data later and improve the efficiency of the service or the company. However, this is a risky practice. Users should be able to remove their data completely, because sensitive data can represent a threat. New laws, such as the GDPR law (<a href="https://en.wikipedia.org/wiki/General_Data_Protection_Regulation">https://en.wikipedia.org/wiki/General_Data_Protection_Regulation</a>), protect the user's right to own their data and stipulate certain requirements for data protection. Violation of such laws may result in a fine. It's important to remember this when you work with sensitive data.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Routing advanced requests</h1>
+                </header>
+            
+            <article>
+                
+<p>In the preceding example, we used pattern matching to detect the destination of a request. This isn't a flexible technique, because the path often contains extra characters that have to be taken into account. The <kbd>/user/1/</kbd> path, for example, contains the trailing slash, <strong><em><kbd>/</kbd></em></strong> , which can't be parsed with a user ID in the previous version of our microservice. There's a flexible tool to fix this issue: regular expressions.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Defining paths with regular expressions</h1>
+                </header>
+            
+            <article>
+                
+<p>A regular expression is a sequence of characters that express a pattern to be searched for in a string. Regular expressions provide you with the ability to create tiny parsers that split a text into parts using a formal declaration. Rust has a crate called <kbd>regex</kbd>, a popular abbreviation of <em>regular expression collocation</em>. You can learn more about this crate here: <a href="https://crates.io/crates/regex">https://crates.io/crates/regex</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding the necessary dependencies</h1>
+                </header>
+            
+            <article>
+                
+<p>To use regular expressions in our <kbd>server</kbd>, we need two crates: <kbd>regex</kbd> and <kbd>lazy_static</kbd>. The first provides a <kbd>Regex</kbd> type to create and match regular expressions with strings. The second helps to store <kbd>Regex</kbd> instances in a static context. We can assign constant values to static variables, because they're created when a program loads to memory. To use complex expressions, we have to add an initialization code and use it to execute expressions, assigning the result to a static variable. The <kbd>lazy_static</kbd> crate contains a <kbd>lazy_static!</kbd> macro to do this job for us automatically. This macro creates a static variable, executes an expression, and assigns the evaluated value to that variable. We can also create a regular expression object for every request in a local context using a local variable, rather than a static one. However, this takes up runtime overhead, so it's better to create it in advance and reuse it.</p>
+<p>Add both dependencies to the <kbd>Cargo.toml</kbd> file:</p>
+<pre>[dependencies]<br/>slab = "0.4"<br/>futures = "0.1"<br/>hyper = "0.12"<br/>lazy_static = "1.0"<br/>regex = "1.0"</pre>
+<p>Add two imports, in addition to the imports in the <kbd>main.rs</kbd> source file from the previous example:</p>
+<pre>use lazy_static::lazy_static;<br/>use regex::Regex;</pre>
+<p>We'll use the <kbd>lazy_static</kbd> macro and the <kbd>Regex</kbd> type to construct a regular expression.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Writing regular expressions</h1>
+                </header>
+            
+            <article>
+                
+<p>Regular expressions contain a special language, used to write a pattern to extract data from a string. We need three patterns for our example:</p>
+<ul>
+<li>A path for the index page</li>
+<li>A path for user management</li>
+<li>A path for the list of users (a new feature for our example server)</li>
+</ul>
+<p>There's a <kbd>Regex::new</kbd> function that creates regular expressions. Remove the previous <kbd>USER_PATH</kbd> constant and add three new regular expression constants in a lazy static block:</p>
+<pre>lazy_static! {<br/>    static ref INDEX_PATH: Regex = Regex::new("^/(index\\.html?)?$").unwrap();<br/>    static ref USER_PATH: Regex = Regex::new("^/user/((?P&lt;user_id&gt;\\d+?)/?)?$").unwrap();<br/>    static ref USERS_PATH: Regex = Regex::new("^/users/?$").unwrap();<br/>}</pre>
+<p>As you can see, regular expressions look complex. To understand them better, let's analyze them.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Path for index page</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">The <kbd>INDEX_PATH</kbd> expression matches the following paths:</p>
+<ul>
+<li><em><kbd>/</kbd></em></li>
+<li><em><kbd>/index.htm</kbd></em></li>
+<li><em><kbd>/index.html</kbd></em></li>
+</ul>
+<p>The expression that fits these paths is <kbd>"^/(index\\.html?)?$"</kbd>.</p>
+<p>The <kbd>^</kbd> symbol means there must be a string beginning, while the <kbd>$</kbd> symbol means there must be a string ending. When we place these symbols on either side, we prevent all prefixes and suffixes in the path and expect exact matching.</p>
+<p>The <kbd>( )</kbd> brackets implies there must be a group. An expression in a group is treated as an indivisible unit.</p>
+<p>The <kbd>?</kbd> symbol means that the previous character is optional. We place it after the <kbd>l</kbd> character to allow the file in the path to have both <kbd>.htm</kbd> and <kbd>.html</kbd><em> </em>extensions. As you'll see later, we don't have an index file to read. We use it as an alias of the root path handler. The question mark is also used after a whole group with a file name to fit the empty root path, <em><kbd>/</kbd></em>.</p>
+<p>The  dot symbol (<kbd>.</kbd>) fits any character, but we need a real dot symbol. To treat a dot as a symbol, we have to add a backslash (<span><kbd>\</kbd>) </span>before it. A single backslash, however, will be interpreted as a beginning-of-escape expression, so we have to use pair of backslashes (<kbd>\\</kbd>) to make the backslash a plain symbol.</p>
+<p>All other characters are treated as is, including the <kbd>/</kbd> symbol.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Path for user management</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>USER_PATH</kbd> expression can fit the following paths:</p>
+<ul>
+<li><kbd>/user/</kbd></li>
+<li><kbd>/user/&lt;id&gt;</kbd>, where <kbd>&lt;id&gt;</kbd> means group of digits</li>
+<li><kbd>/user/&lt;id&gt;/</kbd>, the same as the previous one, but with a trailing backslash</li>
+</ul>
+<p>These cases can be handled with the <kbd>"^/user/((?P&lt;user_id&gt;\\d+?)/?)?$"</kbd> regular expression. This expression is a bit complex. It includes two groups (one is nested) and some other strange characters. Let's have a closer look.</p>
+<p><kbd>?P&lt;name&gt;</kbd> is a grouping attribute that sets the name of the capturing group. Every group in brackets can be accessed by the <kbd>regex::Captures</kbd> object. Named groups can be accessed by names.</p>
+<p><kbd>\\d</kbd> is a special expression that matches any digit. To specify that we have one or more digits, we should add the <kbd>+</kbd> symbol, which tells us how many repetitions it may have. The <kbd>*</kbd> symbol can also be added, which tells us that there are zero or more repetitions, but we haven't used this in our regular expression.</p>
+<p>There are two groups. The first is nested with the name <kbd>user_id</kbd>. It must include digits only to be parsed to the <kbd>UserId</kbd> type. The second is an enclosing group that contains the optional trailing slash. This whole group is optional, meaning that the expression can include a <kbd>/user/</kbd> path without any identifier.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title"> Path for the users list</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>USERS_PATH</kbd> is a new pattern, which we didn't have in the previous example. We'll use it to return a full list of users on the <kbd>server</kbd>. This pattern fits only two variants of the path:</p>
+<ul>
+<li><kbd>/users/</kbd>  (with a trailing slash)</li>
+<li><kbd>/users</kbd> (without a trailing slash)</li>
+</ul>
+<p>The regular expression to handle these cases is quite simple: <kbd>"^/users/?$"</kbd>. We've already seen all the symbols in this pattern. It expects a <span>string to </span>begin with the <kbd>^</kbd> symbol and the slash symbol. After that, it expects <kbd>users</kbd> with an optional slash at the tail <kbd>/?</kbd>. Finally, it expects the end of a string with the <kbd>$</kbd> symbol.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Matching expressions</h1>
+                </header>
+            
+            <article>
+                
+<p>We have to reorganize the code of <kbd>microservice_handler</kbd> because we can't use regular expressions in a <kbd>match</kbd> expression. We have to extract the method with the path at the start, because we need it for most responses:</p>
+<pre>let response = {<br/>    let method = req.method();<br/>    let path = req.uri().path();<br/>    let mut users = user_db.lock().unwrap();<br/><br/>    // Put regular expressions here<br/>};<br/>futures::ok()</pre>
+<p>The first thing we'll check is the index page requests. Add the following code:</p>
+<pre>if INDEX_PATH.is_match(path) {<br/>    if method == &amp;Method::GET {<br/>        Response::new(INDEX.into())<br/>    } else {<br/>        response_with_code(StatusCode::METHOD_NOT_ALLOWED)<br/>    }</pre>
+<p>This uses the <kbd>INDEX_PATH</kbd> regular expression to check whether the request's path matches the index page request using the <kbd>Regex::is_match</kbd> method, which returns a <kbd>bool</kbd> value. Here, we're checking the method of a request, so only <kbd>GET</kbd> is allowed.</p>
+<p>We'll then continue the <kbd>if</kbd> clause with an alternative condition for the user list request:</p>
+<pre>} else if USERS_PATH.is_match(path) {<br/>    if method == &amp;Method::GET {<br/>        let list = users.iter()<br/>            .map(|(id, _)| id.to_string())<br/>            .collect::&lt;Vec&lt;String&gt;&gt;()<br/>            .join(",");<br/>        Response::new(list.into())<br/>    } else {<br/>        response_with_code(StatusCode::METHOD_NOT_ALLOWED)<br/>    }</pre>
+<p>This code uses the <kbd>USERS_PATH</kbd> pattern to check whether the client requested the list of users. This is a new path route. After this, we iterate over all the users in the database and join their IDs in a single string.</p>
+<p>The following code is used to handle REST requests:</p>
+<pre>} else if let Some(cap) = USER_PATH.captures(path) {<br/>    let user_id = cap.name("user_id").and_then(|m| {<br/>        m.as_str()<br/>            .parse::&lt;UserId&gt;()<br/>            .ok()<br/>            .map(|x| x as usize)<br/>    });<br/>    // Put match expression with (method, user_id) tuple</pre>
+<p>This code uses the <kbd>USER_PATH</kbd> and the <kbd>Regex::captures</kbd> method. It returns a <kbd>Captures</kbd> object with the values of all captured groups. If the pattern doesn't match the method, it returns a <kbd>None</kbd> value. If the pattern does match, we get an object stored in the <kbd>cap</kbd> variable. The <kbd>Captures</kbd> struct has the <kbd>name</kbd> method to get a captured value by name. We use the <kbd>user_id</kbd> as the name of the group. This group can be optional and the <kbd>name</kbd> method returns an <kbd>Option</kbd>. We use the <kbd>and_then</kbd> method of the <kbd>Option</kbd> to replace it with the parsed <kbd>UserId</kbd>. Finally, the <kbd>user_id</kbd> variable takes the <kbd>Option&lt;UserId&gt;</kbd> value, in the same way as the previous version of our microservice. To avoid repetition, I skipped the block where the request is the same as the (<kbd>method</kbd>, <kbd>user_id</kbd>) tuple <span>–</span> just copy this part from the example in the previous section of this chapter.</p>
+<p> </p>
+<p>The last part is a default handler that returns a response with a <kbd>NOT_FOUND</kbd> status code:</p>
+<pre>} else {<br/>    response_with_code(StatusCode::NOT_FOUND)<br/>}</pre>
+<p>The service is now complete, so it can be compiled and run. In <a href="1d24de7f-9990-4afe-bd1c-9bf664f1eda3.xhtml">Chapter 13</a>, <em>Testing and Debugging Rust Microservices,</em> you'll find out how to debug microservices. For now, however, you can use the <kbd>curl</kbd> command to send some <kbd>POST</kbd> requests and check the result in the browser. Type the following command in the shell to add three users and remove the second user with the ID of <kbd><strong>1</strong></kbd>:</p>
+<pre><strong>$ curl -X POST http://localhost:8080/user/</strong><br/><strong>0</strong><br/><strong>$ curl -X POST http://localhost:8080/user/</strong><br/><strong>1</strong><br/><strong>$ curl -X POST http://localhost:8080/user/</strong><br/><strong>2</strong><br/><strong>$ curl -X DELETE http://localhost:8080/user/1</strong><br/><strong>$ curl http://localhost:8080/users</strong><br/><strong>0,2</strong></pre>
+<p>If you fetch the list of users in the browser, it should display the following:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/f68c682c-9bcc-4903-89ea-740767bd6992.png" style="width:33.25em;height:12.42em;"/></p>
+<p>As you can see, we used the <kbd>/users</kbd> request without a trailing slash with <kbd>curl</kbd>, and <strong><kbd>/users/</kbd></strong> with the trailing slash in the browser. This result means that regular expressions and request routing both work.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we created a microservice using a <kbd>hyper</kbd> crate. We started with a minimal example that only responds with the <em>Rust Microservice</em> message. Then, we created a microservice that has two distinct paths <span>–</span> the first being the index page request and the second, the <kbd>NOT_FOUND</kbd> response.</p>
+<p>Once we learned the basics, we then started to use the <kbd>match</kbd> expression to make the microservice REST-compliant. We also added the ability to handle users' data with four basic operations—create, read, update, and delete.</p>
+<p>To expand the routing capabilities in the last example of the chapter, we implemented routing based on regular expressions. Regular expressions are compact patterns that check and extract data from a text.</p>
+<p>In this chapter, we encountered various crates—<kbd>hyper</kbd>, <kbd>futures</kbd>, <kbd>slab</kbd>, <kbd>regex</kbd>, and <kbd>lazy_static</kbd>. We'll discuss these in detail in the next chapter.<span> </span></p>
+<p>Since we have learned to create minimal HTTP microservice in the next chapter we will learn how to make it configurable and how to attach logging to it, because microservices work at remote servers and we need a capability to configure it without recompilation and be able to see all issues that happened with a microservices in logs.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

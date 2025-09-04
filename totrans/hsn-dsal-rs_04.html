@@ -1,0 +1,944 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Lists, Lists, and More Lists</h1>
+                </header>
+            
+            <article>
+                
+<p>Lists are everywhere: shopping lists, to-do lists, recipes, street numbers in western countries... simply everywhere. Their defining characteristic, storing things in a linear, defined relationship with each other, helps us keep track of stuff and find it again later on. From a data structure perspective, they are also essential to almost any program and come in various shapes and forms. While some lists are tricky to implement in Rust, the general principles can be found here as well, along with some valuable lessons on the borrow checker! After this chapter, we want you to know more about the following:</p>
+<ul>
+<li>(Doubly) linked lists and when you should use them</li>
+<li>Array lists, better known as Rust's vector</li>
+<li>Skip lists and, ideally, the New York metro subway system</li>
+<li>Implementing a simple transaction log</li>
+</ul>
+<div class="packt_infobox">As a final note, this chapter will build <em>safe</em> implementations of various lists, even though unsafe versions could be faster and require less code. This decision is due to the fact that, when working on regular use cases, unsafe is almost never a solution. Check out the links in the <em>Further reading</em> section of this chapter for unsafe lists.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Linked lists</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">To keep track of a bunch of items, there is a simple solution: with each entry in the list, store a pointer to the next entry. If there is no next item, store <kbd>null</kbd>/<kbd>nil</kbd>/<kbd>None</kbd> and so on, and keep a pointer to the first item. This is called a <strong>singly linked list</strong>, where each item is connected with a single link to the next, as shown in the following diagram—but you already knew that:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/73e264f8-1621-4095-9d02-fb0a5645e62b.png" style="width:60.25em;height:8.67em;"/></p>
+<p>What are the real use cases for a linked list though? Doesn't everyone just use a dynamic array for everything?</p>
+<p>Consider a transaction log, a typical append-only structure. Any new command (such as a SQL statement) is simply appended to the existing chain and is eventually written to a persistent storage. Thus, the initial requirements are simple:</p>
+<ul>
+<li>Append a command to an existing list</li>
+<li>Replay every command from the beginning to the end—in that order</li>
+</ul>
+<p class="mce-root">In other words, its a queue (or <strong>LIFO</strong>—short for <strong>Last In First Out</strong>) structure.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">A transaction log</h1>
+                </header>
+            
+            <article>
+                
+<p>First, a list has to be defined—in Rust, lacking a <kbd>null</kbd> type, each item is chained to the next by an <kbd>Option</kbd> property. The <kbd>Option</kbd> instances are enumerations that wrap either the value, in this case a heap reference (such as a <kbd>Box</kbd>, <kbd>Rc</kbd>, and so on), or none—Rust's typed <kbd>null</kbd> equivalent. Why? Let's find out!</p>
+<p><span>Creating a prototypical implementation</span> to explore a certain aspect is always a good idea, especially since the compiler <span>often</span> provides excellent feedback. Accordingly, an implementation of an integer list is the first step. How about this <kbd>struct</kbd> for each list element?</p>
+<p>Have a look at the following code snippet:</p>
+<pre>struct Node {<br/>    value: i32,<br/>    next: Option&lt;Node&gt;<br/>}</pre>
+<p>For practical considerations, it needs a way to know where to start and the length of the list. Considering the planned <kbd>append</kbd> operation, a reference to the end (tail) would be useful too:</p>
+<pre>struct TransactionLog {<br/>    head: Option&lt;Node&gt;, <br/>    tail: Option&lt;Node&gt;,<br/>    pub length: u64<br/>}</pre>
+<p class="mce-root">That looks great! Does it work though?</p>
+<pre><strong>error[E0072]: recursive type `Node` has infinite size</strong><br/><strong> --&gt; ch4/src/lib.rs:5:1</strong><br/><strong>  |</strong><br/><strong>5 | struct Node {</strong><br/><strong>  | ^^^^^^^^^^^^^ recursive type has infinite size</strong><br/><strong>6 | value: i32,</strong><br/><strong>7 | next: Option&lt;Node&gt;</strong><br/><strong>  | ------------------ recursive without indirection</strong><br/><strong>  |</strong><br/><strong>  = help: insert indirection (e.g., a `Box`, `Rc`, or `&amp;`) at some point to make `Node` representable</strong></pre>
+<p>Unfortunately, it doesn't work—and, thinking back to the previous chapters, it becomes clear why: the compiler cannot be certain of the data structure's size, since the entire list would have to be nested into the first element. H<span>owever,</span> as we know, the compiler cannot compute and therefore allocate the required amount of memory this way—which is why reference types are required.</p>
+<p>Reference types (such as <kbd>Box</kbd>, <kbd>Rc</kbd>, and so on) are a good fit, since they allocate space on the heap and therefore allow for larger lists. Here's an updated version:</p>
+<div>
+<pre><span>use std::cell::RefCell;<br/>use std::rc::Rc;<br/><br/>struct</span><span> </span><span>Node</span><span> {<br/></span><span>    value: </span><span>i32</span><span>,<br/></span><span>    next: </span><span>Option</span><span>&lt;</span><span>Rc&lt;RefCell</span><span>&lt;</span><span>Node&gt;</span><span>&gt;&gt;<br/></span><span>}<br/><br/></span><span>struct</span><span> </span><span>TransactionLog</span><span> {<br/>    </span><span>head: Option&lt;Rc&lt;RefCell</span><span>&lt;</span><span>Node</span><span>&gt;&gt;&gt;,<br/>    tail: </span><span>Option&lt;Rc&lt;RefCell</span><span>&lt;</span><span>Node</span><span>&gt;&gt;&gt;,<br/>    pub length: u64<br/></span><span>}</span></pre></div>
+<p>Storing each node item in a <kbd><span><span>Rc&lt;RefCell&lt;T&gt;&gt;</span></span></kbd> provides the ability to retrieve and replace data as needed (the internal mutability pattern)—crucial when executing operations on the list. Another good practice is to alias types, especially if there are a lot of generics in play. This makes it easy to replace type implementations and provides a more readable definition:</p>
+<div>
+<pre><span>type</span><span> </span><span>SingleLink</span><span> = </span><span>Option</span><span>&lt;</span><span>Rc&lt;RefCell</span><span>&lt;</span><span>Node</span><span>&gt;&gt;&gt;;<br/></span><span><br/>#[derive(Clone)]<br/></span><span>struct</span><span> </span><span>Node</span><span> {<br/></span><span>    value: </span><span>i32</span><span>,<br/></span><span>    next: SingleLink,<br/></span><span>}<br/></span></pre></div>
+<p>Perfect! This is the base definition of the transaction log, but to use it there are many things missing. First of all, the value type has to be <kbd>String</kbd>:</p>
+<pre><span>#[derive(Clone)]<br/></span><span>struct</span><span> Node</span><span> {<br/></span><span>    value: </span><span>String</span><span>,<br/></span><span>    next: SingleLink,<br/></span><span>}<br/><br/>impl Node {<br/>    // A nice and short way of creating a new node<br/>    fn new(value: String) -&gt; Rc&lt;RefCell&lt;Node&gt;&gt; {<br/>        Rc::new(RefCell::new(Node {<br/>            value: value,<br/>            next: None,<br/>        }))<br/>    }<br/>}<br/><br/></span></pre>
+<p>In addition to that, it is going to be useful to create an empty list, so the <kbd>impl</kbd> block of the list has a single function for now—<kbd>new_empty()</kbd>:</p>
+<pre><span>impl </span><span>TransactionLog</span><span> {<br/></span><span>    pub fn new_empty() -&gt; TransactionLog {<br/>        TransactionLog { head: None, tail: None, length: 0 }<br/></span></pre>
+<pre><span>    }</span><span><br/></span><span>}</span></pre>
+<p>Still, there is a lot missing. To recap, the transaction log has two requirements:</p>
+<ul>
+<li><kbd>Append</kbd> entries at the end</li>
+<li><kbd>Remove</kbd> entries from the front</li>
+</ul>
+<p>Let's start with the first requirement: appending items to the back of the list!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding entries</h1>
+                </header>
+            
+            <article>
+                
+<p>The transaction log can now be created and hold entries, but there is no way to add anything to the list. Typically, a list has the ability to add elements to either end—as long as there is a pointer to that end. If that was not the case, any operation would become computationally expensive, since every item has to be looked at to find its successor. With a pointer to the end (tail) of the list, this won't be the case for the append operation; however, to access a random index on the list, it would require some time to go through everything.</p>
+<div class="packt_tip"><span>Naming is—especially if English is your second language—often tricky. Operations have different names by the language or library used. For example, common names for adding items to a list include</span> <kbd>push</kbd> <span>(can add to the front or back),</span> <kbd>push_back</kbd>, <kbd>add</kbd>, <kbd>insert</kbd> <span>(usually comes with a positional parameter), or</span> <kbd>append</kbd><em>.</em> On top of being able to guess method names, some imply completely different processes than others! If you design an interface or library, find the most descriptive and simple name possible and reuse whenever you can!</div>
+<p>This is one of the things that a linked list does really well—adding items to either end. There are a few critical things that should not be overlooked, though:</p>
+<ul>
+<li>Creating the <kbd>Node</kbd> object within the method makes for a nicer API and better ownership handling.</li>
+<li>Edge cases such as empty lists.</li>
+<li>Incrementing the length is a good idea.</li>
+<li>The <kbd>RefCell</kbd> is used to retrieve mutable ownership for setting a new successor using its <kbd>borrow_mut()</kbd> function (interior mutability).</li>
+</ul>
+<p>Once that is thought of, the actual implementation is not too bad. Rust's <kbd>Option</kbd> type offers a method to retrieve ownership of a value it contains, replacing it with <kbd>None</kbd> (see also the documentations for <kbd>Option.take()</kbd>—<a href="https://doc.rust-lang.org/std/option/enum.Option.html#method.take">https://doc.rust-lang.org/std/option/enum.Option.html#method.take</a> and <kbd>mem::replace()</kbd>—<a href="https://doc.rust-lang.org/stable/std/mem/fn.replace.html">https://doc.rust-lang.org/stable/std/mem/fn.replace.html</a>), which conveniently shortens the code required to append a new node:</p>
+<div>
+<pre><span>pub</span><span> </span><span>fn</span><span> </span><span>append</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>, value: </span><span>String</span><span>) {<br/>    </span><span>let</span><span> new </span><span>=</span><span> Node</span><span>::</span><span>new</span><span>(value);<br/>    </span><span>match</span><span> </span><span>self</span><span>.tail.</span><span>take</span><span>() {<br/>        </span><span>Some</span><span>(old) </span><span>=&gt;</span><span> old.</span><span>borrow_mut</span><span>().next </span><span>=</span><span> </span><span>Some</span><span>(new.</span><span>clone</span><span>()), <br/>        </span><span>None</span><span> </span><span>=&gt;</span><span> </span><span>self</span><span>.head </span><span>=</span><span> </span><span>Some</span><span>(new.</span><span>clone</span><span>())<br/>    </span><span>}; <br/>    </span><span>self</span><span>.length </span><span>+=</span><span> </span><span>1</span><span>;<br/>    </span><span>self</span><span>.tail </span><span>=</span><span> </span><span>Some</span><span>(new);<br/></span><span>}</span></pre></div>
+<p>With that, it's now possible to create a log of any string commands passing through. However, there is something important missing here as well: log replay.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Log replay</h1>
+                </header>
+            
+            <article>
+                
+<p>Typically in databases, transaction logs are a resilience measure if something bad happens that the database must be restored—or to keep a replica up to date. The principle is fairly simple: the log represents a timeline of commands that have been executed in this exact order. Thus, to recreate that final state of a database, it is necessary to start with the oldest entry and apply every transaction that follows in that very order.</p>
+<p>You may have caught how that fits the capabilities of a linked list nicely. So, what is missing from the current implementation?</p>
+<p>The ability to remove elements starting at the front.</p>
+<p class="mce-root">Since the entire data structure resembles a queue, this function is going to be called <kbd>pop</kbd>, as it's the typical name for this kind of operation. Additionally, <kbd>pop</kbd> will consume the item that was returned, making the list a single-use structure. This makes sense, to avoid replaying anything twice!</p>
+<p>This looks a lot more complex than it is: the interior mutability pattern certainly adds complexity to the implementation. However, it makes the whole thing safe—thanks to <kbd>RefCells</kbd> checking borrowing rules at runtime. This also leads to the chain of functions in the last part—it retrieves the value from within its wrappers:</p>
+<div>
+<div>
+<pre><span>pub</span><span> </span><span>fn</span><span> </span><span>pop</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>) -&gt; </span><span>Option</span><span>&lt;</span><span>String</span><span>&gt; {<br/></span><span>    self</span><span>.head.</span><span>take</span><span>().</span><span>map</span><span>(</span><span>|</span><span>head</span><span>|</span><span> {<br/>        </span><span>if</span><span> </span><span>let</span><span> </span><span>Some</span><span>(next) </span><span>=</span><span> head.</span><span>borrow_mut</span><span>().next.</span><span>take</span><span>() {<br/>            </span><span>self</span><span>.head </span><span>=</span><span> </span><span>Some</span><span>(next);<br/>        </span><span>} </span><span>else</span><span> {<br/>            </span><span>self</span><span>.tail.</span><span>take</span><span>();<br/>        </span><span>}<br/>        </span><span>self</span><span>.length </span><span>-=</span><span> </span><span>1</span><span>;<br/>        </span><span>Rc</span><span>::</span><span>try_unwrap</span><span>(head)<br/>            </span><span>.</span><span>ok</span><span>()<br/>            </span><span>.</span><span>expect</span><span>(</span><span>"Something is terribly wrong"</span><span>)<br/>            </span><span>.</span><span>into_inner</span><span>()<br/>            </span><span>.value<br/>    </span><span>})<br/></span><span>}</span></pre></div>
+</div>
+<p>Calling this function in sequence returns the commands in the order they were inserted, providing a nice replay feature. For a real-world usage, it's important to provide the ability to serialize this state to disk as well, especially since this operation consumes the list entirely. Additionally, handling errors gracefully (instead of panicking and crashing) is recommended.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">After use</h1>
+                </header>
+            
+            <article>
+                
+<p>Whenever the list needs to be disposed of, Rust calls a <kbd>drop()</kbd> method that is automatically implemented. However, since this is an automated process, each member is dropped recursively—which works OK until the level of nested <kbd>next</kbd> pointers exceeds the stack for executing the <kbd>drop()</kbd> method and crashes the program with an unexpected stack overflow message.</p>
+<p>As a consequence, it is a good idea for production usage to also implement the <kbd>Drop</kbd> trait and dispose of the list elements iteratively. By the way, a stack overflow also happens while using the derived <kbd>Debug</kbd> implementation to print a <kbd>Node</kbd>—for the same reason.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Wrap up</h1>
+                </header>
+            
+            <article>
+                
+<p>A (transaction) log is a great use case for a linked list: They often grow to unexpected sizes, and indexing is not required. While a linked list is often a very simple type in other languages, it harbors a surprising amount of challenges in Rust. This is mostly due to the borrowing and ownership concepts which require a programmer to think about what goes where in great detail. For real-world use cases, however, it's better to use Rust's standard library linked list (<kbd>std::collections::LinkedList</kbd><span>). From a performance perspective, finding a particular item in the singly linked list requires looking at the entire list in the worst case, resulting in a runtime complexity of <kbd>O(n)</kbd>, with <kbd>n</kbd> being the number of items in the list (more on the topic of runtime complexity in <a href="6ab96dc6-b8f5-4c03-88a3-f4a345f8cc9b.xhtml">Chapter 8</a>, <em>Algorithm Evaluation</em>).</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Upsides</h1>
+                </header>
+            
+            <article>
+                
+<p>The main benefits of a linked list are the abilities to grow very large in size cheaply, always maintain a certain direction, and allow to access items individually. What makes this data structure unique?</p>
+<p>There are a few points:</p>
+<ul>
+<li>Low overhead allocation per item.</li>
+<li>Item count is only limited by heap memory.</li>
+<li>Mutation while iterating is possible.</li>
+<li>A direction is strictly enforced—there is no going back.</li>
+<li>Implementation is fairly simple (even in Rust).</li>
+<li>Efficient append, prepend, delete, and insert operations—compared to an array (no shifting required).</li>
+</ul>
+<p>Generally, the linked list performs well in an environment where l<span>imited memory does not allow overhead allocation (as dynamic arrays do), or as a basis for an exotic lock-free data structure.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Downsides</h1>
+                </header>
+            
+            <article>
+                
+<p>The linked list has some obvious shortcomings:</p>
+<ul>
+<li>Indexing is inefficient, since every node has to be looked at.</li>
+<li>Iteration in general involves a lot of jumping around on the heap, which takes more time and makes the operation hard to cache.</li>
+<li>Reversing a list is <em>very</em> inefficient.</li>
+</ul>
+<p>The last point is important, so, commonly, a linked-list implementation will have a link back as well, which makes it a doubly linked list.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Doubly linked list</h1>
+                </header>
+            
+            <article>
+                
+<p><span>The transaction log of the previous section is due for an upgrade. The product team wants to enable users to be able to examine the log by going through it</span> <strong>forward</strong> <span><strong>and</strong></span> <strong>backward</strong> <span>to see what each step does. This is bad news for the regular linked list, as it's really inefficient to go anywhere other than forward. So, how is this rectified?</span></p>
+<p>It is rectified using the doubly linked list. The doubly linked list introduces the link <kbd>back</kbd>. While this sounds like a minor change, it allows to work on that list backward as well as forward, which significantly improves the ability to look up items. By augmenting the previous singly linked list item with a back pointer, the doubly linked list is almost created:</p>
+<div>
+<pre><span>#[derive(Debug, Clone)]<br/></span><span>struct</span><span> </span><span>Node</span><span> {<br/>    </span><span>value: </span><span>String</span><span>,<br/>    </span><span>next: Link,<br/>    </span><span>prev: Link,<br/></span><span>}<br/><br/></span><span>type</span><span> </span><span>Link</span><span> = </span><span>Option</span><span>&lt;Rc&lt;RefCell&lt;Node&gt;&gt;&gt;;<br/></span><span><br/></span><span>#[derive(Debug, Clone)]<br/></span><span>pub</span><span> </span><span>struct</span><span> </span><span>BetterTransactionLog</span><span> {<br/>    </span><span>head: Link,</span><span> <br/>    tail: Link,<br/>    </span><span>pub</span><span> length: </span><span>u64</span><span>,<br/></span><span>}</span></pre></div>
+<p class="mce-root">Similar to the singly linked list, the list itself only consists of a head and a tail pointer, which makes accessing either end of the list cheap and easy. Additionally, the nodes now also feature a pointer back to the preceding node, making the list look like this:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/30cde807-16c5-4e6a-8009-5967d7449cc4.png" style="width:71.67em;height:12.17em;"/></p>
+<p>This is also the point that makes the doubly linked list tricky in Rust. The ownership principle is great if there is a hierarchy of ownership: a customer has an address, a text file has several lines of text, and so on. However, a node in a doubly linked list doesn't have clear ownership of either of its neighbors.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">A better transaction log</h1>
+                </header>
+            
+            <article>
+                
+<p>So, the list of requirements got expanded:</p>
+<ul>
+<li>Move forward through the log</li>
+<li>Move backward through the log</li>
+<li>Moves don't consume the log</li>
+</ul>
+<p>A nice fit for the doubly linked list, so the existing transaction log can be upgraded! With the pointers to both neighbors of a node, it can solve the problem. However, what about moving through the list without removing elements?</p>
+<p>For that, another concept is required: <strong>iterators</strong>. Rust's iterators are leaning on the functional side of programming and provide a versatile interface for integrating with all kinds of other data structures and commands across the language. For example, <kbd>for</kbd> loops will pick up on the iterator and behave as expected.</p>
+<div class="packt_infobox"><strong>Iterators</strong> <span>are pointers to the current item with a method called</span> <kbd>next()</kbd> <span>that produces the next item while moving the pointer forward! This concept is applied a lot when using a more functional approach to working with collections: by chaining them together and applying a function after invoking</span> <kbd>next()</kbd>, <span>going through a list can be very efficient. Check the</span> <em>Further reading</em> section and the last chapter of this book <span>for more information!</span></div>
+<p>The data model is going to look like the singly linked list, so most of the operations can be used as they are—they only need to be upgraded to work with the back-pointer as well.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Examining the log</h1>
+                </header>
+            
+            <article>
+                
+<p>Looking at the list without consuming it is an iterator's job (see the info box), which—in Rust as well as in most other languages—is a simple implementation of an interface or trait. In fact, this is so common that the Rust docs have a great article (<a href="https://doc.rust-lang.org/std/iter/index.html#implementing-iterator">https://doc.rust-lang.org/std/iter/index.html#implementing-iterator</a>), which is exactly what's required.</p>
+<p>Since we are already working with heap references, the iterator can simply save an optional reference to a node and it's easy to move it forward and backward:</p>
+<pre><span>pub</span><span> </span><span>struct</span><span> </span><span>ListIterator</span><span> {<br/>    </span><span>current: Link</span><span>,<br/></span><span>}<br/><br/></span><span>impl</span><span> </span><span>ListIterator</span><span> {</span><span><br/>    </span><span>fn</span><span> </span><span>new</span><span>(start_at: Link</span><span>) -&gt; ListIterator {<br/>        </span><span>ListIterator {<br/>            </span><span>current: start_at,<br/>        </span><span>}<br/>    </span><span>}<br/>}</span></pre>
+<p><span>As the documentation states, a <kbd>for</kbd> loop uses two traits: <kbd>Iterator</kbd> and <kbd>IntoIterator</kbd>. Implementing the former is usually a good idea, as it provides access to the powerful methods in <kbd>Iterator</kbd>, such as <kbd>map</kbd>, <kbd>fold</kbd>, and so on, and nicely chains together with other—compatible—iterators:</span></p>
+<pre><span>impl</span><span> </span><span>Iterator</span><span> </span><span>for</span><span> </span><span>ListIterator</span><span> {<br/>    </span><span>type</span><span> </span><span>Item</span><span> = </span><span>String</span><span>;<br/>    </span><span>fn</span><span> </span><span>next</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>) -&gt; </span><span>Option</span><span>&lt;</span><span>String</span><span>&gt; {<br/>        </span><span>let</span><span> current </span><span>=</span><span> </span><span>&amp;</span><span>self</span><span>.current;<br/>        </span><span>let</span><span> </span><span>mut</span><span> result </span><span>=</span><span> </span><span>None</span><span>;<br/>        </span><span>self</span><span>.current </span><span>=</span><span> </span><span>match</span><span> current {<br/>            </span><span>Some</span><span>(</span><span>ref</span><span> current) </span><span>=&gt;</span><span> {<br/>                </span><span>let</span><span> current </span><span>=</span><span> current.</span><span>borrow</span><span>();<br/>                </span><span>result </span><span>=</span><span> </span><span>Some</span><span>(current.value.</span><span>clone</span><span>());<br/>                </span><span>current.next.</span><span>clone</span><span>()<br/>            </span><span>},<br/>            </span><span>None</span><span> </span><span>=&gt;</span><span> </span><span>None<br/>        </span><span>};<br/>        </span><span>result<br/>    </span><span>}<br/></span><span>}</span></pre>
+<p>This iterator is responsible for moving one direction: forward. How can we walk back too?</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Reverse</h1>
+                </header>
+            
+            <article>
+                
+<p>Now, since the requirement was also to go back, the iterator needs to go both ways. One easy way is to simply add a function to the structure that is called <kbd>reverse()</kbd>, but that would not integrate well and would require developers to read up on this API, and it creates additional work, since the forward/backward iterators are separate.</p>
+<p>Rust's standard library offers an interesting concept for this: <kbd>DoubleEndedIterator</kbd>. Implementing this trait will provide the ability to reverse an iterator in a standardized way by <span>offering a</span> <kbd>next_back()</kbd> <span>function to get the previous value—with the doubly linked list, this is only a matter of which property gets set to the current item! Therefore, both iterators share a large chunk of the code:</span></p>
+<pre><span>impl</span><span> </span><span>DoubleEndedIterator</span><span> </span><span>for</span><span> </span><span>ListIterator</span><span> {<br/></span><span>    fn</span><span> </span><span>next_back</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>) -&gt; </span><span>Option</span><span>&lt;</span><span>String</span><span>&gt; {<br/>        </span><span>let</span><span> current </span><span>=</span><span> </span><span>&amp;</span><span>self</span><span>.current;<br/>        </span><span>let</span><span> </span><span>mut</span><span> result </span><span>=</span><span> </span><span>None</span><span>;<br/>        </span><span>self</span><span>.current </span><span>=</span><span> </span><span>match</span><span> current {<br/>            </span><span>Some</span><span>(</span><span>ref</span><span> current) </span><span>=&gt;</span><span> {<br/>                </span><span>let</span><span> current </span><span>=</span><span> current.</span><span>borrow</span><span>();<br/>                </span><span>result </span><span>=</span><span> </span><span>Some</span><span>(current.value.</span><span>clone</span><span>());<br/>                </span><span>current.prev.</span><span>clone</span><span>()<br/>            </span><span>},<br/>            </span><span>None</span><span> </span><span>=&gt;</span><span> </span><span>None<br/>        </span><span>};<br/>        </span><span>result<br/></span><span>    }<br/></span><span>}</span></pre>
+<p>With this in place, an iterator can be created by calling the <kbd>iter()</kbd> function on the list type, and by calling <kbd>iter().rev()</kbd>, the iterator will be reversed, providing the ability to go back as well as forward.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Wrap up</h1>
+                </header>
+            
+            <article>
+                
+<p>Doubly linked lists are in many cases improved versions (and the default) over regular linked lists, thanks to the better flexibility at the cost of a single pointer per node and slightly more complex operations.</p>
+<p>In particular, by keeping the code safe (in Rust terms, so no <kbd>unsafe {}</kbd> was used), the code gets riddled with <kbd>RefCells</kbd> and <kbd>borrow()</kbd> to create a data structure that the borrow checker is auditing at runtime. Looking at the Rust source code for <kbd>LinkedList</kbd>, this is not the case there (more on that in <a href="ba6dfa3b-1b5c-4033-a641-da15b9adb390.xhtml">Chapter 7</a>, <em>Collections in Rust</em>). The basic structure is similar, but the operations use a bunch of unsafe code underneath—something that requires a good experience writing Rust.</p>
+<div class="packt_infobox"><kbd>PhantomData&lt;T&gt;</kbd> is a zero-size type that informs the compiler about a range of things, such as drop behavior, sizes, and so on, when generics are involved.</div>
+<p>As a quick preview, here is the Rust standard library's <kbd>LinkedList&lt;T&gt;</kbd> definition and implementation. It's a doubly linked list! Additionally, the <kbd>push_front_node</kbd> (<kbd>prepend</kbd>) function shows the use of an unsafe area to speed up inserts. For more information on that, check out the link to the online book <em>Learning Rust With Entirely Too Many Linked Lists</em> in the <em>Fu</em><em>rther reading</em> section at the end of the chapter:</p>
+<pre class="rust"><span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">LinkedList</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
+    <span class="ident">head</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">Shared</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">tail</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">Shared</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">len</span>: <span class="ident">usize</span>,
+    <span class="ident">marker</span>: <span class="ident">PhantomData</span><span class="op">&lt;</span><span class="ident">Box</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+}
+
+<span class="kw">struct</span> <span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
+    <span class="ident">next</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">Shared</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">prev</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">Shared</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span><span class="op">&gt;</span>,
+    <span class="ident">element</span>: <span class="ident">T</span>,
+}<br/><br/>[...]<br/><br/><span class="kw">impl</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> <span class="ident">LinkedList</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
+    <span class="doccomment">/// Adds the given node to the front of the list.</span>
+    <span class="attribute">#[<span class="ident">inline</span>]</span>
+    <span class="kw">fn</span> <span class="ident">push_front_node</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="kw-2">mut</span> <span class="ident">node</span>: <span class="ident">Box</span><span class="op">&lt;</span><span class="ident">Node</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;&gt;</span>) {
+        <span class="kw">unsafe</span> {
+            <span class="ident">node</span>.<span class="ident">next</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">head</span>;
+            <span class="ident">node</span>.<span class="ident">prev</span> <span class="op">=</span> <span class="prelude-val">None</span>;
+            <span class="kw">let</span> <span class="ident">node</span> <span class="op">=</span> <span class="prelude-val">Some</span>(<span class="ident">Shared</span>::<span class="ident">from</span>(<span class="ident">Box</span>::<span class="ident">into_unique</span>(<span class="ident">node</span>)));
+
+            <span class="kw">match</span> <span class="self">self</span>.<span class="ident">head</span> {
+                <span class="prelude-val">None</span> <span class="op">=&gt;</span> <span class="self">self</span>.<span class="ident">tail</span> <span class="op">=</span> <span class="ident">node</span>,
+                <span class="prelude-val">Some</span>(<span class="kw-2">mut</span> <span class="ident">head</span>) <span class="op">=&gt;</span> <span class="ident">head</span>.<span class="ident">as_mut</span>().<span class="ident">prev</span> <span class="op">=</span> <span class="ident">node</span>,
+            }
+
+            <span class="self">self</span>.<span class="ident">head</span> <span class="op">=</span> <span class="ident">node</span>;
+            <span class="self">self</span>.<span class="ident">len</span> <span class="op">+=</span> <span class="number">1</span>;
+        }
+    }<br/><br/>// [...]  The remaining code was left out.<br/><br/>}</pre>
+<p>Whatever the implementation, there are general upsides and downsides to the doubly linked list.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Upsides</h1>
+                </header>
+            
+            <article>
+                
+<p>As a linked list, the principles are the same but slightly different. However, the major points of when the list is a good choice are shared with the singly linked list:</p>
+<ul>
+<li>Low overhead allocation per item (but more than the singly linked list).</li>
+<li>Item count is only limited by heap memory.</li>
+<li>Mutation while iterating is possible.</li>
+<li>Implementation is more complex but still fairly simple.</li>
+<li>Inserts, deletes, append, and prepend remain efficient.</li>
+<li>Efficient reversion.</li>
+</ul>
+<p>This makes the doubly linked list a superior version of the two versions of linked lists, which is why it's usually the default <kbd>LinkedList</kbd> type.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Downsides</h1>
+                </header>
+            
+            <article>
+                
+<p>The doubly linked list shares a lot of the downsides of its less complex sibling and replaces the "no going back" with "more memory overhead" and "more complex implementation". Here's the list again:</p>
+<ul>
+<li>Indexing is still inefficient.</li>
+<li>Nodes are also allocated on the heap, which requires a lot of jumping around too.</li>
+<li>An additional pointer has to be stored per node.</li>
+<li>Implementation is more complex.</li>
+</ul>
+<p>Inefficient indexing and iteration is something that a lot of developers wanted to get rid of, so they invented a more exotic version of a linked list: the <strong>skip list</strong>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Skip lists</h1>
+                </header>
+            
+            <article>
+                
+<p>A lot of people love New York—and so do we. It has many qualities that are hard to describe; it is a crazy (in a good way), lively city that brings together many cultures, backgrounds, ethnicities, activities, and opportunities. New York also features a large public transport network, almost like cities in Europe.</p>
+<p>What does any of this have to do with skip lists? A subway system can be expressed as a simple list of stops (expressed in street numbers, a common thing in the USA): <kbd>14 -&gt; 23 -&gt; 28 -&gt; 33 -&gt; 42 -&gt; 51 -&gt; 59 -&gt; 68</kbd> . However, the New York subway system has something called <strong>express trains</strong> which reduce the number of stops to cover larger distances faster.</p>
+<p>Suppose someone wants to go from stop 14 to stop 51. Instead of seeing the doors open and close five times, they can go there getting off at the third stop. In fact, this is how New Yorkers use the trains 4, 5, and 6 between 14th Street (Union Square) and 51st Street. Turned on its side, the subway plan looks roughly like this:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/a5ec37c0-2813-4ba9-83ec-91d5403cd129.png" style="width:51.00em;height:11.17em;"/></p>
+<p>The local service trains stop at every stop along the way, but the express service trains skip certain smaller stops only to halt at shared stations where travelers can switch between the two. The skipping happens quite literally on some stops where trains simply drive through, sometimes confusing tourists and locals alike.</p>
+<p>Expressed as a data structure, the list is essentially several lists, each at a different level. The lowest level contains <em>all</em> nodes, where the upper levels are their "express services" that can skip a number of nodes to get further ahead quicker. This results in a multilayered list, fused together only at certain nodes that have a connection on these particular levels:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/253f5e6f-35ff-49a9-9b48-793e20413e74.png" style="width:62.67em;height:15.67em;"/></p>
+<p>Ideally, each level has half the number of nodes that the previous level has, which means that there needs to be a decision-making algorithm that can work with a growing list and still maintain this constraint. If this constraint is not kept, search times get worse, and in the worst-case scenario it's a regular linked list with a lot of overhead.</p>
+<div class="packt_tip">A node's level is decided using a probabilistic approach: increment the level as long as a coin flip comes out on the same side. While this produces the desired distribution, that's only meaningful if the higher-level nodes are evenly distributed. There are a few posts on improved versions in the <em>Further reading</em> section.</div>
+<p>In addition to that, the skip list has to be ordered to function properly. After all, if the elements of the list are in a random order, how would the list know what it is skipping? In general, however, a node type for this—basic—skip list looks like this:</p>
+<div>
+<pre><span>type</span><span> </span><span>Link</span><span> = </span><span>Option</span><span>&lt;Rc&lt;RefCell&lt;Node&gt;&gt;&gt;;<br/> <br/></span>struct<span> </span><span>Node</span><span> {<br/>    </span>next: <span>Vec</span><span>&lt;</span><span>Link</span><span>&gt;</span><span>,<br/>    </span><span>pub</span><span> value: </span><span>u64</span><span>,<br/></span><span>}</span></pre></div>
+<p>And to chain them together, a list type is also required:</p>
+<pre><span>struct</span><span> SkipList</span><span> {<br/></span><span>    head: Link,<br/>    </span><span>tails: </span><span>Vec</span><span>&lt;</span><span>Link</span><span>&gt;</span><span>,<br/>    </span><span>max_level: </span><span>usize</span><span>,<br/>    </span><span>pub</span><span> length: </span><span>u64</span><span>,<br/></span><span>}</span></pre>
+<p>What stands out is that the <kbd>struct</kbd> is very similar to the previous lists. Indeed—the relationship is undeniable, since they share almost all the properties. However, there are two differences: the <kbd>tails</kbd> is a <kbd>Vec&lt;Link&gt;</kbd> and the <kbd>max_level</kbd> is a property of the list.</p>
+<p>The <kbd>tails</kbd> <span>property</span> being a vector is due to the fact that every level will have a tail end, meaning that whenever an append occurs, all tails may need to be updated. Additionally, the developer is responsible for providing an appropriate <kbd>max_level</kbd> value, since changing <kbd>max_level</kbd> would result in constructing a new list!</p>
+<p>Going back to the previous example, the product team has requested more features! Users are confused by the lack of a clear direction in the list, and they are annoyed that there is no way to quickly skip the verbose but less-than-interesting parts in the beginning.</p>
+<p>As a consequence, the product team wants the following:</p>
+<ul>
+<li>A time associated with the logged transaction</li>
+<li>To be able to quickly jump to an arbitrary time</li>
+<li>To start iterating from there</li>
+</ul>
+<p>Doesn't this sound a lot like a skip list?</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The best transaction log</h1>
+                </header>
+            
+            <article>
+                
+<p><span>To improve the transaction log in the way the product team describes, it's a perfect fit for a skip list. How about ordering the commands by a <kbd>u32</kbd> number—a millisecond offset from the initial timestamp. The commands it contains are going to be stored as strings associated with the offset.</span></p>
+<p>Nevertheless, the list and its nodes need to be implemented.</p>
+<p>Compared to previous implementations (especially since the singly linked list is a close relative), <span>there are two major differences in this declaration. Firstly, the next pointer is an array, which is due to the node having a different successor at every level.</span></p>
+<p><span>Secondly, the content was previously named <kbd>value</kbd>, but to differentiate between the timestamp offset and the actual content, <kbd>value</kbd> has been replaced by <kbd>offset</kbd> and <kbd>command</kbd>:</span></p>
+<pre><span>#[derive(Clone)]<br/></span><span>struct</span><span> </span><span>Node</span><span> {<br/></span><span>    next: </span><span>Vec</span><span>&lt;</span><span>Link</span><span>&gt;</span><span>,<br/></span><span>    pub</span><span> offset: </span><span>u64</span><span>,<br/></span><span>    pub</span><span> command: </span><span>String</span><span>,<br/></span><span>}</span></pre>
+<p>These nodes form the basis of this—improved—transaction log. As previously, with the singly linked list, this is done by creating a type that has a head pointer.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The list</h1>
+                </header>
+            
+            <article>
+                
+<p>Other than a simple pointer to the head, the list best stores the length as well as the maximum level that elements can have. This user-supplied parameter is critical, since if it's chosen too low, searching will approximate the search performance of a singly linked list (<kbd>O(n)</kbd>).</p>
+<p>In contrast, choosing a maximum level that is too high will also result in an uneven distribution that could see as many vertical (levels down) as horizontal iterations (<kbd>O(n + h)</kbd> ), none of which are good. The Big O notation (<kbd>O(n)</kbd> and so on) will be discussed in <a href="6ab96dc6-b8f5-4c03-88a3-f4a345f8cc9b.xhtml">Chapter 8</a>, <em>Algorithm Evaluation</em>.</p>
+<p>Consequently, this parameter has to be set to somewhat reflect the future size of the list and the highest level only contains two or three nodes at most:</p>
+<div>
+<pre><span>#[derive(Clone)]<br/></span><span>pub</span><span> </span><span>struct</span><span> </span><span>BestTransactionLog</span><span> {<br/>    </span><span>head: Link,<br/>    </span><span>tails: </span><span>Vec</span><span>&lt;</span><span>Link</span><span>&gt;</span><span>,<br/>    </span><span>max_level: </span><span>usize</span><span>,<br/>    </span><span>pub</span><span> length: </span><span>u64</span><span>,<br/>}</span></pre></div>
+<p>The <kbd>tails</kbd> <span>property</span> is a vector pointing to the tail of each level. When adding data, this is the primary place to update this transaction log, thanks to the append-only nature of our skip list.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding data</h1>
+                </header>
+            
+            <article>
+                
+<p>Having the basic data structures ready, a function to insert data is required. As previously stated, a skip list can only work if the values are somehow comparable and follow an ascending order. This makes sense: skipping ahead is only useful if you know where you are going!</p>
+<p class="mce-root">A very efficient way to create a sorted list is by doing a <strong>sorted insert</strong> (sometimes called an <strong>insertion</strong> <strong>sort</strong>). Commonly, this would add some complexity to the insert logic to find the correct place for the node. However, since a timestamp is naturally ascending and a comparable value, this version of the transaction log works without a sophisticated insert, thereby requiring fewer tests and fewer headaches when reading it a year down the road.</p>
+<p>In fact, this means reusing some code from earlier sections is entirely possible:</p>
+<div>
+<pre><span>pub</span><span> </span><span>fn</span><span> </span><span>append</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>, offset: </span><span>u64</span><span>, value: </span><span>String</span><span>) {<br/></span><span>    let</span><span> level </span><span>=</span><span> </span><span>1</span><span> </span><span>+</span><span> </span><span>if</span><span> </span><span>self</span><span>.head.</span><span>is_none</span><span>() {<br/>        </span><span>self</span><span>.max_level   // use the maximum level for the first node<br/></span><span>    } </span><span>else</span><span> { <br/>        </span><span>self</span><span>.</span><span>get_level</span><span>() // determine the level by coin flips<br/>    </span><span>};<br/><br/>    </span><span>let</span><span> new </span><span>=</span><span> Node</span><span>::</span><span>new</span><span>(</span><span>vec!</span><span>[</span><span>None</span><span>; level], offset, value);<br/><br/>    // update the tails for each level<br/>    </span><span>for</span><span> i </span><span>in</span><span> </span><span>0</span><span>..level {<br/>        </span><span>if</span><span> </span><span>let</span><span> </span><span>Some</span><span>(old) </span><span>=</span><span> </span><span>self</span><span>.tails[i].</span><span>take</span><span>() {<br/>            </span><span>let</span><span> next </span><span>=</span><span> </span><span>&amp;</span><span>mut</span><span> old.</span><span>borrow_mut</span><span>().next;<br/>            </span><span>next[i] </span><span>=</span><span> </span><span>Some</span><span>(new.</span><span>clone</span><span>());<br/>        </span><span>}<br/>        </span><span>self</span><span>.tails[i] </span><span>=</span><span> </span><span>Some</span><span>(new.</span><span>clone</span><span>());<br/>    </span><span>}<br/><br/>    // this is the first node in the list<br/>    </span><span>if</span><span> </span><span>self</span><span>.head.</span><span>is_none</span><span>() {<br/>        </span><span>self</span><span>.head </span><span>=</span><span> </span><span>Some</span><span>(new.</span><span>clone</span><span>());<br/>    </span><span>}<br/>    </span><span>self</span><span>.length </span><span>+=</span><span> </span><span>1</span><span>;<br/></span><span>}</span></pre></div>
+<p>Yet, there is an important addition: deciding on the level a node should (also) be present at. This is what makes the list powerful and is done just before the node is created:</p>
+<div>
+<pre><span>    let</span><span> level </span><span>=</span><span> </span><span>1</span><span> </span><span>+</span><span> </span><span>if</span><span> </span><span>self</span><span>.head.</span><span>is_none</span><span>() {<br/>        </span><span>self</span><span>.max_level<br/></span><span>    } </span><span>else</span><span> { <br/>        </span><span>self</span><span>.</span><span>get_level</span><span>()<br/>    </span><span>};<br/>    </span><span>let</span><span> new </span><span>=</span><span> Node</span><span>::</span><span>new</span><span>(</span><span>vec!</span><span>[</span><span>None</span><span>; level], offset, value);</span></pre></div>
+<p>This snippet shows some important details:</p>
+<ul>
+<li>The first node is always present on all levels, which makes search considerably easier, since the algorithm only needs to descend. However, this is only possible thanks to the append-only approach!</li>
+<li>Each node's <kbd>next</kbd> vector has to store succeeding pointers at the level's index, which means that the actual length needs to be <kbd>highest level + 1</kbd>.</li>
+</ul>
+<p>How do you decide on the level, though? This is a great question, since this is the heart of a well-performing skip list.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Leveling up</h1>
+                </header>
+            
+            <article>
+                
+<p>Since <kbd>search</kbd> in a skip list is very much like <kbd>search</kbd> in a binary search tree (the first section in <a href="84f203ac-a9f6-498b-90ff-e069c41aaca0.xhtml">Chapter 5</a>, <em>Robust Trees</em>, will get more into those), it has to retain a certain distribution of nodes to be effective. The original paper by William Pugh proposes a way to create the desired distribution of nodes on a certain level by repeatedly flipping a coin (assuming <em>p = 0.5</em>).</p>
+<p>This is the proposed algorithm (<em>William Pugh, Skip Lists: A Probabilistic Alternative to Balanced Trees, Figure 5</em>):</p>
+<pre>randomLevel()<br/>    lvl := 1<br/>    -- random() that returns a random value in [0...1)<br/>    while random() &lt; p and lvl &lt; MaxLevel do<br/>        lvl := lvl + 1<br/>    return lvl </pre>
+<p>Since this is a simple and understandable implementation, the skip list in this chapter will use this as well. However, there are better ways to generate the required distribution, and this is left for you to explore further. For this task, the first external crate is going to be used: <kbd>rand</kbd>.</p>
+<div class="packt_infobox"><kbd>rand</kbd> is provided by the Rust project but published in its own repository. There certainly are discussions about why this is not part of the default standard library; however, it's not too bad having the choice of crates to import if it needs to be replaced by something more lightweight, or if the target platform is not supported.</div>
+<p>This Rust code should do just fine and generate the required level on call:</p>
+<div>
+<pre><span>fn</span><span> </span><span>get_level</span><span>(</span><span>&amp;</span><span>self</span><span>) -&gt; </span><span>usize</span><span> {<br/>    </span><span>let</span><span> </span><span>mut</span><span> n </span><span>=</span><span> </span><span>0</span><span>;<br/>    </span><span>// bool = p(true) = 0.5<br/>    </span><span>while</span><span> rand</span><span>::</span><span>random</span><span>::</span><span>&lt;</span><span>bool</span><span>&gt;() </span><span>&amp;&amp;</span><span> n </span><span>&lt;</span><span> </span><span>self</span><span>.max_level {<br/>        </span><span>n </span><span>+=</span><span> </span><span>1</span><span>;<br/>    </span><span>}<br/>    </span><span>n<br/>}</span></pre></div>
+<p>Regarding the algorithm, bear this in mind: a range of levels that come out are <kbd>[0, max_level]</kbd>, including the level. <span>Each time a value is inserted, this function is called to acquire the level for the resultant node, so jumps can actually make <kbd>search</kbd> faster.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Jumping around</h1>
+                </header>
+            
+            <article>
+                
+<p>The skip list only resembles a binary search tree, but it is able to achieve the same runtime complexity (<kbd>O(log n)</kbd>) without the need for expensive rebalancing. This is due to the jumps the skip list allows. Logically, it makes sense: by jumping over several nodes, these nodes don't need to be looked at to find out whether those are the values that are being searched for. Fewer nodes means fewer comparisons, leading to a reduced runtime.</p>
+<p>The jumps are quickly implemented too and can be implemented in a function using a few loops:</p>
+<div>
+<pre><span>pub</span><span> </span><span>fn</span><span> </span><span>find</span><span>(</span><span>&amp;</span><span>self</span><span>, offset: </span><span>u64</span><span>) -&gt; </span><span>Option</span><span>&lt;</span><span>String</span><span>&gt; {<br/></span><span>    match</span><span> </span><span>self</span><span>.head {<br/>        </span><span>Some</span><span>(</span><span>ref</span><span> head) </span><span>=&gt;</span><span> {<br/>            </span><span>let</span><span> </span><span>mut</span><span> start_level </span><span>=</span><span> </span><span>self</span><span>.max_level;<br/>            </span><span>let</span><span> node </span><span>=</span><span> head.</span><span>clone</span><span>();<br/>            let mut result = None;<br/>            </span><span>loop</span><span> {<br/>                </span><span>if</span><span> node.</span><span>borrow</span><span>().next[start_level].</span><span>is_some</span><span>() {<br/>                    </span><span>break</span><span>;<br/>                </span><span>}<br/>                </span><span>start_level </span><span>-=</span><span> </span><span>1</span><span>;<br/>            </span><span>}<br/>            </span><span>let</span><span> </span><span>mut</span><span> n </span><span>=</span><span> node;<br/>            </span><span>for</span><span> level </span><span>in</span><span> (</span><span>0</span><span>..</span><span>=</span><span>start_level).</span><span>rev</span><span>() {<br/>                </span><span>loop</span><span> {<br/>                    </span><span>let</span><span> next </span><span>=</span><span> n.</span><span>clone</span><span>();<br/>                    </span><span>match</span><span> next.</span><span>borrow</span><span>().next[level] {<br/>                        </span><span>Some</span><span>(</span><span>ref</span><span> next) <br/>                            </span><span>if</span><span> next.</span><span>borrow</span><span>().offset </span><span>&lt;=</span><span> offset </span><span>=&gt;</span><span> <br/>                                n </span><span>=</span><span> next.</span><span>clone</span><span>(),<br/>                        </span><span>_ </span><span>=&gt;</span><span> </span><span>break<br/>                    </span><span>};<br/></span>                }<br/>                <span>if</span><span> n.</span><span>borrow</span><span>().offset </span><span>==</span><span> offset {<br/>                    let tmp = n.borrow();<br/>                    result = Some(tmp.command.clone());<br/>                    </span><span>break</span><span>;<br/>                </span><span>}<br/>            </span><span>}<br/>            </span><span>result</span><span><br/>        </span><span>}<br/>        </span><span>None</span><span> </span><span>=&gt;</span><span> </span><span>None</span><span>,<br/></span><span>    }<br/></span><span>}</span></pre></div>
+<p>These 30 lines of code allow you to search the list quickly within a few steps. First, a sensible starting level has to be found by starting at the highest possible level, to see which has a valid node that follows it. The following happens in this part:</p>
+<pre><span>            </span><span>let</span><span> </span><span>mut</span><span> start_level </span><span>=</span><span> </span><span>self</span><span>.max_level;<br/>            </span><span>let</span><span> node </span><span>=</span><span> head.</span><span>clone</span><span>();<br/>            </span><span>loop</span><span> {<br/>                </span><span>if</span><span> node.</span><span>borrow</span><span>().next[start_level].</span><span>is_some</span><span>() {<br/>                    </span><span>break</span><span>;<br/>                </span><span>}<br/>                </span><span>start_level </span><span>-=</span><span> </span><span>1</span><span>;<br/>            </span><span>}<br/></span></pre>
+<p>Once this level is figured out, the next step is to move vertically toward the desired node and move lower, as the potential next node is greater than the value we are looking for:</p>
+<pre><span>            let</span><span> </span><span>mut</span><span> n </span><span>=</span><span> node;<br/>            </span><span>for</span><span> level </span><span>in</span><span> (</span><span>0</span><span>..</span><span>=</span><span>start_level).</span><span>rev</span><span>() {<br/>                </span><span>loop</span><span> {<br/>                    </span><span>let</span><span> next </span><span>=</span><span> n.</span><span>clone</span><span>();<br/>                    </span><span>match</span><span> next.</span><span>borrow</span><span>().next[level] {<br/>                        </span><span>Some</span><span>(</span><span>ref</span><span> next) <br/>                            </span><span>if</span><span> next.</span><span>borrow</span><span>().offset </span><span>&lt;=</span><span> offset </span><span>=&gt;</span><span> <br/>                                n </span><span>=</span><span> next.</span><span>clone</span><span>(),<br/>                        </span><span>_ </span><span>=&gt;</span><span> </span><span>break<br/>                    </span><span>};<br/></span>                }<br/>                <span>if</span><span> n.</span><span>borrow</span><span>().offset </span><span>==</span><span> offset {<br/>                    let tmp = n.borrow();<br/>                    result = Some(tmp.command.clone());<br/>                    </span><span>break</span><span>;<br/>                </span><span>}<br/>            </span><span>}<br/>            </span><span>result</span></pre>
+<p>Finally, the result of the search is returned as an <kbd>Option</kbd> that contains the command that was issued at the specified time—or <kbd>None</kbd>. Depending on the semantics of failure, it could be a better choice to use a <kbd>Result</kbd> with the appropriate message that informs the user about why there was no result (the list was empty, no value has been found, and so on).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Thoughts and discussion</h1>
+                </header>
+            
+            <article>
+                
+<p><kbd>skip list</kbd> is a fascinating data structure, as it is fairly simple to implement and combines the benefits of tree-like structures within a list without the need for expensive inserts or rebalancing. To visualize the power of this data structure, here is a chart that compares the <kbd>find()</kbd> operation of skip lists and (<kbd>std::collections::</kbd>) <kbd>LinkedList</kbd>:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/3d095723-203b-491d-92c9-4bcffacaa57b.png" style="width:46.00em;height:55.33em;"/></p>
+<div class="CDPAlignCenter CDPAlign packt_figref">The graph output for Skip List find () and Linked List find ()</div>
+<p>The first chart (higher) shows how the skip list behaves according to an <kbd>O(log n)</kbd> type function, which proves that the implementation works! The second (lower) chart shows the linear search in <kbd><span>LinkedList</span></kbd>, with the time required growing in <kbd>O(n)</kbd>. The raw numbers are even more impressive:</p>
+<table border="1" style="border-collapse: collapse;width: 100%">
+<tbody>
+<tr>
+<td style="width: 175px"><strong>Size</strong></td>
+<td style="width: 220px"><strong>Skip list [avg ns]</strong></td>
+<td style="width: 323px"><strong>Linked list [avg ns]</strong></td>
+</tr>
+<tr>
+<td style="width: 175px">1,000</td>
+<td style="width: 220px">311</td>
+<td style="width: 323px">825</td>
+</tr>
+<tr>
+<td style="width: 175px">10,000</td>
+<td style="width: 220px">438</td>
+<td style="width: 323px">17,574</td>
+</tr>
+<tr>
+<td style="width: 175px">100,000</td>
+<td style="width: 220px">1,190</td>
+<td style="width: 323px">428,259</td>
+</tr>
+<tr>
+<td style="width: 175px">1,000,000</td>
+<td style="width: 220px">2,609</td>
+<td style="width: 323px">5,440,420</td>
+</tr>
+<tr>
+<td style="width: 175px">10,000,000</td>
+<td style="width: 220px">3,334</td>
+<td style="width: 323px">45,157,562</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>These numbers reflect the <strong>nanoseconds</strong> (<strong>ns</strong>) required for a single call to the <kbd>find()</kbd> method averaged over a number of trials. This is truly a great data structure for search.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Upsides</h1>
+                </header>
+            
+            <article>
+                
+<p>In a word: <kbd>search</kbd>. The number of steps required to retrieve a single item is linear (it will take as many steps to find an item as there are items in the list ), in the <em>worst case</em>. Commonly, the time would be at the level of a binary search tree!</p>
+<p>In more practical terms, this would provide the ability to store large amounts of data in a list and quickly find the items that you were looking for. However, there is more; here is a list of upsides:</p>
+<ul>
+<li>The item count is only limited by heap memory</li>
+<li>The search is really efficient</li>
+<li>It is less complex to implement than many trees</li>
+</ul>
+<p>Yet, there are downsides to this list.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Downsides</h1>
+                </header>
+            
+            <article>
+                
+<p>The memory efficiency of a skip list and its complexity can be an issue. With the append-only approach, the list implemented in this book avoids a few complexities such as sorted insert (we'll get there later). Other points include the following:</p>
+<ul>
+<li>Memory efficiency: lots and lots of pointers create overhead</li>
+<li>Implementation complexity</li>
+<li>Sorting required</li>
+</ul>
+<ul>
+<li>Updates are expensive</li>
+<li>Probabilistic approach to elevating nodes onto certain levels</li>
+</ul>
+<p class="mce-root">Depending on the type of project, these might be prohibitive issues. However, there are other types of lists that might be suitable, one of them being the dynamic array.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Dynamic arrays</h1>
+                </header>
+            
+            <article>
+                
+<p><strong>Arrays</strong> are another common way to store sequences of data. However, they lack a fundamental feature of lists: expansion. Arrays are efficient because they are a fixed-size container of length <em>n</em>, where every element has an equal size. Thus, any element can be reached by calculating the address to jump to using the simple formula <kbd>start_address + n * element_size</kbd>, making the entire process really fast. Additionally, this is very CPU cache-friendly, since the data is always at least one hop away.</p>
+<p class="mce-root">The idea of using arrays to emulate list behavior has been around for a long time (Java 1.2 included an <kbd>ArrayList</kbd> class in 1998, but the idea is likely much older) and it is still a great way to achieve high performance in lists. Rust's <kbd>Vec&lt;T&gt;</kbd> uses the same technique. To start off, this is how an array list is built:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/880ecd46-5207-45cf-855a-67a55ab1cfe5.png" style="width:47.58em;height:8.75em;"/></p>
+<p class="mce-root">Consequently, this Rust implementation will have an array (actually a slice, but more on that later) as the main storage facility as well:</p>
+<div>
+<pre><span>pub</span><span> </span><span>struct</span><span> </span><span>DynamicArray</span><span> {<br/>    b</span><span>uf: </span><span>Box</span><span>&lt;</span><span>[</span><span>Option</span><span>&lt;</span><span>u64</span><span>&gt;</span><span>]</span><span>&gt;</span><span>,<br/>    </span><span>cap: </span><span>usize</span><span>, <br/>    </span><span>pub</span><span> length: </span><span>usize</span><span>,<br/></span><span>}</span></pre></div>
+<p>The idea is that, dynamic list sizes can be emulated at the cost of memory and potentially excessive overallocation. Consequently, the critical point is when the currently allocated size is exceeded and the list needs to grow. The question becomes this: how much memory is going to be needed?</p>
+<p>The consequence of too little memory is that reallocation is going to happen again quickly—which will remove any performance gains over regular lists. If the resizing was too large, a lot of memory would go to waste, and, depending on the program's target platform, this might be a huge issue. Thus, the strategy of acquiring more memory is essential. Rust's <kbd>Vec</kbd> follows a smart implementation and allows either an exact allocation and an amortized allocation of simply double (or more) the size of the current internal array.</p>
+<p>Java's implementation grows the vector by simply creating a new array with the old capacity added to a bit-shifted version (to the right by one) of th<span>e old capacity</span>. That is, of course, only if that is enough. Typically, that leads to adding half of the current capacity or more to the number of possible elements. Naturally, all existing elements are (shallow) copied to the new array before disposing of the original memory. In code, it looks as follows <span>(from OpenJDK 8, class</span> <kbd>ArrayList</kbd><span>, lines 237 to 247; new lines added for readability):</span></p>
+<pre class="sourcelines stripes4 wrap"><span>private void grow(int minCapacity) {<br/>    </span><span>// overflow-conscious code</span>
+<span>    int oldCapacity = elementData.length;</span>
+<span>    </span><span>int newCapacity = oldCapacity + (oldCapacity &gt;&gt; 1);</span> <span> <br/><br/>    if (newCapacity - minCapacity &lt; 0)</span> <span> <br/>        newCapacity = minCapacity;<br/></span><span><br/>    if (newCapacity - MAX_ARRAY_SIZE &gt; 0)</span> <span> <br/>        newCapacity = hugeCapacity(minCapacity);</span> <span> <br/><br/>    // minCapacity is usually close to size, so this is a win:</span> <span>         <br/>    elementData = Arrays.copyOf(elementData, newCapacity);</span> <span> <br/>}</span><a href="http://hg.openjdk.java.net/jdk8/jdk8/jdk/file/tip/src/share/classes/java/util/ArrayList.java#l246"><span><br/></span></a></pre>
+<p>This code has a fascinating simplicity, and it's used by billions of programs worldwide, and the implementation of this book's dynamic array will use the same strategy.</p>
+<p>Again, the product team has another feature request. Users liked the going-back-and-forth feature a lot, so they want to save a few noteworthy timestamps in a separate list.</p>
+<p>Often, these kinds of requirements send developers straight to a hash table or dictionary type. However, these usually do not retain the order of the items that were inserted and, if iteration is a primary concern, they are perhaps not the most efficient way to do this.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Favorite transactions</h1>
+                </header>
+            
+            <article>
+                
+<p>To clean up the product team's demands, here is a list of the required features:</p>
+<ul>
+<li>Save a transaction's timestamp in a list</li>
+<li>Access the elements quickly by index, in any order</li>
+<li>Iterate the items in the order they were saved</li>
+</ul>
+<p>A dynamic array utilizes an expanding array underneath and works really quickly, for accessing indices directly while still supporting iteration—great for saving a numbered list of noteworthy timestamps. The direct index access provides a way to fetch the stored data without having to go through the entire list, and since transaction timestamps are basically <kbd>u64</kbd> numbers (milliseconds), the data structure can be a dynamic array of multiple <kbd>u64</kbd>.</p>
+<p>Other than previous lists, this time, a node only stores data and can therefore be a type alias as well:</p>
+<div>
+<pre><span>type</span><span> </span><span>Node</span><span> = </span><span>Option</span><span>&lt;</span><span>u64</span><span>&gt;;</span></pre></div>
+<p>Making the node an <kbd>Option</kbd> type is necessary, since the capacity and actual length of the internal slice may differ—which means that an "empty" marker is needed:</p>
+<div>
+<pre><span>pub</span><span> </span><span>struct</span><span> </span><span>TimestampSaver</span><span> {<br/>    </span><span>buf: </span><span>Box</span><span>&lt;</span><span>[Node]</span><span>&gt;</span><span>,<br/>    </span><span>cap: </span><span>usize</span><span>,<br/>    </span><span>pub</span><span> length: </span><span>usize</span><span>,<br/></span><span>}</span></pre></div>
+<p>Once the node type is declared, it can be used inside the new list's internal buffer. This construct is called a <strong>boxed slice</strong> (see the following section) and stores nodes in an array-like fashion.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Internal arrays</h1>
+                </header>
+            
+            <article>
+                
+<p>Arrays are defined as data structures that have a known size at compile time. Rust takes this very seriously, and the array constructor will only take constants to denominate size in an array. <kbd>[0u8; 4]</kbd> will work, but <kbd>let my_array_size = 2 * 2; [0u8; my_array_size]</kbd> won't.</p>
+<p>So, how do you dynamically reallocate a new array then? In Rust, there is also something called <kbd>slices</kbd>, which are views into a sequence data structure, akin to an array. These are a great fit when stored inside a <kbd>Box</kbd> pointer: allocated on the heap, it has all the benefits of an array with a dynamic size.</p>
+<p>As previously mentioned, this implementation goes with Java's <kbd>ArrayList</kbd> growth strategy and increases its size by at least 50% each time more capacity is required. While this has the unfortunate effect of exponential growth, it has worked for Java—a <em>very</em> popular language—for decades.</p>
+<p>The Rust implementation is close to its Java pendant; in fact, only the oversized variety is missing:</p>
+<div>
+<pre><span>fn</span><span> </span><span>grow</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>, min_cap: </span><span>usize</span><span>) {<br/>    </span><span>let</span><span> old_cap </span><span>=</span><span> </span><span>self</span><span>.buf.</span><span>len</span><span>();<br/>    </span><span>let</span><span> </span><span>mut</span><span> new_cap </span><span>=</span><span> old_cap </span><span>+</span><span> (old_cap </span><span>&gt;&gt;</span><span> </span><span>1</span><span>);<br/><br/>    </span><span>new_cap </span><span>=</span><span> cmp</span><span>::</span><span>max</span><span>(new_cap, min_cap);<br/></span><span>    new_cap </span><span>=</span><span> cmp</span><span>::</span><span>min</span><span>(new_cap, </span><span>usize</span><span>::</span><span>max_value</span><span>());<br/>    </span><span>let</span><span> current </span><span>=</span><span> </span><span>self</span><span>.buf.</span><span>clone</span><span>();<br/>    </span><span>self</span><span>.cap </span><span>=</span><span> new_cap;<br/>    <br/></span><span>    self</span><span>.buf </span><span>=</span><span> </span><span>vec!</span><span>[</span><span>None</span><span>; new_cap].</span><span>into_boxed_slice</span><span>();<br/>    </span><span>self</span><span>.buf[..current.</span><span>len</span><span>()].</span><span>clone_from_slice</span><span>(</span><span>&amp;</span><span>current);<br/>}</span></pre></div>
+<p>You will quickly see that the <kbd>vec![]</kbd> macro has been used—"<em>why is that?</em>" you might ask. Unfortunately, there is no great and safe way outside the <kbd>vec![]</kbd> macro to allocate this boxed slice. This use of the macro, however, allows to create an empty vector with the appropriate size and convert it into a boxed slice—a slice stored in a <kbd>Box</kbd>. This slice can afterward clone data from the previous slice.</p>
+<p>This code works well up to the length of <kbd>usize</kbd>, which depends on the platform the program has been compiled for.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Quick access</h1>
+                </header>
+            
+            <article>
+                
+<p>Due to the underlying slice, accessing an index is cheap. In fact, it always takes the same amount of time, regardless of the index (which makes it different to previously discussed lists). A call to the <kbd>at()</kbd> function will therefore simply forward it accordingly:</p>
+<div>
+<pre><span>pub</span><span> </span><span>fn</span><span> </span><span>at</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>, index: </span><span>usize</span><span>) -&gt; </span><span>Option</span><span>&lt;</span><span>u64</span><span>&gt; {<br/>    </span><span>if</span><span> </span><span>self</span><span>.length </span><span>&gt;</span><span> index {<br/>        </span><span>self</span><span>.buf[index]<br/>    </span><span>} </span><span>else</span><span> {<br/>        </span><span>None<br/>    </span><span>}<br/></span><span>}</span></pre></div>
+<p>Here, again, the Rust implementation has to deal with sharing borrowed content or clone the data structure which might require more memory. Under the hood, a <kbd>u64</kbd> is implicitly cloned.</p>
+<p>To fulfill all requirements, the <kbd>Iterator</kbd> trait has to be implemented as well. Unlike the doubly linked list, the iterator cannot store a single node and go forward or backward from there. It has to store a pointer to the entire list, along with the current index:</p>
+<pre><span>pub</span><span> </span><span>struct</span><span> </span><span>ListIterator</span><span> {<br/>    </span><span>current: </span><span>usize</span><span>,<br/>    </span><span>data: </span><span>Box</span><span>&lt;</span><span>[Node]</span><span>&gt;</span><span>,<br/>}</span></pre>
+<p>This <kbd>struct</kbd> makes the implementation already obvious. Move the current pointer back and forth as needed:</p>
+<pre><span>impl</span><span> </span><span>Iterator</span><span> </span><span>for</span><span> </span><span>ListIterator</span><span> {<br/>    </span><span>type</span><span> </span><span>Item</span><span> = </span><span>u64</span><span>;<br/><br/>    </span><span>fn</span><span> </span><span>next</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>) -&gt; </span><span>Option</span><span>&lt;</span><span>u64</span><span>&gt; {<br/>        </span><span>if</span><span> </span><span>self</span><span>.current </span><span>&lt;</span><span> </span><span>self</span><span>.data.</span><span>len</span><span>() {<br/>            </span><span>let</span><span> item </span><span>=</span><span> </span><span>self</span><span>.data[</span><span>self</span><span>.current];<br/>            </span><span>self</span><span>.current </span><span>+=</span><span> </span><span>1</span><span>;<br/>            </span><span>item<br/>        </span><span>} </span><span>else</span><span> {<br/>            </span><span>None<br/>        </span><span>}<br/>    </span><span>}<br/></span><span>}<br/><br/></span><span>impl</span><span> </span><span>DoubleEndedIterator</span><span> </span><span>for</span><span> </span><span>ListIterator</span><span> {<br/></span><span>    fn</span><span> </span><span>next_back</span><span>(</span><span>&amp;</span><span>mut</span><span> </span><span>self</span><span>) -&gt; </span><span>Option</span><span>&lt;</span><span>u64</span><span>&gt; {<br/>        </span><span>if</span><span> </span><span>self</span><span>.current </span><span>&lt;</span><span> </span><span>self</span><span>.data.</span><span>len</span><span>() {<br/>            </span><span>let</span><span> item </span><span>=</span><span> </span><span>self</span><span>.data[</span><span>self</span><span>.current];<br/>            </span><span>if</span><span> </span><span>self</span><span>.current </span><span>==</span><span> </span><span>0</span><span> {<br/>                </span><span>self</span><span>.current </span><span>=</span><span> </span><span>self</span><span>.data.</span><span>len</span><span>() </span><span>-</span><span> </span><span>1</span><span>;<br/>             </span><span>} </span><span>else</span><span> {<br/>                </span><span>self</span><span>.current </span><span>-=</span><span> </span><span>1</span><span>;<br/>            </span><span>}<br/>            </span><span>item<br/>        </span><span>} </span><span>else</span><span> {<br/>            </span><span>None<br/>        </span><span>}<br/>    </span><span>}<br/></span><span>}</span></pre>
+<p>This is a simple and clear iterator: no unpacking, explicit borrowing, and so on, just a simple counter that is incremented or decremented as it moves through the list.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Wrap up</h1>
+                </header>
+            
+            <article>
+                
+<p>The dynamic array is a very flexible way of using array-like structures as a list—and it's surprisingly easy to implement and use. In fact, adding other features (<kbd>prepend</kbd>, insert at a specified position, and so on) is only a matter of a few lines of code.</p>
+<p>For Rust, the difference from the other list types is the clearly defined hierarchical ownership: the list <kbd>struct</kbd> owns the internal structure, which in turn owns the data in its elements. There are no links among the elements that could create ambiguity in who owns what, making the dynamic array a great example for how productive Rust code can be.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Upsides</h1>
+                </header>
+            
+            <article>
+                
+<p>Other than it being only a few lines of code, the dynamic array has quite a few upsides:</p>
+<ul>
+<li>Speed: arrays/slices make things really fast</li>
+<li>Simple and fast element access</li>
+<li>Clear ownership structures</li>
+<li>Fast append and iteration</li>
+<li>Very CPU cache-friendly</li>
+</ul>
+<p>One thing is clear: it's fast in many cases. When is the dynamic array not the best choice, though?</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Downsides</h1>
+                </header>
+            
+            <article>
+                
+<p>However, this type of list is also quite memory-inefficient, and its rigid structure can be a downside as well:</p>
+<ul>
+<li>Operations other than append will require to shift elements</li>
+<li>Growth strategy is not memory-efficient</li>
+</ul>
+<ul>
+<li>A single large chunk of memory is required</li>
+<li>Size is limited by <kbd>usize</kbd> type, which differs from platform to platform</li>
+<li>Growth speed decreases with list size</li>
+</ul>
+<p>This concludes this journey into the realm of lists, hopefully in a successful manner. Before the next chapter begins, a quick summary highlights all the important parts.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>Lists are everywhere! While this is true, it's a fact that makes everything harder. Which list is the right tool for the job? How well will it do at certain sizes to add and later find elements? What's the overhead if my payload size is really small?</p>
+<p>These are all questions that programmers are faced with today, and the author hopes to provide some guidance on these decisions. To recap: the least complex is the singly linked list, upon which the doubly linked list is built. Skip lists are in essence multilayered singly linked lists that provide excellent search performance at the cost of memory overhead. Last, but not least, there is the dynamic array—a type of list that wraps and manages an array for storing data just like a list.</p>
+<p>Implementing these structures in Rust requires many pointers to the heap, especially <kbd>Rc</kbd> and <kbd>RefCells</kbd>, which were companions from the beginning to the end of the chapter. When you consider the structure of a singly linked list, each item required access to the next—but with a predictable size. This fact requires programmers to work with references, but how would this work if the list gets passed around the program, possibly living on the heap itself? The consequence is to simplify things and put them on to the heap from the beginning and use an interior mutable <kbd>Rc</kbd> and <kbd>RefCell</kbd> construct to do that.</p>
+<p>Similarly, is the doubly linked list. Other than the forward (next) pointer that the singly linked sibling provides, a doubly linked node has to point backward as well. Therefore, each item has two pointers in addition to the payload, enabling a set of powerful features such as instant list reversal.</p>
+<p>Skip lists, on the other hand, have been implemented as singly linked lists in this chapter (but certainly can be doubly linked as well). Their main improvement is the great ability to search the contained data quickly—just like a binary search tree. This means that, almost regardless of the size, the look-up performance is vastly better than that of a regular list, both in absolute and relative terms. Unfortunately, this comes at the cost of many more pointers per node.</p>
+<p>The most popular data structure is probably the dynamic array. Often dubbed <kbd>Vec&lt;T&gt;</kbd> (Rust), <kbd>ArrayList</kbd> (Java), <kbd>List&lt;T&gt;</kbd> (C#), or simply <kbd>list()</kbd> (Python), these are wrappers around an array that is allocated and reallocated intelligently as required. By doing this, they can accommodate the need for fast element access and quick iteration at the cost of a shallow copy on resize, as well as having a large chunk of memory available. These are the best choice for storing a limited amount of small- to medium-sized items.</p>
+<p>The next chapter is going to delve deeper into less linear data structures: trees. These constructs provide interesting capabilities by the way they are built and are a great choice for read-heavy undertakings.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Questions</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li>Why is a linked list tricky to implement in Rust?</li>
+<li>How does Rust's standard library <kbd>LinkedList</kbd> work?</li>
+<li>What is the difference between a doubly linked list and a skip list?</li>
+<li>Does a dynamic array outperform a skip list for element access?</li>
+<li>How is a dynamic array a great choice for CPU caching?</li>
+<li>What is another growth strategy for dynamic arrays?</li>
+<li>Rust takes arrays seriously, so what does the dynamic array use internally?</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<p>You can refer to the following links for more information:</p>
+<ul>
+<li><em>Learning Rust With Entirely Too Many Linked Lists</em> (<a href="http://cglab.ca/~abeinges/blah/too-many-lists/book/README.html">http://cglab.ca/~abeinges/blah/too-many-lists/book/README.html</a>)</li>
+<li>Implementing the <kbd>Iterator</kbd> trait (<a href="https://doc.rust-lang.org/std/iter/index.html#implementing-iterator">https://doc.rust-lang.org/std/iter/index.html#implementing-iterator</a>)</li>
+<li><em>Skip Lists: Done Right</em> (<a href="https://doc.rust-lang.org/std/iter/index.html#implementing-iterator">https://doc.rust-lang.org/std/iter/index.html#implementing-iterator</a>)</li>
+<li><em>Skip Lists: A Probabilistic Alternative to Balanced Trees</em>, <span>William Pugh (<a href="https://www.epaperpress.com/sortsearch/download/skiplist.pdf">https://www.epaperpress.com/sortsearch/download/skiplist.pdf</a>)</span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

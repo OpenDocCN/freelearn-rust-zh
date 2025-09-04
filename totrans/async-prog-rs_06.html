@@ -1,0 +1,130 @@
+<html><head></head><body>
+		<div id="_idContainer029">
+			<h1 id="_idParaDest-114" class="chapter-number"><a id="_idTextAnchor113"/>6</h1>
+			<h1 id="_idParaDest-115"><a id="_idTextAnchor114"/>Futures in Rust</h1>
+			<p>In <a href="B20892_05.xhtml#_idTextAnchor092"><span class="No-Break"><em class="italic">Chapter 5</em></span></a>, we covered one of the most popular ways of modeling concurrency in a programming language: fibers/green threads. Fibers/green threads are an example of stackful coroutines. The other popular way of modeling asynchronous program flow is by using what we call stackless coroutines, and combining Rust’s futures with <strong class="source-inline">async/await</strong> is an example of that. We will cover this in detail in the <span class="No-Break">next chapters.</span></p>
+			<p>This first chapter will introduce Rust’s futures to you, and the main goals of this chapter are to do <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>Give you a high-level introduction to concurrency <span class="No-Break">in Rust</span></li>
+				<li>Explain what Rust provides and not in the language and standard library when working with <span class="No-Break">async code</span></li>
+				<li>Get to know why we need a runtime library <span class="No-Break">in Rust</span></li>
+				<li>Understand the difference between a leaf future and a <span class="No-Break">non-leaf future</span></li>
+				<li>Get insight into how to handle <span class="No-Break">CPU-intensive tasks</span></li>
+			</ul>
+			<p>To accomplish this, we’ll divide this chapter into the <span class="No-Break">following sections:</span></p>
+			<ul>
+				<li>What is <span class="No-Break">a future?</span></li>
+				<li><span class="No-Break">Leaf futures</span></li>
+				<li><span class="No-Break">Non-leaf futures</span></li>
+				<li><span class="No-Break">Runtimes</span></li>
+				<li>A mental model of an <span class="No-Break">async runtime</span></li>
+				<li>What the Rust language and standard library take <span class="No-Break">care of</span></li>
+				<li>I/O vs <span class="No-Break">CPU-intensive tasks</span></li>
+				<li>Advantages and disadvantages of Rust’s <span class="No-Break">async model</span></li>
+			</ul>
+			<h1 id="_idParaDest-116"><a id="_idTextAnchor115"/>What is a future?</h1>
+			<p>A future is a <a id="_idIndexMarker395"/>representation of some operation that will be completed in <span class="No-Break">the future.</span></p>
+			<p>Async in Rust uses a poll-based approach in which an asynchronous task will have <span class="No-Break">three phases:</span></p>
+			<ol>
+				<li><strong class="bold">The poll phase</strong>: A <a id="_idIndexMarker396"/>future is polled, which results in the task progressing until a point where it can no longer make progress. We often refer to the part of the runtime that polls a future as <span class="No-Break">an executor.</span></li>
+				<li><strong class="bold">The wait phase</strong>: An <a id="_idIndexMarker397"/>event source, most often referred to as a reactor, registers that a future is waiting for an event to happen and makes sure that it will wake the future when that event <span class="No-Break">is ready.</span></li>
+				<li><strong class="bold">The wake phase</strong>: The<a id="_idIndexMarker398"/> event happens and the future is woken up. It’s now up to the executor that polled the future in <em class="italic">step 1</em> to schedule the future to be polled again and make further progress until it completes or reaches a new point where it can’t make further progress and the <span class="No-Break">cycle repeats.</span></li>
+			</ol>
+			<p>Now, when we talk about futures, I find it useful to make a distinction between <strong class="bold">non-leaf</strong> futures and <strong class="bold">leaf</strong> futures early on because, in practice, they’re pretty different from <span class="No-Break">one another.</span></p>
+			<h1 id="_idParaDest-117"><a id="_idTextAnchor116"/>Leaf futures</h1>
+			<p>Runtimes create leaf futures, which represent a resource such as <span class="No-Break">a socket.</span></p>
+			<p>This is an<a id="_idIndexMarker399"/> example of a <span class="No-Break">leaf future:</span></p>
+			<pre class="source-code">
+let mut stream = tokio::net::TcpStream::connect("127.0.0.1:3000");</pre>			<p>Operations on these resources, such as a reading from a socket, will be non-blocking and return a future, which we call a leaf future since it’s the future that we’re actually <span class="No-Break">waiting on.</span></p>
+			<p>It’s unlikely<a id="_idIndexMarker400"/> that you’ll implement a leaf future yourself unless you’re writing a runtime, but we’ll go through how they’re constructed in this book <span class="No-Break">as well.</span></p>
+			<p>It’s also unlikely that you’ll pass a leaf future to a runtime and run it to completion alone, as you’ll understand by reading the <span class="No-Break">next paragraph.</span></p>
+			<h1 id="_idParaDest-118"><a id="_idTextAnchor117"/>Non-leaf futures</h1>
+			<p>Non-leaf futures<a id="_idIndexMarker401"/> are the kind of futures we as users of a runtime write ourselves using the <strong class="source-inline">async</strong> keyword to create a task that can be run on <span class="No-Break">the executor.</span></p>
+			<p>The bulk of an async program will consist of non-leaf futures, which are a kind of pause-able computation. This is an important distinction since these futures represent a set of operations. Often, such a task will <strong class="source-inline">await</strong> a leaf future as one of many operations to complete <span class="No-Break">the task.</span></p>
+			<p>This is an<a id="_idIndexMarker402"/> example of a <span class="No-Break">non-leaf future:</span></p>
+			<pre class="source-code">
+let non_leaf = async {
+    let mut stream = <strong class="bold">TcpStream::connect("127.0.0.1:3000").await.unwrap();</strong>
+    println!("connected!");
+    <strong class="bold">let result = stream.write(b"hello world\n").await;</strong>
+    println!("message sent!");
+    ...
+};</pre>			<p>The two highlighted lines indicate points where we pause the execution, yield control to a runtime, and eventually resume. In contrast to leaf futures, these kinds of futures do not themselves represent an I/O resource. When we poll them, they will run until they get to a leaf future<a id="_idIndexMarker403"/> that returns <strong class="source-inline">Pending</strong> and then yields control to the scheduler (which is a part of what we call <span class="No-Break">the runtime).</span></p>
+			<p class="callout-heading">Runtimes</p>
+			<p class="callout">Languages such as C#, JavaScript, Java, Go, and many others come with a runtime for handling concurrency. So, if you’re used to one of those languages, this will seem a bit strange to you. Rust is different from these languages in the sense that Rust doesn’t come with a runtime for handling concurrency, so you need to use a library that provides this <span class="No-Break">for you.</span></p>
+			<p class="callout">Quite a bit of complexity attributed to futures is actually complexity rooted in runtimes; creating an efficient runtime <span class="No-Break">is hard.</span></p>
+			<p class="callout">Learning how to use one correctly requires quite a bit of effort as well, but you’ll see that there are several similarities between this kind of runtime, so learning one makes learning the next <span class="No-Break">much easier.</span></p>
+			<p class="callout">The difference between Rust and other languages is that you have to make an active choice when it comes to picking a runtime. Most often, in other languages, you’ll just use the one provided <span class="No-Break">for you.</span></p>
+			<h1 id="_idParaDest-119"><a id="_idTextAnchor118"/>A mental model of an async runtime</h1>
+			<p>I find it easier <a id="_idIndexMarker404"/>to reason about how futures work by creating a high-level mental model we can use. To do that, I have to introduce the concept of a <a id="_idIndexMarker405"/>runtime that will drive our futures <span class="No-Break">to completion.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">The mental model I create here is not the only way to drive futures to completion, and Rust’s futures do not impose any restrictions on how you actually accomplish <span class="No-Break">this task.</span></p>
+			<p>A fully working async system in Rust can be divided into <span class="No-Break">three parts:</span></p>
+			<ul>
+				<li>Reactor (responsible for notifying about <span class="No-Break">I/O events)</span></li>
+				<li><span class="No-Break">Executor (scheduler)</span></li>
+				<li>Future (a task that can stop and resume at <span class="No-Break">specific points)</span></li>
+			</ul>
+			<p>So, how do these three parts <span class="No-Break">work together?</span></p>
+			<p>Let’s <a id="_idIndexMarker406"/>take a <a id="_idIndexMarker407"/>look at a diagram that shows a simplified overview of an <span class="No-Break">async runtime:</span></p>
+			<div>
+				<div id="_idContainer028" class="IMG---Figure">
+					<img src="image/B20892_07_1.jpg" alt="Figure 6.1 – Reactor, executor, and waker"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.1 – Reactor, executor, and waker</p>
+			<p>In <em class="italic">step 1</em> of the figure, an executor holds a list of futures. It will try to run the future by polling it (the poll phase), and when it does, it hands it a <strong class="source-inline">Waker</strong>. The future either returns <strong class="source-inline">Poll:Ready</strong> (which means it’s finished) or <strong class="source-inline">Poll::Pending</strong> (which means it’s not done but can’t get further at the moment). When the executor receives one of these results, it knows it can start polling a different future. We call these points where control is shifted back to the executor <span class="No-Break"><em class="italic">yield points</em></span><span class="No-Break">.</span></p>
+			<p>In <em class="italic">step 2</em>, the reactor stores a copy of the <strong class="source-inline">Waker</strong> that the executor passed to the future when it polled it. The reactor tracks events on that I/O source, usually through the same type of event queue that we learned about in <a href="B20892_04.xhtml#_idTextAnchor081"><span class="No-Break"><em class="italic">Chapter 4</em></span></a><span class="No-Break">.</span></p>
+			<p>In <em class="italic">step 3</em>, when the reactor gets a notification that an event has happened on one of the tracked sources, it locates the <strong class="source-inline">Waker</strong> associated with that source and calls <strong class="source-inline">Waker::wake</strong> on it. This<a id="_idIndexMarker408"/> will in turn inform the executor that the future is ready to make progress so it can poll it <span class="No-Break">once more.</span></p>
+			<p>If we write a<a id="_idIndexMarker409"/> short async program using pseudocode, it will look <span class="No-Break">like this:</span></p>
+			<pre class="source-code">
+async fn foo() {
+    println!("Start!");
+    let txt = io::read_to_string().await.unwrap();
+    println!("{txt}");
+}</pre>			<p>The line where we write <strong class="source-inline">await</strong> is the one that will return control back to the scheduler. This is often called a <em class="italic">yield point</em> since it will return either <strong class="source-inline">Poll::Pending</strong> or <strong class="source-inline">Poll::Ready</strong> (most likely it will return <strong class="source-inline">Poll::Pending</strong> the first time the future <span class="No-Break">is polled).</span></p>
+			<p>Since the <strong class="source-inline">Waker</strong> is the same across all executors, reactors can, in theory, be completely oblivious to the type of executor, and vice-versa. <em class="italic">Executors and reactors never need to communicate with one </em><span class="No-Break"><em class="italic">another directly.</em></span></p>
+			<p>This design is what gives the futures framework its power and flexibility and allows the Rust standard library to provide an ergonomic, zero-cost abstraction for us <span class="No-Break">to use.</span></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">I introduced the concept of reactors and executors here like it’s something everyone knows about. I know that’s not the case, and don’t worry, we’ll go through this in detail in the <span class="No-Break">next chapter.</span></p>
+			<h1 id="_idParaDest-120"><a id="_idTextAnchor119"/>What the Rust language and standard library take care of</h1>
+			<p>Rust only <a id="_idIndexMarker410"/>provides what’s necessary to model asynchronous operations in the language. Basically, it provides <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>A common interface that represents an operation, which will be completed in the future through the <span class="No-Break"><strong class="source-inline">Future</strong></span><span class="No-Break"> trait</span></li>
+				<li>An ergonomic way of creating tasks (stackless coroutines to be precise) that can be suspended and resumed through the <strong class="source-inline">async</strong> and <span class="No-Break"><strong class="source-inline">await</strong></span><span class="No-Break"> keywords</span></li>
+				<li>A defined interface to wake up a suspended task through the <span class="No-Break"><strong class="source-inline">Waker</strong></span><span class="No-Break"> type</span></li>
+			</ul>
+			<p>That’s really what <a id="_idIndexMarker411"/>Rust’s standard library does. As you see there is no definition of non-blocking I/O, how these tasks are created, or how they’re run. There is no non-blocking version of the standard library, so to actually run an asynchronous program, you have to either create or decide on a runtime <span class="No-Break">to use.</span></p>
+			<h1 id="_idParaDest-121"><a id="_idTextAnchor120"/>I/O vs CPU-intensive tasks</h1>
+			<p>As you know now, what <a id="_idIndexMarker412"/>you normally write are called non-leaf futures. Let’s take a look at this <strong class="source-inline">async</strong> block using pseudo-Rust as <span class="No-Break">an example:</span></p>
+			<pre class="source-code">
+let non_leaf = async {
+    let mut stream = <strong class="bold">TcpStream::connect("127.0.0.1:3000").await.unwrap();</strong>
+    // request a large dataset
+    let result = <strong class="bold">stream.write(get_dataset_request).await.unwrap();</strong>
+    // wait for the dataset
+    let mut response = vec![];
+    <strong class="bold">stream.read(&amp;mut response).await.unwrap();</strong>
+    // do some CPU-intensive analysis on the dataset
+    let report = analyzer::analyze_data(response).unwrap();
+    // send the results back
+    <strong class="bold">stream.write(report).await.unwrap();</strong>
+};</pre>			<p>I’ve highlighted <a id="_idIndexMarker413"/>the points where we yield control to the runtime executor. It’s important to be aware that the code we write between the yield points runs on the <em class="italic">same thread</em> as <span class="No-Break">our executor.</span></p>
+			<p>That means that while our <strong class="source-inline">analyzer</strong> is working on the dataset, the executor is busy doing calculations instead of handling <span class="No-Break">new requests.</span></p>
+			<p>Fortunately, there are a few ways to handle this, and it’s not difficult, but it’s something you must be <span class="No-Break">aware of:</span></p>
+			<ol>
+				<li>We could create a new leaf future, which sends our task to another thread and resolves when the task is finished. We could <strong class="source-inline">await</strong> this leaf-future like any <span class="No-Break">other future.</span></li>
+				<li>The runtime could have some kind of supervisor that monitors how much time different tasks take and moves the executor itself to a different thread so it can continue to run even though our <strong class="source-inline">analyzer</strong> task is blocking the original <span class="No-Break">executor thread.</span></li>
+				<li>You can create a reactor yourself that is compatible with the runtime, which does the analysis any way you see fit and returns a future that can <span class="No-Break">be awaited.</span></li>
+			</ol>
+			<p>Now, the first way is the usual way of handling this, but some executors implement the second method as well. The problem with #2 is that if you switch runtime, you need to make sure that it supports this kind of supervision as well or else you will end up blocking <span class="No-Break">the </span><span class="No-Break"><a id="_idIndexMarker414"/></span><span class="No-Break">executor.</span></p>
+			<p>The third method is more of theoretical importance; normally, you’d be happy to send the task to the thread pool that most <span class="No-Break">runtimes provide.</span></p>
+			<p>Most executors have a way to accomplish #1 using methods such <span class="No-Break">as </span><span class="No-Break"><strong class="source-inline">spawn_blocking</strong></span><span class="No-Break">.</span></p>
+			<p>These methods send the task to a thread pool created by the runtime where you can either perform CPU-intensive tasks or blocking tasks that are not supported by <span class="No-Break">the runtime.</span></p>
+			<h1 id="_idParaDest-122"><a id="_idTextAnchor121"/>Summary</h1>
+			<p>So, in this short chapter, we introduced Rust’s futures to you. You should now have a basic idea of what Rust’s async design looks like, what the language provides for you, and what you need to get elsewhere. You should also have an idea of what a leaf future and a non-leaf <span class="No-Break">future are.</span></p>
+			<p>These aspects are important as they’re design decisions built into the language. You know by now that Rust uses stackless coroutines to model asynchronous operations, but since a coroutine doesn’t do anything in and of itself, it’s important to know that the choice of how to schedule and run these coroutines is left up <span class="No-Break">to you.</span></p>
+			<p>We’ll get a much better understanding as we start to explain how this all works in detail as we <span class="No-Break">move forward.</span></p>
+			<p>Now that we’ve seen a high-level overview of Rust’s futures, we’ll start explaining how they work from the ground up. The next chapter will cover the concept of futures and how they’re connected with coroutines and the <strong class="source-inline">async/await</strong> keywords in Rust. We’ll see for ourselves how they represent tasks that can pause and resume their execution, which is a prerequisite to having multiple tasks be <em class="italic">in progress</em> concurrently, and how they differ from the pausable/resumable tasks we implemented as fibers/green threads in <a href="B20892_05.xhtml#_idTextAnchor092"><span class="No-Break"><em class="italic">Chapter 5</em></span></a><span class="No-Break">.</span></p>
+		</div>
+	</body></html>

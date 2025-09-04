@@ -1,0 +1,741 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Mutability, Ownership, and Pure Functions</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">Rust has introduced some new concepts of its own with respect to object ownership. These safeguards protect the developer from certain classes of errors, such as double free memory or hanging pointers, but also create constraints that can feel unmerited at times. Functional programming may help ease some of this conflict by encouraging the use of immutable data and pure functions.</p>
+<p>In this chapter, we will look at a case of ownership gone wrong. You will inherit code that has been abandoned as being too difficult to work with. Your job in this chapter will be to address the problems that the previous team were unable to overcome. To achieve this, you will need to use much of what you have learned so far, along with a gained understanding of the specific behaviors and constraints of ownership in Rust.</p>
+<p>Learning outcomes:</p>
+<ul>
+<li>Recognizing anti-patterns of complex ownership</li>
+<li>Learning specific rules of complex ownership</li>
+<li>Using immutable data to prevent anti-patterns of ownership</li>
+<li>Using pure functions to prevent anti-patterns of ownership</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>A recent version of Rust is necessary to run the examples provided:</p>
+<p><a href="https://www.rust-lang.org/en-US/install.html">https://www.rust-lang.org/en-US/install.html</a></p>
+<p>This chapter's code is also available on GitHub:</p>
+<p><a href="https://github.com/PacktPublishing/Hands-On-Functional-Programming-in-RUST">https://github.com/PacktPublishing/Hands-On-Functional-Programming-in-RUST</a></p>
+<p>Specific installation and build instructions are also included in each chapter's <kbd>README.md</kbd> file.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Recognizing anti-patterns of ownership</h1>
+                </header>
+            
+            <article>
+                
+<p>Consider the following situation.</p>
+<p>Congratulations, you have inherited legacy code. A previous team responsible for developing privileged access modules for elevators has been moved to a different project. They successfully developed code libraries to interface with a range of microcontrollers. However, while developing the access logic in Rust, they found object ownership to be very complicated and were unable to develop software that was compatible with Rust.</p>
+<p>Your task in this chapter will be to analyze their code, look for possible solutions, then create a library to support privileged access for your elevators. To clarify, privileged access refers to override codes and keys made available to emergency services such as police, firemen, and so on.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Inspecting the microcontroller drivers</h1>
+                </header>
+            
+            <article>
+                
+<p>The microcontroller drivers are written in other languages and exposed to Rust through the <strong>foreign function interface</strong> (<strong>FFI</strong>) feature. An FFI is a way of connecting Rust code to libraries written in other languages. The following are the symbols defined in the foreign library and bindings in <kbd>src/magic.rs</kbd>.</p>
+<p>This function issues an override code to the library and subsystem, as follows:</p>
+<pre>fn issue_override_code(code: c_int)</pre>
+<p>When an override code is entered, it will be exposed through this function. The higher layers should interpret what the override codes mean to potentially enter emergency operation modes or other maintenance functions, as follows:</p>
+<pre>fn poll_override_code() -&gt; c_int</pre>
+<p>When an override mode has been established and the emergency service worker enters a floor, this method will be called. Floor requests from emergency modes should take precedence over normal <kbd>elevator</kbd> operation:</p>
+<pre>fn poll_override_input_floor()</pre>
+<p>Error codes occurring from the <kbd>override</kbd> operation will be exposed through this function. Issues such as invalid override codes will be presented for higher layers to decide how to respond:</p>
+<pre>fn poll_override_error() -&gt; c_int</pre>
+<p>If an override code is entered, an authorized override session will be created:</p>
+<pre>fn poll_override_session() -&gt; *const c_void</pre>
+<p>After an override session is complete, it should be freed to release resources and reset state:</p>
+<pre>fn free_override_session(session: *const c_void)</pre>
+<p>If a physical key access is initiated to an elevator, then this method will expose the result:</p>
+<pre>fn poll_physical_override_privileged_session() -&gt; *const c_void</pre>
+<p>If a physical key access is initiated by an administrator, then this method will expose the result, as follows:</p>
+<pre>fn poll_physical_override_admin_session() -&gt; *const c_void</pre>
+<p>This function will force the elevator into manual operation mode:</p>
+<pre>fn override_manual_mode()</pre>
+<p>This function will force the elevator into normal operation mode:</p>
+<pre>fn override_normal_mode()</pre>
+<p>This function will reset the elevator state:</p>
+<pre>fn override_reset_state()</pre>
+<p>This function will perform a timed flashing pattern of lights on the elevator control panel:</p>
+<pre> fn elevator_display_flash(pattern: c_int)</pre>
+<p>This function will toggle the light for a button or other symbol on the elevator control panel:</p>
+<pre>fn elevator_display_toggle_light(light_id: c_int)</pre>
+<p>This function will alter the display color of a light on the elevator control panel:</p>
+<pre>fn elevator_display_set_light_color(light_id: c_int, color: int)</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Inspecting the type and trait definitions</h1>
+                </header>
+            
+            <article>
+                
+<p>The Rust type and trait definitions left behind were primarily intended to wrap the library interfaces. Let's look quickly through the symbols defined in <kbd>src/admin.rs</kbd> to familiarize ourselves with how the library was intended to work.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Defining the OverrideCode enum</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>OverrideCode</kbd> enum gives typesafe definitions and names to the different override codes from the linked library. This code associates named enum values with the numerical enumerated values returned or sent to the FFI. Notice the syntax pattern assigning integer values to each enum element:</p>
+<pre>pub enum OverrideCode {<br/>   IssueOverride = 1,<br/>   IssuePrivileged = 2,<br/>   IssueAdmin = 3,<br/>   IssueInputFloor = 4,<br/>   IssueManualMode = 5,<br/>   IssueNormalMode = 6,<br/>   IssueFlash = 7,<br/>   IssueToggleLight = 8,<br/>   IssueSetLightColor = 9,<br/>}<br/><br/>pub fn toOverrideCode(i: i32) -&gt; OverrideCode {<br/>   match i {<br/>      1 =&gt; OverrideCode::IssueOverride,<br/>      2 =&gt; OverrideCode::IssuePrivileged,<br/>      3 =&gt; OverrideCode::IssueAdmin,<br/>      4 =&gt; OverrideCode::IssueInputFloor,<br/>      5 =&gt; OverrideCode::IssueManualMode,<br/>      6 =&gt; OverrideCode::IssueNormalMode,<br/>      7 =&gt; OverrideCode::IssueFlash,<br/>      8 =&gt; OverrideCode::IssueToggleLight,<br/>      9 =&gt; OverrideCode::IssueSetLightColor,<br/>      _ =&gt; panic!("Unexpected override code: {}", i)<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Defining the ErrorCode enum</h1>
+                </header>
+            
+            <article>
+                
+<p>Similar to <kbd>OverrideCode</kbd>, the <kbd>ErrorCode</kbd> enum defines typesafe labels for each of the library error codes. There is also a helper function to cast integers into the enum type:</p>
+<pre>pub enum ErrorCode {<br/>   DoubleAuthorize = 1,<br/>   DoubleFree = 2,<br/>   AccessDenied = 3,<br/>}<br/><br/>pub fn toErrorCode(i: i32) -&gt; ErrorCode {<br/>   match i {<br/>      1 =&gt; ErrorCode::DoubleAuthorize,<br/>      2 =&gt; ErrorCode::DoubleFree,<br/>      3 =&gt; ErrorCode::AccessDenied,<br/>      _ =&gt; panic!("Unexpected error code: {}", i)<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Defining the AuthorizedSession struct and deconstructor</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>AuthorizedSession</kbd> struct wraps a session pointer from the library. This struct also implements the <kbd>Drop</kbd> trait, which is called when the object goes out of scope. The <kbd>free_override_session</kbd> call here is very important and should be noted as a potential source of problems:</p>
+<pre>#[derive(Clone)]<br/>pub struct AuthorizedSession<br/>{<br/>   session: *const c_void<br/>}<br/><br/>impl Drop for AuthorizedSession {<br/>   fn drop(&amp;mut self) {<br/>      unsafe {<br/>         magic::free_override_session(self.session);<br/>      }<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Authorizing sessions</h1>
+                </header>
+            
+            <article>
+                
+<p>To authorize a session, there are three steps:</p>
+<ol>
+<li>Authorize the session</li>
+<li>Poll and retrieve the session object</li>
+<li>Check for errors</li>
+</ol>
+<p>The results of these functions are <kbd>Result</kbd> objects, which will be a common pattern in this library:</p>
+<pre>pub fn authorize_override() -&gt; Result&lt;AuthorizedSession,ErrorCode&gt;<br/>{<br/>   let session = unsafe {<br/>      magic::issue_override_code(OverrideCode::IssueOverride as i32);<br/>      magic::poll_override_session()<br/>   };<br/>   let session = AuthorizedSession {<br/>      session: session<br/>   };<br/>   check_error(session)<br/>}<br/><br/>pub fn authorize_privileged() -&gt; Result&lt;AuthorizedSession,ErrorCode&gt;<br/>{ ... }<br/><br/>pub fn authorize_admin() -&gt; Result&lt;AuthorizedSession,ErrorCode&gt;<br/>{ ... }</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Checking errors and resetting state</h1>
+                </header>
+            
+            <article>
+                
+<p>There are two simple utility functions available that reset state and check for errors. The code wraps the FFI functions in unsafe blocks and converts errors into <kbd>Result</kbd> values. The code is as follows:</p>
+<pre>pub fn reset_state()<br/>{<br/>   unsafe {<br/>      magic::override_reset_state();<br/>   }<br/>}<br/><br/>pub fn check_error&lt;T&gt;(t: T) -&gt; Result&lt;T,ErrorCode&gt;<br/>{<br/>   let err = unsafe {<br/>      magic::poll_override_error()<br/>   };<br/>   if err==0 {<br/>      Result::Ok(t)<br/>   } else {<br/>      Result::Err(toErrorCode(err))<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Privileged commands</h1>
+                </header>
+            
+            <article>
+                
+<p>Privileged commands must be authorized before being called, otherwise the command will be denied. Errors are checked after each operation and a <kbd>Result</kbd> value is returned:</p>
+<pre>pub fn input_floor(floor: i32) -&gt; Result&lt;(),ErrorCode&gt;<br/>{<br/>   unsafe {<br/>      magic::override_input_floor(floor);<br/>   }<br/>   check_error(())<br/>}<br/><br/>pub fn manual_mode() -&gt; Result&lt;(),ErrorCode&gt;<br/>{<br/>   unsafe {<br/>      magic::override_manual_mode();<br/>   }<br/>   check_error(())<br/>}<br/><br/>pub fn normal_mode() -&gt; Result&lt;(),ErrorCode&gt;<br/>{<br/>   unsafe {<br/>      magic::override_normal_mode();<br/>   }<br/>   check_error(())<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Normal commands</h1>
+                </header>
+            
+            <article>
+                
+<p>Normal commands do not require an authorized session to be called. Errors are checked after each call and a <kbd>Result</kbd> value is returned:</p>
+<pre>pub fn flash(pattern: i32) -&gt; Result&lt;(),ErrorCode&gt;<br/>{<br/>   unsafe {<br/>      magic::elevator_display_flash(pattern);<br/>   }<br/>   check_error(())<br/>}<br/><br/>pub fn toggle_light(light_id: i32) -&gt; Result&lt;(),ErrorCode&gt;<br/>{<br/>   unsafe {<br/>      magic::elevator_display_toggle_light(light_id);<br/>   }<br/>   check_error(())<br/>}<br/><br/>pub fn set_light_color(light_id: i32, color: i32) -&gt; Result&lt;(),ErrorCode&gt;<br/>{<br/>   unsafe {<br/>      magic::elevator_display_set_light_color(light_id, color);<br/>   }<br/>   check_error(())<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Querying library and session state</h1>
+                </header>
+            
+            <article>
+                
+<p>Several functions that query the library and session state are available, mostly for debugging purposes:</p>
+<pre>pub fn is_override() -&gt; bool<br/>{<br/>   unsafe {<br/>      magic::is_override() != 0<br/>   }<br/>}<br/><br/>pub fn is_privileged() -&gt; bool<br/>{<br/>   unsafe {<br/>      magic::is_privileged() != 0<br/>   }<br/>}<br/><br/>pub fn is_admin() -&gt; bool<br/>{<br/>   unsafe {<br/>      magic::is_admin() != 0<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Inspecting the foreign library tests</h1>
+                </header>
+            
+            <article>
+                
+<p>The previous team seemed very confident in the library subsystem that they developed; however, they found Rust code difficult to work with. The tests make this problem apparent. Two test sets seem to support the notion that the library works as intended, but the Rust components fail in edge cases. It will be your responsibility to pick up the pieces and salvage the project.</p>
+<p>Looking at the library tests in <kbd>src/tests/magic.rs</kbd>, the intended behavior is as follows:</p>
+<ul>
+<li>Override codes are issued to the subsystem through either elevator control panel or from the software directly</li>
+<li>Status information and authorization sessions are accessed through the <kbd>poll</kbd> functions</li>
+<li>Authorization sessions must be freed before others can authorize</li>
+<li>In override mode, privileged commands may be issued, such as:
+<ul>
+<li>Change elevator to manual operation</li>
+<li>Use elevator display panel to communicate</li>
+</ul>
+</li>
+<li>Privileged commands may not be issued without an active session</li>
+</ul>
+<p>All library tests are passing, confirming the correct behavior of the library under the limited conditions tested. It should also be noted that the library is a bit obtuse in how it handles state, events, and sessions. These patterns are common in linked libraries, but to see the pattern, let's look at the resulting code in Rust.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Issuing override codes</h1>
+                </header>
+            
+            <article>
+                
+<p>This set of tests for the FFI functions confirms that issued command codes are received by the library:</p>
+<pre>#[test]<br/>fn issue_override_code() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(1);<br/>      assert!(magic::poll_override_code() == 1);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}<br/><br/>#[test]<br/>fn issue_privileged_code() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(2);<br/>      assert!(magic::poll_override_code() == 2);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}<br/><br/>#[test]<br/>fn issue_admin_code() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(3);<br/>      assert!(magic::poll_override_code() == 3);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Accessing status information and sessions</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">These tests confirm that authorizing sessions and releasing sessions works correctly:</p>
+<pre>#[test]<br/>fn authorize_override_success() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(1);<br/>      let session = magic::poll_override_session();<br/>      assert!(session != (0 as *const c_void));<br/>      magic::free_override_session(session);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}<br/><br/>#[test]<br/>fn authorize_privileged_success() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(2);<br/>      let session = magic::poll_physical_override_privileged_session();<br/>      assert!(session != (0 as *const c_void));<br/>      magic::free_override_session(session);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}<br/><br/>#[test]<br/>fn authorize_admin_success() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(3);<br/>      let session = magic::poll_physical_override_admin_session();<br/>      assert!(session != (0 as *const c_void));<br/>      magic::free_override_session(session);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Deactivating active sessions</h1>
+                </header>
+            
+            <article>
+                
+<p>Deactivating active sessions is an error that attempts to authorize two sessions simultaneously, as follows:</p>
+<pre>#[test]<br/>fn double_override_failure() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(1);<br/>      magic::issue_override_code(1);<br/>      assert!(magic::poll_override_session() == (0 as *const c_void));<br/>      assert!(magic::poll_override_error() == 1);<br/>   }<br/>}<br/><br/>#[test]<br/>fn double_privileged_failure() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(2);<br/>      magic::issue_override_code(2);<br/>      assert!(magic::poll_physical_override_privileged_session() == (0 as *const c_void));<br/>      assert!(magic::poll_override_error() == 1);<br/>   }<br/>}<br/><br/>#[test]<br/>fn double_admin_failure() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(3);<br/>      magic::issue_override_code(3);<br/>      assert!(magic::poll_physical_override_admin_session() == (0 as *const c_void));<br/>      assert!(magic::poll_override_error() == 1);<br/>   }<br/>}</pre>
+<p>It is also disallowed to call a free session on the same object twice. Calling deconstructors in foreign libraries multiple times is highly discouraged due to possible memory corruption:</p>
+<pre>#[test]<br/>fn double_free_override_failure() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(1);<br/>      let session = magic::poll_override_session();<br/>      assert!(session != (0 as *const c_void));<br/>      magic::free_override_session(session);<br/>      magic::free_override_session(session);<br/>      assert!(magic::poll_override_error() == 2);<br/>   }<br/>}<br/><br/>#[test]<br/>fn double_free_privileged_failure() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(2);<br/>      let session = magic::poll_physical_override_privileged_session();<br/>      assert!(session != (0 as *const c_void));<br/>      magic::free_override_session(session);<br/>      magic::free_override_session(session);<br/>      assert!(magic::poll_override_error() == 2);<br/>   }<br/>}<br/><br/>#[test]<br/>fn double_free_admin_failure() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(3);<br/>      let session = magic::poll_physical_override_admin_session();<br/>      assert!(session != (0 as *const c_void));<br/>      magic::free_override_session(session);<br/>      magic::free_override_session(session);<br/>      assert!(magic::poll_override_error() == 2);<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Issuing normal commands</h1>
+                </header>
+            
+            <article>
+                
+<p>Normal commands do not require authorization, so these tests just check that the commands are issued and received:</p>
+<pre>#[test]<br/>fn flash() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::elevator_display_flash(222);<br/>      assert!(magic::poll_override_code() == 7);<br/>      assert!(magic::poll_override_code() == 222);<br/>   }<br/>}<br/><br/>#[test]<br/>fn toggle_light() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::elevator_display_toggle_light(33);<br/>      assert!(magic::poll_override_code() == 8);<br/>      assert!(magic::poll_override_code() == 33);<br/>      assert!(magic::poll_override_code() == 1);<br/>      magic::elevator_display_toggle_light(33);<br/>      assert!(magic::poll_override_code() == 8);<br/>      assert!(magic::poll_override_code() == 33);<br/>      assert!(magic::poll_override_code() == 0);<br/>   }<br/>}<br/><br/>#[test]<br/>fn set_light_color() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::elevator_display_set_light_color(33, 222);<br/>      assert!(magic::poll_override_code() == 9);<br/>      assert!(magic::poll_override_code() == 33);<br/>      assert!(magic::poll_override_code() == 222);<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Issuing privileged commands</h1>
+                </header>
+            
+            <article>
+                
+<p>Privileged commands will be allowed if there is an active authorized session:</p>
+<pre>#[test]<br/>fn input_floor() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(3);<br/>      magic::override_input_floor(2);<br/>      assert!(magic::poll_override_code() == 4);<br/>      assert!(magic::poll_override_code() == 2);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}<br/><br/>#[test]<br/>fn manual_mode() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(3);<br/>      magic::override_manual_mode();<br/>      assert!(magic::poll_override_code() == 5);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}<br/><br/>#[test]<br/>fn normal_mode() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(3);<br/>      magic::override_normal_mode();<br/>      assert!(magic::poll_override_code() == 6);<br/>      assert!(magic::poll_override_error() == 0);<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Denying unauthorized commands</h1>
+                </header>
+            
+            <article>
+                
+<p>Privileged commands will be denied if there is no active authorized session:</p>
+<pre>#[test]<br/>fn deny_input_floor() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(4);<br/>      magic::issue_override_code(2);<br/>      assert!(magic::poll_override_error() == 3);<br/>   }<br/>}<br/><br/>#[test]<br/>fn deny_manual_mode() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(5);<br/>      assert!(magic::poll_override_error() == 3);<br/>   }<br/>}<br/><br/>#[test]<br/>fn deny_normal_mode() {<br/>   unsafe {<br/>      magic::override_reset_state();<br/>      magic::issue_override_code(6);<br/>      assert!(magic::poll_override_error() == 3);<br/>   }<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Inspecting the Rust tests</h1>
+                </header>
+            
+            <article>
+                
+<p>These tests in <kbd>src/tests/admin.rs</kbd> cover the high-level semantics defined in <kbd>src/admin.rs</kbd>. They cover mostly the same test cases as the lower level tests; however, some of these tests fail. To salvage the library, the library should be adjusted so that these tests will pass.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Rust authorization with sessions</h1>
+                </header>
+            
+            <article>
+                
+<p>Here are high-level tests covering the authentication and deactivation of sessions:</p>
+<pre>#[test]<br/>fn authorize_override() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_override().ok();<br/>      assert!(admin::is_override());<br/>   }<br/>   assert!(!admin::is_override());<br/>   assert!(admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn authorize_privileged() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_privileged().ok();<br/>      assert(admin::is_privileged());<br/>   }<br/>   assert!(!admin::is_privileged());<br/>   assert!(admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn issue_admin_code() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_admin().ok();<br/>      assert(admin::is_admin());<br/>   }<br/>   assert(!admin::is_admin());<br/>   assert!(admin::check_error(()).is_ok());<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Rust sharing session reference</h1>
+                </header>
+            
+            <article>
+                
+<p>The high-level library supports cloning sessions. Yikes! This could get complicated, but the tests are clear as to how it should work:</p>
+<pre>#[test]<br/>fn clone_override() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_override().ok().unwrap();<br/>      let session2 = session.clone();<br/>      assert!(admin::is_override());<br/>   }<br/>   assert!(!admin::is_override());<br/>   assert!(admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn clone_privileged() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_privileged().ok().unwrap();<br/>      let session2 = session.clone();<br/>      assert!(admin::is_privileged());<br/>   }<br/>   assert!(!admin::is_privileged());<br/>   assert!(admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn clone_admin() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_admin().ok().unwrap();<br/>      let session2 = session.clone();<br/>      assert!(admin::is_admin());<br/>   }<br/>   assert!(!admin::is_admin());<br/>   assert!(admin::check_error(()).is_ok());<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Privileged commands</h1>
+                </header>
+            
+            <article>
+                
+<p>Privileged commands should be allowed if there is an active authorized session:</p>
+<pre>#[test]<br/>fn input_floor() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_admin().ok();<br/>      admin::input_floor(2).ok();<br/>   }<br/>   assert!(!admin::is_admin());<br/>   assert!(admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn manual_mode() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_admin().ok();<br/>      admin::manual_mode().ok();<br/>   }<br/>   assert!(!admin::is_admin());<br/>   assert!(admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn normal_mode() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_admin().ok();<br/>      admin::normal_mode().ok();<br/>   }<br/>   assert!(!admin::is_admin());<br/>   assert!(admin::check_error(()).is_ok());<br/>} </pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Unprivileged commands</h1>
+                </header>
+            
+            <article>
+                
+<p>Unprivileged commands should be allowed regardless of authentication:</p>
+<pre>#[test]<br/>fn flash() {<br/>   admin::reset_state();<br/>   assert!(!admin::is_override());<br/>   assert!(!admin::is_privileged());<br/>   assert!(!admin::is_admin());<br/>   admin::flash(222).ok();<br/>   assert!(admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn toggle_light() {<br/>   admin::reset_state();<br/>   assert!(!admin::is_override());<br/>   assert!(!admin::is_privileged());<br/>   assert!(!admin::is_admin());<br/>   admin::toggle_light(7).ok();<br/>   assert!(admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn set_light_color() {<br/>   admin::reset_state();<br/>   assert!(!admin::is_override());<br/>   assert!(!admin::is_privileged());<br/>   assert!(!admin::is_admin());<br/>   admin::set_light_color(33, 123).ok();<br/>   assert!(admin::check_error(()).is_ok());<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Denying access to privileged commands</h1>
+                </header>
+            
+            <article>
+                
+<p>Privileged commands should be denied if there is no authorized active session:</p>
+<pre>#[test]<br/>fn deny_input_floor() {<br/>   admin::reset_state();<br/>   admin::input_floor(2).err();<br/>   assert!(!admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn deny_manual_mode() {<br/>   admin::reset_state();<br/>   admin::manual_mode().err();<br/>   assert!(!admin::check_error(()).is_ok());<br/>}<br/><br/>#[test]<br/>fn deny_normal_mode() {<br/>   admin::reset_state();<br/>   admin::normal_mode().err();<br/>   assert!(!admin::check_error(()).is_ok());<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Learning the rules of ownership</h1>
+                </header>
+            
+            <article>
+                
+<p>Rust has three rules of ownership:</p>
+<ul>
+<li>Each value in Rust has a variable that's called its <strong>owner</strong></li>
+<li>There can only be one owner at a time</li>
+<li>When the owner goes out of scope, the value will be dropped</li>
+</ul>
+<p>In the simplest case, we can define a block with a variable that goes out of scope at the end of the block:</p>
+<pre>fn main()<br/>{<br/>   //variable x has not yet been defined<br/>   {<br/>      let x = 5;<br/>      //variable x is now defined and owned by this context<br/><br/>      //variable x is going out of scope and will be dropped here<br/>   }<br/>   //variable x has gone out of scope and is no longer defined<br/>}</pre>
+<p>We have brushed against the first two rules of ownership and lifetimes in previous chapters. However, this is the first chapter in which we have needed to work with the third rule—drop.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">When the owner goes out of scope, the value will be dropped</h1>
+                </header>
+            
+            <article>
+                
+<p>In the preceding code, we can see the simple case where a function block is an owner. When the function block exits, the variables are dropped. Ownership can also be transferred, so when a value is sent or returned to another block, that block will become the new owner. The remaining case is that ownership is transferred to an object. When a value is dropped, all children objects are automatically dropped as well.</p>
+<p>In the current project, there are three tests failing, all related to the <kbd>.clone</kbd> method on sessions. The failing sessions look like the following:</p>
+<pre>#[test]<br/>fn clone_override() {<br/>   admin::reset_state();<br/>   {<br/>      let session = admin::authorize_override().ok().unwrap();<br/>      let session2 = session.clone();<br/>      assert!(admin::is_override());<br/>   }<br/>   assert!(!admin::is_override());<br/>   assert!(admin::check_error(()).is_ok());<br/>}</pre>
+<p>Removing the boilerplate, we can see that each of the three tests follows the same pattern:</p>
+<ol>
+<li>Open a new block
+<ol>
+<li>Authorize a new session</li>
+<li>Clone the new session</li>
+<li>Confirm that session is authorized</li>
+</ol>
+</li>
+<li>Close the block</li>
+<li>Confirm that session is not authorized</li>
+<li>Confirm that no errors occurred</li>
+</ol>
+<p>All tests work correctly, other than generating errors that are checked at the end of the test. The error code indicates a double free of the session. By normal Rust ownership rules, we know that cloned sessions will each be dropped individually. This makes sense because <kbd>Drop</kbd> is implemented for each of the two <kbd>AuthorizedSession</kbd> structs in scope. If we look at the implementation of <kbd>Drop</kbd> then we can see that it naively just calls the foreign library, which will cause the double free error:</p>
+<pre>#[derive(Clone)]<br/>pub struct AuthorizedSession<br/>{<br/>   session: *const c_void<br/>}<br/>impl Drop for AuthorizedSession {<br/>   fn drop(&amp;mut self) {<br/>      unsafe {<br/>         magic::free_override_session(self.session);<br/>      }<br/>   }<br/>}</pre>
+<p>Normally, Rust might complain about this careless resource management. However, the library uses an unsafe block to wrap the calls to the foreign function. Marking code as unsafe turns off many safety checks and encourages the compiler to trust the programmer. Calling foreign libraries is inherently unsafe, so this unsafe block is still necessary.</p>
+<p>The correct behavior here seems to be to free the session only once after all cloned sessions have been dropped. This is a good case for <kbd>std::rc::Rc</kbd>, which stands for reference counted.</p>
+<p><kbd>Rc</kbd> works by storing one owned value internal to itself. All owners of an <kbd>Rc</kbd> no longer hold direct ownership over the inner object of the reference counted container. To use the inner object, the borrower must ask to borrow a pointer to the inner object. Ownership of <kbd>Rc</kbd> objects will be counted, and when all references containing a given value are gone, the value will be dropped.</p>
+<p>This built-in functionality provides exactly what we want. Clone multiple times, drop once, as follows:</p>
+<pre>struct AuthorizedSessionInner(*const c_void);<br/><br/>#[derive(Clone)]<br/>pub struct AuthorizedSession<br/>{<br/>   session: Rc&lt;AuthorizedSessionInner&gt;<br/>}<br/><br/>impl Drop for AuthorizedSessionInner {<br/>   fn drop(&amp;mut self) {<br/>      unsafe {<br/>         magic::free_override_session(self.0);<br/>      }<br/>   }<br/>}</pre>
+<p>To initialize sessions from raw pointers, we need to wrap them. Otherwise, no code needs to change:</p>
+<pre>let session = AuthorizedSession {<br/>   session: Rc::new(AuthorizedSessionInner(session))<br/>};</pre>
+<p>After these small changes, the three remaining tests pass. The library seems to be working. The big lesson to learn here is that <kbd>Drop</kbd> implementations can be very sensitive sometimes. Don't assume that multiple drops will be safe. To deal with complex situations, we have in the standard library the types <kbd>std::rc::Rc</kbd> and <kbd>std::sync::Arc</kbd>. <kbd>Arc</kbd> is a threadsafe version of <kbd>Rc</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using immutable data</h1>
+                </header>
+            
+            <article>
+                
+<p>After implementing and testing the library with real elevators, you find another bug—when someone physically keys into a session, sometimes they get deauthorized while still using the elevator. Sometimes is a terrible word to hear in a bug report.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Fixing the hard-to-reproduce bug</h1>
+                </header>
+            
+            <article>
+                
+<p>After way too much searching and researching, you find a test case that reliably reproduces the problem:</p>
+<pre>#[test]<br/>fn invalid_deauthorization() {<br/>   admin::reset_state();<br/>   let session = admin::authorize_admin().ok();<br/>   assert!(admin::authorize_admin().is_err());<br/>   assert!(admin::is_admin());<br/>}</pre>
+<p>Looking at this test case, the first thing we might ask is, why should this be permitted?</p>
+<p>The problem that we encountered during physical testing was characterized by the random deauthorization of valid sessions. What was discovered during investigations was that during physically authorized sessions, sometimes software authorized sessions would be initiated. A physical authorization is when someone uses a key on the elevator to use special commands. Software authorization is any other authorized session initiated from the running software, rather than from the elevator hardware. This double authorization action violated the double authorization constraint, so both sessions were invalidated. The resolution is clearly to permit the first authorized session to continue, while rejecting the second authorization.</p>
+<p>The solution seems fairly direct and straightforward. From <kbd>src/admin.rs</kbd>, we have the ability to check whether any session is authorized from the library, then reject the second authorization without calling the library.</p>
+<p>So, rewriting the authorize commands, we add a check to see whether there is already an authorized session. If such a session exists, then this authorization fails:</p>
+<pre>pub fn authorize_override() -&gt; Result&lt;AuthorizedSession,ErrorCode&gt;<br/>{<br/>   if is_override() || is_privileged() || is_admin() {<br/>      return Result::Err(ErrorCode::DoubleAuthorize)<br/>   }<br/>   let session = unsafe {<br/>      magic::issue_override_code(OverrideCode::IssueOverride as i32);<br/>      magic::poll_override_session()<br/>   };<br/>   let session = AuthorizedSession {<br/>      session: Rc::new(AuthorizedSessionInner(session))<br/>   };<br/>   check_error(session)<br/>}<br/><br/>pub fn authorize_privileged() -&gt; Result&lt;AuthorizedSession,ErrorCode&gt;<br/>{ ... }<br/><br/>pub fn authorize_admin() -&gt; Result&lt;AuthorizedSession,ErrorCode&gt;<br/>{ ... }</pre>
+<p>This change fixes the immediate problem, but causes the double free tests to fail, because now there is no error code generated from the library after double free. We are essentially protecting the underlying library from double free responsibility, so this is a foreseeable consequence. The new tests just remove the last line that previously checked for the error code:</p>
+<pre>#[test]<br/>fn double_override_failure() {<br/>   admin::reset_state();<br/>   let session = admin::authorize_override().ok();<br/>   assert!(admin::authorize_override().err().is_some());<br/>}<br/><br/>#[test]<br/>fn double_privileged_failure() {<br/>   admin::reset_state();<br/>   let session = admin::authorize_privileged().ok();<br/>   assert!(admin::authorize_privileged().err().is_some());<br/>}<br/><br/>#[test]<br/>fn double_admin_failure() {<br/>   admin::reset_state();<br/>   let session = admin::authorize_admin().ok();<br/>   assert!(admin::authorize_admin().err().is_some());<br/>}</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Preventing hard-to-reproduce bugs</h1>
+                </header>
+            
+            <article>
+                
+<p>Rust was specifically designed to avoid hard-to-reproduce bugs like this. Raw pointer handling is prevented or strongly discouraged in Rust. A raw pointer is like a reference that Rust knows nothing about, and therefore can provide no safety guarantees regarding its use. Unfortunately, this bug is internal to a foreign library, so our Rust project doesn't have jurisdiction to complain about the root problem here. Despite this, there are still good practices that we can follow to prevent or limit the occurrence of bugs related to mutation and strange side-effects.</p>
+<p>The first technique we will recommend is immutability. By default, all variables are declared as immutable. This is Rust's way of not so subtly telling you to avoid mutating values if possible, as follows:</p>
+<pre>fn main() {<br/>   let a = 5;<br/>   let mut b = 5;<br/><br/>   //a = 4; not valid<br/>   b = 4;<br/><br/>   //*(&amp;mut a) = 3; not valid<br/>   *(&amp;mut b) = 3;<br/>}</pre>
+<p>Immutable values cannot be borrowed as mutable (by design), so requiring mutability for a function parameter will require mutability from each value sent to it:</p>
+<pre>fn f(x: &amp;mut i32) {<br/>   *x = 2;<br/>}<br/><br/>fn main() {<br/>   let a = 5;<br/>   let mut b = 5;<br/><br/>   //f(&amp;mut a); not valid<br/>   f(&amp;mut b);<br/>}</pre>
+<p>Turning an immutable value into a mutable one can be as simple as cloning it to create a new identical value; however, as we have seen throughout this chapter, the clone is not always a simple operation, an example is shown as follows:</p>
+<pre>use std::sync::{Mutex, Arc};<br/><br/>#[derive(Clone)]<br/>struct TimeBomb {<br/>   countdown: Arc&lt;Mutex&lt;i32&gt;&gt;<br/>}<br/>impl Drop for TimeBomb<br/>{<br/>   fn drop(&amp;mut self) {<br/>      let mut c = self.countdown.lock().unwrap();<br/>      *c -= 1;<br/>      if *c &lt;= 0 {<br/>         panic!("BOOM!!")<br/>      }<br/>   }<br/>}<br/><br/>fn main()<br/>{<br/>   let t3 = TimeBomb {<br/>      countdown: Arc::new(Mutex::new(3))<br/>   };<br/>   let t2 = t3.clone();<br/>   let t1 = t2.clone();<br/>   let t0 = t1.clone();<br/>}</pre>
+<p>Declaring a variable as immutable does not absolutely prevent all mutation, inside or out.  In Rust, immutable variables are permitted to hold interior fields with datatypes that are mutable. For example, <kbd>std::cell::RefCell</kbd> can be used to achieve interior mutability over whatever data it holds.</p>
+<p>Despite the exceptions, using immutable by default variables can help prevent simple bugs from becoming complex bugs. Don't let your programming style become a liability; practice defensive software development.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using pure functions</h1>
+                </header>
+            
+            <article>
+                
+<p>Pure functions are the second technique that we recommend to prevent hard-to-reproduce bugs. Pure functions can be thought of as an extension of the avoid side-effects principle. The definition of a pure function is a function where the following is true:</p>
+<ul>
+<li>No changes are caused outside of the function (no side-effects)</li>
+<li>The return value does not depend on anything but the function parameters</li>
+</ul>
+<p>Here are some examples of pure functions:</p>
+<pre>fn p0() {}<br/><br/>fn p1() -&gt; u64 {<br/>   444<br/>}<br/><br/>fn p2(x: u64) -&gt; u64 {<br/>   x * 444<br/>}<br/><br/>fn p3(x: u64, y: u64) -&gt; u64 {<br/>   x * 444 + y<br/>}<br/><br/>fn main()<br/>{<br/>   p0();<br/>   p1();<br/>   p2(3);<br/>   p3(3,4);<br/>}</pre>
+<p>Here are some examples of impure functions:</p>
+<pre>use std::cell::Cell;<br/><br/>static mut blah: u64 = 3;<br/>fn ip0() {<br/>   unsafe {<br/>      blah = 444;<br/>   }<br/>}<br/><br/>fn ip1(c: &amp;Cell&lt;u64&gt;) {<br/>   c.set(333);<br/>}<br/><br/>fn main()<br/>{<br/>   ip0();<br/>   let r = Cell::new(3);<br/>   ip1(&amp;r);<br/>   ip1(&amp;r);<br/>}</pre>
+<p>Rust does not have any language feature that specifically designates a function as more or less pure. However, as the preceding examples illustrate, Rust somewhat discourages impure functions. Function purity should be regarded as a design pattern and is strongly associated with the good functional style.</p>
+<p>Closures can also be pure or impure in the same fashion as top-level functions. As such, function purity becomes a concern when working with higher-level functions. Certain patterns of functional programming expect functions to be pure. A good example is the memoization pattern that we briefly mentioned in <a href="9221248a-8815-4394-8042-b2b5bb10cd5e.xhtml">Chapter 1</a>, <em>Functional Programming – a Comparison</em>. Let's compare what can happen to memoization if the memoized function is impure.</p>
+<p>First, here is a reminder of how memoization is supposed to work:</p>
+<pre>#[macro_use] extern crate cached;<br/><br/>cached!{<br/>   FIB;<br/>   fn fib(n: u64) -&gt; u64 = {<br/>      if n == 0 || n == 1 { return n }<br/>      fib(n-1) + fib(n-2)<br/>   }<br/>}<br/><br/>fn main() {<br/>   fib(30); //call 1, generates correct value and returns it<br/>   fib(30); //call 2, finds correct value and returns it<br/>}</pre>
+<p>Next, let's look at a memoized impure function:</p>
+<pre>#[macro_use] extern crate lazy_static;<br/>#[macro_use] extern crate cached;<br/>use std::collections::HashMap;<br/>use std::sync::Mutex;<br/><br/>lazy_static! {<br/>   static ref BUCKET_COUNTER: Mutex&lt;HashMap&lt;u64, u64&gt;&gt; = {<br/>      Mutex::new(HashMap::new())<br/>   };<br/>}<br/><br/>cached!{<br/>   BUCK;<br/>   fn bucket_count(n: u64) -&gt; u64 = {<br/>      let mut counter = BUCKET_COUNTER.lock().unwrap();<br/>      let r = match counter.get(&amp;n) {<br/>         Some(c) =&gt; { c+1 }<br/>         None =&gt; { 1 }<br/>      };<br/>      counter.insert(n, r);<br/>      r<br/>   }<br/>}<br/><br/>fn main() {<br/>   bucket_count(30); //call 1, generates correct value and returns it<br/>   bucket_count(30); //call 2, finds stale value and returns it<br/>} </pre>
+<p>This first cache example should return the same value every time. The second example should not return the same value every time. Semantically, we don't want the second example to return stale values; however, this also means that we cannot safely cache the results. There is a necessary performance trade-off. There is nothing wrong with the purity or impurity of either example here if it is necessary. It just means that the second example should not be cached.</p>
+<p>However, there are also anti-patterns of impurity. Let's look at another impure function that behaves poorly:</p>
+<pre>#[macro_use] extern crate cached;<br/>use std::sync::{Arc,Mutex};<br/><br/>#[derive(Clone)]<br/>pub struct TimeBomb {<br/>   countdown: Arc&lt;Mutex&lt;i32&gt;&gt;<br/>}<br/><br/>impl Drop for TimeBomb<br/>{<br/>   fn drop(&amp;mut self) {<br/>      let mut c = self.countdown.lock().unwrap();<br/>      *c -= 1;<br/>      if *c &lt;= 0 {<br/>         panic!("BOOM!!")<br/>      }<br/>   }<br/>}<br/><br/>cached!{<br/>   TICKING_BOX;<br/>   fn tick_tock(v: i32) -&gt; TimeBomb = {<br/>      TimeBomb {<br/>         countdown: Arc::new(Mutex::new(v))<br/>      }<br/>   }<br/>}<br/><br/>fn main() {<br/>   tick_tock(3);<br/>   tick_tock(3);<br/>   tick_tock(3);<br/>}</pre>
+<p>In this example, the data itself is impure. Every <kbd>tick_tock</kbd> moves and drops a <kbd>TimeBomb</kbd>. Eventually, it explodes and our cache doesn't help to protect us. Hopefully, you won't need to work with bombshells in your programs.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we worked with legacy code and foreign libraries in Rust. Rust safeguards can be annoying to learn and sometimes burdensome to work with, but the alternative of fast and loose coding is also stressful and problematic.</p>
+<p>One of the motivations for Rust memory safety rules is the concept of double free memory, which we mentioned in this chapter. However, the code presented did not involve a real double free of memory. A real double free causes something known as undefined behavior. Undefined behavior is a term used in language standards to refer to operations that will cause the program to act strangely. Double freed memory is typically one of the worst types of undefined behavior, causing memory corruption and subsequent crashes or invalid states that are hard to trace back to the original cause.</p>
+<p>In the latter half of the chapter, we examined specific Rust design decisions, features, and patterns such as ownership, immutability, and pure functions. These are Rust's defense mechanisms against undefined behavior and other ills.</p>
+<p>Using Rust safeguards correctly and not circumventing them has many benefits. Rust encourages a certain style of programming that benefits the design of larger projects. Typically, project architecture follows a more-than-linear bug/complexity curve. As a project grows in size, the number of bugs and difficult situations will grow at an even faster rate. By locking down common sources of bugs or code dependency, it is possible to develop large projects with fewer problems.</p>
+<p>In the next chapter, we will formally explain many functional design patterns. This will be a good opportunity to learn the extent to which functional programming principles apply and are relevant to Rust. If nothing in the next chapter seems cool or useful, then the author has failed.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Questions</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>What does <kbd>Rc</kbd> stand for?</li>
+<li>What does <kbd>Arc</kbd> stand for?</li>
+<li>What is a weak reference?</li>
+<li>Which superpowers are enabled in unsafe blocks?</li>
+<li>When will an object be dropped?</li>
+<li>What is the difference between lifetimes and ownership?</li>
+<li>How can you be sure that a function is safe?</li>
+<li>What is memory corruption and how would it affect a program?</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>
