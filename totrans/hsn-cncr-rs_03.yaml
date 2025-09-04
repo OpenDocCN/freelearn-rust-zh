@@ -1,7 +1,9 @@
 - en: The Rust Memory Model – Ownership, References and Manipulation
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Rust内存模型 - 所有权、引用和操作
 - en: In the previous chapter, [Chapter 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml),
     *Sequential Rust Performance and Testing*, we discussed factors that contribute
     or detract from the serial performance of a Rust program. We did not explicitly
@@ -15,104 +17,155 @@
     chapter, the `rustc` implementation will have changed, potentially making our
     code listings here no longer square with the naming patterns in `rustc` itself.
     If you wish to follow along, please check out Rust at SHA `da569fa9ddf8369a9809184d43c600dc06bd4b4d`.
+  id: totrans-1
   prefs: []
   type: TYPE_NORMAL
+  zh: 在上一章，[第2章](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml)，*Rust的顺序性能和测试*，我们讨论了影响Rust程序顺序性能的因素。我们没有明确地讨论并发性能，因为缺乏关于Rust的抽象内存模型如何与机器的真实内存层次结构交互的足够信息。在本章中，我们将讨论Rust的内存模型，如何控制类型在内存中的布局，类型是如何被别名的，以及Rust的内存安全性是如何工作的。我们将深入研究标准库，以了解这些在实际中是如何体现的。本章还将检查生态系统中的一些常见crate，这些crate将在本书后面的部分对我们感兴趣。请注意，当你阅读这一章时，`rustc`
+    的实现可能已经改变，这可能会使这里的代码列表与 `rustc` 本身的命名模式不再一致。如果你希望跟随，请查看SHA `da569fa9ddf8369a9809184d43c600dc06bd4b4d`
+    的Rust。
 - en: 'By the close of this chapter, we will have:'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 到本章结束时，我们将：
 - en: Investigated how Rust lays objects out in memory
+  id: totrans-3
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 研究了Rust如何在内存中布局对象
 - en: Discussed the various ways Rust points to memory and their guarantees
+  id: totrans-4
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 讨论了Rust指向内存的各种方式及其保证
 - en: Discussed how Rust allocates and deallocates memory
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 讨论了 Rust 如何分配和释放内存
 - en: Discussed how Rust denotes stack and heap allocations
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 讨论Rust如何表示栈和堆分配
 - en: Investigated the internal implementation of `Option`, `Cell`, `CellRef` , `Rc` and
     `Vec`.
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 研究了 `Option`、`Cell`、`CellRef`、`Rc` 和 `Vec` 的内部实现
 - en: Technical requirements
+  id: totrans-8
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: This chapter requires a working Rust installation. The details of verifying
     your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
     *Preliminaries – Machine Architecture and Getting Started with Rust*. No additional
     software tools are required.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 这需要有一个工作的Rust安装。验证安装的细节在[第1章](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml)，*预备知识
+    - 机器架构和Rust入门*中有介绍。不需要额外的软件工具。
 - en: 'You can find the source code for this book''s projects on GitHub: [https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust).
     This chapter has its source code under `Chapter03`.'
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以在GitHub上找到本书项目的源代码：[https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust)。本章的源代码位于
+    `Chapter03`。
 - en: Memory layout
+  id: totrans-11
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 内存布局
 - en: 'Rust has a handful of mechanisms to lay out compound types in memory. They
     are as follows:'
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust有一系列机制来在内存中布局复合类型。它们如下：
 - en: Arrays
+  id: totrans-13
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 数组
 - en: Enums
+  id: totrans-14
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 枚举
 - en: Structs
+  id: totrans-15
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 结构体
 - en: Tuples
+  id: totrans-16
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 元组
 - en: 'Exactly how these are laid out in memory depends on the representation chosen.
     By default, everything in Rust is `repr(Rust)`. All `repr(Rust)` types are aligned
     on byte boundaries to the power of two. Every type is at least one byte in memory,
     then two, then four, and so forth. Primitives—`u8`, `usize`, `bool`, and `&T`—are
     aligned to their size. In Rust, representation structures have alignment according
     to the largest field. Consider the following struct:'
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些在内存中的具体布局取决于选择的表现形式。默认情况下，Rust中的所有内容都是 `repr(Rust)`。所有 `repr(Rust)` 类型都按照2的幂次对字节边界对齐。每个类型在内存中至少占用一个字节，然后是两个，然后是四个，以此类推。原始类型——`u8`、`usize`、`bool`
+    和 `&T`——都与其大小对齐。在Rust中，表示结构体的对齐方式取决于最大的字段。考虑以下结构体：
 - en: '[PRE0]'
+  id: totrans-18
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: '`AGC` is aligned to `u32` with padding inserted as appropriate to match that
     32-bit alignment. Rust will re-order fields to achieve maximal packing. Enums
     are different, being subject to a host of optimizations, most notably null pointer
     optimization. See the following enumeration:'
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: '`AGC` 与 `u32` 对齐，并插入适当的填充以匹配32位对齐。Rust将重新排序字段以实现最大打包。枚举不同，受到大量优化的影响，最值得注意的是空指针优化。请参见以下枚举：'
 - en: '[PRE1]'
+  id: totrans-20
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'This will be laid out as follows:'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将按照以下方式布局：
 - en: '[PRE2]'
+  id: totrans-22
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: The `data` field is wide enough to accommodate the largest inner value and the
     `tag` allows discrimination between variants. Where this gets complicated is in
     the case of an enum that holds a non-nullable pointer, and other variants cannot
     refer to the same. `Option<&T>` means if a null pointer is discovered when dereferencing
     the option Rust can assume that the `None` variant was discovered. Rust will optimize
     away the tag for `Option<&T>`.
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: '`data`字段足够宽，可以容纳最大的内部值，而`tag`允许区分不同的情况。当涉及到一个包含非空指针的枚举时，情况会变得复杂，其他情况不能引用相同的指针。`Option<&T>`表示如果在取消引用选项时发现空指针，Rust可以假设发现了`None`情况。Rust会优化掉`Option<&T>`的标签。'
 - en: Rust supports other representations. `repr(C) ` lays out types in memory in
     a manner that C would do and is often used in FFI projects, as we'll see later
     in this book. `repr(packed)` lays types out in memory like `repr(Rust)` except
@@ -122,19 +175,25 @@
     The remaining representations have to do with forcing the size of fieldless enumerations—that
     is, enumerations that have no data in their variants—and these are useful for
     forcing the size of such an enum with an eye towards ABI compatability.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust支持其他表示形式。`repr(C)`以C语言的方式在内存中布局类型，常用于FFI项目，我们将在本书后面的内容中看到。`repr(packed)`以`repr(Rust)`类似的方式布局类型，但不会添加填充，对齐仅发生在字节级别。这种表示形式可能会引起未对齐的加载，并对常见CPU的性能产生严重影响，特别是本书中我们关注的两种CPU架构。其余的表示形式与强制无字段枚举的大小有关——即没有数据在其变体中的枚举——这些表示形式对于确保与ABI兼容性有关的大小非常有用。
 - en: 'Rust allocations happen by default on the hardware stack, as is common for
     other low-level languages. Heap allocations must be performed explicitly by the
     programmer or be done implicitly when creating a new type that holds some sort
     of internal storage. There are complications here. By default, Rust types obey
     move semantics: the bits of the type are moved as appropriate between contexts.
     For example:'
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust的分配默认发生在硬件栈上，这与其他底层语言的做法相同。堆分配必须由程序员显式执行，或者当创建一个包含某种内部存储的新类型时隐式执行。这里有一些复杂性。默认情况下，Rust类型遵循移动语义：类型位在上下文之间适当地移动。例如：
 - en: '[PRE3]'
+  id: totrans-26
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'The `project_flights` function allocates a new `Vec<(u16, u8)>` on the heap,
     populates it, and then returns ownership of the heap-allocated vector to the caller.
     This does not mean that the bits of `t` are copied from the stack frame of `project_flights`
@@ -148,15 +207,21 @@
     Rust code not using `unsafe` —the possibility of double frees. The following code
     block derives `Copy` for two user-defined types and is an example of a poor random
     generator:'
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: '`project_flights`函数在堆上分配一个新的`Vec<(u16, u8)>`，填充它，然后将堆分配的向量所有权返回给调用者。这并不意味着`t`的位从`project_flights`的栈帧中复制过来，而是指针`t`从`project_flights`的栈返回到`main`。在Rust中，可以通过使用`Copy`特质来实现复制语义。`Copy`类型将在内存中从一个地方复制到另一个地方。Rust的原始类型是`Copy`——复制它们与移动它们一样快，特别是当类型小于本地指针时。除非你的类型实现了`Drop`特质（定义了类型如何释放自身），否则可以实现你自己的类型的`Copy`。这个限制在Rust代码（不使用`unsafe`）中消除了双重释放的可能性。以下代码块为两个用户定义的类型推导了`Copy`，是一个糟糕的随机生成器的示例：'
 - en: '[PRE4]'
+  id: totrans-28
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: Pointers to memory
+  id: totrans-29
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 内存指针
 - en: 'Rust defines several kinds of pointers, each with a specific purpose. `&T`
     is a shared reference and there may be many duplicates of that shared reference.
     The owner of `&T` does not necessarily, own `T` and may not modify it. Shared
@@ -173,16 +238,26 @@
     the `unsafe` keyword and they are almost always seen solely in the context of
     performance-sensitive code or FFI interfaces. Put another way, a raw pointer may
     be null; a reference may never be null.'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust 定义了几种指针类型，每种都有特定的用途。`&T` 是一个共享引用，可能会有许多该共享引用的副本。`&T` 的拥有者不一定拥有 `T`，并且可能无法修改它。共享引用是不可变的。可变引用——写成
+    `&mut T`——也不一定意味着其他 `&mut T` 必然拥有 `T`，但引用可以用来修改 `T`。对于任何 `T`，可能只有一个 `&mut T` 引用。这使某些代码变得复杂，但意味着
+    Rust 能够证明两个变量在内存中不重叠，从而解锁了 C/C++ 中不存在的各种优化机会。Rust 引用被设计成编译器能够证明所引用类型的活性：引用不能悬空。这不是
+    Rust 的原始指针类型——`*const T` 和 `*mut T`——的工作方式，它们与 C 指针类似：它们严格上是内存中的一个地址，对该地址的数据不提供任何保证。因此，许多原始指针的操作都需要
+    `unsafe` 关键字，并且它们几乎总是仅在性能敏感的代码或 FFI 接口上下文中出现。换句话说，原始指针可能为空；引用永远不会为空。
 - en: 'The rules around references often cause difficulty in situations where an immutable
     borrow is accidentally made of a mutable reference. The Rust documentation uses
     the following small program to illustrate the difficulty:'
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 关于引用的规则通常会在意外地对可变引用进行不可变借用的情况下引起困难。Rust 文档使用以下小型程序来展示这种困难：
 - en: '[PRE5]'
+  id: totrans-32
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'The `println!` macro takes its arguments by reference, implicitly here, creating
     a `&x`. The compiler rejects this program as `y: &mut u8` is invalid. Were this
     program to compile, we would be subject to a race between the update of `y` and
@@ -190,44 +265,67 @@
     of references could be potentially limiting when working with structures. Rust
     allows programs to split borrows for a structure, providing that the disjoint
     fields cannot be aliased.'
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: '`println!` 宏通过引用接收其参数，在这里隐式地创建了一个 `&x`。编译器拒绝了这个程序，因为 `y: &mut u8` 是无效的。如果这个程序能够编译，我们就会面临
+    `y` 的更新和 `x` 的读取之间的竞争条件，这取决于 CPU 和内存排序。当与结构一起工作时，引用的排他性可能会限制潜在的应用。Rust 允许程序分割结构的借用，只要不重叠的字段不能被别名。'
 - en: 'We demonstrate this in the following brief program:'
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在以下简短的程序中展示了这一点：
 - en: '[PRE6]'
+  id: totrans-35
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: 'This same trick is difficult to impossible for general container types. Consider
     a map where two keys map to the same referenced `T`. Or, for now, a slice:'
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 这种技巧对于通用容器类型来说很难甚至不可能实现。考虑一个映射，其中两个键映射到相同的引用 `T`。或者，现在考虑一个切片：
 - en: '[PRE7]'
+  id: totrans-37
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'This program fails to compile with the following error:'
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个程序编译失败，错误如下：
 - en: '[PRE8]'
+  id: totrans-39
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'We, the programmers*,* know that this was safe—`gemini_2` and `gemini_12` don''t
     overlap in memory—but it''s not possible for the compiler to prove this. What
     if we had done the following:'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们，程序员，知道这是安全的——`gemini_2` 和 `gemini_12` 在内存中不重叠——但是编译器无法证明这一点。如果我们做了以下操作：
 - en: '[PRE9]'
+  id: totrans-41
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: By definition, `missions[0]` and `missions[1]` overlap in memory. We, the programmers,
     know we're breaking the aliasing rules and the compiler, being conservative, assumes
     that the rules are being broken.
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 根据定义，`missions[0]` 和 `missions[1]` 在内存中重叠。我们，程序员，知道我们正在违反别名规则，而编译器出于保守考虑，假设规则正在被违反。
 - en: Allocating and deallocating memory
+  id: totrans-43
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 分配和释放内存
 - en: 'Deallocation happens in one of two ways, depending on whether the type is allocated
     on the stack or the heap. If it''s on the stack, the type is deallocated when
     the stack frame itself ceases to exist. Each Rust stack frame comes into the world
@@ -236,25 +334,33 @@
     out of scope, either through the natural flow of the program or by an explicit
     `std::mem::drop` being called by the programmer. The implementation of `drop`
     is as follows:'
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 分配释放可以通过两种方式之一发生，这取决于类型是在栈上还是在堆上分配的。如果是在栈上，当栈帧本身不再存在时，类型就会被释放。每个Rust栈帧都是完全分配但未初始化地来到这个世界，并在其关联的函数退出时离开这个世界。堆分配的类型在最后一个有效的绑定移出作用域时被释放，无论是通过程序的正常流程还是通过程序员显式调用的`std::mem::drop`。`drop`的实现如下：
 - en: '[PRE10]'
+  id: totrans-45
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: The value `_x` is moved into `drop` —meaning there are no other borrows of `_x`—and
     then immediately falls out of scope when `drop` exits. An explicit `drop` is not
     able to remove items from scope, however, so subtle interactions with structures
     where the Rust compiler is not able to prove non-overlapping aliases and the like
     will happen. The `drop` documentation discusses several cases and it is worth
     reviewing that material.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: '`_x`的值被移动到`drop`中——这意味着没有其他对`_x`的借用——然后当`drop`退出时立即超出作用域。然而，显式`drop`不能从作用域中删除项目，因此与结构体的微妙交互将发生，在这些结构体中，Rust编译器无法证明非重叠别名等情况。`drop`文档讨论了几个案例，值得回顾这些材料。'
 - en: Any Rust type that can be deallocated—meaning it is not `Copy`—will implement
     the `Drop` trait, a trait whose sole function is `drop(&mut self)`. `Drop::drop`
     cannot be called explicitly and is called when the type goes out of scope or is
     invocable by `std::mem::drop`, as discussed  previously.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 任何可以被释放的Rust类型——这意味着它不是`Copy`——都将实现`Drop`特质，这是一个只有一个函数`drop(&mut self)`的特质。`Drop::drop`不能被显式调用，当类型超出作用域或可以被`std::mem::drop`调用时，它就会被调用，正如之前讨论的那样。
 - en: 'So far in this chapter, we''ve discussed the layout of types in memory and
     allocation on the heap but without fully discussing how allocation itself works
     in the Rust memory model. The simplest way of forcing a heap allocation is with
@@ -263,24 +369,34 @@
     is, a `Box<T>` allocates enough space on the heap for a type `T` and acts as the
     owner of that allocation. When the box is dropped, the drop of `T` occurs. Here''s
     the definition of `Box<T>` straight from the standard library, in the file `src/liballoc/boxed.rs`:'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 到目前为止，在本章中，我们讨论了内存中类型的布局和在堆上的分配，但没有完全讨论Rust内存模型中分配本身是如何工作的。强制堆分配的最简单方法就是使用`std::boxed::Box`。实际上，Rust对`Box`的文档——也简称为box——将其描述为Rust中最简单的堆分配形式。也就是说，`Box<T>`在堆上为类型`T`分配足够的空间，并作为该分配的所有者。当box被丢弃时，`T`的丢弃就会发生。以下是`Box<T>`的定义，直接来自标准库，在文件`src/liballoc/boxed.rs`中：
 - en: '[PRE11]'
+  id: totrans-49
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: The size of a type
+  id: totrans-50
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 类型的大小
 - en: 'There''s two important things here we have not come across yet in this book—`Sized`
     and `Unique`. First, `Sized`, or more properly, `std::marker::Sized`. `Sized`, is
     a Rust `trait` that bounds a type to have a known size at compile time. Almost
     everything in Rust has an implicit `Sized` bound, which we can inspect. For instance:'
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里有两个重要的事情我们在这本书中还没有遇到——`Sized`和`Unique`。首先，`Sized`，或者更准确地说，`std::marker::Sized`。`Sized`是Rust的一个`trait`，它将类型约束为在编译时具有已知的大小。在Rust中几乎所有的东西都有一个隐式的`Sized`约束，我们可以检查它。例如：
 - en: '[PRE12]'
+  id: totrans-52
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: '`u8` is a single byte, Project is the byte to distinguish the enum variants
     plus the inner mission byte, pointers are the size of a machine word–a `usize-`
     and a `Vec<T>` is guaranteed to be a pointer and two `usize` fields no matter
@@ -291,68 +407,103 @@
     and alignment and so all DSTs must exist behind a reference or pointer. A slice—a
     view into contiguous memory—is one such type. In the following program, the compiler
     will not be able to determine the size of the slice of values:'
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: '`u8` 是一个字节，Project 是用于区分枚举变体的字节以及内部任务字节，指针是机器字的大小——一个 `usize`，而 `Vec<T>` 保证是一个指针和两个
+    `usize` 字段，无论 `T` 的大小如何。`Vec<T>` 和 `T` 之间有一些有趣的事情发生，我们将在本章后面深入探讨。请注意，我们几乎在 Rust
+    中说到了所有东西都有一个隐式的 `Sized` 约束。Rust 支持 *动态大小类型*，这些类型没有已知的大小或对齐。Rust 需要已知的大小和对齐，因此所有
+    DSTs 都必须位于引用或指针之后。切片——对连续内存的视图——就是这样一种类型。在以下程序中，编译器将无法确定值的切片的大小：'
 - en: '[PRE13]'
+  id: totrans-54
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: '*Slices are a view into a block of memory represented as a pointer and a length*, as
     the documentation for the primitive type slice puts it. The trick is that the
     length is determined at runtime. The following program will compile:'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: '*切片是内存块的一种视图，该内存块以指针和长度表示，正如原始类型切片的文档所述*。技巧在于长度是在运行时确定的。以下程序将能够编译：'
 - en: '[PRE14]'
+  id: totrans-56
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: 'However, the previous code will panic at runtime:'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，之前的代码在运行时会引发恐慌：
 - en: '[PRE15]'
+  id: totrans-58
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: 'Rust allows programmers to include DSTs as the last field of a `struct`, like
     so:'
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust 允许程序员将 DSTs（可变大小类型）作为 `struct` 的最后一个字段，如下所示：
 - en: '[PRE16]'
+  id: totrans-60
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: However, this causes the struct itself to become a DST.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，这会导致结构体本身成为 DST。
 - en: Static and dynamic dispatch
+  id: totrans-62
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 静态和动态分发
 - en: 'Trait objects likewise have no statically known size in Rust. Trait objects
     are the mechanism by which Rust performs dynamic dispatch. Preferentially, Rust
     is a static dispatch language as there are increased opportunities for inlining
     and optimization—the compiler simply knows more. Consider the following code:'
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 Rust 中，特质对象同样没有静态已知的大小。特质对象是 Rust 执行动态分发的方式。优先考虑 Rust 是一种静态分发语言，因为存在更多的内联和优化机会——编译器知道得更多。考虑以下代码：
 - en: '[PRE17]'
+  id: totrans-64
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: 'Here, we define a function, `sd_add<T: Add<Output=T>>(x: T, y: T) -> T`. Rust,
     like C++, will perform monomorphization at compile time, emitting two `sd_add`
     functions, one for `u8` and the other for `u64`. Like C++, this potentially increases
     the code size of a Rust program and slows compilation but at the benefit of allowing
     inlining at the caller site, potentially more efficient implementations owing
     to type specialization, and fewer branches.'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: '这里，我们定义了一个函数，`sd_add<T: Add<Output=T>>(x: T, y: T) -> T`。Rust，就像 C++ 一样，将在编译时进行单态化，生成两个
+    `sd_add` 函数，一个用于 `u8`，另一个用于 `u64`。像 C++ 一样，这可能会增加 Rust 程序的代码大小并减慢编译速度，但好处是在调用者位置允许内联，由于类型特化，可能更有效的实现，以及更少的分支。'
 - en: When static dispatch is not desirable, the programmer can construct trait objects
     to perform dynamic dispatch. Trait objects do not have a known size—indeed, they
     can be any `T` that implements the trait—and so, like slices, must exist behind
     a kind of pointer. Dynamic dispatch will not see much use in this book. The reader
     is warmly encouraged to consult the documentation for `std::raw::TraitObject`
     for full details on Rust's trait object notion.
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 当静态分发不可取时，程序员可以构建特质对象以执行动态分发。特质对象没有已知的大小——实际上，它们可以是实现该特质的任何 `T` 类型——因此，就像切片一样，必须位于某种指针之后。在这本书中，动态分发不会得到太多应用。强烈建议读者查阅
+    `std::raw::TraitObject` 的文档，以获取 Rust 特质对象概念的详细信息。
 - en: Zero sized types
+  id: totrans-67
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 零大小类型
 - en: 'Rust also supports *zero sized types* or ZSTs; structs with no fields, the
     unit type `()`, or arrays with no size are all zero sized. The fact that the type
     has no size is a boon to optimization and dead-tree removal. Rust APIs often include
@@ -363,12 +514,17 @@
     of a ZST indistinguishable from the allocator being unable to find free memory—and
     pointer offsets from a ZST are of zero offset. Both of these considerations will
     be important in this chapter.'
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust还支持*零大小类型*或ZST；没有字段的struct、单位类型`()`或没有大小的数组都是零大小的。类型没有大小的事实对优化和死树移除是一个福音。Rust
+    API通常包括如下返回类型：`Result<(), a_mod::ErrorKind>`。这种类型表示，虽然函数可能会出错，但在正常路径下的返回值是单位类型。这些类型在实践中相对较少，但它们是不安全的，Rust必须意识到它们。许多分配器在请求分配零字节时返回空指针——使得ZST的分配与分配器无法找到空闲内存的情况无法区分——并且从ZST的指针偏移量为零。这两个考虑因素在本章中都将非常重要。
 - en: Boxed types
+  id: totrans-69
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 带框的类型
 - en: 'That''s the trait `Sized`, but what does `?Sized` mean? The `?` flags the relevant
     trait as optional. So, a box is a type in Rust parameterized over some other type
     `T` which may or may not have a size. A box is a kind of a pointer to heap allocated
@@ -376,11 +532,16 @@
     type is a signal to the Rust compiler that some `*mut T` is non-null and that
     the unique is the sole owner of `T`, even though `T` was allocated outside the
     `Unique`. `Unique` is defined like so:'
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 那是`Sized`特性，但`?Sized`是什么意思呢？`?`标志表示相关的特性是可选的。因此，一个框是Rust中参数化其他类型`T`的类型，`T`可能具有大小也可能不具有大小。一个框是一种指向堆分配存储的指针。让我们进一步看看它的实现。`Unique<T>`又是怎么回事呢？这个类型是向Rust编译器发出信号，表示某些`*mut
+    T`是非空的，并且唯一所有者是`T`，即使`T`是在`Unique`外部分配的。`Unique`的定义如下：
 - en: '[PRE18]'
+  id: totrans-71
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: '`NonZero<T>` is a struct that the `rustc` source describes as a wrapper type
     for raw pointers and integers that will never be `NULL` or `0` that might allow
     certain optimizations. It''s annotated in a special way to admit those null pointer
@@ -393,36 +554,51 @@
     to `T` but does not, itself, have `T` stored anywhere other than in the heap.
     A box is then, a unique, non-null pointer to a thing allocated somewhere in memory
     but not inside the storage space of the box.'
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: '`NonZero<T>`是一个`rustc`源代码描述为原始指针和整数的包装类型，这些指针和整数永远不会是`NULL`或`0`，这可能会允许某些优化。它以特殊方式注释，以允许本章其他地方讨论的空指针优化。`Unique`也因其使用`PhantomData<T>`而引起兴趣。实际上，`PhantomData`是一个零大小类型，定义为`pub
+    struct PhantomData<T:?Sized>;`。此类型指示Rust编译器将`PhantomData<T>`视为拥有`T`，尽管最终`PhantomData`无处存储其新发现的`T`。这对于必须通过维护指向`T`的非零常量指针来拥有`<T>`的`Unique<T>`来说效果很好，但它本身并不在除堆以外的任何地方存储`T`。因此，一个框是一个唯一的、非空的指针，指向内存中某个地方分配的东西，但不在框的存储空间内。'
 - en: 'The internals of box are compiler intrinsics: they sit at the interplay of
     the allocator and are a special consideration in Rust''s borrow checker. With
     that in mind, we will avoid chasing down the internal details of `Box` as they
     will change from compiler version to compiler version and this book is explicitly
     not a `rustc` internals book. For our purposes, however, it is worth considering
     the API exposed by box. The key functions are:'
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 框的内部是编译器内建函数：它们位于分配器和借用检查器之间的交互中，在Rust的借用检查器中是一个特殊考虑。考虑到这一点，我们将避免深入挖掘`Box`的内部细节，因为它们会随着编译器版本的更新而变化，而这本书明确不是一本关于`rustc`内部机制的书籍。然而，就我们的目的而言，考虑由框暴露的API是有价值的。关键函数包括：
 - en: '`fn from_raw(raw: *mut T) -> Box<T>`'
+  id: totrans-74
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`fn from_raw(raw: *mut T) -> Box<T>`'
 - en: '`fn from_unique(u: Unique<T>) -> Box<T>`'
+  id: totrans-75
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`fn from_unique(u: Unique<T>) -> Box<T>`'
 - en: '`fn into_raw(b: Box<T>) -> *mut T`'
+  id: totrans-76
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`fn into_raw(b: Box<T>) -> *mut T`'
 - en: '`fn into_unique(b: Box<T>) -> Unique<T>`'
+  id: totrans-77
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`fn into_unique(b: Box<T>) -> Unique<T>`'
 - en: '`fn leak<''a>(b: Box<T>) -> &''a mut T`'
+  id: totrans-78
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`fn leak<''a>(b: Box<T>) -> &''a mut T`'
 - en: 'Both `from_raw` and `from_unique` are unsafe. Conversion from a raw pointer
     is unsafe if a raw pointer is *boxed* more than once or if a box is made from
     a pointer that overlaps with another, as examples. There are other possibilities.
@@ -444,20 +620,34 @@
     wherever you please. When the leaked memory is intended to live for the lifetime
     of the program—into the `static` lifetime—there''s no issue. An example  is as
     follows, straight from the docs for `leak:`'
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: '`from_raw` 和 `from_unique` 都是 unsafe 的。如果原始指针被 *boxed* 多次，或者如果从一个与另一个重叠的指针创建了一个
+    box，那么从原始指针的转换是不安全的，例如。还有其他可能性。从 `Unique<T>` 的转换是不安全的，因为 `T` 可能或可能不被 `Unique`
+    所拥有，从而导致 box 不是其内存的唯一所有者。然而，`into_*` 函数是安全的，因为生成的指针将是有效的，但调用者不会对管理内存的生命周期承担全部责任。`Box`
+    文档指出，调用者可以自己释放内存或将指针转换回它们原来的类型，并允许 Rust 为他们处理。本书将采用后一种方法。最后，还有 `leak`。`leak` 是一个有趣的概念，但在稳定渠道上不可用，但对于将软件部署到嵌入式目标的应用程序来说值得讨论。嵌入式系统的一种常见内存管理策略是在程序的生命周期内预分配所有必要的内存，并且只在该内存上操作。在
+    Rust 中，如果你想要一个固定大小的未初始化内存：数组和其他原始类型，这是微不足道的。如果你在程序开始时需要堆分配，情况就更加复杂了。这就是 `leak`
+    的作用：它使内存从 box（堆分配）泄漏到任何你想要的地方。当泄漏的内存打算在程序的生命周期内存在——进入 `static` 生命周期——就没有问题。以下是一个例子，直接来自
+    `leak` 的文档：'
 - en: '[PRE19]'
+  id: totrans-80
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: Here, we see a new `usize` allocated on the heap, leaked into `static_ref`—a
     mutable reference of static lifetime—and then fiddled with through the remaining
     lifetime of the program.
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们看到在堆上分配了一个新的 `usize`，泄漏到 `static_ref`——一个具有静态生命周期的可变引用——然后在整个程序的生命周期内对其进行操作。
 - en: Custom allocators
+  id: totrans-82
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 自定义分配器
 - en: It is possible to plug in one's own allocator to Rust, as can be done in C++
     or similar system-level programming languages. By default, on most targets, Rust
     uses jemalloc with a backup alternative to the system-provided allocator. In embedded
@@ -467,58 +657,86 @@
     and related RFCs. As of writing this, an interface for plugging in custom allocators
     to stable Rust is under active discussion and any such capability is only available
     in nightly Rust. We will not make use of custom allocators in this book.
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: 可以将自定义分配器插入 Rust，就像在 C++ 或类似的系统级编程语言中做的那样。默认情况下，在大多数目标上，Rust 使用 jemalloc，并有一个系统提供的分配器的后备替代方案。在嵌入式应用程序中，可能没有系统，更不用说分配器了，因此建议感兴趣的读者查阅
+    RFC 1183 ([https://github.com/rust-lang/rfcs/blob/master/text/1183-swap-out-jemalloc.md](https://github.com/rust-lang/rfcs/blob/master/text/1183-swap-out-jemalloc.md))、RFC
+    1398 ([https://github.com/rust-lang/rfcs/pull/1398](https://github.com/rust-lang/rfcs/pull/1398))
+    以及相关的 RFC。截至撰写本文时，将自定义分配器插入稳定 Rust 的接口正在积极讨论中，并且此类功能仅在 nightly Rust 中可用。本书将不会使用自定义分配器。
 - en: Implementations
+  id: totrans-84
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 实现
 - en: In [Chapter 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml), *Sequential Rust
     Performance and Testing,* we very briefly dipped into the implementation of `std::collections::HashMap`.
     Let's continue with that approach of dissecting the standard library, paying special
     attention to the concerns of memory that pop up.
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 在[第2章](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml)，“顺序Rust性能和测试”中，我们非常简要地探讨了`std::collections::HashMap`的实现。让我们继续以这种方式剖析标准库，特别关注出现的内存问题。
 - en: Option
+  id: totrans-86
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Option
 - en: 'Let''s examine `Option<T>`. We''ve already discussed `Option<T>` in this chapter;
     that it''s subject to *null pointer optimization* on account of its empty `None`
     variant in particular. `Option` is as simple as you might imagine, being defined
     in `src/libcore/option.rs`:'
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们检查`Option<T>`。我们已经在本章中讨论了`Option<T>`；它由于特别空的`None`变体而受到*空指针优化*的影响。`Option`就像你可能想象的那样简单，它在`src/libcore/option.rs`中定义：
 - en: '[PRE20]'
+  id: totrans-88
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: 'As is often the case with Rust internals, there are a great deal of flags around
     to control when and where new features land in which channel and how documentation
     is generated. A slightly tidier expression of `Option<T>` is:'
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: 正如Rust内部经常发生的那样，有许多标志用于控制新功能何时何地出现在哪个通道中，以及如何生成文档。`Option<T>`的一个稍微整洁的表达式是：
 - en: '[PRE21]'
+  id: totrans-90
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: 'This is refreshingly simple, much like how you may have implemented an option
     type yourself up on first thinking of it. `Option` is the owner of its inner `T`
     and is able to pass out references to that inner data per the usual restrictions.
     As an example:'
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 这非常简单，就像你第一次想到它时可能实现选项类型一样。`Option`是其内部`T`的所有者，并且能够根据通常的限制传递对该内部数据的引用。例如：
 - en: '[PRE22]'
+  id: totrans-92
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: 'Rust exposes a special trait type inside each `trait: Self`. It desugars simply
     to the referent trait type, in this case, `Option<T>`. The `&mut self` is shorthand
     for `self: &mut Self`, as is `&self` for `self: &Self` . `as_mut`  is then allocating
     a new option whose inner type is a mutable reference to the original inner type.
     Now, consider the humble `map`:'
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 'Rust在每个`trait: Self`内部暴露一个特殊的特质类型。它简单地解糖为引用特质类型，在这种情况下，`Option<T>`。`&mut self`是`self:
+    &mut Self`的缩写，同样`&self`是`self: &Self`的缩写。`as_mut`随后分配一个新的选项，其内部类型是原始内部类型的可变引用。现在，考虑一下谦逊的`map`：'
 - en: '[PRE23]'
+  id: totrans-94
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: 'Rust allows closures as arguments to functions. In this way, Rust is similar
     to higher-level and, especially, functional programming languages. Unlike these
     higher-level programming languages, Rust has restrictions on closures in terms
@@ -526,28 +744,40 @@
     Here, we see the `FnOnce` trait being used, restricting the closure being passed
     in as `f` to the map function as being single-use. The function traits, all defined
     in `std::ops`, are:'
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust允许将闭包作为函数的参数。通过这种方式，Rust与高级语言，尤其是函数式编程语言相似。与这些高级编程语言不同，Rust对闭包的捕获方式、调用总数和可变性有约束。在这里，我们看到`FnOnce`特质被用来限制传递给map函数的闭包`f`为单次使用。函数特质，所有都在`std::ops`中定义，如下所示：
 - en: '`Fn`'
+  id: totrans-96
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`Fn`'
 - en: '`FnMut`'
+  id: totrans-97
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`FnMut`'
 - en: '`FnOnce`'
+  id: totrans-98
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`FnOnce`'
 - en: 'The first trait, `Fn`, is described by the Rust documentation as being a *call
     operator that takes an immutable receiver*. This is maybe a little obscure until
     we look at the definition of `Fn` in `src/libcore/ops/function.rs`:'
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一个特质`Fn`，Rust文档描述为是一个*接受不可变接收者的调用操作符*。这可能有点难以理解，直到我们查看`src/libcore/ops/function.rs`中`Fn`的定义：
 - en: '[PRE24]'
+  id: totrans-100
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: 'Now it''s more obscure! But, we can work that back. `Args` is distinct from
     `std::env::Args` but plays a similar role of being a placeholder for function
     arguments, save at a type-level. `: FnMut<Args>` means that the `FnMut<Args>`
@@ -556,43 +786,56 @@
     dispatch, discussed previously. This also means that any instance of `Fn` can
     be used where an `FnMut` is expected, in cases of static dispatch. Of particular
     interest to understanding `Fn` is:'
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: '现在它更难以理解了！但是，我们可以回溯。`Args`与`std::env::Args`不同，但扮演着类似的角色，即作为函数参数的占位符，只是在类型级别上。`:
+    FnMut<Args>`意味着`FnMut<Args>`是`Fn<Args>`的*超特质*：所有`FnMut`的方法在用作特质对象时都可用。回想一下，特质对象在之前讨论的动态调度中找到了用途。这也意味着在静态调度的情况下，任何`Fn`的实例都可以用在期望`FnMut`的地方。对理解`Fn`特别感兴趣的是：'
 - en: '[PRE25]'
+  id: totrans-102
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: 'We''ll approach this in parts. Firstly, `extern "rust-call"`. Here, we are
     defining an inline extern block that uses the `"rust-call"` ABI. Rust supports
     many ABIs, three of which are cross-platform and guaranteed to be supported no
     matter the platform:'
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
 - en: '`extern "Rust" fn`, implicit for all Rust functions unless otherwise specified'
+  id: totrans-104
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`extern "C" fn`, often used in FFI and shorthanded to `extern fn`'
+  id: totrans-105
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`extern "system" fn`, equivalent to `extern "C" fn` save for some special platforms'
+  id: totrans-106
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`"rust-call"` does not appear in that list because it is a rust-specific ABI,
     which also includes:'
+  id: totrans-107
   prefs: []
   type: TYPE_NORMAL
 - en: '`extern "rust-intrinsic" fn`, specific to `rustc` intrinsics'
+  id: totrans-108
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`extern "rust-call" fn`, the ABI for all `Fn::call` functions'
+  id: totrans-109
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`extern "platform-intrinsic" fn`, which the documentation notes as being something
     the programmer should never have to deal with'
+  id: totrans-110
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -600,31 +843,41 @@
     with a special call ABI. This particular `extern` is important when writing traits
     that implement the `Fn` trait, as box will when the unstable `fnbox` feature flag
     is enabled:'
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE26]'
+  id: totrans-112
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: 'Secondly, `fn call(&self, args: Args)`. The implementing type is taken in as
     an immutable reference, in addition to the passed args; this is the immutable
     receiver mentioned in the documentation. The final piece here is `-> Self::Output`,
     the returned type after the call operator is used. This associated type defaults
     to `Self` but can be set by the implementer.'
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
 - en: '`FnMut` is similar to `Fn` save that it takes `&mut self` rather than `&self`,
     and `FnOnce` is its supertrait:'
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE27]'
+  id: totrans-115
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: 'Only `FnOnce` deviates in its definition:'
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE28]'
+  id: totrans-117
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: 'Here, we see where `Self::Output` makes its appearance as an associated type
     and note that the implementations of `FnOnce` are in terms of `call_once` rather
     than `call.` Also, we now know that `FnOnce` is a supertrait of `FnMut`, which
@@ -636,24 +889,32 @@
     contexts; the exact feature flags that need to be enabled in a nightly build,
     their use, and upcoming changes are not documented. Happily, closures and function
     pointers implement function traits implicitly. For example:'
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE29]'
+  id: totrans-119
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: The compiler is good enough to figure out the details for us.
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
 - en: 'Conceptually, `Result<T>` is a type similar to `Option<T>`, save that it is
     able to communicate an extra piece of information in its `Err` variant. In fact,
     the implementation in `src/libcore/result.rs` is awfully similar to the way we''d
     likely write this at first though, as with `Option`:'
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE30]'
+  id: totrans-122
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: Cell and RefCell
+  id: totrans-123
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -667,6 +928,7 @@
     mutability something of a last resort but, while not common, it is not exactly
     rare in practice, either. The two options for interior mutability in Rust are
     `Cell<T>` and `RefCell<T>`.
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
 - en: 'Let''s consider `Cell<T>`. How is it used? As suggested, `Cell<T>` is useful
@@ -679,35 +941,47 @@
     storage outside of the graph, or insert an interior, mutable counter into the
     graph. Which choice is best will depend on the specific situation. Here is a significantly
     less complicated example of `Cell<T>`, compared to a graph search:'
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE31]'
+  id: totrans-126
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: 'Of course, that''s a bit contrived. Interior mutability shows up when the situation
     is non-trivial, generally speaking. Note that `Cell<u8>` had to be manipulated
     with `get` and `set` methods, contrary to the normal process of setting and reading
     directly or through a pointer. Let''s dig into the implementation of `Cell<T>`,
     defined in `src/libcore/cell.rs`:'
+  id: totrans-127
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE32]'
+  id: totrans-128
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: As is common in Rust internals, a safe interface hides an unsafe inner core,
     as we saw in [Chapter 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml), *Sequential
     Rust Performance and Testing*, with `HashMap`. What is the definition of `UnsafeCell`?
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE33]'
+  id: totrans-130
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: 'Of particular note is an implementation that follows shortly afterward:'
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE34]'
+  id: totrans-132
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: 'We will discuss `Sync` in the following chapter in greater detail. Suffice
     it to say, for now, any type that is threadsafe must implement `Sync`—and many
     do automatically—and by disabling the `Sync` trait for `UnsafeCell<T>`—which is
@@ -723,20 +997,26 @@
     is itself mutable. It is up to the caller to ensure that there is *only* one mutable
     reference at any time. The implementation of `UnsafeCell` —stripped of its comments
     for clarity''s sake—is brief:'
+  id: totrans-133
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE35]'
+  id: totrans-134
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: 'This brings us back to `Cell<T>`. We know that `Cell<T>` is built on top of
     an unsafe abstraction and we will have to take care not to violate the `&mut T`
     uniqueness constraint. How is this done? First, construction of `Cell<T>` is straightforward,
     as you may expect:'
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE36]'
+  id: totrans-136
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: 'The `const fn` is likely a surprise, on account of it being a nightly-only
     feature as of writing this book. In Rust, a constant function is evaluated at
     compile time. The benefit to the programmer of this particular definition is that
@@ -744,11 +1024,14 @@
     exist for the lifetime of the program. Both `as_ptr` and `get_mut` are different
     views of the underlying `T`, one a raw mutable pointer and the other a mutable
     reference:'
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE37]'
+  id: totrans-138
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: 'Note that while the internals of `get_mut` are unsafe, the borrow checker is
     brought to bear on the problem of keeping `&mut T` unique and so `Cell::get_mut`
     can itself be safe. `Cell::as_ptr` is not marked as unsafe—it''s safe to receive
@@ -757,106 +1040,143 @@
     pointer floating around. Setting a new value into the cell is done in terms of
     replacement, discussed ahead, but with careful attention made towards forcefully
     dropping the `T` pulled from the cell:'
+  id: totrans-139
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE38]'
+  id: totrans-140
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE38]'
 - en: '`Cell::swap` and `Cell::replace` are done in terms of the lower-level memory
     manipulation tools from `std::ptr` and `std::mem`. `swap` is intended to replace
     the interior of one cell with another. Its definition is as follows:'
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE39]'
+  id: totrans-142
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE39]'
 - en: '`swap` is done in terms of `std::ptr::swap`, a function documented as copying
     the memory through the raw pointers passed to it as arguments*.* You''ll note
     that `Cell::swap` is careful to avoid the `swap` if the passed `other` is equivalent
     to `self`. The reason for this becomes clear when we take a peek at the definition
     of `std::ptr::swap`, defined in `src/libcore/ptr.rs`:'
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE40]'
+  id: totrans-144
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE40]'
 - en: 'The exact details of `copy_nonoverlapping` and copy are unimportant here, except
     in noting that swapping does require allocation of uninitialized space and copying
     back and forth from that space. It''s wise to avoid the work if you don''t have
     to do it. `Cell::replace` works along similar lines:'
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE41]'
+  id: totrans-146
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE41]'
 - en: '`std::mem::replace` takes a `&mut T` and a `T` and then replaces the value
     at `&mut T` with the passed in `val`, returning the old value and dropping neither.
     The definition of `std::mem::replace` is in `src/libcore/mem.rs` and is as follows:'
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE42]'
+  id: totrans-148
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE42]'
 - en: 'Chasing the definition of `swap` in the same module, we find it is as follows:'
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE43]'
+  id: totrans-150
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE43]'
 - en: '`std::ptr::swap_nonoverlapping` is as follows:'
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE44]'
+  id: totrans-152
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE44]'
 - en: 'Finally, the private `std::ptr::swap_nonoverlapping_bytes` is as follows:'
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE45]'
+  id: totrans-154
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE45]'
 - en: Whew! That's some rabbit hole. Ultimately, what we've discovered here is that
     `std::mem::replace` is defined in terms of block copies from one non-overlapping
     location in memory to another, a process which the Rust developers have tried
     to make as efficient as possible by exploiting LLVM's ability to optimize a bitwise
     operation on common processors in terms of SIMD instructions. Neat.
+  id: totrans-155
   prefs: []
   type: TYPE_NORMAL
 - en: 'What of `RefCell<T>`? It too is a safe abstraction over `UnsafeCell<T>` except
     that the copy restriction of `Cell<T>` is lifted. This makes the implementation
     a touch more complicated, as we''ll see:'
+  id: totrans-156
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE46]'
+  id: totrans-157
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE46]'
 - en: 'Like `Cell, RefCell` has an inner unsafe value, that much is the same. What''s
     fun here is `borrow: Cell<BorrowFlag>`. `RefCell<T>` is a client of `Cell<T>`,
     which makes good sense considering that the immutable `RefCell` is going to need
     interior mutability to track the total number of borrows of its inner data. `BorrowFlag`
     is defined like so:'
+  id: totrans-158
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE47]'
+  id: totrans-159
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE47]'
 - en: 'The implementation of `RefCell<T>` is like to that of `Cell<T>`. `RefCell::replace`
     is also implemented in terms of `std::mem::replace`, `RefCell::swap` in terms
     of `std::mem::swap`. Where things get interesting are the functions new to `RefCell`,
      which are those to do with borrowing. We''ll look at `try_borrow` and `try_borrow_mut`
     first as they''re used in the implementations of the other borrowing functions.
     `try_borrow` is defined like so:'
+  id: totrans-160
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE48]'
+  id: totrans-161
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE48]'
 - en: 'With `BorrowRef` being as follows:'
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE49]'
+  id: totrans-163
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE49]'
 - en: '`BorrowRef` is a structure that holds a reference to the borrow field of `RefCell<T>`.
     Creating a new `BorrowRef` depends on the value of that borrow; if the value is
     `WRITING` then no `BorrowRef` is created—`None` gets returned—and otherwise the
@@ -864,26 +1184,34 @@
     of writing needed while allowing for multiple readers—it''s not possible for `try_borrow`
     to hand out a reference when a write reference is out for the same data. Now,
     let''s consider `try_borrow_mut`:'
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE50]'
+  id: totrans-165
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE50]'
 - en: 'Again, we find an implementation in terms of another type, `BorrowRefMut`:'
+  id: totrans-166
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE51]'
+  id: totrans-167
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE51]'
 - en: The key, as with `BorrowRef`, is in `BorrowRefMut::new`. Here, we can see that
     if the inner borrow from `RefCell` is unused then the borrow is set to write,
     excluding any potential read references. Likewise, if there is a read reference
     in existence, the creation of a mutable reference will fail. And so, exclusive
     mutable references and multiple immutable references are held at runtime by abstracting
     over an unsafe structure that allows for the breaking of that guarantee.
+  id: totrans-168
   prefs: []
   type: TYPE_NORMAL
 - en: Rc
+  id: totrans-169
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -896,11 +1224,14 @@
     somewhat analogously as to the way `RefCell<T>` works. The drop of an `Rc<T>`
     reduces that internal counter and when the counter''s value is equal to zero,
     the heap allocation is released. Let''s take a peek inside `src/liballoc/rc.s`:'
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE52]'
+  id: totrans-171
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE52]'
 - en: 'We''ve already encountered `PhantomData<T>` in this chapter, so we know that
     `Rc<T>` will not directly hold the allocation of `T`, but the compiler will behave
     as if it does. Also, we know that `T` may or may not be sized. The pieces we need
@@ -911,34 +1242,46 @@
     new(ptr: *mut X) -> Option<Self>`. In the first variant, the caller is responsible
     for ensuring that the pointer is non-null, and in the second the nulled nature
     of the pointer is checked, like so:'
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE53]'
+  id: totrans-173
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE53]'
 - en: 'We find the definition and implementation of `NonZero<T>` in `src/libcore/nonzero.rs ` like
     so:'
+  id: totrans-174
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE54]'
+  id: totrans-175
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE54]'
 - en: '`Zeroable` is an unstable trait, which is pretty straightforward:'
+  id: totrans-176
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE55]'
+  id: totrans-177
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE55]'
 - en: 'Every pointer type implements an `is_null() -> bool` and this trait defers
     to that function, and `NonZero::new` defers to `Zeroable::is_zero`. The presence
     of a `Shared<T>`, then, gives the programmer the same freedom as `*mut T` but
     with added guarantees about the pointer''s nullable situation. Jumping back up
     to `Rc::new`:'
+  id: totrans-178
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE56]'
+  id: totrans-179
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE56]'
 - en: '`Box::into_unique` converts a `Box<T>` into a `Unique<T>`—discussed previously
     in this chapter—which is then converted into a `Shared<T>`. This chain preserves
     the non-null guarantee needed and ensures uniqueness. Now, what about strong and
@@ -956,11 +1299,14 @@
     store a vector of all nodes and have each node store weak references to connections,
     then a drop of the vector would cause a drop of all nodes, cycles or not. We can
     see how this works in practice by inspecting the `Drop` implementation of `Rc<T>`:'
+  id: totrans-180
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE57]'
+  id: totrans-181
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE57]'
 - en: 'This is trimmed some for clarity but the notion is as we''ve described—when
     the total number of strong references is zero, a full deallocation occurs. The
     referenced `Heap` and `Layout` are compiler internals and won''t be discussed
@@ -969,17 +1315,22 @@
     at `1`. To avoid invalidating the weak pointers, the actual `T` is only deallocated
     if there are no strong or weak pointers available. Let''s have a look at `Drop
     for Weak<T>`, again trimmed some for clarity:'
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE58]'
+  id: totrans-183
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE58]'
 - en: As expected, the `T` can only be deallocated when the weak pointer total falls
     to zero, which is only possible if there are no strong pointers left. That's `Rc<T>`—a
     handful of important traits, a specialized box, and a few compiler internals.
+  id: totrans-184
   prefs: []
   type: TYPE_NORMAL
 - en: Vec
+  id: totrans-185
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -992,14 +1343,18 @@
     much so that its actual name is `std::vec::Vec<T>` but Rust imports the type by
     default. Rust programs are full of vectors and it stands to reason we'd do well
     to understand how it interacts with the memory it holds.
+  id: totrans-186
   prefs: []
   type: TYPE_NORMAL
 - en: '`Vec<T>` is defined in `src/liballoc/vec.rs` and is defined as follows:'
+  id: totrans-187
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE59]'
+  id: totrans-188
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE59]'
 - en: 'The Rust documentation declares that a `Vec<T>` will be laid out as a pointer,
     a capacity of `usize`, and a length of `usize.` The order of these fields is completely
     unspecified. As we''ve already discussed, Rust will reorder fields as it sees
@@ -1010,11 +1365,14 @@
     means there''s a distinct difference between capacity and length, the distinction
     of which we''ll come back to as we dig into `RawVec<T>`. Let''s take a peek at
     `RawVec<T>`, defined in `src/liballoc/raw_vec.rs`:'
+  id: totrans-189
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE60]'
+  id: totrans-190
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE60]'
 - en: 'What we have is a pointer to a `Unique<T>`, a `*mut T` with added guarantees
     that the `RawVec<T>` is the only possessor of the allocation and that the pointer
     is not null. The `cap` is the capacity of the raw vector. `a: A` is the allocator,
@@ -1026,23 +1384,32 @@
     but the reader is warmly encouraged to explore the topic in more detail. Allocator
     aside, there''s the pointers, length, and capacity that the Rust documentation
     promised. Let''s pop back to `Vec<T>` and take a look at `new`:'
+  id: totrans-191
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE61]'
+  id: totrans-192
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE61]'
 - en: 'Now, the new of raw `vec`:'
+  id: totrans-193
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE62]'
+  id: totrans-194
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE62]'
 - en: 'This defers creation to `new_in`, a function on the same `trait`:'
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE63]'
+  id: totrans-196
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE63]'
 - en: 'The `cap` computation is interesting. It''s possible to store a `T` in `Vec<T>`—and
     by extension `RawVec<T>`—that has zero size. The implementers knew this and came
     up with a fun solution: if the size of the type is zero, set the capacity to `usize::MAX`,
@@ -1052,38 +1419,50 @@
     an enumeration or a flag variable. Tidy trick. If we bounce back to vector and
     inspect `with_capacity`, we''ll find that defers to `RawVec::with_capacity`, which
     defers to `RawVec::allocate_in`:'
+  id: totrans-197
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE64]'
+  id: totrans-198
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE64]'
 - en: 'There''s a lot going on here, but it''s important, so let''s break it into
     small pieces. Firstly, see the following:'
+  id: totrans-199
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE65]'
+  id: totrans-200
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE65]'
 - en: 'At the head of the function, the size of the element is computed and the total
     allocation requested by the caller is confirmed to be no more than the available
     system memory. Note that `checked_mul` ensures we don''t overflow usize and accidentally
     allocate too little memory. Finally, a function called `alloc_guard` is called.
     That is as follows:'
+  id: totrans-201
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE66]'
+  id: totrans-202
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE66]'
 - en: 'This is a guarantee check. Remember that usize and isize are the signed and
     unsigned size of the system pointer. To understand this guard, we must understand
     the answer to two questions:'
+  id: totrans-203
   prefs: []
   type: TYPE_NORMAL
 - en: On a given machine, how much memory can I allocate?
+  id: totrans-204
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: On a given machine, how much memory can I address?
+  id: totrans-205
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
@@ -1091,6 +1470,7 @@
     Rust is checking that the allocation size is less than the maximum isize. The
     Rust reference ([https://doc.rust-lang.org/stable/reference/types.html#machine-dependent-integer-types](https://doc.rust-lang.org/stable/reference/types.html#machine-dependent-integer-types))
     explains why:'
+  id: totrans-206
   prefs: []
   type: TYPE_NORMAL
 - en: '"The isize type is a signed integer type with the same number of bits as the
@@ -1098,15 +1478,19 @@
     is the maximum isize value. This ensures that isize can be used to calculate differences
     between pointers into an object or array and can address every byte within an
     object along with one byte past the end."'
+  id: totrans-207
   prefs: []
   type: TYPE_NORMAL
 - en: 'Combined with the capacity check from `checked_mul`, we know that the allocation
     is properly sized and that it''s addressable along the whole of itself:'
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE67]'
+  id: totrans-209
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE67]'
 - en: 'In the event that the desired capacity is zero *or* the size of `T` is zero,
     the implementation coerces the minimum alignment of `T` into a pointer to bytes,
     the `*mut u8`. This pointer is, well, it points nowhere useful but the implementation
@@ -1115,63 +1499,85 @@
     is good, and all the implementation will have to do is be aware that when the
     capacity is zero, or if the type size is zero, the pointer cannot be dereferenced.
     Right:'
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE68]'
+  id: totrans-211
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE68]'
 - en: 'This branch is hit when there''s memory to be allocated. Notably, two sub-possibilities,
     controlled by the `zeroed` argument: either memory is zeroed or it is left uninitialized.
     `Vec<T>` does not expose this option to the end user but we know from inspection
     that memory starts off uninitialized, an optimization for non-trivial allocations:'
+  id: totrans-212
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE69]'
+  id: totrans-213
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE69]'
 - en: 'The lack of an initialization flag is kind of tricky in some cases. Consider
     `std::io::Read::read_exact`. This function takes a `&mut [u8]` and it''s common
     enough to create this slice from a specially created vec. This code will *not*
     read 1024 bytes:'
+  id: totrans-214
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE70]'
+  id: totrans-215
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE70]'
 - en: 'Why? The slice that we pass in is actually of zero length! Rust dereferences
     are allowed on a type by two traits: `std::ops::Deref` and `std::ops::DerefMut`,
     depending on your desire for an immutable or mutable slide. The `Deref`  trait
     is defined as follows:'
+  id: totrans-216
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE71]'
+  id: totrans-217
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE71]'
 - en: 'And the mutable version analogously. When we slice our vector as in the preceding
     code block, we''re calling this `DerefMut::deref`:'
+  id: totrans-218
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE72]'
+  id: totrans-219
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE72]'
 - en: 'This is the very important part: `slice::from_raw_parts_mut(ptr, self.len)`.
     Vector slices are built by length, not capacity. The capacity of a vector serves
     to distinguish how much memory has been allocated versus how much memory has been
     initialized, either to zeros or some other inserted values. This is an important
     difference. It''s possible to initialize memory ourselves:'
+  id: totrans-220
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE73]'
+  id: totrans-221
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE73]'
 - en: 'Or to rely on the `Vec` API to convert from a fixed-size array:'
+  id: totrans-222
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE74]'
+  id: totrans-223
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE74]'
 - en: Either will work. Which you choose depends on if you know the size of the buffer
     ahead of time or not.
+  id: totrans-224
   prefs: []
   type: TYPE_NORMAL
 - en: 'Befitting such an important type, there are a good many API functions on `Vec<T>`.
@@ -1179,32 +1585,41 @@
     `push` and `insert`. The `push` function is a constant operation, modulo any reallocations
     necessary to cope with the case of our capacity limit being reached. Here''s the
     `push` function:'
+  id: totrans-225
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE75]'
+  id: totrans-226
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE75]'
 - en: 'If you''ll recall, `self.buf` is the underlying `RawVec<T>`. The documentation
     for `Vec<T>` notes that when reallocation is required, the underlying memory will
     be doubled, which, it turns out, is handled by `RawVec<T>::double`. That function
     is fairly long and, as you might suspect, is a bunch of arithmetic to compute
     the new, doubled size matched with a realloc when there''s an existing allocation,
     else when there''s a new allocation. That is worth listing:'
+  id: totrans-227
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE76]'
+  id: totrans-228
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE76]'
 - en: '`Alloc::alloc_array` allocates space for contiguous memory, which is suitable
     to hold `new_cap` number of elements the size of `T`, returning the pointer to
     the first address of this newly allocated space. Here then, is the contiguous
     memory promised in the documentation of `Vec<T>`! Back in `Vec<T>`, now that the
     capacity is twice that of what it was, at least, the value `T` can be inserted:'
+  id: totrans-229
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE77]'
+  id: totrans-230
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE77]'
 - en: Rust pointers are handy in that their offset function takes into account the
     size of `T`; there's no need to do additional multiplication as the caller. The
     implementation is determining the first of the unused `T` sized spaces in the
@@ -1212,6 +1627,7 @@
     The fact that the space is unused is important*, *`std::ptr::write` does not deallocate
     any memory that may have originally existed at the written-to pointer. If you
     `ptr::write` over the top of a live reference, wacky things will happen.
+  id: totrans-231
   prefs: []
   type: TYPE_NORMAL
 - en: 'Finally, `insert`. The `insert` function of `Vec<T>` allows for the insertion
@@ -1221,28 +1637,36 @@
     of the vector, all elements to the right of the insertion index are shifted over
     once, a non-trivial operation depending on the size of the allocation. Here''s
     the full listing of `insert`:'
+  id: totrans-232
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE78]'
+  id: totrans-233
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE78]'
 - en: 'The index checking and potential buffering is straightforward at this point
     in the chapter. In the unsafe block, `p` is the proper offset for insertion. The
     two important lines are:'
+  id: totrans-234
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE79]'
+  id: totrans-235
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE79]'
 - en: When a value is inserted into a vector, no matter the location, all the memory
     starting from `p` to the end of the list is copied over the top of the memory,
     starting at `p+1`. Once this is done, the inserted value is written over the top
     of `p`. This is a non-trivial operation and can become incredibly slow, especially
     if the allocation to be shifted is fairly large. Performance-focused Rust will
     use `Vec::insert` sparingly, if at all. `Vec<T>` will almost surely make an appearance.
+  id: totrans-236
   prefs: []
   type: TYPE_NORMAL
 - en: Summary
+  id: totrans-237
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -1251,9 +1675,11 @@
     strategies of a Rust program. We did a deep-dive on types in the Rust standard
     library to make these concepts concrete and it is hoped that the reader will now
     feel comfortable further exploring the compiler and will do so with confidence.
+  id: totrans-238
   prefs: []
   type: TYPE_NORMAL
 - en: Further reading
+  id: totrans-239
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -1263,10 +1689,12 @@
     formally documented, though there are rumblings in the community of providing
     it. Independent of that, it is also important for the working programmer to understand
     the underlying machine. There's a staggering amount of material to be covered.
+  id: totrans-240
   prefs: []
   type: TYPE_NORMAL
 - en: 'These notes are a small start, focusing especially on the Rust documentation
     that relates most to this chapter:'
+  id: totrans-241
   prefs: []
   type: TYPE_NORMAL
 - en: '*High Performance Code 201: Hybrid Data Structures*, Chandler Carruth, available
@@ -1276,6 +1704,7 @@
     especially interesting from the point of view of building information-dense data
     structures that interact well with CPU caches. While the talk is in C++, the techniques
     apply directly to Rust.'
+  id: totrans-242
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1283,6 +1712,7 @@
     and Sridhar Ramachandran. This paper introduces the concept of building data structures
     that are cache oblivious, or, native to machines with memory hierarchies and interact
     with them well, in addition to a machine model to analyze such data structures.'
+  id: totrans-243
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1291,6 +1721,7 @@
     last by Frigo et al and summarizing existing work. This is a highly recommended
     read, especially in conjunction with the previous paper. It is well worth scanning
     the bibliography as well.'
+  id: totrans-244
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1300,6 +1731,7 @@
     This chapter has gone into further detail in some areas, but the Rust book''s
     chapter is warmly recommended for anyone needing a refresher or a more gentle
     climb.'
+  id: totrans-245
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1309,6 +1741,7 @@
     *Splitting Borrows* explains the reasoning behind a common issue with new Rust
     developers: performing multiple mutable borrows out of a vector or array. The
     fact that this works with *structs* is often a source of great confusion and anguish.'
+  id: totrans-246
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1318,6 +1751,7 @@
     lists and over chat for years. The reference in its current form can be a touch
     hard to search—it used to be one long page—but it''s hoped the situation will
     be improved upon by the time our book here has gone to press.'
+  id: totrans-247
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1326,6 +1760,7 @@
     Rust closures have some subtle implications to them that can be hard to internalize
     for new Rust developers. This chapter in the second edition of the Rust Book is
     excellent in this regard.'
+  id: totrans-248
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1333,6 +1768,7 @@
     blocks are relatively rare in this book—and, perhaps, in most of the Rust code
     you''re likely to see—but there''s a fair few of them available. It is well worth
     having a passing knowledge of this document''s existence.'
+  id: totrans-249
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1340,6 +1776,7 @@
     present in the book are now available as simple instructions on some chips, such
     as x86, but you''ll see the occasional delight here or there in the `rustc` source
     code, the `swap_nonoverlapping_bytes` trick especially.'
+  id: totrans-250
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
