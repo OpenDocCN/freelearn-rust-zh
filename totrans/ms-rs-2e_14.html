@@ -1,0 +1,312 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Interacting with Databases in Rust</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we'll discuss on why databases are essential to modern applications. We'll cover a few crates that are available in the Rust ecosystem, which allows one to interact with databases. We'll then continue with our linksnap API server that we developed in the previous chapter and integrate database support into it through a convenient library. This will allow us to persist new bookmarks that are sent to our API.</p>
+<p>In this chapter, we will cover the following topics:</p>
+<ul>
+<li>SQLite integration using <kbd>rusqlite</kbd></li>
+<li>Interacting with PostgreSQL with Rust</li>
+<li>Database connection pooling</li>
+<li>Object-relational mapping using the <kbd>diesel</kbd> crate</li>
+<li>Integrating diesel with the linksnap API server</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Why do we need data persistence?</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_quote">"Sometimes, elegant implementation is just a function. Not a method. Not a class. Not a framework. Just a function."                                                                                                                                                                                                                         - John Carmack</div>
+<p>Modern applications these days are data-heavy. Data is the new oil, as many say. Database-backed services are everywhere, from social gaming to cloud storage, to e-commerce, to healthcare, and so on. All of these services need to store and retrieve data correctly. The data that they store, must be easy to retrieve and must have guarantees regarding consistency and durability.</p>
+<p>Databases are the go-to solution for providing a robust foundation for building applications that are data-backed and that support the expectations of their users. Before we build anything involving databases with Rust, we need to get an idea of the basics. A database, in general, is a collection of tables. Tables are units of data organization.</p>
+<div class="packt_infobox">Data that's been organized into tables is only applicable to relational databases. Other databases, such as NoSQL and graph-based databases, use a more flexible document model to store and organize data.</div>
+<p>Data is organized into logical bodies called tables. Tables are usually representations of entities from the real world. These entities can have various attributes that take the place of columns in these tables. These entities can also have relations with other entities. A column in one table can refer to another column. Changes to any database is performed using a specific DSL called <strong>Structured Query Language (SQL)</strong>. SQL queries also allow you to spread a query across multiple tables using query clauses such as JOIN. Those are the basics. A common pattern with a user interacting with database-backed applications is the <strong>CRUD</strong> pattern, which is short for <strong>Create, Read, Update, and Delete</strong>. These are the usual operations a user performs most of the time on a database through the application.</p>
+<p>SQL is a declarative way to perform transactions on a database. A transaction is a group of modifications to a database that must happen atomically or not at all in case there are any failures midway. The naive way to write a database transaction in any application is through a raw SQL query. However, there's a better way to do this, and it's called <strong>Object Relational Mapping (ORM)</strong>. This is a technique that's used to access a database using native language abstractions and types that map almost one to one with the SQL syntax and semantics. Languages provide higher-level libraries for speaking SQL, which allow you to write queries in their native language, which is then translated into a raw SQL query. In traditional object-oriented languages, your objects become SQL-speaking objects. These libraries are called object-relational mappers. Many of these libraries exist in mainstream languages such as Hibernate for Java, Active Record for Ruby, SQLAlchemy for Python, and so on. Using ORMs reduces the possibility of any errors occurring when you're using raw SQL queries. However, ORMs also suffer from not being able to map themselves completely to the language's object model with the database model. As such, ORM libraries should try to limit the amount of abstraction they provide for interacting with a database and leave some of the parts to raw SQL queries.</p>
+<p>The Rust ecosystem provides quite a few high-quality solutions to manage and build persistent applications. We'll look at a couple of them in the following section.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">SQLite</h1>
+                </header>
+            
+            <article>
+                
+<p>SQLite is a very lightweight embedded database. It does not require a special database management system for you to be able to use it. Databases created by SQLite are represented as files or as in memory database, and you don't need to connect to an external remote endpoint or a local socket connection to use a database. It serves a different target audience than traditional client-server database engines such as MySQL or PostgreSQL, and is the go-to solution for use cases where an application needs to store data locally but in a secure and efficiently retrievable manner. The Android platform is a heavy user of SQLite and allows mobile applications to store preferences or configurations for users within an application. It is also used by many desktop applications that need to store any kind of state with durability guarantees.</p>
+<p>The Rust community provides us with a couple of options for connecting to and interacting with a SQLite database. We'll go with the <kbd>rusqlite</kbd> crate, which is available on <kbd>crates.io</kbd> at <a href="https://crates.io/crates/rusqlite"><span class="InternetLink">https://crates.io/crates/rusqlite</span></a>. This crate supports SQLite version 3.6.8 and above. Its API cannot be considered an ORM, but can be considered a mid-level abstraction of what an ORM provides, as it helpfully hides many of the details of the actual SQLite API. In contrast to many other relational database systems, SQLite's type system is dynamic. This means that columns do not have types, but each individual value does. Technically, SQLite separates storage classes from data types, but this is mainly an implementation detail, and we can just think in terms of types without being too far from the truth.</p>
+<p>The <kbd>rusqlite</kbd> crate provides the <kbd>FromSql</kbd> and <kbd>ToSql</kbd> traits for converting objects between SQLite and Rust types. It also provides the following implementations out of the box for most standard library types and primitives:</p>
+<table border="1" class="table" style="border-collapse: collapse;width: 100%">
+<tbody>
+<tr>
+<td>
+<p><strong>Description</strong></p>
+</td>
+<td>
+<p><strong>SQLite</strong></p>
+</td>
+<td>
+<p><strong>Rust</strong></p>
+</td>
+</tr>
+<tr>
+<td>
+<p>The null value</p>
+</td>
+<td>
+<p><kbd>NULL</kbd></p>
+</td>
+<td>
+<p><kbd>rusqlite::types::Null</kbd></p>
+</td>
+</tr>
+<tr>
+<td>
+<p>1, 2, 3, 4, 6, or 8-byte signed integers</p>
+</td>
+<td>
+<p><kbd>INTEGER</kbd></p>
+</td>
+<td>
+<p><kbd>i32</kbd> (with possible truncation) and <kbd>i64</kbd></p>
+</td>
+</tr>
+<tr>
+<td>
+<p>8-byte IEEE floats</p>
+</td>
+<td>
+<p><kbd>REAL</kbd></p>
+</td>
+<td>
+<p><kbd>f64</kbd></p>
+</td>
+</tr>
+<tr>
+<td>
+<p>UTF-8, UTF-16BE or UTF-16LE strings</p>
+</td>
+<td>
+<p><kbd>TEXT</kbd></p>
+</td>
+<td>
+<p><kbd>String</kbd> and <kbd>&amp;str</kbd></p>
+</td>
+</tr>
+<tr>
+<td>
+<p>Bytestrings</p>
+</td>
+<td>
+<p><kbd>BLOB</kbd></p>
+</td>
+<td>
+<p><kbd>Vec&lt;u8&gt;</kbd> and <kbd>&amp;[u8]</kbd></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>With the basics of the <kbd>rusqlite</kbd> crate covered, let's see it in action.</p>
+<p>We'll create a new project by running <kbd>cargo new rusqlite_demo</kbd>. Our program takes a properly formatted <strong><span>Comma Separated Values</span></strong> (<strong>CSV</strong>) list of book data from the standard input, stores it in SQLite, and then retrieves a subset of the data using a filter SQL query. First, let's create our table creation and deletion QueryNStrings and our <kbd>Book</kbd> struct, which will store the data retrieved from the query:</p>
+<pre>// rusqlite_demo/src/main.rs<br/><br/>use std::io;<br/>use std::io::BufRead;<br/><br/>use rusqlite::Error;<br/>use rusqlite::{Connection, NO_PARAMS};<br/><br/>const CREATE_TABLE: &amp;str = "CREATE TABLE books <br/>                            (id INTEGER PRIMARY KEY,<br/>                            title TEXT NOT NULL,<br/>                            author TEXT NOT NULL,<br/>                            year INTEGER NOT NULL)";<br/><br/>const DROP_TABLE: &amp;str = "DROP TABLE IF EXISTS books";<br/><br/>#[derive(Debug)]<br/>struct Book {<br/>    id: u32,<br/>    title: String,<br/>    author: String,<br/>    year: u16<br/>}</pre>
+<p>We have two constants, <kbd>CREATE_TABLE</kbd> and <kbd>DROP_TABLE</kbd>, defined, which contain raw SQL queries for creating a <kbd>books</kbd> table and deleting it, respectively. We then have the book struct, which contains the following fields:</p>
+<ul>
+<li><kbd>id</kbd>: This acts as the primary key and can be used to distinguish books from one another when inserting a book into our books table</li>
+<li><kbd>title</kbd>: The title of the book</li>
+<li><kbd>author</kbd>: The author of the book</li>
+<li><kbd>year</kbd>: The year of publication</li>
+</ul>
+<p>Next, let's look at our <kbd>main</kbd> function:</p>
+<pre>// rusqlite_demo/src/main.rs<br/><br/>fn main() {<br/>    let conn = Connection::open("./books").unwrap();<br/>    init_database(&amp;conn);<br/>    insert(&amp;conn);<br/>    query(&amp;conn);<br/>}</pre>
+<p>First, we open our connection to our SQLite database by calling <kbd>Connection::open</kbd> and providing a path, <kbd>"./books"</kbd>, to create the database in the current directory. Next, we call <kbd>init_database()</kbd>, passing a reference to <kbd>conn</kbd>, which is defined as follows:</p>
+<pre>fn init_database(conn: &amp;Connection) {<br/>    conn.execute(CREATE_TABLE, NO_PARAMS).unwrap();<br/>}</pre>
+<p>We then call the <kbd>insert</kbd> method, passing our <kbd>conn</kbd>. Finally, we call the <kbd>query</kbd> method, which queries our <kbd>books</kbd> database.</p>
+<p>Here's our <kbd>insert</kbd> function method:</p>
+<pre>fn insert(conn: &amp;Connection) {<br/>    let stdin = io::stdin();<br/>    let lines = stdin.lock().lines();<br/>    for line in lines {<br/>        let elems = line.unwrap();<br/>        let elems: Vec&lt;&amp;str&gt; = elems.split(",").collect();<br/>        if elems.len() == 4 {<br/>            let _ = conn.execute(<br/>                "INSERT INTO books (id, title, author, year) VALUES (?1, ?2, ?3, ?4)",<br/>                &amp;[&amp;elems[0], &amp;elems[1], &amp;elems[2], &amp;elems[3]],<br/>            );<br/>        }<br/>    }<br/>}</pre>
+<p>In <kbd>insert</kbd>, we first get a lock on <kbd>stdout</kbd> and iterate over the lines. Each line is split with commas. Following that, we call <kbd>execute</kbd> on <kbd>conn</kbd>, passing in an insert query string. In the query string, we use the template variables <kbd>?1</kbd>, <kbd>?2</kbd>, and so on, whose corresponding values are taken from the <kbd>elems</kbd> vector. If the number of elements collected is up to <kbd>4</kbd>, we insert the book using the raw SQL query and provide the corresponding values from the <kbd>elems</kbd> <kbd>Vec</kbd> for template variables.</p>
+<p>Next, our <kbd>query</kbd> function is defined as follows:</p>
+<pre>fn query(conn: &amp;Connection) {<br/>    let mut stmt = conn<br/>        .prepare("SELECT id, title, author, year FROM books WHERE year &gt;= ?1")<br/>        .unwrap();<br/>    let movie_iter = stmt<br/>        .query_map(&amp;[&amp;2013], |row| Book {<br/>            id: row.get(0),<br/>            title: row.get(1),<br/>            author: row.get(2),<br/>            year: row.get(3),<br/>        })<br/>        .unwrap();<br/><br/>    for movie in movie_iter.filter_map(extract_ok) {<br/>        println!("Found book {:?}", movie);<br/>    }<br/>}</pre>
+<p>The query function takes in <kbd>conn</kbd>, on which we call <kbd>prepare</kbd>, passing in the raw SQL query string. Here, we're filtering books that are greater than a given year. We store this query in <kbd>stmt</kbd>. Next, we call <kbd>query_map</kbd> on this type, passing in a reference to an array that contains just the number <kbd>2013</kbd>, which represents the year we want to filter the books against. As you can see, the API is a bit uneasy here. The second argument to <kbd>query_map</kbd> is a closure that is a <kbd>Row</kbd> type. Within the closure, we extract the respective fields from the <kbd>row</kbd> instance and construct a <kbd>Book</kbd> instance out of it. This returns an iterator, which we store in <kbd>movie_iter</kbd>. Finally, we iterate over our <kbd>movie_iter</kbd>, filtering any failed values using the <kbd>extract_ok</kbd> helper method. This is defined as follows:</p>
+<pre>fn extract_ok(p: Result&lt;Book, Error&gt;) -&gt; Option&lt;Book&gt; {<br/>    if p.is_ok() {<br/>        Some(p.unwrap())<br/>    } else {<br/>        None<br/>    }<br/>}</pre>
+<p>Then, we print the books. The full code is as follows:</p>
+<pre>// rusqlite_demo/src/main.rs<br/><br/>use std::io;<br/>use std::io::BufRead;<br/><br/>use rusqlite::Error;<br/>use rusqlite::{Connection, NO_PARAMS};<br/><br/>const CREATE_TABLE: &amp;str = "CREATE TABLE IF NOT EXISTS books <br/>                            (id INTEGER PRIMARY KEY,<br/>                            title TEXT NOT NULL,<br/>                            author TEXT NOT NULL,<br/>                            year INTEGER NOT NULL)";<br/><br/>#[derive(Debug)]<br/>struct Book {<br/>    id: u32,<br/>    title: String,<br/>    author: String,<br/>    year: u16,<br/>}<br/><br/>fn extract_ok(p: Result&lt;Book, Error&gt;) -&gt; Option&lt;Book&gt; {<br/>    if p.is_ok() {<br/>        Some(p.unwrap())<br/>    } else {<br/>        None<br/>    }<br/>}<br/><br/>fn insert(conn: &amp;Connection) {<br/>    let stdin = io::stdin();<br/>    let lines = stdin.lock().lines();<br/>    for line in lines {<br/>        let elems = line.unwrap();<br/>        let elems: Vec&lt;&amp;str&gt; = elems.split(",").collect();<br/>        if elems.len() &gt; 2 {<br/>            let _ = conn.execute(<br/>                "INSERT INTO books (id, title, author, year) VALUES (?1, ?2, ?3, ?4)",<br/>                &amp;[&amp;elems[0], &amp;elems[1], &amp;elems[2], &amp;elems[3]],<br/>            );<br/>        }<br/>    }<br/>}<br/><br/>fn init_database(conn: &amp;Connection) {<br/>    conn.execute(CREATE_TABLE, NO_PARAMS).unwrap();<br/>}<br/><br/>fn query(conn: &amp;Connection) {<br/>    let mut stmt = conn<br/>        .prepare("SELECT id, title, author, year FROM books WHERE year &gt;= ?1")<br/>        .unwrap();<br/>    let movie_iter = stmt<br/>        .query_map(&amp;[&amp;2013], |row| Book {<br/>            id: row.get(0),<br/>            title: row.get(1),<br/>            author: row.get(2),<br/>            year: row.get(3),<br/>        })<br/>        .unwrap();<br/><br/>    for movie in movie_iter.filter_map(extract_ok) {<br/>        println!("Found book {:?}", movie);<br/>    }<br/>}<br/><br/>fn main() {<br/>    let conn = Connection::open("./books").unwrap();<br/>    init_database(&amp;conn);<br/>    insert(&amp;conn);<br/>    query(&amp;conn);<br/>}</pre>
+<p>We also have a books.csv file in the same directory. We can run it by running:</p>
+<pre><strong>cargo run &lt; books.csv</strong></pre>
+<p>Here's the output of the program upon running:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img class=" image-border" src="assets/9605d0c0-ab0d-4296-b8fe-93a031b7a0f0.png" style="width:81.58em;height:9.25em;"/></div>
+<p class="mce-root"/>
+<p>This is nowhere near a representative real-world database-backed application and is just for demonstrating the usage of the library. A real-world application wouldn't be reading from the standard input and the querying routines would have better error handling.</p>
+<p>This was a brief demonstration of how to use a SQLite database with Rust by using the <kbd>rusqlite</kbd> crate. The API is not very strongly typed, but currently it's the only solution we've got. Next, we'll look at one of the big brothers of SQLite, which is the PostgreSQL database management system.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">PostgreSQL</h1>
+                </header>
+            
+            <article>
+                
+<p>While SQLite is fine for prototyping and simpler use cases, a real relational database management system can make the life of a developer much easier. One such sophisticated database system is PostgreSQL. To integrate postgres in Rust, we have the <kbd>postgres</kbd> crate on <em>crates.io</em>. It's a native Rust client, meaning that it does not ride on a C library but implements the whole protocol in Rust. If the API looks familiar to the <kbd>rusqlite</kbd> crate, this is deliberate; the SQLite client's API is actually based on the postgres client.The <kbd>postgres</kbd> crate supports some of PostgreSQL's unique features, such as bit vectors, time fields, JSON support, and UUIDs.</p>
+<p>In this section, we'll explore interacting with postgres by creating a sample program that initializes the postgres database and does a few inserts and queries on the database. We assume that you have already set up the database on your system. The PostgreSQL version used for the example is 9.5.</p>
+<div class="packt_infobox">To install the PostgreSQL database system, the following DigitalOcean article is recommended: <a href="https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-on-ubuntu-16-04">https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-on-ubuntu-16-04</a>.</div>
+<p>Postgres comes with its command line tool called <kbd>psql</kbd> which can be used to run queries, examine tables, manage roles, view system information and much more. You can view the postgres version running on your system by running the following commands inside the psql prompt. First we'll launch <kbd>psql</kbd> by running:</p>
+<pre><strong>$ sudo -u postgres psql</strong></pre>
+<p>Once we are within the psql, we run the following command at the prompt:</p>
+<pre><strong>postgres=# SELECT version();</strong></pre>
+<p>Running the command above, gives the following output:</p>
+<pre>PostgreSQL 9.5.14 on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 5.4.0-6ubuntu1~16.04.10) 5.4.0 20160609, 64-bit</pre>
+<p>To make this example simpler, we'll reuse the same books data that we used in our <kbd>rusqlite</kbd> demo. We'll use the default <kbd>"postgres"</kbd> user in the following examples, with the password as <kbd>"postgres"</kbd>. You'll need to adapt the following examples to match your new user. Let's fire up a new project by running <kbd>cargo new postgres_demo</kbd>. Here's our dependencies in <kbd>Cargo.toml</kbd>:</p>
+<pre># postgres_demo/Cargo.toml<br/><br/>[dependencies]<br/>postgres = "0.15.2"<br/>serde = { version = "1.0.82"}<br/>serde_derive = "1.0.82"<br/>serde_json = "1.0.33"</pre>
+<p>Let's run through the code in <kbd>main.rs</kbd>:</p>
+<pre>// postgres_demo/src/main.rs<br/><br/>use postgres::{Connection, TlsMode};<br/><br/>const DROP_TABLE: &amp;str = "DROP TABLE IF EXISTS books";<br/>const CONNECTION: &amp;str = "postgres://postgres:postgres@localhost:5432";<br/>const CREATE_TABLE: &amp;str = "CREATE TABLE IF NOT EXISTS books <br/>                            (id SERIAL PRIMARY KEY,<br/>                            title VARCHAR NOT NULL,<br/>                            author VARCHAR NOT NULL,<br/>                            year SERIAL)";<br/><br/>#[derive(Debug)]<br/>struct Book {<br/>    id: i32,<br/>    title: String,<br/>    author: String,<br/>    year: i32<br/>}<br/><br/>fn reset_db(conn: &amp;Connection) {<br/>    let _ = conn.execute(DROP_TABLE, &amp;[]).unwrap();<br/>    let _ = conn.execute(CREATE_TABLE, &amp;[]).unwrap();<br/>}</pre>
+<p>We have a bunch of string constants for connecting to the database and creating and deleting the books table. Next is our function <kbd>main</kbd>:</p>
+<pre>// postgres_demo/src/main.rs<br/><br/>fn main() {<br/>    let conn = Connection::connect(CONNECTION, TlsMode::None).unwrap();<br/>    reset_db(&amp;conn);<br/><br/>    let book = Book {<br/>        id: 3,<br/>        title: "A programmers introduction to mathematics".to_string(),<br/>        author: "Dr. Jeremy Kun".to_string(),<br/>        year: 2018<br/>    };<br/><br/>    conn.execute("INSERT INTO books (id, title, author, year) VALUES ($1, $2, $3, $4)",<br/>                 &amp;[&amp;book.id, &amp;book.title, &amp;book.author, &amp;book.year]).unwrap();<br/><br/>    for row in &amp;conn.query("SELECT id, title, author, year FROM books", &amp;[]).unwrap() {<br/>        let book = Book {<br/>            id: row.get(0),<br/>            title: row.get(1),<br/>            author: row.get(2),<br/>            year: row.get(3)<br/>        };<br/>        println!("{:?}", book);<br/>    }<br/>}</pre>
+<p>Because we are not using an ORM here, and just a low-level interface, we'll need to unpack the values into the database query manually. Let's run this program:</p>
+<p><img src="assets/21ff948c-f012-4cce-83bb-1f2f8a075cd5.png"/></p>
+<p>Here's an output of the program, along with a <kbd>psql</kbd> query of the table to show the contents afterwards:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img class=" image-border" src="assets/bbef2889-a031-4572-a8e0-efeae1da3fd9.png" style="width:44.17em;height:18.08em;"/></div>
+<p class="mce-root"/>
+<p>First, we list our database with the <kbd>\dt</kbd> command at the <kbd>psql</kbd> prompt. Following that, we use the query, that is, <kbd>"select * from books"</kbd>.</p>
+<p>That's the basics o interacting with PostgreSQL with Rust. Next, let's explore how we can make our database queries efficient by using the concept of connection pooling.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Connection pooling with r2d2</h1>
+                </header>
+            
+            <article>
+                
+<p>Opening and closing a database connection every time new transactions take place becomes a bottleneck really quickly. Typically, opening a database connection is an expensive operation. This is mostly because of the associated TCP handshake that's required to create socket connections on both sides. The overhead is even more expensive if the database is hosted on a remote server, which is usually the case. If we could reuse the connection for every subsequent request that gets sent to our database, we might reduce the latency a great deal. An efficient way to mitigate this overhead is to employ database connection pooling. When a process needs a new connection, it is given an existing connection from the pool of connections. When the process has completed the required operation with the database, this connection handle goes back to the pool to be used later.</p>
+<p>In Rust, we have the <kbd>r2d2</kbd> crate, which leverages traits to provide a generic way of maintaining connection pools for various databases. It provides various backends as sub-crates, and supports PostgreSQL, Redis, MySQL, MongoDB, SQLite, and a few other known database systems. The architecture of <kbd>r2d2</kbd> consists of two parts: a generic part and a backend-specific part. The backend code attaches to the generic part by implementing r2d2's <kbd>ManageConnection</kbd> trait and by adding a connection manager for the specific backend. The trait is as follows:</p>
+<pre>pub trait ManageConnection: Send + Sync + 'static {<br/>    type Connection: Send + 'static;<br/>    type Error: Error + 'static;<br/>    fn connect(&amp;self) -&gt; Result&lt;Self::Connection, Self::Error&gt;;<br/>    fn is_valid(&amp;self, conn: &amp;mut Self::Connection) -&gt; Result&lt;(), Self::Error&gt;;<br/>    fn has_broken(&amp;self, conn: &amp;mut Self::Connection) -&gt; bool;<br/>}</pre>
+<p>Looking at the trait definition, we need to specify a <kbd>Connection</kbd> type, which must be <kbd>Send</kbd> and <kbd>'static</kbd>, and an <kbd>Error</kbd> type. We also have three methods: <kbd>connect</kbd>, <kbd>is_valid</kbd>, and <kbd>has_broken</kbd>. The <kbd>connect</kbd> method returns the <kbd>Connection</kbd> type that comes from the underlying backend crate; for instance, it would be the <kbd>postgres::Connection</kbd> type for the postgres backend. The <kbd>Error</kbd> type is an enum that specifies all the possible <kbd>Error</kbd> cases that may happen during either the connection phase or while checking the validity of the connection.</p>
+<p>For demonstration purposes, we'll look at how we can use the <kbd>r2d2</kbd> crate here by first checking out how to connect to PostgreSQL using a pool. We'll take the code from the previous section and modify it to use a connection pool, where we make SQL queries from <kbd>8</kbd> threads.</p>
+<p>Here's the full code of a pooled and threaded implementation using <kbd>r2d2-postgres</kbd> backend crate:</p>
+<pre>// r2d2_demo/src/main.rs<br/><br/>use std::thread;<br/>use r2d2_postgres::{TlsMode, PostgresConnectionManager};<br/>use std::time::Duration;<br/><br/>const DROP_TABLE: &amp;str = "DROP TABLE IF EXISTS books";<br/><br/>const CREATE_TABLE: &amp;str = "CREATE TABLE IF NOT EXISTS books <br/>                            (id SERIAL PRIMARY KEY,<br/>                            title VARCHAR NOT NULL,<br/>                            author VARCHAR NOT NULL,<br/>                            year SERIAL)";<br/><br/>#[derive(Debug)]<br/>struct Book {<br/>    id: i32,<br/>    title: String,<br/>    author: String,<br/>    year: i32<br/>}<br/><br/>fn main() {<br/>    let manager = PostgresConnectionManager::new("postgres://postgres:postgres@localhost:5432",<br/>                                                 TlsMode::None).unwrap();<br/>    let pool = r2d2::Pool::new(manager).unwrap();<br/>    let conn = pool.get().unwrap();<br/><br/>    let _ = conn.execute(DROP_TABLE, &amp;[]).unwrap();<br/>    let _ = conn.execute(CREATE_TABLE, &amp;[]).unwrap();<br/>    <br/>    thread::spawn(move || {<br/>        let book = Book {<br/>            id: 3,<br/>            title: "A programmers introduction to mathematics".to_string(),<br/>            author: "Dr. Jeremy Kun".to_string(),<br/>            year: 2018<br/>        };<br/>        conn.execute("INSERT INTO books (id, title, author, year) VALUES ($1, $2, $3, $4)",<br/>                    &amp;[&amp;book.id, &amp;book.title, &amp;book.author, &amp;book.year]).unwrap();                                         <br/>    });<br/><br/>    thread::sleep(Duration::from_millis(100));<br/>    for _ in 0..8 {<br/>        let conn = pool.get().unwrap();<br/>        thread::spawn(move || {<br/>            for row in &amp;conn.query("SELECT id, title, author, year FROM books", &amp;[]).unwrap() {<br/>                let book = Book {<br/>                    id: row.get(0),<br/>                    title: row.get(1),<br/>                    author: row.get(2),<br/>                    year: row.get(3)<br/>                };<br/>                println!("{:?}", book);<br/>            }<br/>        });<br/>    }<br/>}<br/><br/></pre>
+<p>The code is fairly straight forward from the last example, except that we now spawn 8 threads to do a select query on our database. The pool size is configured to a value of <kbd>8</kbd>, which means that the <kbd>SELECT</kbd> query threads get to do 8 queries concurrently by reusing the connections for any further requests.</p>
+<p>Now up until this point, we have been mostly using raw SQL queries for interacting with databases from Rust. But, there's a more convenient strongly typed approach to interacting with databases through an ORM library called diesel. Let's explore that next.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Postgres and the diesel ORM</h1>
+                </header>
+            
+            <article>
+                
+<p>Writing a complex application using low-level database libraries with raw SQL queries is a recipe for a lot of mistakes. Diesel is an ORM (Object Relational Mapper) and a query builder for Rust. It makes heavy use of procedural macros. It detects most database interaction errors at compile time and is able to produce very efficient code in most cases, sometimes even beating low-level access with C. This is due to its ability to move checks that are typically made at runtime to compile time. At the time of writing, diesel supports PostgreSQL, MySQL, and SQLite out of the box.</p>
+<p>We'll be integrating database support to the linksnap server that we developed in <a href="ea972b20-1dc0-46d2-a0b8-d4186b0fe2c7.xhtml">Chapter 13</a>, <em>Building Web Applications with Rust</em>. We're going to use diesel to communicate with our postgres database in a type-safe manner. We'll copy the <kbd>linksnap</kbd> project from <a href="80838e60-3afc-4e3b-8ad4-493d7f9381af.xhtml">Chapter 13</a>, <em>Building Web Applications with Rust</em>, and rename it <kbd>linksnap_v2</kbd>. We won't be going over the full source code walk-through—only the parts that affect the integration of the database with diesel. The rest of the code base is exactly the same as in the previous chapter.</p>
+<p>The diesel project is built of many components. First, we have a command line tool called <kbd>diesel-cli</kbd> that automates the process of creation of database and performing any migration to the database if required.</p>
+<p>Now, before we start implementing routines for talking to our database, we need to install the <kbd>diesel-cli</kbd> tool, which will set up our database and the tables inside it. We can install it by running the following command:</p>
+<pre><strong>cargo install diesel_cli --no-default-features --features postgres</strong></pre>
+<p>We are only using the postgres feature from this CLI tool and so the <kbd>--features</kbd> flag. <kbd>Cargo</kbd> will fetch and build <kbd>diesel_cli</kbd> and its dependencies, and install the binary to Cargo's default binary location for your user, which is usually <kbd>~/.cargo/bin/</kbd> directory.</p>
+<p>Within our <kbd>linksnap_v2</kbd> directory, we'll then add the connection URL to our database in a <kbd>.env</kbd> file that's located in the directory root with the following contents:</p>
+<div>
+<pre><strong><span>DATABASE_URL</span><span>=</span><span>postgres://postgres:postgres@localhost/linksnap</span></strong></pre></div>
+<p>Our database in postgres is named <kbd>linksnap</kbd>, and both the username and password is <kbd>postgres</kbd>. This is in no way a secure way to access our database and it's recommended that you use the best security practices to set up your postgres database in a production environment.</p>
+<p>We'll also need to add <kbd>diesel</kbd> as a dependency in our <kbd>Cargo.toml</kbd> file, along with the <kbd>dotenv</kbd> library. The <kbd>dotenv</kbd> crate handles local configuration via <em>dotfiles</em>. Here's our <kbd>Cargo.toml</kbd> file:</p>
+<pre># linksnap_v2/Cargo.toml<br/><br/>[dependencies]<br/>actix = "0.7"<br/>actix-web = "0.7"<br/><br/>futures = "0.1"<br/>env_logger = "0.5"<br/>bytes = "0.4"<br/>serde = "1.0.80"<br/>serde_json = "1.0.33"<br/>serde_derive = "1.0.80"<br/>url = "1.7.2"<br/>lazy_static = "1.2.0"<br/>log = "0.4.6"<br/>chrono = { version="0.4" }<br/>diesel = { version = "1.3.3", features = ["extras", "postgres", "r2d2"] }<br/>dotenv = "0.13.0"</pre>
+<p>Notice the features on the diesel crate where we use <kbd>"postgres"</kbd> and <kbd>"r2d2"</kbd>. Next, we'll run <kbd>diesel setup</kbd>:</p>
+<pre>Creating migrations directory at: /home/creativcoder/book/Mastering-RUST-Second-Edition/Chapter14/linksnap_v2/migrations</pre>
+<p>This creates a diesel.toml file at the root directory with the following contents:</p>
+<pre># linksnap_v2/diesel.toml<br/><br/># For documentation on how to configure this file,<br/># see diesel.rs/guides/configuring-diesel-cli<br/><br/>[print_schema]<br/>file = "src/schema.rs"</pre>
+<p>Diesel uses macros quite heavily to give us great features, such as extra safety and performance at compile time. To be able to do this, it needs compile-time access to the database. This is why the <kbd>.env</kbd> file is important. The <kbd>diesel setup</kbd> command automatically generates model types by reading the database and writing it to a file called <kbd>schema.rs</kbd>. The models are generally split into query and insert structs. Both use derive macros to generate model code for different use cases. In addition to this, a diesel-based application needs code to connect to the database and a set of database migrations to build up and maintain the database tables.</p>
+<p>Now, let's add a migration that creates our table by running the following code:</p>
+<pre><strong>diesel migration generate linksnap</strong></pre>
+<p>This command generates a new migration with two empty <kbd>up.sql</kbd> and <kbd>down.sql</kbd> migration files:</p>
+<pre>Creating migrations/2019-01-30-045330_linksnap/up.sql<br/>Creating migrations/2019-01-30-045330_linksnap/down.sql</pre>
+<p>The migration files are just plain SQL, so we can just put in our earlier <kbd>CREATE TABLE</kbd> command:</p>
+<pre>-- linksnap_v2/migrations/2019-01-30-045330_linksnap_db/up.sql<br/><br/>CREATE TABLE linksnap (<br/>  id SERIAL PRIMARY KEY,<br/>  title VARCHAR NOT NULL,<br/>  url TEXT NOT NULL,<br/>  added TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP<br/>)</pre>
+<p>The <kbd>down.sql</kbd> file should contain a corresponding <kbd>DROP TABLE</kbd>:</p>
+<pre>-- linksnap_v2/migrations/2019-01-30-045330_linksnap_db/down.sql<strong><br/></strong>DROP TABLE linksnap</pre>
+<p>Once we do that, we have to run:</p>
+<pre><strong>$ diesel migration run</strong></pre>
+<p>This will create a <kbd>schema.rs</kbd> file by reading from the database:</p>
+<pre>// linksnap_v2/src/schema.rs<br/><br/>table! {<br/>    linksnap (id) {<br/>        id -&gt; Int4,<br/>        title -&gt; Varchar,<br/>        url -&gt; Text,<br/>        added -&gt; Timestamp,<br/>    }<br/>}</pre>
+<p>The <kbd>table!</kbd> macro generates code for the <kbd>linksnap</kbd> table with <kbd>id</kbd> as the primary key. It also specifies the column names with <kbd>id</kbd>, <kbd>title</kbd>, <kbd>url</kbd> and <kbd>added</kbd>.</p>
+<p>Now we can write a model for this table. In diesel, models can live in any visible module, but we'll go with the convention of putting them in <kbd>src/models.rs</kbd>. Here's its contents for our <kbd>Link</kbd> model:</p>
+<pre>// linksnap_v2/src/models.rs<br/><br/>use chrono::prelude::*;<br/>use diesel::prelude::Queryable;<br/>use chrono::NaiveDateTime;<br/>use diesel;<br/>use diesel::pg::PgConnection;<br/>use diesel::prelude::*;<br/>use crate::state::AddLink;<br/>use crate::schema::linksnap;<br/>use crate::schema::linksnap::dsl::{linksnap as get_links};<br/>use serde_derive::{Serialize, Deserialize};<br/><br/>pub type LinkId = i32;<br/><br/>#[derive(Queryable, Debug)]<br/>pub struct Link {<br/>    pub id: i32,<br/>    pub title: String,<br/>    pub url: String,<br/>    pub added: NaiveDateTime,<br/>}<br/><br/>impl Link {<br/>    pub fn add_link(new_link: AddLink, conn: &amp;PgConnection) -&gt; QueryResult&lt;usize&gt; {<br/>        diesel::insert_into(linksnap::table)<br/>            .values(&amp;new_link)<br/>            .execute(conn)<br/>    }<br/><br/>    pub fn get_links(conn: &amp;PgConnection) -&gt; QueryResult&lt;Vec&lt;Link&gt;&gt; {<br/>        get_links.order(linksnap::id.desc()).load::&lt;Link&gt;(conn)<br/>    }<br/><br/>    pub fn rm_link(id: LinkId, conn: &amp;PgConnection) -&gt; QueryResult&lt;usize&gt; {<br/>        diesel::delete(get_links.find(id)).execute(conn)<br/>    }<br/>}</pre>
+<p>We have created a <kbd>Link</kbd> struct that can be used to query the database. It also has various methods that are invoked when we our server receives requests on the respective endpoints.</p>
+<p>Next, the <kbd>state.rs</kbd> file contains diesel and postgres specific code:</p>
+<pre>// linksnap_v2/src/state.rs<br/><br/>use diesel::pg::PgConnection;<br/>use actix::Addr;<br/>use actix::SyncArbiter;<br/>use std::env;<br/>use diesel::r2d2::{ConnectionManager, Pool, PoolError, PooledConnection};<br/>use actix::{Handler, Message};<br/>use crate::models::Link;<br/>use serde_derive::{Serialize, Deserialize};<br/>use crate::schema::linksnap;<br/>use std::ops::Deref;<br/><br/>const DB_THREADS: usize = 3;<br/><br/>use actix_web::{error, Error};<br/>use actix::Actor;<br/>use actix::SyncContext;<br/><br/>// Using this we create the connection pool.<br/>pub type PgPool = Pool&lt;ConnectionManager&lt;PgConnection&gt;&gt;;<br/>type PgPooledConnection = PooledConnection&lt;ConnectionManager&lt;PgConnection&gt;&gt;;<br/>pub struct Db(pub PgPool);<br/><br/>// We define a get conn a convenient method to get<br/>impl Db {<br/>    pub fn get_conn(&amp;self) -&gt; Result&lt;PgPooledConnection, Error&gt; {<br/>        self.0.get().map_err(|e| error::ErrorInternalServerError(e))<br/>    }<br/>}</pre>
+<p>First we create a bunch of convenient aliases for our PostgreSQL connection pool. We have the same <kbd>Db</kbd> struct that wraps a PgPool type. The PgPool type is a <kbd>ConnectionManager</kbd> from the <kbd>r2d2</kbd> module in diesel. On the <kbd>Db</kbd> struct, we also define the <kbd>get_conn</kbd> method, which returns a reference to a pooled connection.</p>
+<p>Continuing down the same file:</p>
+<pre><br/>// We then implement the Actor trait on the actor.<br/>impl Actor for Db {<br/>    type Context = SyncContext&lt;Self&gt;;<br/>}<br/><br/>pub fn init_pool(database_url: &amp;str) -&gt; Result&lt;PgPool, PoolError&gt; {<br/>    let manager = ConnectionManager::&lt;PgConnection&gt;::new(database_url);<br/>    Pool::builder().build(manager)<br/>}<br/><br/>// This type is simply wraps a Addr what we <br/>#[derive(Clone)]<br/>pub struct State {<br/>    pub inner: Addr&lt;Db&gt;<br/>}<br/><br/>impl State {<br/>    // The init method creates <br/>    pub fn init() -&gt; State {<br/>        let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");<br/>        let pool = init_pool(&amp;database_url).expect("Failed to create pool");<br/>        let addr = SyncArbiter::start(DB_THREADS, move || Db(pool.clone()));<br/>        let state = State {<br/>            inner: addr.clone()<br/>        };<br/>        state<br/>    }<br/>    pub fn get(&amp;self) -&gt; &amp;Addr&lt;Db&gt; {<br/>        &amp;self.inner<br/>    }<br/>}</pre>
+<p class="mce-root"/>
+<p>We have the familiar State type, but the init method is different here. It first creates accesses the <kbd>DATABASE_URL</kbd> environment variable and tries to make a pooled connection using the <kbd>database_url</kbd> in <kbd>pool</kbd>.  We then start a <kbd>SyncArbiter</kbd> thread cloning the <kbd>pool</kbd>. Finally we return back the <kbd>state</kbd> instance to the caller.</p>
+<p>Apart from that, we don't need to change much of our linksnap code base from the previous version. Let's take our new server for a spin. We'll insert a Link to our server using curl as:</p>
+<pre><strong>curl --header "Content-Type: application/json" \</strong><br/><strong>  --request POST \</strong><br/><strong>  --data '{"title":"rust webpage","url":"https://rust-lang.org"}' \</strong><br/><strong>  127.0.0.1:8080/add</strong></pre>
+<p>Now to confirm that this link made it to our postgres database, let's query for this entry from the psql prompt:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/1acba38a-6390-427f-856b-61382f6c1174.png" style="width:42.08em;height:24.25em;"/></p>
+<p>Great ! our curl request made it to the postgres database.</p>
+<p>Diesel's barrier to entry is a tad high though, but the situation should improve as more and more examples and literature come along.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we took a quick look at a few ways to perform basic database interaction using Rust by using the low-level SQLite and PostgreSQL library crates. We saw how to augment database connectivity with a connection pool using r2d2. Finally, we made a small application with Diesel, a safe and performant ORM.</p>
+<p>In the next chapter, we'll take a look at how Rust can be made to run on the web by using a bleeding edge technology called WebAssembly.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

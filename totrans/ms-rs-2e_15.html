@@ -1,0 +1,305 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Rust on the Web with WebAssembly</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">Rust extends far beyond its system programming domain and can be made to run on the web as well. In this chapter, we'll explore one such technology for doing this, called WebAssembly. We'll go into the details of what exactly WebAssembly is, and how Rust can be made to run alongside JavaScript using this technology.Being able to run on web browsers unlocks a domain that enables Rust to be used by a much larger audience, that is, the community of web developers, and enables them to leverage the performance of a systems language in their applications. Later in this chapter, we'll explore the tools and libraries that offer WebAssembly support, and build a live markdown editor that invokes an API implemented in Rust for rendering markdown documents to an HTML page.</p>
+<p>In this chapter, we will cover the following topics</p>
+<ul>
+<li>What is WebAssembly?</li>
+<li>The goals of WebAssembly</li>
+<li>How can WebAssembly be used?</li>
+<li>The tale of Rust and WebAssembly and available crates</li>
+<li>Building a WebAssembly-based web application in Rust</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What is WebAssembly?</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_quote">"Be curious. Read widely. Try new things. I think a lot of what people call intelligence boils down to curiosity."                                                                                                                   – Aaron Swartz</div>
+<p>WebAssembly is a suite of technologies and specifications that allows native code to run on the web by compiling down to a low-level programming language called <strong>wasm</strong>. From a usability perspective, it's a set of technologies that allows programs written in other non-web programming languages to run on web browsers. From a technical standpoint, WebAssembly is a virtual machine specification with a binary, load-time-efficient <strong>Instruction Set Architecture (ISA)</strong>. Okay, that's jargon overload. Let's simplify this definition a bit. As we know, a compiler is a complex program that turns code written in a human-readable programming language into machine code consisting of zeroes and ones. However, this translation happens in a multi-step process. It does this in several phases of compilation where, in the end, it gets compiled to the assembly language that's specific to the machine. Following that, the machine-specific assembler encodes it to the machine code by following the rules specified in the ISA for the target machine. Here, the compiler is targeting a real machine. However, it doesn't always have to be a real machine. It can also be a virtual machine (VM) executing its own virtual instruction set on top of a real machine. One example of virtual machines are video game emulators such as the Gameboy emulator that runs on normal computers and emulates the Gameboy hardware. A WebAssembly virtual machine is similar to that! Here, the browser engine implements the WebAssembly virtual machine, which enables us to run wasm code alongside JavaScript.</p>
+<div class="packt_infobox">An instruction set architecture or ISA defines how a computer executes instructions and what sort of operations it supports at the lowest level. This ISA doesn't have to always be for a real physical machine; it can also be defined for a virtual machine. Wasm is the ISA for WebAssembly virtual machines.</div>
+<p>The past 5 years of increasing dependence on the web and its diverse range of applications has resulted in developers trying hard to transpile their code to JavaScript. This is because JavaScript is the most popular and is the only cross-platform technology on the web. One project, called <kbd>asm.js</kbd>, from Mozilla (a faster-typed subset of JavaScript) was the first effort to make the web more efficient and fast enough to meet growing demands. From <kbd>asm.js</kbd> and its founding principles and learned lessons, WebAssembly was born.</p>
+<p>WebAssembly is a joint effort from the browser committee bodies of various major companies, namely Mozilla, Google, Apple, and Microsoft. Since early 2018, it has seen a tremendous rise in popularity as a compilation target for a wide variety of languages, ranging from <em>C++</em> using the Emscripten toolchain, Rust using LLVM/Emscripten, TypeScript using AssemblyScript, and many others. As of 2019, all major browsers implement a WebAssembly virtual machine in their web browser engine.</p>
+<p>WebAssembly has the name assembly in it, as it's a low-level programming language similar to assembly instructions. It has a limited set of primitive types, which makes the language simple to parse and run. It supports the following types natively:</p>
+<ul>
+<li><strong>i32</strong>: 32-bit integer</li>
+<li><strong>i64</strong>: 64-bit integer</li>
+<li><strong>f32</strong>: 32-bit floating point</li>
+<li><strong>f64</strong>: 64-bit floating point</li>
+</ul>
+<p>It's less of a programming language that you will write daily, like JavaScript, but more of a compilation target for compilers. The WebAssembly platform and the ecosystem is currently focused on running this technology on the web, but it's not limited to the web in any way. If a platform implements the WebAssembly virtual machine specification as a program, a wasm program will be able to run on that virtual machine.</p>
+<p>To support WebAssembly on any platform, a virtual machine needs to be implemented in the language that is supported by the platform. This is just like JVM's platform-agnostic code—write once, run faster, safe anywhere! But it's primary target, as of now, is the browser. Most web browsers come with a JavaScript parser that can parse <kbd>.js</kbd> files in their browser engines to enable all sorts of interactivity for the user. To allow the web to interpret wasm files too, these engines implement the WebAssembly VM within them, allowing browsers to interpret and run wasm code alongside JavaScript code.</p>
+<p>A stark difference between parsing JavaScript and parsing WebAssembly code is that wasm code is an order of magnitude faster to parse because of its compact representation. Most of the initial page-load time on dynamic websites is spent on parsing JavaScript code, and using WebAssembly can provide a huge boost in performance for these websites. The goal of WebAssembly, however, is not to replace JavaScript, but to be a helping hand for JavaScript when performance matters.</p>
+<p>WebAssembly's language comes in two formats, as per the specification, which is defined at <a href="https://webassembly.org/">https://webassembly.org/</a>: the human-readable text format, <kbd>.wat</kbd>, which is suitable for viewing and debugging WebAssembly code before its final deployment, and the compact, low-level machine format called <strong>wasm</strong>. The <kbd>.wasm</kbd> format is the one that's interpreted and executed by the WebAssembly VM.</p>
+<p>A WebAssembly program starts with a module. Within a module, you can define variables, functions, constants, and so on. Wasm programs are written as s-expressions. S-expressions are a concise way to represent programs via a nested sequence of parenthesis-delimited blocks. For instance, a single <kbd>(1)</kbd> is an s-expression that returns the value <kbd>1</kbd>. Every s-expression in WebAssembly returns a value. Let's take a look at a very minimal WebAssembly program in the readable <kbd>.wat</kbd> format:</p>
+<pre class="graf graf--pre graf-after--p">(module<br/> (table 0 anyfunc)<br/> (memory $0 1)<br/> (export "memory" (memory $0))<br/> (export "one" (func $one))<br/> (func $one (; 0 ;) (result i32)<br/>  (i32.const 1)<br/> )<br/>)</pre>
+<p>In the preceding <kbd>wat</kbd> code, we have a parent s-expression block <kbd>(module)</kbd> that contains other nested s-expressions. Inside <kbd>module</kbd>, we have sections called <kbd>table</kbd>, <kbd>memory</kbd>, and <kbd>export</kbd>, and a <kbd>func</kbd> definition called <kbd>$one</kbd>, which returns an <kbd>i32</kbd>. We won't be going into the details of them, as that would digress us too far.</p>
+<p>The important point to mention about wasm programs is that they are very efficient in their representation and can be sent and parsed much faster in browsers than JavaScript. Having said that, WebAssembly was designed with a focused set of goals and not to be a general-purpose programming language.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Design goals of WebAssembly</h1>
+                </header>
+            
+            <article>
+                
+<p>WebAssembly's design is the result of a joint collaboration between major browser vendors. Together, they aim to shape its design with the following goals in mind:</p>
+<ul>
+<li><strong>Be as safe and universal as JavaScript</strong>: The web platform is an unsafe environment and having untrusted code run is detrimental to the safety of users on the web.</li>
+<li><strong>Run as quickly as native code</strong>: Because the language is quite compact, WebAssembly can be loaded faster than JavaScript code and can be interpreted five times faster than JavaScript.</li>
+<li><strong>Provide consistent, predictable performance</strong>: Being statically typed, and with very minimal analysis happening at runtime, WebAssembly is able to provide consistent performance on the web, whereas JavaScript falls short because of its dynamic nature.</li>
+<li><strong>Allow code reuse between web and native</strong>: A lot of existing code bases in C/C++, Rust, and other languages can now be reused and run on the web after compilation to WebAssembly.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Getting started with WebAssembly</h1>
+                </header>
+            
+            <article>
+                
+<p>Though WebAssembly modules can be written by hand, it is not advisable to do so, as the code is hard to maintain and is not human-friendly. It is a pretty low-level language and, as a result, creating complex applications using raw wasm code can be challenging and time-consuming. Instead, it is often compiled to, or generated from, a variety of languages. Let's look at the available tools that we can use to explore the details of how WebAssembly programs are written and run.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Trying it out online</h1>
+                </header>
+            
+            <article>
+                
+<p>Before we discuss how WebAssembly is used as a compilation target across different language ecosystems, we can explore it online without requiring any kind of setup on our machine. Some tools that can be used to do this are as follows:</p>
+<ul>
+<li><strong>WebAssembly Studio</strong>: The folks at Mozilla have created a really handy tool to try out WebAssembly in a quick way, and it's hosted at <a href="https://webassembly.studio">https://webassembly.studio</a>. Using this tool, we can experiment and prototype ideas in WebAssembly really quickly.</li>
+<li><strong>Wasm Fiddle</strong><span>: This is another handy tool for trying out wasm code online, and can be found at</span> <a href="https://wasdk.github.io/WasmFiddle/">https://wasdk.github.io/WasmFiddle/</a><span>.</span></li>
+</ul>
+<p>There are other tools online and community resources for you to explore, all of which you can find at <a href="https://github.com/mbasso/awesome-wasm">https://github.com/mbasso/awesome-wasm</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Ways to generate WebAssembly</h1>
+                </header>
+            
+            <article>
+                
+<p>There are several compiler toolchain projects that can help developers compile their code from any language to wasm. Compiling native code has huge implications for the web. It means that most major performance-intensive code can now be run on the web. For instance, C++ code can be compiled to wasm using the emscripten LLVM backend. The emscripten project takes in the LLVM IR generated by the C++ compiler and converts it into WebAssembly modules in wasm format. There are also projects such as AssemblyScript, which convert TypeScript code into WebAssembly using another emscripten-like tool, called binaryen. Rust also supports emitting WebAssembly code by default using LLVM's native WebAssembly backend. Compiling to wasm with Rust is very simple. First, we need to add the wasm by running the following code:</p>
+<pre><strong>rustup target add wasm32-unknown-unknown</strong></pre>
+<p>Once that is done, we can compile any Rust program to wasm by running the following code:</p>
+<pre><strong> cargo build --target=wasm32-unknown-unknown</strong></pre>
+<p>This is the bare minimum that's needed to create a wasm file from a Rust crate, but it's a lot of hand holding from there. Fortunately, there are amazing projects being developed around the wasm and Rust ecosystem that allow for more higher-level, intuitive interaction with JavaScript and Rust, and vice versa. We'll explore one such project, called wasm-bindgen, and build a real-world web application soon.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Rust and WebAssembly</h1>
+                </header>
+            
+            <article>
+                
+<p>The ecosystem around Rust and WebAssembly is hurtling at quite a fast pace and it'll take time before the community agrees on a set of tools for building practical applications. Fortunately, some tools and libraries are emerging that give us a picture of what to expect as developers when building applications for the web in Rust using WebAssembly.</p>
+<p>In this section, we'll explore a crate from the community called <kbd>wasm-bindgen</kbd><em>.</em> This crate is pretty much a work in progress, as the WebAssembly specification itself is a work in progress, but nonetheless, it is quite feature-rich to explore what is possible.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Wasm-bindgen</h1>
+                </header>
+            
+            <article>
+                
+<p><kbd>wasm-bindgen</kbd> is a crate that was developed by the rust-wasm team on GitHub. It allows Rust code to call JavaScript code and vice versa. Based on this library, other higher-level libraries have been built, such as the <kbd>web-sys</kbd> crate and the <kbd>js-sys</kbd> crate.</p>
+<p>JavaScript by itself is what is defined by the ECMA standard, but the standard does not specify how it works on the web. JavaScript can support many hosts and the web happens to be one of them. The <kbd>web-sys</kbd> crate gives access to all of the JavaScript APIs on the web, that is, DOM APIs such as <kbd>Window</kbd>, <kbd>Navigator</kbd>, <kbd>EventListener</kbd>, and so on. The <kbd>js-sys</kbd> crate provides all of the base JavaScript objects that are specified in the ECMA standard specification, that is, functions, objects, numbers, and so on.</p>
+<p>Since WebAssembly only supports numeric types, the <kbd>wasm-bindgen</kbd> crate generates shims to allow you to use native Rust types in JavaScript. For example, a struct in Rust is represented as an object on the JavaScript side, while a <kbd>Promise</kbd> object can be accessed as a <kbd>Future</kbd> on the Rust side. It does all of this by using the <kbd>#[wasm-bindgen]</kbd> attribute macro over function definitions.<span><br/></span></p>
+<p>To explore <kbd>wasm-bindgen</kbd> and how it interacts with JavaScript, we'll build something practical. We'll build a live markdown editor app that will allow you to write markdown and view the rendered HTML page. Before we start, though, we need to install the wasm-bindgen-cli tool that will generate shims for us, allowing us to conveniently use the exposed Rust functions from our library. We can install it by running:</p>
+<pre><strong>cargo install wasm-bindgen-cli</strong></pre>
+<p>Next, let's create a new project by running <kbd>cargo new livemd</kbd> with the following contents in <kbd>Cargo.toml</kbd>:</p>
+<pre>[package]<br/>name = "livemd"<br/>version = "0.1.0"<br/>authors = ["Rahul Sharma &lt;creativcoders@gmail.com&gt;"]<br/>edition = "2018"<br/><br/>[lib]<br/>crate-type = ["cdylib"]<br/><br/>[dependencies]<br/>wasm-bindgen = "0.2.29"<br/>comrak = "0.4.0"</pre>
+<p>We have named our library <kbd>livemd</kbd>. Our library is of the <kbd>cdylib</kbd> type and is exposing a C interface because WebAssembly accepts a widely targetable dynamic C library interface, which most languages can compile to. Next, we'll also create a <kbd>run.sh</kbd> script at our directory root that will let us build and run our project and rerun it every time we change any of our code using <kbd>cargo-watch</kbd>. Here's the content of the <kbd>run.sh</kbd> file:</p>
+<pre>#!/bin/sh<br/><br/>set -ex<br/><br/>cargo build --target wasm32-unknown-unknown<br/>wasm-bindgen target/wasm32-unknown-unknown/debug/livemd.wasm --out-dir app<br/>cd app<br/>yarn install<br/>yarn run serve</pre>
+<p>Next is the implementation of the the markdown conversion code in <kbd>lib.rs</kbd>, in its entirety:</p>
+<pre>// livemd/src/lib.rs<br/><br/>use wasm_bindgen::prelude::*;<br/><br/>use comrak::{markdown_to_html, ComrakOptions};<br/><br/>#[wasm_bindgen]<br/>pub fn parse(source: &amp;amp;str) -&gt; String {<br/>    markdown_to_html(source, &amp;amp;ComrakOptions::default())<br/>}</pre>
+<p>Our <kbd>livemd</kbd> crate exposes a single function named <kbd>pars</kbd>, which takes in the markdown text from the <kbd>textarea</kbd> tag on the web page (yet to be created) and returns the compiled HTML string by invoking the <kbd>markdown_to_html</kbd> function from the <kbd>comrak</kbd> crate. As you may have noticed, the <kbd>parse</kbd> method is annotated with the <kbd>#[wasm_bindgen]</kbd> attribute. This macro generates code for all kinds of lower-level conversions, and is required to expose this function to JavaScript. Using this attribute, we don't have to care about what kind of strings our parse method will take. Strings from JavaScript are different than strings in Rust. The <kbd>#[wasm_bindgen]</kbd> attribute handles this difference and the low-level details of converting the string from the JavaScript side before accepting it as a <kbd>&amp;amp;str</kbd> type for us. At the time of writing this book, there are some types that <kbd>wasm-bindgen</kbd> cannot convert, such as references and type definitions with lifetime annotation on them.</p>
+<p>We then need to generate the wasm file for this crate. But before we do that, let's set up our app. In the same directory, we'll create a directory named <kbd>app/</kbd> and initialize our project by running <kbd>yarn init</kbd>:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/3c8e0591-081b-467a-bc5f-dd78dfcb232e.png" style="width:27.33em;height:14.92em;"/></p>
+<p><kbd>yarn init</kbd> creates our <kbd>package.json</kbd> file. Apart from the usual fields, we'll specify <kbd>scripts</kbd> and <kbd>dev-dependencies</kbd>:</p>
+<pre>{<br/>  "name": "livemd",<br/>  "version": "1.0.0",<br/>  "description": "A live markdown editor",<br/>  "main": "index.js",<br/>  "license": "MIT",<br/>  "scripts": {<br/>    "build": "webpack",<br/>    "serve": "webpack-dev-server"<br/>  },<br/>  "devDependencies": {<br/>    "html-webpack-plugin": "^3.2.0",<br/>    "webpack": "^4.28.3",<br/>    "webpack-cli": "^3.2.0",<br/>    "webpack-dev-server": "^3.1.0"<br/>  }<br/>}</pre>
+<p>We'll be using webpack to spin up our development web server. Webpack is a module bundler. A module bundler takes multiple JavaScript source files and bundles them into a single file, possibly minifying it for consumption on the web. To configure webpack so that we can bundle our JavaScript and wasm-generated code, we'll create a webpack config file in a file named <kbd>webpack.config.js</kbd>:</p>
+<pre>// livemd/app/webpack.config.js<br/><br/>const path = require('path');<br/>const HtmlWebpackPlugin = require('html-webpack-plugin');<br/><br/>module.exports = {<br/>    entry: './index.js',<br/>    output: {<br/>        path: path.resolve(__dirname, 'dist'),<br/>        filename: 'index.js',<br/>    },<br/>    plugins: [<br/>        new HtmlWebpackPlugin({<br/>            template: "index.html"<br/>        })<br/>    ],<br/>    mode: 'development'<br/>};</pre>
+<p>Next, in the same <kbd>app/</kbd> directory, we'll create three files:</p>
+<ul>
+<li><kbd>index.html</kbd>: This contains the UI of the app:</li>
+</ul>
+<pre style="padding-left: 60px">&lt;!--livemd/app/index.html--&gt;<br/><br/>&lt;!DOCTYPE html&gt;<br/>&lt;html&gt;<br/>&lt;head&gt;<br/>    &lt;title&gt;Livemd: Realtime markdown editor&lt;/title&gt;<br/>    &lt;link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css" rel="stylesheet"&gt;<br/>    &lt;link href="https://fonts.googleapis.com/css?family=Aleo" rel="stylesheet"&gt; <br/>    &lt;link href="styles.css" rel="stylesheet"&gt;<br/>&lt;/head&gt;<br/><br/>&lt;body class="container-fluid"&gt;<br/>    &lt;section class="row"&gt;<br/>        &lt;textarea class="col-md-6 container" id="editor"&gt;_Write your text here.._&lt;/textarea&gt;<br/>        &lt;div class="col-md-6 container" id="preview"&gt;&lt;/div&gt;<br/>    &lt;/section&gt;<br/>    &lt;script src="index.js" async defer&gt;&lt;/script&gt;<br/>&lt;/body&gt;<br/>&lt;/html&gt;</pre>
+<p style="padding-left: 60px">We have declared a <kbd>&lt;textarea&gt;</kbd> HTML element with an ID of <kbd>editor</kbd>. This will be shown on the left, and is where you can write your markdown. Next, we have a <kbd>&lt;div&gt;</kbd> element with an ID of <kbd>preview</kbd>, which will show the live rendered HTML content.</p>
+<ul>
+<li><kbd>style.css</kbd>: To make our app look nice, this file provides the basic styling for rendering the live editor and preview panes in the app:</li>
+</ul>
+<pre style="padding-left: 60px">/* livemd/app/styles.css */<br/><br/>html, body, section, .container {<br/>    height: 100%;<br/>} <br/><br/>#editor {<br/>    font-family: 'Aleo', serif;<br/>    font-size: 2rem;<br/>    color: white;<br/>    border: none;<br/>    overflow: auto;<br/>    outline: none;<br/>    resize: none;<br/><br/>    -webkit-box-shadow: none;<br/>    -moz-box-shadow: none;<br/>    box-shadow: none;<br/>    box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, .6);<br/>    background-color: rgb(47,79,79);<br/>}<br/><br/>#preview {<br/>    overflow: auto;<br/>    border: 5px;<br/>    border-left: 1px solid grey;<br/>}</pre>
+<ul>
+<li><kbd>index.js</kbd>: This file provides the glue code between our UI and our <kbd>livemd</kbd> crate:</li>
+</ul>
+<pre style="padding-left: 60px">// livemd/app/index.js<br/><br/>import('./livemd').then((livemd) =&gt; {<br/>    var editor = document.getElementById("editor");<br/>    var preview = document.getElementById("preview");<br/><br/>    var markdownToHtml = function() {<br/>        var markdownText = editor.value;<br/>        html = livemd.parse(markdownText);<br/>        preview.innerHTML = html;<br/>    };<br/><br/>    editor.addEventListener('input', markdownToHtml);<br/>    // Kick off parsing of initial text<br/>    markdownToHtml();<br/>}).catch(console.error);</pre>
+<p>The preceding code imports the <kbd>livemd</kbd> module, which returns a <kbd>Promise</kbd> instance. We then chain on the value that's produced by this promise by calling the <kbd>then</kbd> method, which takes an anonymous function, <kbd>(livemd) =&gt; {}</kbd>. This function receives the wasm module (we named it <kbd>livemd</kbd>). Within this method, we get the <kbd>editor</kbd> and <kbd>preview</kbd> <span>HTML elements</span> by their IDs. We then create a function called <kbd>markdownToHtml</kbd>, which takes the text from the <kbd>editor</kbd> element from its property <kbd>value</kbd> and passes it to the <kbd>parse</kbd> method from the livemd wasm module. This returns rendered HTML text as a string. We then set the <kbd>innerHTML</kbd> property of the <kbd>preview</kbd> element to this text. Next, to provide live feedback for any updates made by the user on any text changes in the <kbd>editor</kbd> element, we need to invoke this function. We can use the <kbd>onInput</kbd> event handler for this. To the editor element, we call the <kbd>addEventListener</kbd> method with the <kbd>"input"</kbd> event and pass this function as the handler. Finally, we invoke <kbd>markdownToHtml</kbd> to kick off the parsing and rendering of the text.</p>
+<p>That's it—we have created our first web application that uses Rust under the hood and runs WebAssembly alongside JavaScript.</p>
+<div class="packt_infobox"><strong>Note</strong>: This isn't an efficient implementation and there are lot of improvements that can be made. However, since we are learning about the tools here, it's okay for demonstration purposes.</div>
+<p>Now, we need to compile our crate into WebAsssembly code, that is, as a <kbd>wasm</kbd> file, and generate a bundled JavaScript file. We have a script set up already, called <kbd>run.sh</kbd>. Here's the output on running our <kbd>run.sh</kbd> script:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/a4213403-fe51-4b07-be87-6b012e27b065.png"/></p>
+<p class="CDPAlignLeft CDPAlign">The <kbd>run.sh</kbd> script first builds the <kbd>livemd</kbd> crate by running <kbd>cargo build --target wasm32-unknown-unknown</kbd>. Next, it invokes the <kbd>wasm-bindgen</kbd> tool, which optimizes our <kbd>wasm</kbd> file and outputs it in the <kbd>app/</kbd> directory. Then, we run <kbd>yarn install</kbd> in our app directory, followed by <kbd>yarn run serve</kbd>, which starts our development server using the <kbd>webpack-dev-server</kbd> plugin.</p>
+<p>If you face errors while running wasm-bindgen cli command, try updating the wasm-bindgen dependency in livemd/Cargo.toml by running:</p>
+<pre><strong>cargo update -p wasm-bindgen</strong></pre>
+<p>We also need to install the yarn package manager for hosting the web page on localhost. This can be done by running:</p>
+<pre><strong>$ curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -</strong><br/><strong>$ echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list<br/>$ sudo apt-get update &amp;amp;&amp;amp; sudo apt-get install yarn</strong></pre>
+<p>From webpack's output, our development server is running at <kbd>http://localhost:8080</kbd>. Let's head over to our web browser and go to this address. Here's the output on my browser:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/79393ad6-760c-4b95-b8ea-06a23fbeb810.png"/></p>
+<p>As you can see, we have our text in markdown format on the left-hand pane and it gets rendered on the right in real time as HTML. Under the hood, every bit of text we type on the left-hand side of this page gets converted into HTML text, which is generated by the <kbd>livemd</kbd> wasm module that we created.</p>
+<p>We can also publish our <kbd>livemd</kbd> crate as an npm package. The wasm-pack project at <a href="https://github.com/rustwasm/wasm-pack">https://github.com/rustwasm/wasm-pack</a> provides all kinds of orchestration that's needed to build and ship npm modules written in Rust that have been compiled to WebAssembly.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Other WebAssembly projects</h1>
+                </header>
+            
+            <article>
+                
+<p>Apart from the <kbd>wasm-bindgen</kbd> crate and friends, there are other emerging frameworks and projects in the Rust community that are worth exploring.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Rust</h1>
+                </header>
+            
+            <article>
+                
+<p>Wasm-bindgen is not the only project that aims to create amazing development experiences. Some other projects in the Rust ecosystem are as follows:</p>
+<ul>
+<li><strong>Stdweb</strong>: This crate aims to provide a high-level, Rust-based API for accessing DOM APIs over the web.</li>
+<li><strong>Yew</strong><span>: This is a complete frontend web application building framework that allows you to write web applications in Rust that can access Web APIs and compile them into wasm so that they can be run on the web. It is inspired by the Elm and ReactJS projects. It also encapsulates actor-based message passing concurrency via web workers on the web. Yew uses the</span> <kbd>stdweb</kbd> <span>crate internally to access DOM APIs.</span></li>
+<li><strong>Nebutlet</strong><span>: This is a micro-kernel that can execute WebAssembly programs without any kind of system call interface, which is usually the norm in most operating system implementations.</span></li>
+<li><strong>Wasmi</strong><span>: This is a wasm virtual machine that's implemented in Rust, but it isn't related to the wasm VM in browser engines. The project was initiated by Parity, an Ethereum-based start-up, which is more suited to running WebAssembly applications on many platforms. The project is hosted at</span> <a href="https://github.com/paritytech/wasmi">https://github.com/paritytech/wasmi</a><span>.</span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Other languages</h1>
+                </header>
+            
+            <article>
+                
+<p>Other languages also have technologies that target WebAssembly, such as the following:</p>
+<ul>
+<li><strong>Life</strong>: Life is a WebAssembly VM that's implemented in Golang for running high performance, decentralized applications securely. The project resides at <a href="https://github.com/perlin-network/life">https://github.com/perlin-network/life</a>.</li>
+<li><strong>AssemblyScript</strong><span>: This is a TypeScript-to-WebAssembly compiler.</span></li>
+<li><strong>Wagon</strong><span>: Wagon is a WebAssembly interpreter in Golang.</span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>WebAssembly will have a huge impact on how web developers build their applications, allowing them to gain a lot of performance gains with little effort. It will allow for diversity in terms of application developers, thus allowing them to write web applications in their native language without worrying about learning other frameworks. WebAssembly is not meant to replace Javascript, but to serve as a high-performance language for running complex web applications on the web. The WebAssembly standard is constantly evolving and has a lot of exciting possibilities.</p>
+<p>In this chapter, we learned about how Rust can compile down to wasm code and the available tooling that helps ship Rust code on the web. If you want to learn more about WebAssembly, head over to the excellent documentation at: <a href="https://developer.mozilla.org/en-US/docs/WebAssembly">https://developer.mozilla.org/en-US/docs/WebAssembly</a>.</p>
+<p>In the next chapter, we will learn a bit about GUI development and how to build desktop applications with Rust.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

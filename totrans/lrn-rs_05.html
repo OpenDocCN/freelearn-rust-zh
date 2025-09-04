@@ -1,0 +1,755 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Remember, Remember</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">One of the main advantages of using Rust over the likes of C is its memory management. For example, C programs will run into buffer overruns and associated undefined behavior if you attempt to write past the end of an array or past an area reserved using <kbd class="calibre10">malloc</kbd>. Rust protects against most of these problems without compromising on efficiency.</p>
+<p class="calibre1">In this chapter, we will delve into how Rust handles memory and will cover the following topics:</p>
+<ul class="calibre12">
+<li class="calibre13">Understanding the memory system used within Rust</li>
+<li class="calibre13">How it can go wrong if you're not careful</li>
+<li class="calibre13">Looking at pointers, references, stack overflows, and preventing crashes</li>
+<li class="calibre13">Allocating and freeing up memory</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Let's start at the beginning</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">In <a href="part0039.html#1565U0-a5175cb437d742a9aed0ea574000ee2d" class="calibre3">Chapter 2</a><em class="calibre9">, Variables</em>, I briefly mentioned how data is stored within memory, and I said that non-compound types, such as <kbd class="calibre10">i32</kbd>, are stored on the stack, whereas, the likes of <kbd class="calibre10">String</kbd>, <kbd class="calibre10">Vector&lt;T&gt;</kbd>, types, and such are stored on the heap.</p>
+<p class="calibre1">By default, Rust stores data on the stack, as it's incredibly fast. There are drawbacks though. The stack is limited in size and the allocation only lasts for the lifetime of the function.</p>
+<p class="calibre1">The question is, how much memory does a function take?</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">The stack frame</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">The stack frame is a term you may have come across. It is the amount of memory allocated to a function, which is used to store all of the local variables and function parameters. In the following snippet, the stack frame will be large enough to store the two <kbd class="calibre10">int</kbd> values and the single <kbd class="calibre10">float32</kbd> type:</p>
+<pre class="calibre21">    fn main() 
+    { 
+        let a = 10; 
+        let b = 20; 
+        let pi = 3.14f32; 
+    } </pre>
+<p class="calibre1">Once <kbd class="calibre10">main</kbd> has exited, the stack frame allocated on entry will be released. The beauty of both the allocation and deallocation is that they are carried out without the user needing to do anything. The amount of memory can also be computed ahead of time, as the compiler knows which local variables are in use. This, again, gives a speed increase.</p>
+<p class="calibre1">For every positive, there is a downside: the values stored only exist for the lifetime of the method.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">What is meant by the stack?</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">The simplest way to think about the stack is to consider memory as a series of boxes. For these examples, think of the boxes in groups of four: the function name, the address, the variable name, and the value. Here's a <kbd class="calibre10">main</kbd> function with a single local variable:</p>
+<pre class="calibre21">    fn main() 
+    { 
+        let i = 32; 
+    } </pre>
+<p class="calibre1">The stack boxes will look like this<a class="calibre3">:</a></p>
+<table class="calibre4">
+<tbody class="calibre5">
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Function name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Address</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Variable name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Value</strong></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">main</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">0</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">i</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">32</kbd></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre1">A slightly different example is as follows:</p>
+<pre class="calibre21">    fn second() 
+    { 
+        let a = 32; 
+        let b = 12; 
+    } 
+    fn main() 
+    { 
+        let d = 100; 
+    } </pre>
+<p class="calibre1">Here, we will have two unconnected stack boxes. Since the <kbd class="calibre10">second</kbd> function is never called, we never actually allocate memory on the stack for it. The memory allocations are therefore exactly same as in the first example.</p>
+<p class="calibre1">Our third example is where we have the <kbd class="calibre10">main</kbd> function call to the <kbd class="calibre10">second</kbd> function; in this case, we actually reserve memory for the <kbd class="calibre10">second</kbd> function:</p>
+<pre class="calibre21">    fn second() 
+    { 
+        let a = 32; 
+        let b = 12; 
+    } 
+    fn main() 
+    { 
+        let d = 100; 
+        second(); 
+    } </pre>
+<p class="calibre1">In terms of our stack boxes, we have the following:</p>
+<table class="calibre4">
+<tbody class="calibre5">
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Function name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Address</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Variable name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Value</strong></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">second</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">2</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">a</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">32</kbd></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7"/>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">1</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">b</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">12</kbd></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">main</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">0</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">d</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">100</kbd></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre1"> </p>
+<p class="calibre1">The variable from the <kbd class="calibre10">main</kbd> function has the address of 0 as it is from the top frame-the frame that calls the other function. The value for the address is purely for this example; it can be anywhere and, typically, different types require a different amount of the stack to hold them. For instance, if the <kbd class="calibre10">number</kbd> type is 4 bytes in length, the address will be the base address of the stack to store <kbd class="calibre10">d</kbd>, then the address + 4 for <kbd class="calibre10">b</kbd>, and finally the address + 8 for <kbd class="calibre10">a</kbd>.</p>
+<p class="calibre1">Once <kbd class="calibre10">foo</kbd> has returned, the stack reverts to this:</p>
+<table class="calibre4">
+<tbody class="calibre5">
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Function name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Address</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Variable name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Value</strong></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">main</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">0</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">d</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">100</kbd></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre1"> </p>
+<p class="calibre1">As soon as the <kbd class="calibre10">main</kbd> function has finished, the stack is empty.</p>
+<p class="calibre1">This stacking continues for as many different functions as the application has, and they always work in the same way.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Let's consider the heap</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">As already discussed, the heap is typically used for complex types. The stack frame model can still be used, but it will need modifying, as the stack will need to point to the base address of the complex type on the heap.</p>
+<p class="calibre1">Let's construct a stack frame for the following piece of code:</p>
+<pre class="calibre21">    fn main() 
+    { 
+        let f = 42; 
+        let my_ids: Vec&lt;i64&gt; = Vec::with_capacity(5); 
+    } </pre>
+<table class="calibre4">
+<tbody class="calibre5">
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Function name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Address</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Variable name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Value</strong></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">main</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">1</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">f</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">42</kbd></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7"/>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">0</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">my_ids</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">(an instance of Vector)</kbd></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre1"> </p>
+<p class="calibre1">Space is allocated correctly for <kbd class="calibre10">f</kbd>, but <kbd class="calibre10">my_ids</kbd> is different; it is a <kbd class="calibre10">Vector&lt;i64&gt;</kbd> with pre-allocated space for five <kbd class="calibre10">i64s</kbd> values. While the vector itself is stored in the stack, its contents are allocated in the heap.</p>
+<p class="calibre1">Values in the heap are considered to be more persistent than those in the stack. That means, unlike values in the stack, their lifetime does not have to be as short as the block's they were defined in.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Deallocation</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">Unlike when memory is freed up on the stack, when you deallocate memory from the heap, you end up with holes in the heap. These are empty and can be reallocated to other variables. As with anything to do with memory, the reallocation is handled by the OS.</p>
+<p class="calibre1">Deallocation is handled automatically by Rust with a style typically called <strong class="calibre8">Resource acquisition is initialization</strong>. This confusingly named concept means that resources (such as heap memory, but also other things such as file pointers) are allocated during object creation and released during object destruction. Object destruction in Rust happens when the binding goes out of scope. If you need to define custom destructors for your own objects, you can implement the <kbd class="calibre10">std::ops::Drop()</kbd> trait. It contains a single method, <kbd class="calibre10">drop</kbd>, which gets called when your object loses its last binding.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">What about functions with arguments?</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">Consider the following piece of code:</p>
+<pre class="calibre21">    fn main() 
+    { 
+        let a = 32; 
+        let b = &amp;a; 
+    } </pre>
+<p class="calibre1">We have created two variable bindings, with the second one (<kbd class="calibre10">b</kbd>) pointing at the address for <kbd class="calibre10">a</kbd>. The <kbd class="calibre10">b</kbd> variable doesn't contain the value of the <kbd class="calibre10">a</kbd> variable, but it points to the position <kbd class="calibre10">a</kbd> is held at, from which it can obtain a value (in other words, the value of <kbd class="calibre10">b</kbd> is borrowed from <kbd class="calibre10">a</kbd>).</p>
+<p class="calibre1">In terms of our stack diagram, we have this:</p>
+<table class="calibre4">
+<tbody class="calibre5">
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Function name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Address</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Variable name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Value</strong></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">main</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">1</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">b</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">→ address 0</kbd></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7"/>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">0</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">a</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">32</kbd></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre1">If we have a function call another function, but with a parameter, our stack will look slightly different:</p>
+<pre class="calibre21">    fn second(i: &amp;i32) 
+    { 
+        let c = 42; 
+        println!("{}", *i); 
+    } 
+ 
+    fn main()  
+    { 
+        let a = 32; 
+        let b = &amp;a; 
+        second(b); 
+    } 
+ </pre>
+<table class="calibre4">
+<tbody class="calibre5">
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Function name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Address</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Variable name</strong></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><strong class="calibre8">Value</strong></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7"/>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">3</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">c</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">42</kbd></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1">second</p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">2</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">i</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">→ address 0</kbd></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7"/>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">1</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">b</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">→ address 0</kbd></p>
+</td>
+</tr>
+<tr class="calibre6">
+<td class="calibre7">
+<p class="calibre1">main</p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">0</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">a</kbd></p>
+</td>
+<td class="calibre7">
+<p class="calibre1"><kbd class="calibre10">32</kbd></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre1"> </p>
+<p class="calibre1">The <kbd class="calibre10">i</kbd> binding points to <kbd class="calibre10">address <span>0</span></kbd> and the <kbd class="calibre10">b</kbd> variable points to <kbd class="calibre10">address <span>0</span></kbd>, and this is the parameter being passed to <kbd class="calibre10">second</kbd>.</p>
+<p class="calibre1">We can use this stack method to think about memory for a complex situation if you like.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Static memory allocation</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">While we have the stack and heap, Rust also has another type of memory allocation, that is, statically allocated memory. This is not allocated at runtime, but moves into memory with the program's code before the program is run.</p>
+<p class="calibre1">The likes of <kbd class="calibre10">static</kbd> and <kbd class="calibre10">const</kbd> variables are good examples of static allocations.</p>
+<p class="calibre1">Static memory allocation has the same lifetime as that of the application.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Garbage collecting time and ownership</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">If you're used to any of the .NET languages, you'll be more than accustomed to the <strong class="calibre8">garbage collector</strong> (<strong class="calibre8">GC</strong>). Essentially, when all references to an object have gone out of scope, the object's heap allocation is freed up by the garbage collector. The garbage collector comes around every once in a while, basically checks through the whole space of allocated memory to see if something isn't used anymore, and removes such content from memory; in other words, the garbage left behind by a deallocated pointer is collected and removed.</p>
+<p class="calibre1">Rust has a primitive garbage collector in the form of a reference counted container, <kbd class="calibre10">Rc&lt;T&gt;</kbd>. For most cases, it's not required though, as Rust uses a system known as <strong class="calibre8">ownership for allocation</strong>.</p>
+<p class="calibre1">Up to this point, when we created a variable, we created variables that mostly live on the stack. These have a very short life span. When we create an object that lives on the heap, we create a single variable that points to it, but then we can have any number of objects point to it, or even through a copy of the pointer, have the copy become the base and free up the original. It gets messy and deallocation of the heap memory can lead to a variety of memory issues.</p>
+<p class="calibre1">We can wrap any type in a generic container, <kbd class="calibre10">Box&lt;T&gt;</kbd>. This creates an owned pointer in Rust, which can only have a single owner, and when that pointer goes out of scope, the memory is automatically freed. In this way, Rust prevents a large number of the problems that we see in other languages. The point of this owned box is that we can hand out the box to other functions, thus being able to return heap allocated variables.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">An owned pointer example</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">Consider the following piece of code:</p>
+<pre class="calibre21">    struct MyRectangle 
+    { 
+        x: i32, 
+        y: i32, 
+        length: i32, 
+        breadth: i32, 
+    } 
+ 
+    fn allocate_rect() 
+    { 
+        let x: Box&lt;MyRectangle&gt; = Box::new (MyRectangle {x: 5, y: 5, length: 25, breadth:15}); 
+    } </pre>
+<p class="calibre1">The <kbd class="calibre10">x</kbd> variable is the single owner of the <kbd class="calibre10">my_rectangle</kbd> object on the heap. As soon as <kbd class="calibre10">allocate_rect()</kbd> is complete, the memory on the heap allocated to <kbd class="calibre10">x</kbd> is freed, since the last owner is gone.</p>
+<p class="calibre1">The single owner is enforced by the compiler. The following example demonstrates transferring ownership. Once the transfer is complete, the original cannot be used again:</p>
+<pre class="calibre21">fn swap_around() 
+{ 
+    let my_rect: Box&lt;MyRectangle&gt; = Box::new(MyRectangle{x:5, y:5, length:25, breadth:15}); 
+    let dup_rect = my_rect; // dup_rect is now the owner 
+    println!("{}", dup_rect.x); 
+    println!("{}", my_rect.x); // won't work - use of moved value 
+} </pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Comparison to C</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">Consider the following C code:</p>
+<pre class="calibre21">    void myFunction() 
+    { 
+        int *memblock = malloc(sizeof(int)); 
+        *memblock = 256; 
+        printf("%d\n", *memblock); 
+        free(memblock); 
+    } </pre>
+<p class="calibre1">Here's what the preceding code does:</p>
+<ol class="calibre16">
+<li value="1" class="calibre13">The <kbd class="calibre10">int</kbd> line allocates a block of memory large enough to store an integer value. The <kbd class="calibre10">memblock</kbd> variable will be in the stack, and the block of memory it points to will be in the heap.</li>
+<li value="2" class="calibre13">A value <kbd class="calibre10">256</kbd> is placed at the location pointed to by <kbd class="calibre10">x</kbd>.</li>
+<li value="3" class="calibre13">The value of the memory location pointed to by <kbd class="calibre10">x</kbd> is printed out.</li>
+<li value="4" class="calibre13">The memory allocated to <kbd class="calibre10">memblock</kbd> is deallocated.</li>
+</ol>
+<p class="calibre1">This works well, but has the following three major drawbacks:</p>
+<ul class="calibre12">
+<li class="calibre13">Once the memory is deallocated, it is still entirely possible to use <kbd class="calibre10">memblock</kbd>. Should you try to do this, the application will exhibit undefined behavior; most likely, the application will just quit, but there is also a chance that it will corrupt memory, which will cause a system crash. The compiler will make no attempt to warn you that you've done this, as it assumes you know what you're doing.</li>
+<li class="calibre13">If you allocate a type larger than what was placed into the <kbd class="calibre10">sizeof</kbd>, this will also give rise to undefined behavior. You are essentially trying to put a quart into a pint pot.</li>
+<li class="calibre13">If <kbd class="calibre10">free</kbd> is not called, the memory remains reserved, even though nothing points to it anymore, which leads to memory leaks.</li>
+</ul>
+<p class="calibre1">You can perform something similar in Rust but, as we'll see, Rust prevents this undefined behavior automatically:</p>
+<pre class="calibre21">    fn myMemory() 
+    { 
+        let memblock: Box&lt;i64&gt; = Box::new(256); 
+        println!("{}", memblock); 
+    } </pre>
+<p class="calibre1">There are a number of differences between the C and Rust code versions. They are as follows:</p>
+<ul class="calibre12">
+<li class="calibre13">In C, you allocate heap memory with the <kbd class="calibre10">malloc</kbd> function. In Rust, we use an owned pointer via the <kbd class="calibre10">Box&lt;T&gt;</kbd> generic.</li>
+<li class="calibre13">The call to <kbd class="calibre10">malloc</kbd> in C returns an <kbd class="calibre10">int</kbd> pointer (<kbd class="calibre10">int *</kbd>). In Rust, a smart pointer (<kbd class="calibre10">Box&lt;T&gt;</kbd>) is returned, in this case to an <kbd class="calibre10">i64</kbd>. A smart pointer is called smart as it controls when the object is freed. This can be when the pointer goes out of scope without the pointer being given away. Rust keeps track of objects and how to clean the memory up.</li>
+</ul>
+<p class="calibre1">Another useful smart pointer type is the reference counted pointer, <kbd class="calibre10">Rc&lt;T&gt;</kbd>. This generic type allows the sharing of the data inside it over multiple locations. It works so that whenever the <kbd class="calibre10">Rc</kbd> binding gets cloned, a reference count is incremented. Whenever such a binding gets deallocated, the reference count is decremented. Only when the reference count reaches zero is the underlying value deallocated. Note that <kbd class="calibre10">Rc&lt;T&gt;</kbd> works only in single-threaded scenarios.</p>
+<p class="calibre1">It is used like this:</p>
+<pre class="calibre21">   // 05/rc-1/src/main.rs <br class="calibre2"/>   use std::rc::Rc; 
+ 
+    fn main() 
+    { 
+        let memblock: Rc&lt;i64&gt; = Rc::new(256); <br class="calibre2"/>        // allocate space on the heap and assign 
+        secondMethod(memblock.clone()); <br class="calibre2"/>        // clone a new reference counted pointer and pass it on to the method 
+        println!("{}", memblock); <br class="calibre2"/>        // output the value 
+    } // free memory here 
+ 
+    fn secondMethod(memblock: Rc&lt;i64&gt;) 
+    { 
+        println!("In secondMethod and memblock is {}", memblock); 
+        let secMemblock: Rc&lt;i64&gt; = memblock.clone(); <br class="calibre2"/>        // yet another reference counted pointer to memblock 
+    } <br class="calibre2"/>    // secMemblock goes out of scope, but the memory is not deallocated </pre>
+<p class="calibre1">In this code, we make several clones of the reference counted pointer. At the peak (on the second line of the <kbd class="calibre10">secondMethod</kbd> function), we have a total of three pointers to the underlying heap. When we leave <kbd class="calibre10">secondMethod</kbd>, the pointer allocated via the <kbd class="calibre10">secMemBlock</kbd> variable gets destructed. Then the <kbd class="calibre10">memBlock</kbd> clone gets deallocated. Finally, when we exit the main function, the last pointer goes away and the heap memory is deallocated.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Let's revisit some old code</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">Back in <a href="part0094.html#2PKKS0-a5175cb437d742a9aed0ea574000ee2d" class="calibre3">Chapter 4</a><em class="calibre9">, Conditions, Recursion, and Loops</em>, we had some code that looked like this:</p>
+<pre class="calibre21">let x = 2; 
+let y =  
+    { 
+        let x_squared = x * x; 
+        let x_cube = x_squared * x; 
+        x_cube + x_squared + x 
+    }; </pre>
+<p class="calibre1">It was explained that what it did was assign the result of <kbd class="calibre10">x_cube + x_squared + x to y</kbd>. If, outside of that, we attempted to access either <kbd class="calibre10">x_squared</kbd> or <kbd class="calibre10">x_cubed</kbd>, then we wouldn't be able to, as they only existed within the scope of that calculation for <kbd class="calibre10">y</kbd>.</p>
+<p class="calibre1">Consider, then, what would happen if we made <kbd class="calibre10">y</kbd> a reference and tried to point it to a temporary value:</p>
+<pre class="calibre21">    // 05/refs-1/src/main.rs<br class="calibre2"/>    fn main() { 
+        let x = 2; 
+        let y: &amp;i32; 
+        { 
+            let x_squared = x * x; 
+            let x_cube = x_squared * x; 
+            y = &amp;(x_cube + x_squared + x); <br class="calibre2"/>            // this value goes away after this line 
+        }; 
+        println!("Y = {}", *y); 
+    } </pre>
+<p class="calibre1">We are assigning <kbd class="calibre10">y</kbd> to the value of a variable that only exists in a small scope (the temporary unnamed value of the computation), then we're trying to access that value giving rise to undefined behavior. As we've seen, the Rust compiler will do everything it can to prevent this sort of error. In this case, the compiler keeps track of each and every reference and fails to build if a reference lasts longer than the pointer in use.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Let's not race ahead!</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">As with anything to do with memory, we do have times where memory is shared between pointers. Typically, when we write an application, we don't consider that, at any given time, there may be multiple threads running at the same time, and while we can fairly accurately predict what will happen by following the flow, we can sometimes face an issue known as a race condition. Quite simply, we don't know which condition will <em class="calibre9">hit</em> first.</p>
+<p class="calibre1">Let's look at the following example:</p>
+<pre class="calibre21">    // 05/threads-1/src/main.rs<br class="calibre2"/>    use std::thread; 
+    use std::rc::Rc; 
+ 
+    struct MyCounter 
+    { 
+        count: i32 
+    } 
+ 
+    fn wont_work() 
+    { 
+        let mut counter = Rc::new(MyCounter {count: 0}); 
+        thread::spawn(move || // new thread  
+        { 
+            counter.count += 1; 
+        }); 
+        println!("{}", counter.count); 
+    } </pre>
+<p class="calibre1">This won't compile because the compiler doesn't know which thread will be <kbd class="calibre10">0</kbd> or <kbd class="calibre10">1</kbd>, as they both attempt to access <kbd class="calibre10">counter</kbd> at the same time. In Rust terms, <kbd class="calibre10">counter</kbd> gets moved to the inner thread, which means that it cannot be accessed anywhere else. Reference counting via the <kbd class="calibre10">Rc</kbd> type does not help here, because it's not thread-safe.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Stop the race...</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">How can this error be avoided?</p>
+<p class="calibre1">There's another reference counted type with an incredibly cool name: Atomic RC. Atomicity, in this case, refers to non-divisible actions and/or containers, which means that they are thread-safe. Also, we'll need to pair the <kbd class="calibre10">Arc</kbd> type with a <kbd class="calibre10">Mutex</kbd> to allow us to lock the data for access. Here's the full code for a threaded implementation:</p>
+<pre class="calibre21">    // 05/threads-2/src/main.rs<br class="calibre2"/>    use std::thread; 
+    use std::sync::{Arc, Mutex}; 
+ 
+    struct MyCounter 
+    { 
+        count: i32 
+    } 
+ 
+    fn wont_work() 
+    { 
+        let counter = Arc::new(Mutex::new(MyCounter {count: 0})); 
+        let another_counter = counter.clone(); 
+        thread::spawn(move || // new thread  
+        { 
+            let mut counter = another_counter.lock().expect("Locking of cloned counter failed"); 
+            counter.count += 1; 
+        }); 
+        println!("{}", counter.lock().unwrap().count); 
+    } </pre>
+<p class="calibre1">Usually, this code will print <kbd class="calibre10">0</kbd> because the print method tends to be reached before the mutation in the thread takes place.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                
+            
+            <article>
+                
+<p class="calibre1">As far as memory handling is concerned, Rust does a lot for the developer and virtually ensures that it is impossible to run into the same form of issues as found in C. Freeing up memory from the heap is automatic, and there is even protection when using pointers by having unique and multiple protected pointers.</p>
+<p class="calibre1">In the next chapter, we will have some respite from learning and see how you can put what we have covered into your own applications.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

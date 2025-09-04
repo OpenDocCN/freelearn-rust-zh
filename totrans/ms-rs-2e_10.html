@@ -1,0 +1,345 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Unsafe Rust and Foreign Function Interfaces</h1>
+                </header>
+            
+            <article>
+                
+<p>Rust is a language that has two modes: safe mode (the default) and unsafe mode. In safe mode, you get all sorts of safety features to protect you from serious mistakes, but there are times when you're required to shake off the safety harness provided by the compiler and get that extra level of control. One use case is interfacing with other languages, such as C, which can be very unsafe. In this chapter, you will get to know what sort of extra work is required when Rust has to interact with other languages and how unsafe mode is used to facilitate and make this interaction explicit.</p>
+<p>In this chapter, we will cover the following topics:</p>
+<ul>
+<li>Understanding the safe and unsafe modes</li>
+<li>Operations that are unsafe in Rust</li>
+<li>Foreign function interface, talking to C, and vice versa</li>
+<li>Interfacing with Python using PyO3</li>
+<li>Interfacing with Node.js using Neon</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What is safe and unsafe really?</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_quote"><span>“You are allowed to do this, but you had better know what you are doing.”</span></div>
+<p class="CDPAlignRight CDPAlign"><span>- <em>A Rustacean</em></span></p>
+<p>When we talk about safety in programming languages, it is a property that spans different levels. A language can be memory-safe, type-safe, or it can be concurrent-safe. Memory safety means that a program doesn't write to a forbidden memory address and it doesn't access invalid memory. Type safety means that a program doesn't allow you to assign a number to a string variable and that this check happens at compile time, while concurrent-safe means that the program does not lead to race conditions when multiple threads are executing and modifying a shared state. If a language provides all of these levels of safety by itself, then it is said to be safe. To put it more generally, a program is deemed safe if, in all possible executions of the program and for all possible inputs, it gives correct outputs, does not lead to crashes, and does not clobber or corrupt its internal or external state. With Rust in safe mode, this is indeed true!</p>
+<p>An unsafe program is one that violates an invariant at runtime or triggers an undefined behavior. These unsafe effects may be local to a function, or may have propagated later as a global state in the program. Some of them are inflicted by programmers themselves, such as logic errors, while some of them are due to the side effects of the compiler implementation that's used, and sometimes from the language specification itself. <strong>Invariants</strong> are conditions that must always be true during the execution of the program in all code paths. The simplest example would be that a pointer pointing to an object on the heap should never be null within a certain section of code. If that invariant breaks, code that is dependent on that pointer might dereference it and undergo a crash. Languages such as C/C++ and languages based on them are unsafe because quite a few operations are categorized as an undefined behavior in the compiler specification. An undefined behavior is an effect of hitting a situation in a program for which the compiler specification does not specify what happens at lower levels, and you are free to assume that anything can happen. One example of undefined behavior is using an uninitialized variable. Consider the following C code:</p>
+<pre class="c"><span>// both_true_false.c<br/><br/>int</span> main<span>(</span><span>void</span><span>)</span> <span>{<br/>    </span>bool var<span>;</span><br/>    <span>if</span> <span>(</span>var<span>)</span> <span>{</span><br/>        <span>fputs</span><span>(</span><span>"var is true!\n"</span><span>)</span>;<br/>    <span>}</span><br/>    <span>if</span> <span>(</span><span>!</span>var<span>)</span> <span>{</span><br/>        <span>fputs</span><span>(</span><span>"var is false!\n");</span><span><br/></span><span>    }</span><br/><span>    return</span> <span>0</span><span>;</span><br/><span>}</span></pre>
+<p>The output of this program is not the same with all C compiler implementations because using an uninitialized variable is an undefined operation. On some C compilers with some optimizations enabled, you may even get the following output:</p>
+<pre>var is true<br/>var is false</pre>
+<p>Having your code take unpredictable code paths like this is something you don't want to see happen in production. Another example of undefined behavior in C is writing past the end of an array of size <kbd>n</kbd>. When the write happens to <kbd>n + 1</kbd> offset in memory, the program may either crash or it may modify a random memory location. In the best case scenario, the program would crash immediately and you would get to know about this. In the worst case scenario, the program would continue running but may later corrupt other parts of the code and give faulty results. Undefined behaviors in C exist in the first place to allow compilers to optimize code for performance and go with the assumption that a certain corner case never happens and to not add error-checking code for these situations, just to avoid the overhead associated with error handling. It would be great if undefined behavior could be converted to compile time errors, but detecting some of these behaviors at compile time sometimes becomes resource intensive, and so not doing so keeps the compiler implementation simple.</p>
+<p>Now, when Rust has to interact with these languages, it knows very little about how function calls and how types are represented at lower levels in these languages and because undefined behavior can occur at unexpected places, it sidesteps from all of these gotchas and instead provides us with a special <kbd>unsafe {}</kbd> block for interacting with things that come from other languages. In unsafe mode, you get some extra abilities to do things, which would be considered undefined behavior in C/C++. However, with great power comes great responsibility. A a developer who uses <kbd>unsafe</kbd> in their code has to be careful of the operations that are performed within the <kbd>unsafe</kbd> block. With Rust in unsafe mode, the onus is on you. Rust places trust in the programmer to keep operations safe. Fortunately, this unsafe feature is provided in a very controlled manner and is easily identifiable by reading the code, because unsafe code is always annotated with the <kbd>unsafe</kbd> keyword or <kbd>unsafe {}</kbd> blocks. This is unlike C, where most things are likely to be unsafe.</p>
+<p>Now, it's important to mention that, while Rust offers to protect you from major unsafe situations in programs, there are also cases where Rust can't save you, even if the program you wrote is safe. These are the cases where you have logical errors such as the following:</p>
+<ul>
+<li>A program uses floating-point numbers to represent currency. However, floating-point numbers are not precise and lead to rounding errors. This error is somewhat predictable (since, given the same input, it always manifests itself in the same way) and easy to fix. This is a logic and implementation error, and Rust offers no protection for such errors.</li>
+<li>A program to control a spacecraft uses primitive numbers as parameters in functions to calculate distance metrics. However, a library may be providing an API where the distances are interpreted in the metric system, and the user might provide numbers in the imperial system, leading to invalid measurements. A similar error occurred in 1999, in NASA's Mars Climate Orbiter spacecraft, and caused nearly $125 million worth of loss. Rust won't fully protect you from such mistakes, although, with the help of type system abstractions such as enums and the newtype pattern, we can isolate different units from each other and restrict the API's surface to only valid operations, making this error much less likely.</li>
+<li>A program writes to shared data from multiple threads without the appropriate locking mechanisms. The error manifests itself unpredictably, and finding it can be very difficult since it is non-deterministic. In this case, Rust fully protects you against data races with its ownership and borrowing rules, which are applicable to concurrent code too, but it cannot detect deadlocks for you.</li>
+<li>A program accesses an object through a pointer, which, in some situations, is a null pointer, causing the program to crash. In safe mode, Rust fully protects you against null pointers. However, when using unsafe mode, the programmer has to make sure that operations with a pointer from other languages are safe.</li>
+</ul>
+<p>The unsafe feature of Rust is also needed for situations where the programmer knows better than the compiler and has to implement some of the tricky parts in their code, where the compile-time ownership rules become too restrictive and get in the way. For instance, let's say there's a case where you need to convert a sequence of bytes into a <kbd>String</kbd> value and you know that your <kbd>Vec&lt;u8&gt;</kbd> is a valid UTF-8 sequence. In this case, you can directly use the unsafe <kbd>String::from_utf_unchecked</kbd> method instead of the usual safe <kbd>String::from_utf8</kbd> method to bypass the extra overhead in checking for valid UTF-8 in the <kbd>from_utf8</kbd> method and can gain a bit of speedup. Also, when doing low-level embedded system development or any program that interfaces with the operating system kernel, you need to switch to unsafe mode. However, not everything requires unsafe mode and there are a few select operations that the Rust compiler sees as unsafe. They are as follows:</p>
+<ul>
+<li>Updating a mutable static variable</li>
+<li>Dereferencing raw pointers, such as <kbd>*const T</kbd> and <kbd>*mut T</kbd></li>
+<li>Calling an unsafe function</li>
+<li>Reading values from a union type</li>
+<li>Invoking a declared function in <kbd>extern</kbd> blocks <span>– </span>items from other languages</li>
+</ul>
+<p>Some of the memory-safety guarantees are relaxed in the aforementioned situations, but the borrow checker is still active in these operations and all the scoping and ownership rules still apply. The Rust reference about unsafety at <a href="https://doc.rust-lang.org/stable/reference/unsafety.html">https://doc.rust-lang.org/stable/reference/unsafety.html</a> distinguishes between what is considered undefined and what is not unsafe. To easily distinguish this when you are performing the aforementioned operations, Rust requires you to use the <kbd>unsafe</kbd> keyword. It allows only a handful of places to be marked as <kbd>unsafe</kbd>, such as the following:</p>
+<ul>
+<li>Functions and methods</li>
+<li>Unsafe block expressions, such as <kbd>unsafe {}</kbd></li>
+<li>Traits</li>
+<li>Implementation blocks</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Unsafe functions and blocks</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's look at <span><span>unsafe functions and blocks</span></span>, starting with unsafe functions:</p>
+<pre>// unsafe_function.rs<br/><br/>fn get_value(i: *const i32) -&gt; i32 { <br/>    *i<br/>}<br/><br/>fn main() {<br/>    let foo = &amp;1024 as *const i32;<br/>    let _bar = get_value(foo);<br/>}</pre>
+<p>We defined a <kbd>get_value</kbd> function that takes in a pointer to an <kbd>i32</kbd> value, which simply returns the pointed value back by dereferencing it. In <kbd>main</kbd>, we are passing <kbd>foo</kbd> to <kbd>get_value</kbd>, which is a reference to an <kbd>i32</kbd> value that <kbd>1024</kbd> cast to <kbd>*const i32</kbd>. If we try running this, the compiler says the following:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/ac78220b-7cce-4109-bf7e-c1e34a8d421d.png" style="width:53.83em;height:12.08em;"/></p>
+<p>As we already said, we need an <kbd>unsafe</kbd> function or block to dereference a raw pointer. Let's go with the first suggestion and add <kbd>unsafe</kbd> before our function:</p>
+<pre>unsafe fn get_value(i: *const i32) -&gt; i32 { <br/>    *i<br/>}</pre>
+<p class="mce-root"/>
+<p>Now, let's try running this again:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/28bf6917-59c4-4b83-82b7-b50ddfac96b2.png" style="width:56.42em;height:12.42em;"/></p>
+<p>Interesting! We got rid of the error on our <kbd>get_value</kbd> function, but now another error is shown at the <kbd>call</kbd> site in <kbd>main</kbd>. Calling an <kbd>unsafe</kbd> function requires us to wrap it within an <kbd>unsafe</kbd> block. That's because unsafe functions, apart from Rust's <kbd>unsafe</kbd> functions, can also be functions in other languages that are declared in <kbd>extern</kbd> blocks. These might or might not return values that the caller expects or a totally malformed value. As such, we need the <kbd>unsafe</kbd> block when calling <kbd>unsafe</kbd> functions. We modify our code to invoke <kbd>get_value</kbd> within an <kbd>unsafe</kbd> block like so:</p>
+<pre>fn main() {<br/>    let foo = &amp;1024 as *const i32;<br/>    let bar = unsafe { get_value(foo) };<br/>}</pre>
+<p><kbd>unsafe</kbd> blocks are expressions, so we remove the semi-colon after <kbd>get_value</kbd>, and instead move it outside the <kbd>unsafe</kbd> block so that our return value from <kbd>get_value</kbd> gets assigned to <kbd>bar</kbd>. With that change, our program compiles.</p>
+<p>Unsafe functions behave like regular functions, except that the aforementioned operations are allowed in it and that declaring your function as <kbd>unsafe</kbd> makes it non-callable from regular, safe functions. However, we could have written <kbd>get_value</kbd> the other way around:</p>
+<pre>fn get_value(i: *const i32) -&gt; i32 { <br/>    unsafe { <br/>        *i <br/>    }<br/>}</pre>
+<p>This looks similar to before but contains a significant change. We moved the <kbd>unsafe</kbd> keyword from the function signature to an inner <kbd>unsafe</kbd> block. The function now does the same unsafe operation but wraps it inside a function that appears just like a regular <kbd>safe</kbd> function. Now, this function can be called without requiring unsafe blocks on the caller side. This technique is often used to provide interfaces from libraries that look safe, even though they are doing unsafe operations internally. Obviously, if you do this, you should take special care that the <kbd>unsafe</kbd> blocks are correct. There are quite a lot of APIs in the standard library that use this paradigm of tucking away operations within <kbd>unsafe</kbd> blocks while providing a safe API on the surface. For example, the <kbd>insert</kbd> method on the <kbd>String</kbd> type, which inserts a character, <kbd>ch</kbd>, at a given index, <kbd>idx</kbd>, is defined like so:</p>
+<pre class="rust"><span class="kw">// https://doc.rust-lang.org/src/alloc/string.rs.html#1277-1285<br/><br/>pub</span> <span class="kw">fn</span> <span class="ident">insert</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">idx</span>: <span class="ident">usize</span>, <span class="ident">ch</span>: <span class="ident">char</span>) {
+    <span class="macro">assert</span><span class="macro">!</span>(<span class="self">self</span>.<span class="ident">is_char_boundary</span>(<span class="ident">idx</span>));
+    <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">bits</span> <span class="op">=</span> [<span class="number">0</span>; <span class="number">4</span>];
+    <span class="kw">let</span> <span class="ident">bits</span> <span class="op">=</span> <span class="ident">ch</span>.<span class="ident">encode_utf8</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">bits</span>).<span class="ident">as_bytes</span>();
+    <span class="kw">unsafe</span> {
+        <span class="self">self</span>.<span class="ident">insert_bytes</span>(<span class="ident">idx</span>, <span class="ident">bits</span>);
+    }<br/>}</pre>
+<p>First, it does an assertion if the <kbd>idx</kbd> passed to it lies at the start or the end of a UTF-8 encoded code-point sequence. Then, it encodes the <kbd>ch</kbd> passed to it as a sequence of bytes. Finally, it calls an <kbd>unsafe</kbd> method, <kbd>insert_bytes</kbd>, in an <kbd>unsafe</kbd> block, passing in <kbd>idx</kbd> and <kbd>bits</kbd>.</p>
+<p>There are many such APIs in the standard library that have similar implementations where they rely on an unsafe block internally, either to gain speedups or when they need mutable access to individual parts of a value because ownership gets in the way.</p>
+<p>Now, if we call our <kbd>get_value</kbd> function from our previous snippet, with a number as an argument, and cast it to a pointer, you can already guess what's going to happen:</p>
+<pre>unsafe_function(4 as *const i32); </pre>
+<p>Running this gives us the following output:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/869b1b0e-5414-4a28-960a-1cd525392a5b.png" style="width:39.00em;height:2.33em;"/></p>
+<p>This is an obvious segmentation fault message! The takeaway from this observation is that the <kbd>unsafe</kbd> function, even though appearing safe on the outside, can be ignorantly or intentionally misused if the user supplies a malformed value. Therefore, if there is the need to expose an unsafe API from your library where the safety of your operations is dependent on user-supplied arguments, the author should document this clearly to ensure they are not passing an invalid value and mark the function with <kbd>unsafe</kbd> rather than using <kbd>unsafe</kbd> blocks internally.</p>
+<p>Safe wrapper functions behind <kbd>unsafe</kbd> blocks should not really be exposed to consumers and instead are to be used mostly to hide implementation details in libraries, as is the case with many standard library API implementations. If you're not certain that you have managed to create a safe wrapper around the unsafe part, you should mark the function as <kbd>unsafe</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Unsafe traits and implementations</h1>
+                </header>
+            
+            <article>
+                
+<p>Apart from functions, traits can also be marked as unsafe. It isn't obvious why we would need unsafe traits. One of the primary motivations for unsafe traits existing in the first place is to mark types that cannot be sent to or shared between threads. This is achieved via the unsafe <kbd>Send</kbd> and <kbd>Sync</kbd> marker traits. These types are also auto traits, which means that they are implemented for most types in the standard library whenever appropriate. However, they are also explicitly opted out for certain types, for instance, the <kbd>Rc&lt;T&gt;</kbd>. An <kbd>Rc&lt;T&gt;</kbd> does not have an atomic reference counting mechanism and if it were to implement <kbd>Sync</kbd> and later be used in multiple threads, then we might end up with the wrong reference counts on the type, which could lead to early frees and dangling pointers. Making <kbd>Send</kbd> and <kbd>Sync</kbd> unsafe puts the onus on the developer to only implement it, that is, if they have proper synchronization in place for their custom types. <kbd>Send</kbd> and <kbd>Sync</kbd> are marked as <kbd>unsafe</kbd> because it's incorrect to implement them for types that have no clear semantics on how types behave when mutated from multiple threads.</p>
+<p>Another motivation for marking traits as unsafe is to encapsulate operations that are likely to have an undefined behavior by a family of types. As we've already mentioned, traits, by their nature, are used to specify a contract that implementing types must hold. Now, let's say your types contain entities from FFI boundaries, that is, a field that contains a reference to a C string, and you have many of these types. In this case, we can abstract away the behavior of such types by using an unsafe trait and then we can have a generic interface that takes types that implement this unsafe trait. One such example from Rust's standard library is the <kbd>Searcher</kbd> trait, which is an associated type of the <kbd>Pattern</kbd> trait,which is defined at <a href="https://doc.rust-lang.org/std/str/pattern/trait.Pattern.html">https://doc.rust-lang.org/std/str/pattern/trait.Pattern.html</a>. The <kbd>Searcher</kbd> trait is an unsafe trait that abstracts the notion of searching an item from a given byte sequence. One of the implementers of <kbd>Searcher</kbd> is the <kbd>CharSearcher</kbd> struct. Marking it as <kbd>unsafe</kbd> removes the burden on the <kbd>Pattern</kbd> trait to check for valid slices on valid UTF-8 byte boundaries and can give you some performance gains in string matching.</p>
+<p>With the motivation for unsafe traits covered, let's look at how we can define and use unsafe traits. Marking a trait as unsafe doesn't make your methods unsafe. We can have unsafe traits that have safe methods. The opposite is also true; we can have a safe trait that can have unsafe methods within it, but that doesn't signify that the trait is unsafe. Unsafe traits are denoted in the same way as functions by simply prepending them with the <kbd>unsafe</kbd> keyword:</p>
+<pre>// unsafe_trait_and_impl.rs<br/><br/>struct MyType;<br/><br/>unsafe trait UnsafeTrait { <br/>    unsafe fn unsafe_func(&amp;self);<br/>    fn safe_func(&amp;self) {<br/>        println!("Things are fine here!");<br/>    }<br/>}<br/><br/>trait SafeTrait {<br/>    unsafe fn look_before_you_call(&amp;self);<br/>}<br/><br/>unsafe impl UnsafeTrait for MyType {<br/>    unsafe fn unsafe_func(&amp;self) {<br/>        println!("Highly unsafe");<br/>    }<br/>}<br/><br/>impl SafeTrait for MyType {<br/>    unsafe fn look_before_you_call(&amp;self) {<br/>        println!("Something unsafe!");<br/>    }<br/>}<br/><br/>fn main() {<br/>    let my_type = MyType;<br/>    my_type.safe_func();<br/>    unsafe {<br/>        my_type.look_before_you_call();<br/>    }<br/>}</pre>
+<p>In the preceding code, we have all kinds of variations with unsafe traits and methods. First, we have two trait declarations: <kbd>UnsafeTrait</kbd>, which is an unsafe trait and <kbd>SafeTrait</kbd>, which is safe. We also have a unit struct called <kbd>MyType</kbd>, which implements them. As you can see, unsafe traits require the <kbd>unsafe</kbd> prefix to implement <kbd>MyType</kbd>, letting the implementer know that they have to uphold the contracts that are expected by the trait. In the second implementation of the <kbd>SafeTrait</kbd> on <kbd>MyType</kbd>, we have an unsafe method that we need to call within the <kbd>unsafe</kbd> block, as we can see in the <kbd>main</kbd> function.</p>
+<p>In the following sections, we'll be exploring a handful of languages and how Rust interoperates with them. All of the related APIs and abstractions that Rust provides to communicate safely back and forth between languages is colloquially termed the <strong>Foreign Function Interface</strong> (<strong>FFI</strong>). As part of the standard library, Rust provides us with built-in FFI abstractions. Wrapper libraries on top of these provide seamless cross-language interaction.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Calling C code from Rust</h1>
+                </header>
+            
+            <article>
+                
+<p>First, we'll take a look at an example of calling C code from Rust. We'll create a new binary crate from which we'll call our C function that's defined in a separate C file. Let's create a new project by running <kbd>cargo new c_from_rust</kbd>. Within the directory, we'll also add our C source, that is, the <kbd>mystrlen.c</kbd> file, which has the following code inside it:</p>
+<pre>// c_from_rust/mystrlen.c<br/><br/>unsigned int mystrlen(char *str) { <br/>    unsigned int c; <br/>    for (c = 0; *str != '\0'; c++, *str++); <br/>    return c; <br/>} </pre>
+<p>It contains a simple function, <kbd>mystrlen</kbd>, which returns the length of a string passed to it. We want to invoke <kbd>mystrlen</kbd> from Rust. To do that, we'll need to compile this C source into a static library. There's one more example in the upcoming section, where we cover linking dynamically to a shared library. We'll use the <kbd>cc</kbd> crate as a build dependency in our <kbd>Cargo.toml</kbd> file:</p>
+<pre># c_from_rust/Cargo.toml<br/><br/>[build-dependencies]<br/>cc = "1.0"</pre>
+<p>The <kbd>cc</kbd> crate does all the heavy lifting of compiling and linking our C source file with our binary with correct linker flags. To specify our build commands, we need to put a <kbd>build.rs</kbd> file at the crate root, which has the following contents:</p>
+<pre>// c_from_rust/build.rs<br/><br/>fn main() {<br/>    cc::Build::new().file("mystrlen.c")<br/>                    .static_flag(true)<br/>                    .compile("mystrlen");<br/>}</pre>
+<p>We created a new <kbd>Build</kbd> instance and passed the C source filename with the static flag set to <kbd>true</kbd> before giving a name to our static object file to the <kbd>compile</kbd> method. Cargo runs the contents of any <kbd>build.rs</kbd> file before any project files get compiled. Upon running code from <kbd>build.rs</kbd>, the <kbd>cc</kbd> crate automatically appends the conventional <kbd>lib</kbd> prefix in C libraries, so our compiled static library gets generated at <kbd>target/debug/build/c_from_rust-5c739ceca32833c2/out/libmystrlen.a</kbd>.</p>
+<p>Now, we also need to tell Rust about the existence of our <kbd>mystrlen</kbd> function. We do this by using <kbd>extern</kbd> blocks, where we can specify items that come from other languages. Our <kbd>main.rs</kbd> file is as follows:</p>
+<pre>// c_from_rust/src/main.rs<br/><br/>use std::os::raw::{c_char, c_uint};<br/>use std::ffi::CString; <br/><br/>extern "C" { <br/>    fn mystrlen(str: *const c_char) -&gt; c_uint; <br/>}<br/><br/>fn main() { <br/>    let c_string = CString::new("C From Rust").expect("failed"); <br/>    let count = unsafe { <br/>        mystrlen(c_string.as_ptr()) <br/>    }; <br/>    println!("c_string's length is {}", count);<br/>}</pre>
+<p>We have a couple of imports from the <kbd>std::os::raw</kbd> module that contain types that are compatible with primitive C types and have names close to their C counterparts. For numeric types, a single letter before the type says whether the type is unsigned. For instance, the unsigned integer is defined as <kbd>c_uint</kbd>. In our <kbd>extern</kbd> declaration of <kbd>mystrlen</kbd>, we take a <kbd>*const c_char</kbd> as input, which is equivalent to <kbd>char *</kbd> in C, and return a <kbd>c_uint</kbd> as output, which maps to <kbd>unsigned int</kbd> in C. We also import the <kbd>CString</kbd> type from the <kbd>std::ffi</kbd> module, as we need to pass a C-compatible string to our <kbd>mystrlen</kbd> function. The <kbd>std::ffi</kbd> module contains common utilities and types that make it easy to perform cross language interactions.</p>
+<p>As you may have noticed, in the <kbd>extern</kbd> block, we have a string, <kbd>"C"</kbd>, following it. This <kbd>"C"</kbd> specifies that we want the compiler's code generator to confirm to the C ABI (<kbd>cdecl</kbd>) so that the function-calling convention follows exactly as a function call that's done from C. An <strong>Application Binary Interface</strong> <em>(</em><strong>ABI</strong>) is basically a set of rules and conventions that dictate how types and functions are represented and manipulated at the lower levels. The function-calling convention is one aspect of an ABI specification. It's quite analogous to what an API means for a library consumer. In the context of functions, an API specifies what functions you can call from the library, while the ABI specifies the lower-level mechanism by which a function is invoked. A calling convention defines things such as whether function parameters are stored in registers or on the stack, and whether the caller clears the register/stack state or the caller when the function returns, and other details. We could have also ignored specifying this, as <kbd>"C"</kbd> (<kbd>cdecl</kbd>) is the default ABI in Rust for items that are declared in an <kbd>extern</kbd> block. The <kbd>cdecl</kbd> is a calling convention that's used by most C compilers for function calls. There are also other ABIs that Rust supports such as <kbd>fastcall</kbd>, <kbd>cdecl</kbd>, <kbd>win64</kbd>, and others, and these need to be put after the <kbd>extern</kbd> block based on what platform you are targeting.</p>
+<p class="mce-root"/>
+<p>In our <kbd>main</kbd> function, we use a special version of a <kbd>CString</kbd> string from the <kbd>std::ffi</kbd> module because strings in C are null terminated, while Rust one's aren't. <kbd>CString</kbd> does all the checks for us to give us a C-compatible version of strings where we don't have a null <kbd>0</kbd> byte character in the middle of the string and ensures that the ending byte is a <kbd>0</kbd> byte. The <kbd>ffi</kbd> module contains two major string types:</p>
+<ul>
+<li><kbd>std::ffi::CStr</kbd> represents a borrowed C string that's analogous to <kbd>&amp;str</kbd>. It can be used to reference a string that has been created in C.</li>
+<li><kbd>std::ffi::CString</kbd> represents an owned string that is compatible with foreign C functions. It is often used to pass strings from Rust code to foreign C functions.</li>
+</ul>
+<p>Since we want to pass a string from the Rust side to the function we just defined, we used the <kbd>CString</kbd> type here. Following that, we call <kbd>mystrlen</kbd> in an unsafe block, passing in the <kbd>c_string</kbd> as a pointer. We then print the string length to standard output.</p>
+<p>Now, all we need to do is run <kbd>cargo run</kbd>. We get the following output:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/69929d3f-ca44-46af-9aeb-28a3582ffaf4.png" style="width:35.67em;height:4.58em;"/></div>
+<p>The <kbd>cc</kbd> crate automatically figures out the correct C compiler to call. In our case, on Ubuntu, it automatically invokes <kbd>gcc</kbd> to link our C library. Now, there are a couple of improvements to be made here. First, it is awkward that we have to be in an <kbd>unsafe</kbd> block to call the function as we know it's not unsafe. We know our C implementation is sound, at least for this small function. Second, we will panic if <kbd>CString</kbd> creation fails. To solve this, we can create a safe wrapper function. In a simplistic form, this just means creating a function that calls the external function inside an unsafe block:</p>
+<pre>fn safe_mystrlen(str: &amp;str) -&gt; Option&lt;u32&gt; { <br/>    let c_string = match CString::new(str) { <br/>        Ok(c) =&gt; c, <br/>        Err(_) =&gt; return None <br/>    };<br/><br/>    unsafe { <br/>        Some(mystrlen(c_string.as_ptr())) <br/>    } <br/>} </pre>
+<p>Our <kbd>safe_mystrlen</kbd> function returns an <kbd>Option</kbd> now, where it returns <kbd>None</kbd> if <kbd>CString</kbd> creation fails and, following that, calls <kbd>mystrlen</kbd> wrapped in an <kbd>unsafe</kbd> block, which is returned as <kbd>Some</kbd>. Calling <kbd>safe_mystrlen</kbd> feels exactly like calling any other Rust function. If possible, it's recommended to make safe wrappers around external functions, taking care that all exceptional cases happening inside the <kbd>unsafe</kbd> block are handled properly so that library consumers don't use unsafe in their code.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Calling Rust code from C</h1>
+                </header>
+            
+            <article>
+                
+<p>As we stated in the previous section, when Rust libraries expose their functions to other languages using the <kbd>extern</kbd> block, they expose the C ABI (<kbd>cdecl</kbd>) by default. As such, it becomes a very seamless experience of calling Rust code from C. To C, they appear just like regular C functions. We'll take a look at an example of calling Rust code from a C program. Let's create a cargo project for this by running <kbd>cargo new rust_from_c --lib</kbd>.</p>
+<p>In our <kbd>Cargo.toml</kbd> file, we have the following items:</p>
+<pre># rust_from_c/Cargo.toml<br/><br/>[package]<br/>name = "rust_from_c"<br/>version = "0.1.0"<br/>authors = ["Rahul Sharma &lt;creativcoders@gmail.com&gt;"]<br/>edition = "2018"<br/><br/>[lib]<br/>name = "stringutils"<br/>crate-type = ["cdylib"]</pre>
+<p>Under the <kbd>[lib]</kbd> section, we specified the crate as <kbd>cdylib</kbd>, which indicates that we want a dynamically loadable library to be generated, which is more commonly known as a shared object file (<kbd>.so</kbd>) in Linux. We specified an explicit name for our <kbd>stringutils</kbd> library, and this will be used to create the shared object file.</p>
+<p>Now, let's move on to our implementation in <kbd>lib.rs</kbd>:</p>
+<pre>// rust_from_c/src/lib.rs<br/><br/>use std::ffi::CStr;<br/>use std::os::raw::c_char;<br/><br/>#[repr(C)]<br/>pub enum Order {<br/>    Gt,<br/>    Lt,<br/>    Eq<br/>}<br/><br/>#[no_mangle]<br/>pub extern "C" fn compare_str(a: *const c_char, b: *const c_char) -&gt; Order {<br/>    let a = unsafe { CStr::from_ptr(a).to_bytes() };<br/>    let b = unsafe { CStr::from_ptr(b).to_bytes() };<br/>    if a &gt; b {<br/>        Order::Gt<br/>    } else if a &lt; b {<br/>        Order::Lt<br/>    } else {<br/>        Order::Eq<br/>    }<br/>}</pre>
+<p>We have a single function, <kbd>compare_str</kbd>. We prepend it with the <kbd>extern</kbd> keyword to expose it to C, followed by specifying the <kbd>"C"</kbd> ABI for the compiler to generate code appropriately. We also need to add a <kbd>#[no_mangle]</kbd> attribute, as Rust adds random characters to function names by default to prevent the clashing of names of types and functions across modules and crates. This is called name mangling. Without this attribute, we won't be able to call our function by the name <kbd>compare_str</kbd>. Our function lexicographically compares two C strings passed to it and returns an enum, <kbd>Order</kbd>, accordingly, which has three variants: <kbd>Gt</kbd> (Greater than), <kbd>Lt</kbd> (Less than), and <kbd>Eq</kbd> (Equal). As you may have noticed, the enum definition has a <kbd>#[repr(C)]</kbd> attribute. Because this enum is being returned to the C side, we want it to be represented in the same way as a C enum. The <kbd>repr</kbd> attribute allows us to do that. On the C side, we will get a <kbd>uint_32</kbd> type as the return type of this function as enums variants are represented as 4 bytes in Rust, as well as in C. Do note that at the time of writing this book, Rust follows the same data layout for enums that have associated data as it does for C enums. However, this may change in the future.</p>
+<p>Now, let's create a file called <kbd>main.c</kbd> that uses our exposed function from Rust:</p>
+<pre>// rust_from_c/main.c<br/><br/>#include &lt;stdint.h&gt;<br/>#include &lt;stdio.h&gt;<br/><br/>int32_t compare_str(const char* value, const char* substr);<br/><br/>int main() {<br/>    printf("%d\n", compare_str("amanda", "brian"));<br/>    return 0;<br/>}</pre>
+<p>We declared the prototype of our <kbd>compare_str</kbd> function, just like any normal prototype declaration. Following that, we called <kbd>compare_str</kbd> in <kbd>main</kbd>, passing in our two string values. Do note that if we were passing strings that were allocated on the heap, we would need to also free it from the C side. In this case, we are passing a C string literal that goes to the data segment of the process, and so we don't need to do any free calls. Now, we'll create a simple <kbd>Makefile</kbd> that builds our <kbd>stringutils</kbd> crate and also compiles and links with our <kbd>main.c</kbd> file:</p>
+<pre># rust_from_c/Makefile<br/><br/>main:<br/>    cargo build<br/>    gcc main.c -L ./target/debug -lstringutils -o main</pre>
+<p>We can now run <kbd>make</kbd> to build our crate and then run <kbd>main</kbd> by first setting our <kbd>LD_LIBRARY_PATH</kbd> to where our generated <kbd>libstringutils.so</kbd> resides. Following that, we can run <kbd>main</kbd> like so:</p>
+<pre><strong>$ export LD_LIBRARY_PATH=./target/debug</strong><br/><strong>$ ./main</strong></pre>
+<p>This gives us an output of <kbd>1</kbd>, which is the value of the <kbd>Lt</kbd> variant from the <kbd>Order</kbd> enum on the Rust side. The takeaway from this example is that when you are invoking a Rust function from C/C++ or any other language that has a supported ABI in Rust, we cannot pass Rust-specific data types to the FFI boundary. For instance, passing <kbd>Option</kbd> or <kbd>Result</kbd> types, that ha've associated data with them is meaningless, as C cannot interpret and extract values out of them, as it has no way of knowing about that. In such cases, we need to pass primitive values as return types from functions to the C side or convert our Rust type to some format that C can understand.</p>
+<p>Now, consider our previous case of calling C code from Rust. In the manual way, we needed to write <kbd>extern</kbd> declarations for all of our APIs that have been declared in header files. It would be great if this could be automated for us. Let's see how we can do that next!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using external C/C++ libraries from Rust</h1>
+                </header>
+            
+            <article>
+                
+<p>Given the amount of software written over the last three decades, a lot of system software is written in C/C++. It's more likely that you may want to link to an existing library written in C/C++ for use in Rust, as rewriting everything in Rust (though desirable) is not practical for complex projects. But at the same time, writing manual FFI bindings for these libraries is also painful and error-prone. Fortunately, there are tools for us to automatically generate bindings to C/C++ libraries. For this demo, the required code on the Rust side is much simpler than the previous example of calling C/C++ code from Rust, as, this time, we'll use a neat crate called <strong>bindgen</strong> that automatically generates FFI bindings from C/C++ libraries. Bindgen is the recommended tool if someone wants to integrate a complex library with lots of APIs. Writing these bindings manually can be very error-prone and bindgen helps us by automating this process. We'll use this crate to generate bindings for a simple C library, <kbd>levenshtein.c</kbd>, which can be found at <a href="https://github.com/wooorm/levenshtein.c">https://github.com/wooorm/levenshtein.c</a>, which is used to find the minimum edit distance between two strings. The edit distance is used in a wide variety of applications, such as in fuzzy string matching, natural language processing, and in spell checkers. Anyway, let's create our cargo project by running <kbd>cargo new edit_distance --lib</kbd>.</p>
+<p>Before we use bindgen, we need to install a few dependencies as bindgen needs them:</p>
+<pre><strong>$ apt-get install llvm-3.9-dev libclang-3.9-dev clang-3.9</strong></pre>
+<p>Next, in our <kbd>Cargo.toml</kbd> file, we'll add a <kbd>build</kbd> dependency on <kbd>bindgen</kbd> and the <kbd>cc</kbd> crate:</p>
+<pre># edit_distance/Cargo.toml<br/><br/>[build-dependencies]<br/>bindgen = "0.43.0"<br/>cc = "1.0"</pre>
+<p>The <kbd>bindgen</kbd> crate will be used to generate bindings from the <kbd>levenshtein.h</kbd> header file, while the <kbd>cc</kbd> crate will be used to compile our library as a shared object so that we can use it from Rust. Our library-related files reside in the <kbd>lib</kbd> folder at the crate root.</p>
+<p>Next, we'll create our <kbd>build.rs</kbd> file, which will be run before any of our source files are compiled. It will do two things: first, it will compile <kbd>levenshtein.c</kbd> to a shared object (<kbd>.so</kbd>) file, and second, it will generate bindings to the APIs defined in the <kbd>levenshtein.h</kbd> file:</p>
+<pre>// edit_distance/build.rs<br/><br/>use std::path::PathBuf;<br/><br/>fn main() {<br/>    println!("cargo:rustc-rerun-if-changed=.");<br/>    println!("cargo:rustc-link-search=.");<br/>    println!("cargo:rustc-link-lib=levenshtein");<br/><br/>    cc::Build::new()<br/>        .file("lib/levenshtein.c")<br/>        .out_dir(".")<br/>        .compile("levenshtein.so");<br/><br/>    let bindings = bindgen::Builder::default()<br/>        .header("lib/levenshtein.h")<br/>        .generate()<br/>        .expect("Unable to generate bindings");<br/><br/>    let out_path = PathBuf::from("./src/");<br/>    bindings.write_to_file(out_path.join("bindings.rs")).expect("Couldn't write bindings!");<br/>}</pre>
+<p>In the preceding code, we tell Cargo that our library search path is our current directory and that the library we are linking against is called <kbd>levenshtein</kbd>. We also tell Cargo to rerun code in <kbd>build.rs</kbd> if any of our files in our current directory change:</p>
+<pre>println!("cargo:rustc-rerun-if-changed=.");<br/>println!("cargo:rustc-link-search=.");<br/>println!("cargo:rustc-link-lib=levenshtein");</pre>
+<p>Following that, we create a compilation pipeline for our library by creating a new <kbd>Build</kbd> instance and provide the appropriate C source file for the <kbd>file</kbd> method. We also set the output directory to <kbd>out_dir</kbd> and our library name to the <kbd>compile</kbd> method:</p>
+<pre>cc::Build::new().file("lib/levenshtein.c")<br/>                .out_dir(".")<br/>                .compile("levenshtein");</pre>
+<p>Next, we create a bindgen <kbd>Builder</kbd> instance, pass our header file location, call <kbd>generate()</kbd>, and then write it to a <kbd>bindings.rs</kbd> file before calling <kbd>write_to_file</kbd>:</p>
+<pre>let bindings = bindgen::Builder::default().header("lib/levenshtein.h")<br/>                                          .generate()<br/>                                          .expect("Unable to generate bindings");</pre>
+<p>Now, when we run <kbd>cargo build</kbd>, a <kbd>bindings.rs</kbd> file will be generated under <kbd>src/</kbd>. As we mentioned previously, it's good practice for all libraries that are exposing FFI bindings to provide a safe wrapper. So, under <kbd>src/lib.rs</kbd>, we'll create a function named <kbd>levenshtein_safe</kbd> that wraps the unsafe function from <kbd>bindings.rs</kbd>:</p>
+<pre>// edit_distance/src/lib.rs<br/><br/>mod bindings;<br/><br/>use crate::bindings::levenshtein;<br/>use std::ffi::CString;<br/><br/>pub fn levenshtein_safe(a: &amp;str, b: &amp;str) -&gt; u32 {<br/>    let a = CString::new(a).unwrap();<br/>    let b = CString::new(b).unwrap();<br/>    let distance = unsafe { levenshtein(a.as_ptr(), b.as_ptr()) };<br/>    distance<br/>}</pre>
+<p>We import the unsafe function from <kbd>bindings.rs</kbd>, wrap it within our <kbd>levenshtein_safe</kbd> function, and call our <kbd>levenshtein</kbd> function in an <kbd>unsafe</kbd> block, passing C-compatible strings. It's time to test our <kbd>levenshtein_safe</kbd> function. We'll create a <kbd>basic.rs</kbd> file in an <kbd>examples/</kbd> directory in our crate root, which has the following code:</p>
+<pre>// edit_distance/examples/basic.rs<br/><br/>use edit_distance::levenshtein_safe;<br/><br/>fn main() {<br/>    let a = "foo";<br/>    let b = "fooo";<br/>    assert_eq!(1, levenshtein_safe(a, b));<br/>}</pre>
+<p>We can run this with <kbd>cargo run --example basic</kbd> and we should see no assertion failures as the value should be <kbd>1</kbd> from the <kbd>levenshtein_safe</kbd> call. Now, it's a recommended naming convention for these kind of crates to have the suffix <kbd>sys</kbd> appended to them, which only houses FFI bindings. Most crates on <kbd>crates.io</kbd> follow this convention. This was a whirlwind tour on how to use bindgen to automate cross-language interaction. If you want similar automation for reverse FFI bindings, such as Rust in C, there is also an equivalent project called <kbd>cbindgen</kbd> at <a href="https://github.com/eqrion/cbindgen">https://github.com/eqrion/cbindgen</a>, which can generate C header files for Rust crates. For instance, <kbd>Webrender</kbd> uses this crate to expose its APIs to other languages. Given the legacy of C, it's the lingua franca of programming languages and Rust has first-class support for it. A lot of other languages also call into C. This implies that your Rust code can be called from all other languages that target C. Let's make other languages talk to Rust.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating native Python extensions with PyO3</h1>
+                </header>
+            
+            <article>
+                
+<p>In this section, we'll see how Python can also call Rust code. The Python community has always been a heavy user of native modules such as numpy, lxml, opencv, and so on, and most of them have their underlying implementations in either C or C++. Having Rust as an alternative to native C/C++ modules is a major advantage both in terms of speed and safety for a lot of Python projects out there. For the demo, we'll build a native Python module that's implemented in Rust. We'll be using <kbd>pyo3</kbd>, a popular project that provides Rust bindings for the Python interpreter and hides all the low-level details, thus providing a very intuitive API. The project is on GitHub at <a href="https://github.com/PyO3/pyo3">https://github.com/PyO3/pyo3</a>. It supports both Python 2 and Python 3 versions. <kbd>pyo3</kbd> is a fast-moving target and only works on nightly at the time of writing this book. So, we'll use a specific version of <kbd>pyo3</kbd>, that is, <kbd>0.4.1</kbd>, along with a specific nightly version of the Rust compiler.</p>
+<p>Let's create a new cargo project by running <kbd>cargo new word_suffix --lib</kbd>. This library crate will expose a Python module called <kbd>word_suffix</kbd>, which contains a single function, <kbd>find_words</kbd>, which accepts a comma-separated string of words and returns all the words in that text that end with a given suffix. Once we build our module, we'll be able to import this module like a normal Python module.</p>
+<p>Before we go ahead with the implementation, we'll need to switch to a specific nightly Rust toolchain for this project, that is, <kbd>rustc 1.30.0-nightly (33b923fd4 2018-08-18)</kbd>. We can override the toolchain to use this specific nightly version for this project by running <kbd>rustup override set nightly-2018-08-19</kbd> in our current directory (<kbd>word_suffix/</kbd>).</p>
+<p>To start things off, we'll specify our dependencies in our <kbd>Cargo.toml</kbd> file:</p>
+<pre># word_suffix/Cargo.toml<br/><br/>[package]<br/>name = "word_suffix"<br/>version = "0.1.0"<br/>authors = ["Rahul Sharma &lt;creativcoders@gmail.com&gt;"]<br/><br/>[dependencies]<br/>pyo3 = "0.4"<br/><br/>[lib]<br/>crate-type = ["cdylib"]</pre>
+<p>We added our only dependency here on <kbd>pyo3</kbd>. As you can see, in the <kbd>[lib]</kbd> section, we specified the <kbd>crate-type</kbd> as <kbd>cdylib</kbd>, which means that the generated library is similar to a C shared library (<kbd>.so</kbd> in linux), which Python already knows how to call.</p>
+<p>Now, let's start the implementation in our <kbd>lib.rs</kbd> file:</p>
+<pre>// word_suffix/src/lib.rs<br/><br/>//! A demo python module in Rust that can extract words<br/>//! from a comma seperated string of words that ends with the given suffix<br/><br/>#[macro_use]<br/>extern crate pyo3;<br/>use pyo3::prelude::*;<br/><br/>/// This module is a python module implemented in Rust.<br/>#[pymodinit]<br/>fn word_suffix(_py: Python, module: &amp;PyModule) -&gt; PyResult&lt;()&gt; {<br/>    module.add_function(wrap_function!(find_words))?;<br/>    Ok(())<br/>}<br/><br/>#[pyfunction]<br/>fn find_words(src: &amp;str, suffix: &amp;str) -&gt; PyResult&lt;Vec&lt;String&gt;&gt; {<br/>    let mut v = vec![];<br/>    let filtered = src.split(",").filter_map(|s| {<br/>        let trimmed = s.trim();<br/>        if trimmed.ends_with(&amp;suffix) {<br/>            Some(trimmed.to_owned())<br/>        } else {<br/>            None<br/>        }<br/>    });<br/><br/>    for s in filtered {<br/>        v.push(s);<br/>    }<br/>    Ok(v)<br/>}</pre>
+<p>First, we imported our <kbd>pyo3</kbd> crate, along with all the Python-related types from the <kbd>prelude</kbd> module. Then, we defined a <kbd>word_suffix</kbd> function, annotating it with the <kbd>#[pymodinit]</kbd> attribute. This becomes our Python module, which  we can import in any <kbd>.py</kbd> file. This function receives two arguments. The first argument is <kbd>Python</kbd>, a marker type that is required for most Python related operations in <kbd>pyo3</kbd>. This is used to indicate that a particular operation modifies the Python interpreter state. The second argument is a <kbd>PyModule</kbd> instance, which represents a Python module object. Through this instance, we then add our <kbd>find_words</kbd> function, wrapped inside the <kbd>wrap_function</kbd> macro by calling <kbd>add_function</kbd>. The <kbd>wrap_function</kbd> macro does some manipulation to the provided Rust function to convert it into a Python-compatible function.</p>
+<p>Next, is our <kbd>find_words</kbd> function, which is the important piece here. We wrap it with a <kbd>#[pyfunction]</kbd> attribute, which performs conversions on the argument and return type of our function so that it's compatible with a Python function. Our <kbd>find_words</kbd> implementation is simple. First, we create a vector, <kbd>v</kbd>, to hold the list of filtered words. Then, we filter our <kbd>src</kbd> string by splitting on <kbd>","</kbd>, followed by a <kbd>filter</kbd> and <kbd>map</kbd> operation. The <kbd>split(",")</kbd> call returns an iterator on which we call the <kbd>filter_map</kbd> method. This method receives a closure as an argument containing the split word <kbd>s</kbd>. We first remove any white space from our <kbd>s</kbd> by calling <kbd>s.trim()</kbd>, followed by checking whether it <kbd>ends_with</kbd> our provided <kbd>suffix</kbd> string. If it does, it converts <kbd>trimmed</kbd> to an owned <kbd>String</kbd> wrapping in <kbd>Some</kbd>; otherwise, it returns <kbd>None</kbd>. We then iterate over all the filtered words (if any), push them to our <kbd>v</kbd>, and return it.</p>
+<p>With that explanation out of the way, it's time to build our Python module. To do that, we have <kbd>pyo3-pack</kbd>: another tool from the same <kbd>pyo3</kbd> project that automates the whole process of making a native Python module. This tool also has the ability to publish the built packages to the <strong>Python Package Index</strong> (<span><strong>PyPI</strong>)</span>. Let's install <kbd>pyo3-pack</kbd> by running <kbd>cargo install pyo3-pack</kbd>. Now, we can generate the package as a Python wheel (<kbd>.whl</kbd>), followed by installing the package locally using <kbd>pyo3-pack develop</kbd>. But before we do that, we need to be in a Python virtual environment, since the <kbd>py3-pack develop</kbd> command requires that.</p>
+<p>We can create our virtual environment by running the following code:</p>
+<pre><strong>virtualenv -p /usr/bin/python3.5 test_word_suffix<br/><br/></strong></pre>
+<p>We are using Python 3.5 here. After that, we need to activate our environment by running the following code:</p>
+<pre><strong>source test_word_suffix/bin/activate</strong></pre>
+<p>If you don't have <kbd>pip</kbd> or <kbd>virtualenv</kbd> installed, you can install them by running the following code:</p>
+<pre><strong>sudo apt-get install python3-pip</strong><br/><strong>sudo pip3 install virtualenv</strong></pre>
+<p>Now, we can run <kbd>pyo3-pack develop</kbd>, which creates the <em>wheel</em> files for both Python 2 and Python 3 versions and also installs them locally inside our virtual environment.</p>
+<p>Now, we'll create a simple <kbd>main.py</kbd> file in our <kbd>word_suffix</kbd> directory and import this module to see if we can use our module:</p>
+<pre># word_suffix/main.py<br/><br/>import word_suffix<br/><br/>print(word_suffix.find_words("Baz,Jazz,Mash,Splash,Squash", "sh"))</pre>
+<p>Running it via <kbd>python main.py</kbd>, we get the following output:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/c7e97fad-d750-4b13-8fdf-33e5408ed38a.png" style="width:41.92em;height:3.67em;"/></p>
+<p>Great! This was a very simple example, though. For complex cases, there are lots of details that you need to know about. To explore more about <kbd>pyo3</kbd>, head over to their excellent guide at <a href="https://pyo3.rs">https://pyo3.rs</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating native extensions in Rust for Node.js</h1>
+                </header>
+            
+            <article>
+                
+<p>There are times when the performance of JavaScript in the Node.js runtime is not enough, so developers reach out to other low-level languages to create native Node.js modules. Often, C and C++ are used as the implementation language for these native modules. Rust can also be used to create native Node.js modules via the the same FFI abstractions that we saw for C and Python. In this section, we'll explore a high-level wrapper for these FFI abstractions, called the <kbd>neon</kbd> project, which was created by Dave Herman from Mozilla.</p>
+<p>The neon project is a set of tools and glue code that makes the life of Node.js developers easier, allowing them to write native Node.js modules in Rust and consume them seamlessly in their JavaScript code. The project resides at <a href="https://github.com/neon-bindings/neon">https://github.com/neon-bindings/neon</a>. It's partially written in JavaScript: there's a command-line tool called <kbd>neon</kbd> in the <kbd>neon-cli</kbd> package, a JavaScript-side support library, and a Rust-side support library. Node.js itself has good support for loading native modules, and neon uses that same support.</p>
+<p>In the following demo, we will be building a native Node.js module in Rust as an npm package, exposing a function that can count occurrences of a given word in a chunk of text. We will then import this package and test the exposed function in a <kbd>main.js</kbd> file. This demo requires Node.js (version <kbd>v11.0.0</kbd>) to be installed, along with its package manager, <kbd>npm</kbd> (version <kbd>6.4.1</kbd>). If you don't have Node.js and <kbd>npm</kbd> installed, head over to <a href="https://www.digitalocean.com/community/tutorials/how-to-install-node-js-on-ubuntu-16-0">https://www.digitalocean.com/community/tutorials/how-to-install-node-js-on-ubuntu-16-04</a> to set them up. After you are done installing them, you need to install the <kbd>neon-cli</kbd> tool using <kbd>npm</kbd> by running the following command:</p>
+<pre><strong>npm install --global neon-cli<br/></strong></pre>
+<p>Since we want this tool to be available globally to create new projects from anywhere, we pass the <kbd>--global</kbd> flag. The <kbd>neon-cli</kbd> tool is used to create a Node.js project with skeleton neon support included. Once it is installed, we create our project by running <kbd>neon new native_counter</kbd>, which prompts for basic information for the project, as shown in the following screenshot:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/0be051c4-e78f-465e-98d8-c47c0398e527.png" style="width:44.17em;height:22.75em;"/></p>
+<p>Here's the directory structure this command created for us:</p>
+<pre><strong>  native_counter tree</strong><br/><strong>.</strong><br/><strong>├── lib</strong><br/><strong>│   └── index.js</strong><br/><strong>├── native</strong><br/><strong>│   ├── build.rs</strong><br/><strong>│   ├── Cargo.toml</strong><br/><strong>│   └── src</strong><br/><strong>│       └── lib.rs</strong><br/><strong>├── package.json</strong><br/><strong>└── README.md</strong></pre>
+<p>The project structure neon created for us is the same npm package structure that we get with the usual <kbd>lib</kbd> directory and <kbd>package.json</kbd>. In addition to the Node.js package structure, it has also created a cargo project for us under the <kbd>native</kbd> directory with some initial code in it. Let's see what the contents of this directory are, starting with <kbd>Cargo.toml</kbd>:</p>
+<pre># native_counter/native/Cargo.toml<br/><br/>[package]<br/>name = "native_counter"<br/>version = "0.1.0"<br/>authors = ["Rahul Sharma &lt;creativcoders@gmail.com&gt;"]<br/>license = "MIT"<br/>build = "build.rs"<br/>exclude = ["artifacts.json", "index.node"]<br/><br/>[lib]<br/>name = "native_counter"<br/>crate-type = ["dylib"]<br/><br/>[build-dependencies]<br/>neon-build = "0.2.0"<br/><br/>[dependencies]<br/>neon = "0.2.0"</pre>
+<p>The prominent thing to note is the <kbd>[lib]</kbd> section, which specifies the crate type as <kbd>dylib</kbd>, which means we require Rust to create a shared library. There is also an autogenerated <kbd>build.rs</kbd> file at the root level, which does some initial build environment configuration by calling <kbd>neon_build::setup()</kbd> inside it. Next, we'll remove the existing code in our <kbd>lib.rs</kbd> file and add the following code:</p>
+<pre>// native_counter/native/src/lib.rs<br/><br/>#[macro_use]<br/>extern crate neon;<br/><br/>use neon::prelude::*;<br/><br/>fn count_words(mut cx: FunctionContext) -&gt; JsResult&lt;JsNumber&gt; {<br/>    let text = cx.argument::&lt;JsString&gt;(0)?.value();<br/>    let word = cx.argument::&lt;JsString&gt;(1)?.value();<br/>    Ok(cx.number(text.split(" ").filter(|s| s == &amp;word).count() as f64))<br/>}<br/><br/>register_module!(mut m, { <br/>    m.export_function("count_words", count_words)?;<br/>    Ok(())<br/>});</pre>
+<p>First, we import the <kbd>neon</kbd> crate, along with the macros and all the items from the <kbd>prelude</kbd> module. Following that, we define a function, <kbd>count_words</kbd>, which takes in a <kbd>FunctionContext</kbd> instance. This contains information in JavaScript regarding the active function that's invoked, such as the argument list, length of arguments, the <kbd>this</kbd> binding, and other details. We expect the caller to pass two arguments to our <kbd>count_words</kbd> function. Firstly, the text, and secondly, the word to search for in the text. These values are extracted by calling the <kbd>argument</kbd> method on the <kbd>cx</kbd> instance and passing in the respective index to it. We also use the turbofish operator to ask it to give a value of the <kbd>JsString</kbd> type. On the returned <kbd>JsString</kbd> instance, we call the <kbd>value</kbd> method to get a Rust <kbd>String</kbd> value.</p>
+<p>After we're done extracting the arguments, we split our text with white space and filter only the chunks that contain the given <kbd>word</kbd> before calling <kbd>count()</kbd> on the iterator chain to count the number of matched occurrences:</p>
+<pre>text.split(" ").filter(|s| s == &amp;word).count()</pre>
+<p><kbd>count()</kbd> returns <kbd>usize</kbd>. However, we need to cast <kbd>usize</kbd> to <kbd>f64</kbd> because of the <kbd>Into&lt;f64&gt;</kbd>  <span>trait bound </span>on our <kbd>number</kbd> method on <kbd>cx</kbd>. Once we do that, we wrap this expression with a call to <kbd>cx.number()</kbd>, which creates a JavaScript<em>-</em>compatible <kbd>JsNumber</kbd> type. Our <kbd>count_words</kbd> method returns a <kbd>JsResult&lt;JsNumber&gt;</kbd> type, as accessing the arguments might fail and returning a proper <em>JavaScript</em> type might also fail. This error variant in the <kbd>JsResult</kbd> type represents any exception that's thrown from the JavaScript-side.</p>
+<p>Next, we register our <kbd>count_words</kbd> function with the <kbd>register_module!</kbd> macro. This macro gets a mutable reference to a <kbd>ModuleContext</kbd> instance, <kbd>m</kbd>. Using this instance, we export our function by calling the <kbd>export_function</kbd> method, passing in the name of the function as string and the actual function type as the second parameter.</p>
+<p>Now, here's our updated <kbd>index.js</kbd> file's contents:</p>
+<pre>// native_counter/lib/index.js<br/><br/>var word_counter = require('../native');<br/>module.exports = word_counter.count_words;</pre>
+<p>As <kbd>index.js</kbd> is the root of an npm package, we require our native module and must export the function directly at the root of the module using <kbd>module.exports</kbd>. We can now build our module using the following code:</p>
+<pre>neon build</pre>
+<p>Once the package has been built, we can test it by creating a simple <kbd>main.js</kbd> file in the <kbd>native_counter</kbd> directory with the following code:</p>
+<pre>// native_counter/main.js<br/><br/>var count_words_func = require('.');<br/>var wc = count_words_func("A test text to test native module", "test");<br/>console.log(wc);</pre>
+<p>We'll run this file by running the following code:</p>
+<pre>node main.js</pre>
+<p>This gives us an output of <kbd>2</kbd>. That concludes our awesome journey on making Rust and other languages talk to each other. It turns out that Rust is quite smooth at this interaction. There are rough edges in cases where other languages don't understand Rust's complex data types, but this is to be expected, as every language is different in its implementation.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>Rust provides us with convenient FFI abstractions to interface with different languages and has first-class support for C, as it exposes the C ABI (<kbd>cdecl</kbd>) for functions marked as <kbd>extern</kbd>. As such, it's a good candidate for bindings for a lot of C/C++ libraries. One of the prominent examples of this is the SpiderMonkey JavaScript engine that's implemented in C++, which is used in the Servo project. The Servo engine calls into C++ using the bindings that are generated via the <kbd>bindgen</kbd> crate.</p>
+<p>But, when we are interacting with cross-language boundaries, the language constructs and data representation that one language has don't need to match with the other language. As such, we need to put extra annotations, along with unsafe blocks, in Rust code to let the compiler know of our intent. We saw this when we used the <kbd>#[repr(C)]</kbd> attribute. The <strong>Foreign Function Interface</strong> (<strong>FFI</strong>), like many other Rust features, is zero-cost, which means that a minimal runtime cost is incurred when linking to code from other languages. We took a look at Python and Node.js, which have nice wrapper crates for these low-level FFI abstractions. For languages that don't have such wrappers, interfacing with other languages is always possible by using the bare FFI APIs that Rust's standard library provides.</p>
+<p>The aim up until this chapter was to cover the topics that are core to the language, and I hope you are up to speed with most of the core language features. The remaining chapters will cover case studies of various Rust frameworks and crates, and will be heavily oriented toward applying Rust to practical projects.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>
