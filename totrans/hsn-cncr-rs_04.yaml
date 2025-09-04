@@ -1,7 +1,9 @@
 - en: Sync and Send – the Foundation of Rust Concurrency
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Sync和Send – Rust并发的基石
 - en: Rust aims to be a programming language in which fearless concurrency is possible.
     What does this mean? How does it work? In [Chapter 2](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml),
     *Sequential Rust Performance Testing*, we discussed the performance of sequential
@@ -11,35 +13,52 @@
     handles memory, especially with regard to composing high-performance structures.
     In this chapter, we'll expand on what we've learned previously and, at long last,
     dig in to Rust's concurrency story.
+  id: totrans-1
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust旨在成为一个可以无畏地进行并发的编程语言。这意味着什么？它是如何工作的？在[第2章](8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml)，*顺序Rust性能测试*中，我们讨论了顺序Rust程序的性能，故意省略了对并发程序的讨论。在[第3章](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml)，*Rust内存模型
+    – 所有权、引用和操作*中，我们看到了Rust处理内存的概述，特别是关于构建高性能结构的方式。在本章中，我们将扩展我们之前学到的内容，并最终深入探讨Rust的并发故事。
 - en: 'By the end of this chapter, we will have:'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 到本章结束时，我们将：
 - en: Discussed the `Sync` and `Send` traits
+  id: totrans-3
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 讨论了`Sync`和`Send`特性
 - en: Inspected parallel races in a ring data structure with Helgrind
+  id: totrans-4
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用Helgrind检查了环形数据结构中的并行竞态
 - en: Resolved this race with a mutex
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用互斥锁解决了这个竞态条件
 - en: Investigated the use of the standard library MPSC
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 调查了标准库MPSC的使用
 - en: Built a non-trivial data multiplexing project
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 构建了一个非平凡的数据复用项目
 - en: Technical requirements
+  id: totrans-8
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: This chapter requires a working Rust installation. The details of verifying
     your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
     *Preliminaries – Machine Architecture and Getting Started with Rust*. The Valgrind
@@ -47,16 +66,25 @@
     but you can find further installation instructions for your system at [valgrind.org](http://valgrind.org/).
     Linux Perf is used and is bundled by many Linux distributions. Any other software
     required for this chapter is installed as a part of the text.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章需要安装一个有效的Rust环境。验证安装的详细说明在[第1章](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml)，*预备知识
+    – 计算机架构和Rust入门*中有所介绍。下面使用Valgrind工具套件。许多操作系统捆绑了valgrind包，但您可以在[http://valgrind.org/](http://valgrind.org/)找到您系统的进一步安装说明。Linux
+    Perf被使用，并且被许多Linux发行版捆绑。本章所需的其他任何软件都将作为文本的一部分安装。
 - en: 'You can find the source code for this book''s projects on GitHub: [https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust/](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust/).
     This chapter has its source code under `Chapter04`.'
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 您可以在GitHub上找到本书项目的源代码：[https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust/](https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust/).
+    本章的源代码位于`Chapter04`目录下。
 - en: Sync and Send
+  id: totrans-11
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Sync和Send
 - en: 'There are two key traits that the parallel Rust programmer must understand—`Send`
     and `Sync`. The `Send` trait is applied to types that can be transferred across
     thread boundaries. That is, any type `T: Send` is safe to move from one thread
@@ -70,32 +98,48 @@
     race between either thread to see which can deallocate `T` first and which will
     suffer a double-free for its troubles. Worse, suppose the taking of the strong
     reference counter in `Rc<T>` were spread across three pseudo-instructions:'
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: '并行Rust程序员必须理解两个关键特性——`Send`和`Sync`。`Send`特性应用于可以在线程边界之间传输的类型。也就是说，任何类型`T: Send`都可以安全地从一条线程移动到另一条线程。`Rc<T>:
+    !Send`表示它被明确标记为在线程之间移动是不安全的。为什么？考虑如果它被标记为`Send`，会发生什么？我们从上一章知道`Rc<T>`是一个带有两个计数器的boxed
+    `T`，分别用于对`T`的弱引用和强引用。这些计数器是关键。假设我们将一个`Rc<T>`分散在两个线程——称为`A`和`B`——每个线程都创建了引用、丢弃了它们，等等。如果`A`和`B`同时丢弃了`Rc<T>`的最后一个引用，会发生什么？我们有两个线程之间的竞态，看哪个线程可以首先释放`T`，哪个线程会因此遭受双重释放的麻烦。更糟糕的是，假设在`Rc<T>`中的强引用计数器的获取被分散在三个伪指令中：'
 - en: '[PRE0]'
+  id: totrans-13
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'Likewise, suppose the dropping of a strong reference counter were spread across
     three pseudo-instructions:'
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 同样地，假设一个强引用计数器的释放被分散到三个伪指令中：
 - en: '[PRE1]'
+  id: totrans-15
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'In a single-threaded context, this works well, but consider this result in
     a multi-threaded context. Let `counter`  be equal to 10 for all threads at the
     beginning of the following thought experiment:'
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 在单线程的上下文中，这工作得很好，但在多线程的上下文中考虑这个结果。在以下思维实验的开始，让所有线程的`counter`都等于10：
 - en: '[PRE2]'
+  id: totrans-17
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: By the end, we've lost three references to `Rc<T>`, meaning while `T` is not
     lost in memory, it is entirely possible that when we drop `T`, references will
     remain to its no longer valid memory out in the wild, the results of which are
     undefined but not likely to be great.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们失去了对`Rc<T>`的三个引用，这意味着虽然`T`在内存中没有丢失，但在我们删除`T`时，完全有可能在外部仍然有效但不再有效的内存中保留对其的引用，其结果是不确定的，但不太可能是好的。
 - en: 'The `Sync` trait is derived from `Send` and has to do with references: `T:
     Sync` if `&T: Send`. That is, a `T` is `Sync` only if sharing a `&T` which acts
     as if that `T` were sent into the thread. We know from the previous code that
@@ -108,22 +152,31 @@
     Neither are raw pointers, to go with their lack of other safety guarantees. As
     you poke around Rust code bases, you''ll find traits that would otherwise have
     been derived thread-safe but are marked as not.'
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Sync`特质是从`Send`派生出来的，与引用有关：如果`&T: Send`，则`T: Sync`。也就是说，只有当共享一个`&T`，它表现得好像那个`T`被发送到线程中时，`T`才是`Sync`。从前面的代码中我们知道`Rc<T>:
+    !Send`，因此我们也知道`Rc<T>: !Sync`。Rust类型继承其组成部分的`Sync`和`Send`状态。按照惯例，任何`Sync` + `Send`的类型都被称为线程安全的。我们基于`Rc<T>`实现的任何类型都不会是线程安全的。现在，对于大多数情况，`Sync`和`Send`是自动派生的特质。在[第3章](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml)中讨论的`UnsafeCell`不是线程安全的。同样，原始指针也不是，因为它们缺乏其他安全保证。当你探索Rust代码库时，你会发现一些特质在其他情况下会被自动派生为线程安全的，但被标记为不是。'
 - en: Racing threads
+  id: totrans-20
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 竞态线程
 - en: 'You can also mark types as thread-safe, effectively promising the compiler
     that you''ve arranged all the data races in such a way as to make them safe. This
     is relatively rare in practice but it''s worth seeing what it takes to make a
     type thread-safe in Rust before we start building on top of safe primitives. First,
     let''s take a look at code that''s intentionally sideways:'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 你也可以将类型标记为线程安全的，这实际上是在向编译器承诺你已经以使它们安全的方式安排了所有数据竞争。这在实践中相对较少见，但在我们开始构建在安全原语之上之前，了解在Rust中使类型线程安全需要什么是有价值的。首先，让我们看看故意写错的代码：
 - en: '[PRE3]'
+  id: totrans-22
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'What we have here is a ring, or a circular buffer, of `u32`. `InnerRing` holds
     a raw mutable pointer and is not automatically thread-safe as a result. But, we''ve
     promised to Rust that we know what we''re doing and implement `Send` and `Sync`
@@ -136,11 +189,15 @@
     time of writing this book, Rust has no stable allocator interface and, so, to
     get a contiguous allocation we have to do it in a roundabout fashion—strip a `Vec<u32>`
     down to its pointer:'
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们这里有一个环形，或者说是一个循环缓冲区，由`u32`组成。`InnerRing`包含一个原始可变指针，因此不是自动线程安全的。但是，我们已经向Rust承诺我们知道我们在做什么，并为`Ring`实现了`Send`和`Sync`。为什么不在`InnerRing`上呢？当我们从多个线程中操作内存中的对象时，该对象的位置必须固定。`InnerRing`——以及它包含的数据——必须在内存中占据一个稳定的位置。`Ring`可以并且将会在至少从创建线程到工作线程之间跳动。现在，`InnerRing`中的数据是什么？它是一个指向连续内存块0偏移量的指针，这个内存块将作为我们的循环缓冲区的存储。在撰写本书时，Rust没有稳定的分配器接口，因此，为了获得连续的分配，我们必须以迂回的方式去做——将`Vec<u32>`简化为其指针：
 - en: '[PRE4]'
+  id: totrans-24
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: '`Ring::with_capacity` functions much the same as other types'' `with_capacity`
     from the Rust ecosystem: sufficient space is allocated to fit capacity items.
     In our case, we piggyback off `Vec::with_capacity`, being sure to allocate enough
@@ -153,16 +210,23 @@
     standard library''s `mem::forget` is ideal for this very use case. The allocation
     now being safe, an `InnerRing` is boxed to store it. The box is then consumed
     by `Box::into_raw` and passed into a `Ring`. Ta-da!'
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Ring::with_capacity`函数与Rust生态系统中的其他类型的`with_capacity`函数非常相似：分配足够的空间以容纳容量项。在我们的情况下，我们利用`Vec::with_capacity`，确保为容量`Option<u32>`实例分配足够的房间，并在整个内存块长度上初始化为None。如果你还记得[第3章](605ce307-29ed-4b5a-961e-8d327467b84f.xhtml)，*《Rust内存模型
+    – 所有权、引用和操作*，这是作为`Vec`在分配上比较懒惰，而我们则需要分配。`Vec::as_mut_ptr`返回一个指向切片的原始指针，但不消耗原始对象，这对`Ring`来说是个问题。当数据超出作用域时，分配的块必须保持存活。标准库的`mem::forget`非常适合这种用途。现在分配是安全的，一个`InnerRing`被装箱以存储它。然后，这个箱子被`Box::into_raw`消耗，并传递给一个`Ring`。哇！'
 - en: 'Interacting with a type that has an inner raw pointer can be verbose, scattering
     unsafe blocks around to little good effect. To that end, `Ring` gets a `Deref`
     and `DerefMut` implementation, both of which tidy up the interaction with `Ring`:'
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 与具有内部原始指针的类型交互可能会很冗长，在周围散布不安全块，效果甚微。为此，`Ring`得到了`Deref`和`DerefMut`的实现，这两个实现都整理了与`Ring`的交互：
 - en: '[PRE5]'
+  id: totrans-27
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'Now that we have `Ring` defined, we can get into the meat of the program. We''ll
     define two operations that will run concurrently with one another—writer and reader.
     The idea here is that writer will race around the ring writing, increasing `u32`
@@ -170,41 +234,57 @@
     `u32` will wrap.) The reader will race around behind the writer reading the values
     written, checking that each read value is up one from the previous read, with
     the caveat of wrapping. Here''s the writer:'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经定义了`Ring`，我们可以进入程序的实质部分。我们将定义两个将同时运行的运算——写入者和读取者。这里的想法是，写入者将在环中竞争，只要有机会就会写入，将`u32`值增加到环中。（在类型边界处，`u32`将回绕。）读取者将在写入者后面竞争，读取写入的值，检查每个读取的值是否比前一个读取的值大一个，但要注意回绕。以下是写入者：
 - en: '[PRE6]'
+  id: totrans-29
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: 'Now, to be crystal clear, there''s a *lot* that''s wrong here. The ambition
     is to only write when the size of the ring buffer has not reached its capacity—meaning
     there''s free space available. The actual writing is:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，为了非常清楚，这里有很多地方是错误的。目标是只在环缓冲区的大小未达到其容量时写入——这意味着有可用空间。实际的写入是：
 - en: '[PRE7]'
+  id: totrans-31
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'That is, we dereference the `ring (*ring)` and get the pointer to the `Option<u32>`
     sized block at `(*ring).data.offset(offset)`, which we then dereference and move
     `Some(cur)` onto the top of whatever was previously there. It is entirely possible
     that because of races on the size of the `Ring` that we''ll overwrite an unread
     `u32.` The remainder of the write block sets up our next `cur` and our next offset,
     adding one and modulating around if need be:'
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 也就是说，我们取消引用`ring (*ring)`并得到指向`Option<u32>`大小块的指针，该块位于`(*ring).data.offset(offset)`，然后我们再次取消引用并将`Some(cur)`移动到之前的内容顶部。完全有可能因为`Ring`大小的竞争，我们会覆盖一个未读取的`u32`。写入块的其余部分设置我们的下一个`cur`和下一个偏移量，如果需要则加一并进行模运算：
 - en: '[PRE8]'
+  id: totrans-33
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: '`thread::yield_now` is new. The writer is a fast spin-loop—it checks a single
     condition and loops back around again for another try. This is very CPU and power
     inefficient. `thread::yield_now` hints to the operating system that this thread
     had no work to do and should be deprioritized in favor of other threads. The effect
     is OS and running environment-dependent but it''s still a good idea to yield if
     you have to spin-loop:'
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: '`thread::yield_now`是新的。写入者是一个快速的旋转循环——它检查一个条件然后再次循环以进行另一次尝试。这非常不高效，对CPU和电力来说都是浪费。`thread::yield_now`向操作系统暗示这个线程没有工作要做，应该优先考虑其他线程。效果取决于操作系统和运行环境，但如果你必须旋转循环，那么让步仍然是一个好主意：'
 - en: '[PRE9]'
+  id: totrans-35
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: The reader is similar to the writer, with the major difference being that it's
     not an infinite loop. Reads are done with `mem::replace`, swapping the block at
     the reader offset with `None`. When we hit bingo and score a `Some`, the memory
@@ -213,14 +293,20 @@
     of a raw pointer and the reader is responsible for finding it. In this way, we
     are careful not to leak memory. Or, well, we would if there wasn't a race on the
     size of the `Ring`.
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 读取器与写入器类似，主要区别在于它不是一个无限循环。读取操作使用`mem::replace`完成，将读取偏移量处的块与`None`交换。当我们得到“bingo”并得到一个`Some`时，那个`u32`的内存现在归读取器所有——当它超出作用域时将调用`drop`。这是很重要的。写入器负责在原始指针内部丢失内存，而读取器负责找到它。通过这种方式，我们小心地避免内存泄漏。或者，好吧，我们会这样做，除非在`Ring`的大小上没有竞争。
 - en: 'Finally, we have the `main` function:'
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们有`main`函数：
 - en: '[PRE10]'
+  id: totrans-38
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: There are two new things going on here. The first is our use of `thread::spawn`
     to start a `reader` and a `writer`. The `move || {}` construct is called a *move
     closure*. That is, every variable reference inside the closure from the outer
@@ -229,40 +315,58 @@
     The second new thing is the `JoinHandle` that `thread::spawn` returns. Rust threads
     are not a drastic departure from the common POSIX or Windows threads. Rust threads
     receive their own stack and are independently runnable by the operating system.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里有两个新的情况。第一个是我们使用`thread::spawn`来启动一个`reader`和一个`writer`。`move || {}`结构被称为*移动闭包*。也就是说，闭包内部对外部作用域中每个变量的引用都被移动到闭包的作用域中。这就是为什么我们需要将环形克隆到`reader_ring`中。否则，就没有`ring`供写入器使用。第二个新情况是`thread::spawn`返回的`JoinHandle`。Rust线程并没有与常见的POSIX或Windows线程有太大的不同。Rust线程有自己的堆栈，并且可以由操作系统独立运行。
 - en: Every Rust thread has a return value, though here ours is `()`. We get at that
     return value by *joining* on the thread's `JoinHandler`, pausing execution of
     our thread until the thread wraps up successfully or crashes. Our main thread
     assumes its child threads will return successfully, hence the `join().unwrap()`.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 每个Rust线程都有一个返回值，尽管这里的返回值是`()`。我们通过在线程的`JoinHandler`上*连接*来获取这个返回值，暂停我们的线程的执行，直到线程成功完成或崩溃。我们的主线程假设其子线程将成功返回，因此有`join().unwrap()`。
 - en: 'What happens when we run our program? Well, failure, which is what we were
     expecting:'
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 当我们运行我们的程序时会发生什么？嗯，失败，这正是我们预期的：
 - en: '[PRE11]'
+  id: totrans-42
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: The flaw of the Ring
+  id: totrans-43
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 环形结构的缺陷
 - en: 'Let''s explore what''s going wrong here. Our ring is laid out in memory as
     a contiguous block and we have a few control variables hung off the side. Here''s
     a diagram of the system before any reads or writes happen:'
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们来看看这里出了什么问题。我们的环形结构在内存中作为一个连续的块布局，并且我们在旁边挂了一些控制变量。以下是任何读取或写入发生之前系统的示意图：
 - en: '[PRE12]'
+  id: totrans-45
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: 'Here''s a diagram of the system just after the writer has written its first
     value:'
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 以下是写入器写入第一个值后系统的示意图：
 - en: '[PRE13]'
+  id: totrans-47
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: 'To do this, the writer has performed a load of both size and capacity, performed
     a comparison between then, written to its offset inside the block, and incremented
     size. None of these operations are guaranteed to be ordered as they are in the
@@ -270,11 +374,15 @@
     seen in the previous run example, the writer has stomped its own writes and raced
     well ahead. How? Consider what happens when the execution of the reader and writer
     are interleaved in this setup:'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 要做到这一点，作者进行了一系列关于大小和容量的负载测试，并在它们之间进行了比较，将结果写入块内的偏移量，并增加了大小。这些操作并不保证按照程序中的顺序执行，要么是因为推测性执行，要么是因为编译器重排序。正如我们在之前的运行示例中看到的，作者在其自己的写入上进行了覆盖，并且进展迅速。这是如何做到的？考虑在以下设置中，当读取器和写入器的执行被交错时会发生什么：
 - en: '[PRE14]'
+  id: totrans-49
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: 'The writer thread has looped through the ring twice and is poised at the start
     of the ring to write `10`. The reader has been through the ring once and is expecting
     to see `5`. Consider what happens if the reader''s decrement of size makes it
@@ -282,11 +390,15 @@
     is woken up just as its size and capacity is checked. Imagine if, in addition
     to that, the writer writes its new `cur` to the main memory before the reader
     wakes back up. You''ll get this situation:'
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 写入线程已经绕过环形结构两次，并处于环形结构的起始位置准备写入`10`。读者已经通过环形结构一次，并期待看到`5`。考虑一下如果读者的减小大小的操作在`mem::replace`之前进入主内存会发生什么。想象一下，如果这时写入线程被唤醒，正在检查其大小和容量。想象一下，除此之外，写入线程在读者再次醒来之前将其新的`cur`写入主内存。你会得到以下情况：
 - en: '[PRE15]'
+  id: totrans-51
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: 'That''s what we see in practice. Sometimes. Here''s the trick with concurrent
     programming at the metal of the machine: you''re dealing with probabilities. It''s
     entirely possible for our program to run successfully or, worse, run successfully
@@ -296,57 +408,86 @@
     a `valgrind` suite tool called `helgrind`, but didn''t have a real use for it
     then. We do now. What does `helgrind` have to say about our intentionally racey
     program?'
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是我们实际看到的情况。有时。在机器金属层面进行并发编程的技巧是：你正在处理概率。我们的程序成功运行或，更糟糕的是，在一个CPU架构上成功运行但在另一个架构上不成功运行是完全可能的。对这类程序进行随机测试和内省是*至关重要的*。实际上，在[第1章](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml)，*预备知识
+    – 机器架构和Rust入门*中，我们讨论了一个`valgrind`套件工具`helgrind`，但当时并没有真正用到它。现在我们用到了。`helgrind`对我们故意制造的竞态条件程序有什么看法？
 - en: 'We''ll run `helgrind` like so:'
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将这样运行`helgrind`：
 - en: '[PRE16]'
+  id: totrans-54
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: 'This will print the full history of the program but place the results in a
     file on disk for easier inspection. Here''s some of the output:'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将打印出程序的完整历史，但将结果放在磁盘上的文件中以便更容易检查。以下是部分输出：
 - en: '[PRE17]'
+  id: totrans-56
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: The output is less clear than it might be, but helgrind is warning us about
     the data stomping that we're already aware of. The reader is encouraged to run
     helgrind for themselves and inspect the whole history.
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 输出不如预期清晰，但helgrind正在警告我们关于我们已知的数据覆盖问题。鼓励读者亲自运行helgrind并检查整个历史。
 - en: 'Let''s improve this situation. Clearly, we have a problem with racing reads
     and writes, but we also have a problem in terms of the behavior of the writer.
     It stomps its own writes and is entirely unaware of it. With an adjustment to
     the writer, we can stop absent-mindedly stomping on writes as follows:'
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们改善这种情况。显然，我们存在竞态条件读写的问题，但我们在写入者的行为上也有问题。它覆盖了自己的写操作，对此毫无察觉。通过调整写入者，我们可以停止无意中覆盖写操作，如下所示：
 - en: '[PRE18]'
+  id: totrans-59
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: 'Afterwards, we run the program a few times and find the following:'
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 之后，我们运行程序几次，发现以下情况：
 - en: '[PRE19]'
+  id: totrans-61
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: That's fun! Both threads have crashed for the same reason. The writer has inappropriately
     stomped a write and the reader has read it.
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: 这很有趣！两个线程都因为相同的原因崩溃了。作者不适当地覆盖了一个写操作，而读者读取了它。
 - en: Getting back to safety
+  id: totrans-63
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 回到安全性
 - en: 'Like we discussed previously, the preceding examples were intentionally low-level
     and unsafe. How can we build something similar with the bits and pieces that Rust
     provides us with? Here''s one approach:'
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 正如我们之前讨论的，前面的例子故意使用了低级且不安全的方法。我们如何使用Rust提供的工具构建类似的东西呢？这里有一个方法：
 - en: '[PRE20]'
+  id: totrans-65
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: 'This is awfully similar to the previous, racey programs. We have Ring, which
     holds a size and is a set of operations around a `Vec<Option<u32>>`. This time,
     the `vec` is not exploded into a raw pointer and the implementation of Ring is
@@ -356,12 +497,17 @@
     the case that indirect, unsafe code is harder to recognize as flawed than direct,
     unsafe code. Anyhow, you''ll note that `Ring: !Send` in this implementation. Instead,
     the writer and reader threads operate on `Arc<Mutex<Ring>>`.'
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: '这与之前的竞争性程序非常相似。我们有环（Ring），它包含一个大小，并围绕`Vec<Option<u32>>`集操作。这次，`vec`没有被拆分成原始指针，环的实现也更加完善。实际上，在我们的前一个例子中，我们有可能提供更多的抽象实现——就像我们在Rust内部探索时所看到的那样——但是间接和不可安全是粗糙的组合。有时，间接的不可安全代码比直接的不可安全代码更难识别为有缺陷。无论如何，你会注意到在这个实现中`Ring:
+    !Send`。相反，写入和读取线程在`Arc<Mutex<Ring>>`上操作。'
 - en: Safety by exclusion
+  id: totrans-67
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 排除法的安全性
 - en: Let's talk about `Mutex.` Mutexes provide MUTual EXclusion among threads. Rust's
     `Mutex` works just as you'd expect coming from other programming languages. Any
     thread that calls a lock on a `Mutex` will acquire the lock or block until such
@@ -378,8 +524,11 @@
     and, so, there's  no way for one thread to interact poorly with another. A `Mutex`
     is both `Sync` and `Send`, which makes good sense. Why then do we wrap our `Mutex<Ring>`
     in an `Arc`? What even is an `Arc<T>`?
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们谈谈`Mutex`。互斥锁（Mutex）在线程之间提供**互斥**。Rust的`Mutex`工作方式与来自其他编程语言的预期一致。任何调用`Mutex`锁的线程都会获取锁或者阻塞，直到持有互斥锁的线程将其解锁。锁的类型为`lock(&self)
+    -> LockResult<MutexGuard<T>>`。这里有一个巧妙的技巧。`LockResult<Guard>`是`Result<Guard, PoisonError<Guard>>`。也就是说，获取互斥锁锁的线程实际上得到一个结果，成功时包含`MutexGuard<T>`，或者是一个*中毒*通知。当互斥锁的持有者崩溃时，Rust会中毒其互斥锁，这种策略有助于防止只有一个线程崩溃的多线程传播继续运行。正因为如此，你会发现许多Rust程序不会检查锁调用的返回值，并立即展开它。`MutexGuard<T>`在释放时，会解锁互斥锁。一旦互斥锁被解锁，就不再可能访问其内部封装的数据，因此，一个线程无法与另一个线程进行不良交互。`Mutex`既是`Sync`也是`Send`，这很有道理。那么，为什么我们要用`Arc`包装我们的`Mutex<Ring>`呢？`Arc<T>`究竟是什么呢？
 - en: The `Arc<T>` is an atomic reference counting pointer. As discussed previously,
     `Rc<T>` is not thread-safe because if it were marked as such there'd be a race
     on the inner strong/weak counters, much like in our intentionally racey programs.
@@ -388,15 +537,21 @@
     a reference counting pointer without introducing data races between threads. `Arc<T>`
     can be used everywhere `Rc<T>` can, except those atomic integers are not free.
     If you can use `Rc<T>`, do so. Anyway, more on this next chapter.
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 原子引用计数指针`Arc<T>`。如前所述，`Rc<T>`不是线程安全的，因为如果它被标记为线程安全，那么内部强/弱计数器之间会有竞争，就像在我们的故意竞争的程序中一样。`Arc<T>`建立在原子整数之上，我们将在下一章中更详细地介绍。现在只需说，`Arc<T>`能够作为引用计数指针工作，而不会在线程之间引入数据竞争。`Arc<T>`可以在`Rc<T>`可以使用的任何地方使用，除了这些原子整数不是免费的。如果你可以使用`Rc<T>`，那就使用它。无论如何，下一章将有更多关于这个话题的介绍。
 - en: 'Why `Arc<Mutex<Ring>>`? Well, `Mutex<Ring>` can be moved but it cannot be cloned.
     Let''s take a look inside `Mutex`:'
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 为什么是`Arc<Mutex<Ring>>`？因为`Mutex<Ring>`可以移动但不能克隆。让我们看看`Mutex`内部的情况：
 - en: '[PRE21]'
+  id: totrans-71
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: 'We can see that `T` may or may not be sized and that `T` is stored in an `UnsafeCell<T>`
     next to something called `sys::Mutex`. Each platform that Rust runs on will provide
     its own form of mutex, being that these are often tied into the operating system
@@ -404,17 +559,23 @@
     is a wrapper around system-dependent mutex implementations. The `Unix` implementation
     is in `src/libstd/sys/unix/mutex.rs` and is an `UnsafeCell` around `pthread_mutex_t`,
     as you might expect:'
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以看到`T`可能或可能不是有大小，并且`T`被存储在名为`sys::Mutex`的`UnsafeCell<T>`旁边。Rust运行的每个平台都会提供自己的互斥锁形式，因为这些通常与操作系统环境相关联。如果你查看`rustc`代码，你会发现`sys::Mutex`是系统依赖互斥锁实现的包装器。`Unix`实现位于`src/libstd/sys/unix/mutex.rs`中，它是一个围绕`pthread_mutex_t`的`UnsafeCell`，正如你所期望的那样：
 - en: '[PRE22]'
+  id: totrans-73
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: It's not strictly necessary for `Mutex` to be implemented on top of system-dependent
     foundations, as we'll see in the chapter on atomic primitives when we build our
     own locks. Generally speaking though, it's a good call to use what's available
     and well-tested unless there's a good reason not to (like pedagogy).
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 并非严格必要在系统依赖的基础上实现`Mutex`，正如我们在原子原语章节中构建自己的锁时将会看到的。一般来说，除非有充分的理由不这样做（比如教学目的），否则使用可用的和经过良好测试的组件是一个好主意。
 - en: 'Now, what would happen if we were to clone `Mutex<T>`? We would need a new
     allocation of the system mutex, for one, and possibly a new `UnsafeCell`, if `T`
     itself were even clonable. The new system mutex is the real problem—threads have
@@ -430,11 +591,15 @@
     `T` is mutably referenced through the `MutexGuard`. This is safe in Rust''s memory
     model as there''s only one mutable reference to `T` at any given time on account
     of mutual exclusion:'
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，如果我们克隆`Mutex<T>`会发生什么呢？首先，我们需要为系统互斥锁分配新的内存，如果`T`本身是可克隆的，可能还需要一个新的`UnsafeCell`。新的系统互斥锁是真正的问题——线程必须在内存中的相同结构上同步。将`Mutex`放入`Arc`中可以解决这个问题。像克隆`Rc`一样，克隆`Arc`会创建对`Mutex`的新强引用。这些引用是不可变的。这怎么工作呢？首先，`Arc`内部的互斥锁永远不会改变。在Rust提供的抽象模型中，互斥锁本身没有内部状态，并且通过锁定线程并没有真正发生任何修改。当然，这实际上并不完全正确，通过检查我们可以发现。Rust的`Mutex`之所以表现得这样，是因为它周围包围着系统依赖结构的内部`UnsafeCell`。Rust的`Mutex`利用了`UnsafeCell`允许的内部可变性。互斥锁本身保持不可变，而内部`T`通过`MutexGuard`可变地引用。这在Rust的内存模型中是安全的，因为由于互斥排他，任何给定时间只有一个可变引用到`T`：
 - en: '[PRE23]'
+  id: totrans-76
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: We wrap our `Ring`, which is not thread-safe in the least, in an `Arc`, `Mutex`
     layer, clone this to the reader, and move it into the writer. Here, this is a
     matter of style, but it's important to realize that if a main thread creates and
@@ -446,18 +611,25 @@
     mutex—`Arc` has convenient `Deref`/`DerefMut` implementations—and then perform
     their action. Running this new program through `helgrind` gives a clean run. The
     reader is encouraged to confirm this on their own system.
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将`Ring`包裹在一个`Arc`、`Mutex`层中，将其克隆给读者，并将其移动到写者那里。在这里，这是一个风格问题，但重要的是要意识到，如果主线程创建并克隆一个`Arc`到子线程中，那么`Arc`的内容仍然存活，至少在主线程存活期间是这样。例如，如果一个文件处理程序被保存在主线程的`Arc`中，克隆到临时启动的工人，然后没有被丢弃，那么文件处理程序本身将永远不会关闭。当然，这可能是也可能不是你的程序所期望的。读者被鼓励在自己的系统上确认这一点。
 - en: 'Moreover, the program itself runs to completion successfully after repeated
     runs. The unfortunate thing is that, theoretically, it''s not especially efficient.
     Locking a mutex is not free, and while our thread''s operations are short—a handful
     of arithmetic in addition to one memory swap—while one thread holds the mutex
     the other waits dumbly. Linux perf proves this somewhat:'
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 此外，程序在多次运行后成功完成。不幸的是，从理论上讲，它并不特别高效。锁定互斥锁不是免费的，尽管我们的线程操作很短——除了一个内存交换外，还有少量算术运算——当一个线程持有互斥锁时，另一个线程会愚蠢地等待。Linux
+    perf证明了这一点：
 - en: '[PRE24]'
+  id: totrans-79
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: Only 1.3 CPUs are used during the execution. For a program as simple as this,
     we're likely better off with the simplest approach. Also, because of cache write
     effects in the presence of a memory barrier—of which a mutex assuredly is one—it
@@ -465,12 +637,16 @@
     Ultimately, it comes down to finding the trade-off in development time, need for
     machine efficiency, and defining what machine efficiency is for the CPU in use.
     We'll see some of this in later chapters.
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
+  zh: 在执行过程中只使用了1.3个CPU。对于这样一个简单的程序，我们可能更倾向于采用最简单的方法。此外，由于存在内存屏障的缓存写入效应——互斥锁肯定是一种——选择互斥锁而不是细粒度锁定策略可能更便宜。最终，这取决于在开发时间、机器效率的需求以及定义所使用CPU的机器效率之间的权衡。我们将在后面的章节中看到一些这方面的内容。
 - en: Using MPSC
+  id: totrans-81
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用MPSC
 - en: 'We''ve come at Ring from an odd point of view, looking to build a malfunctioning
     program from the start only to improve it later. In a real program where purposes
     and functions gradually drift from their origins, it''s worth occasionally asking
@@ -480,8 +656,10 @@
     Secondly, it''s a structure that''s intended to be operated on by two or more
     threads with two roles: reading and writing. Ring is a means of passing `u32` between
     threads, being read in the order that they were written.'
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们从Ring的奇特角度出发，一开始就试图构建一个功能不正常的程序，然后稍后对其进行改进。在一个真正的程序中，目的和功能会逐渐偏离其起源，偶尔问一下软件作为一个抽象概念实际上*做什么*是有意义的。那么，Ring实际上*做什么*呢？首先，它是有限的，这是众所周知的。它有一个固定的容量，读者/写入器对会小心地保持在那个容量内。其次，它是一个旨在由两个或更多线程操作的架构，这些线程有两个角色：读取和写入。Ring是线程间传递`u32`的一种方式，按照它们被写入的顺序进行读取。
 - en: 'Happily, as long as we''re willing to accept only a single reader thread, Rust
     ships with something in the standard library to cover this common need—`std::sync::mpsc`.
     The Multi Producer Single Consumer queue is one where the writer end—called `Sender<T>`—may
@@ -497,14 +675,21 @@
     possible to use Rust''s MPSC in bounded memory, keeping in mind that the caller
     will have to have a strategy for what to do with inputs that are rejected for
     want of space to place them in.'
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: '幸运的是，只要我们愿意只接受一个读取线程，Rust的标准库就提供了一些东西来满足这个常见需求——`std::sync::mpsc`。多生产者单消费者队列是这样一个队列，其写入端——称为`Sender<T>`——可以被克隆并移动到多个线程中。读取线程——称为`Receiver<T>`——只能被移动。有`Sender<T>`和`SyncSender<T>`两种发送者变体。第一个代表无界MPSC，这意味着通道将根据需要分配空间以容纳发送到其中的`Ts`。第二个代表有界MPSC，这意味着通道的内部存储有一个固定的上限容量。虽然Rust文档将`Sender<T>`和`SyncSender<T>`描述为异步和同步，但这并不完全正确。`SyncSender<T>::send`如果没有可用空间，将会阻塞，但还有一个`SyncSender<T>::try_send`，它是一个类型为`try_send(&self,
+    t: T) -> Result<()`, `TrySendError<T>>`的函数。可以在有限的内存中使用Rust的MPSC，同时考虑到调用者必须有一个策略来处理无法放入空间中的输入。'
 - en: 'What does our `u32` passing program look like using Rust''s MPSC? Like so:'
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的`u32`传递程序使用Rust的MPSC看起来像这样：
 - en: '[PRE25]'
+  id: totrans-85
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: 'This is significantly shorter than any of our previous programs as well as
     being not at all prone to arithmetic bugs. The send type of `SyncSender` is `send(&self,
     t: T) -> Result<()`, `SendError<T>>`, meaning that `SendError` has to be cared
@@ -512,23 +697,32 @@
     of an MPSC channel is disconnected, as will happen in this program when the reader
     hits its `read_limit`. The performance characteristics of this odd program are
     not quite as quick as for the last `Ring` program:'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: '这个程序比我们之前的任何程序都要短，而且根本不会出现算术错误。`SyncSender`的发送类型是`send(&self, t: T) -> Result<()`,
+    `SendError<T>>`，这意味着必须处理`SendError`以避免程序崩溃。`SendError`仅在MPSC通道的远程端断开连接时返回，就像在这个程序中当读取器达到其`read_limit`时会发生的那样。这个奇怪程序的性能特性并不像最后一个`Ring`程序那样快：'
 - en: '[PRE26]'
+  id: totrans-87
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: 'But it''s well within the margin of error, especially considering the ease
     of programming. One thing worth keeping in mind is that messages in MPSC flow
     in only one direction: the channel is not bi-directional. In this way, MPSC is
     not suitable for request/response patterns. It''s not unheard of to layer two
     or more MPSCs together to achieve this, with the understanding that a single consumer
     on either side is sometimes not suitable.'
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 但它完全在误差范围内，尤其是在考虑到编程的简便性。有一点值得记住的是，MPSC中的消息只在一个方向上流动：通道不是双向的。因此，MPSC不适合请求/响应模式。将两个或更多MPSC层叠起来以实现这一点并不罕见，理解到单侧的单个消费者有时可能不合适。
 - en: A telemetry server
+  id: totrans-89
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 一个遥测服务器
 - en: 'Let''s build a descriptive statistics server. These pop up often in one way
     or another inside organizations: a thing is needed that consumes events, does
     some kind of descriptive statistic computation over those things, and then multiplexes
@@ -537,11 +731,16 @@
     to service this need at scale on resource constrained devices without tying operations
     staff into any kind of pipeline. What we''ll build here now is a kind of mini-cernan,
     something whose flow is as follows:'
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们构建一个描述性统计服务器。这些服务器以某种方式在组织内部频繁出现：需要一个能够消费事件、对这些事件进行某种描述性统计计算，然后将描述输出到其他系统的工具。我的工作项目postmates/cernan
+    ([https://crates.io/crates/cernan](https://crates.io/crates/cernan))存在的正是为了在资源受限的设备上以规模满足这一需求，同时不将操作人员绑定到任何类型的管道。我们现在要构建的是一个迷你版的cernan，其流程如下：
 - en: '[PRE27]'
+  id: totrans-91
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: The idea is to take `telemetry` from a simple UDP protocol, receive it as quickly
     as possible to avoid the OS dumping packets, pass these points through a high
     and low filter, and then hand the filtered points off to two different statistical
@@ -549,48 +748,71 @@
     moving average, while the low filter associated `egress` computes a quantile summary
     using an approximation algorithm from the postmates/quantiles ([https://crates.io/crates/quantiles](https://crates.io/crates/quantiles))
     library.
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
+  zh: 理念是从简单的UDP协议中提取`telemetry`，尽可能快地接收它以避免操作系统丢弃数据包，然后通过高、低过滤器将这些点传递出去，最后将过滤后的点交给两个不同的统计`egress`点。与高过滤器相关联的`egress`计算连续移动平均，而与低过滤器相关联的`egress`使用postmates/quantiles
+    ([https://crates.io/crates/quantiles](https://crates.io/crates/quantiles))库中的近似算法计算分位数摘要。
 - en: 'Let''s dig in. First, let''s look at `Cargo.toml` for the project:'
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们深入探讨。首先，让我们看看项目的`Cargo.toml`文件：
 - en: '[PRE28]'
+  id: totrans-94
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: 'Short and to the point. We draw in quantiles, as mentioned previously, as well
     as seahasher. Seahasher is a particularly fast—but not cryptographically safe—hasher
     that we''ll substitute into `HashMap`. More on that shortly. Our executable is
     broken out into `src/bin/telem.rs` since this project is a split library/binary
     setup:'
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: 简洁明了。我们像之前提到的那样，绘制分位数，以及seahasher。Seahasher是一种特别快的哈希器——但不是加密安全的——我们将将其替换到`HashMap`中。关于这一点，稍后会有更多介绍。我们的可执行文件被拆分到`src/bin/telem.rs`，因为这个项目是一个分割的库/二进制设置：
 - en: '[PRE29]'
+  id: totrans-96
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: 'There''s a fair bit going on here. The first eight lines are imports of the
     library bits and pieces we need. The body of main is dominated by setting up our
     worker threads and feeding the appropriate channels into them. Note that some
     threads take multiple sender sides of a channel:'
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里有很多事情在进行。前八行是我们需要的库片段的导入。`main`的主体主要由设置我们的工作线程并将适当的通道喂给它们组成。注意，一些线程需要通道的多个发送端：
 - en: '[PRE30]'
+  id: totrans-98
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: 'That''s how we do fanout using Rust MPSC. Let''s take a look at `IngestPoint`,
     in fact. It''s defined in `src/ingest_point.rs`:'
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是我们在Rust MPSC中使用扇出方式的方法。让我们看看`IngestPoint`，实际上它在`src/ingest_point.rs`中定义：
 - en: '[PRE31]'
+  id: totrans-100
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: 'An `IngestPoint` is a host—either an IP address or a DNS hostname, per `ToSocketAddrs`—a
     port and a vector of `mpsc::Sender<event::Event>`. The inner type is something
     we''ve defined:'
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: '`IngestPoint`是一个主机——根据`ToSocketAddrs`，可以是IP地址或DNS主机名，一个端口和一个`mpsc::Sender<event::Event>`的向量。内部类型是我们定义的：'
 - en: '[PRE32]'
+  id: totrans-102
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: '`telem` has two kinds of *events* that flow through it—`Telemetry`, which comes
     from `IngresPoint` and `Flush`, which comes from the main thread. `Flush` acts
     like a clock-tick for the system, allowing the individual subsystems of the project
@@ -599,11 +821,15 @@
     possible, I''ve tried to keep to that in parallel programming as well. If nothing
     else, it helps with testing to have time as an externally pushed attribute of
     the system. Anyhow, back to `IngestPoint`:'
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
+  zh: '`telem`有两种*事件*流经它——`Telemetry`来自`IngresPoint`，`Flush`来自主线程。`Flush`像系统的一个时钟滴答，允许项目的各个子系统跟踪时间而不需要参考墙上的时钟。在嵌入式程序中，用一些已知的脉冲来定义时间是很常见的，如果可能的话，我在并行编程中也尽量保持这一点。至少，将时间作为一个系统外部推动的属性有助于测试。无论如何，回到`IngestPoint`：'
 - en: '[PRE33]'
+  id: totrans-104
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: 'The first bit of this, `init`, is just setup. The run function calls `to_socket_addrs`
     on our host/port pair and retrieves all the associated IP addresses. Each of these
     addresses get a `UdpSocket` bound to them and an OS thread to listen for datagrams
@@ -612,36 +838,52 @@
     production system makes use of Mio in its *Sources*. The key function here is
     `handle_udp`, the function that gets passed to the new listener threads. It is
     as follows:'
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的第一部分，`init`，仅仅是设置。运行函数调用`to_socket_addrs`在我们的主机/端口对上，并检索所有相关的IP地址。每个这些地址都绑定一个`UdpSocket`和一个操作系统线程来监听从这个套接字来的数据报。这在线程开销方面是浪费的，在本书的后续部分我们将讨论基于事件的IO替代方案。之前讨论过的Cernan，作为一个生产系统，在其*源代码*中使用了Mio。这里的关键函数是`handle_udp`，这个函数被传递给新的监听线程。它如下所示：
 - en: '[PRE34]'
+  id: totrans-106
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: 'The function is a simple infinite loop that pulls datagrams off the socket
     into a 16 KB buffer—comfortably larger than most datagrams—and then calls `parse_packet`
     on the result. If the datagram was a valid example of our as yet unspecified protocol,
     then we call `util::send` to send the `Event::Telemetry` out over the `Sender<event::Event>` in
     `chans`. `util::send` is little more than a for loop:'
+  id: totrans-107
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个函数是一个简单的无限循环，从套接字中拉取数据报到一个16 KB的缓冲区——比大多数数据报都要大得多——然后对结果调用`parse_packet`。如果数据报是我们尚未指定的协议的有效示例，那么我们就调用`util::send`来通过`chans`中的`Sender<event::Event>`发送`Event::Telemetry`。`util::send`不过是一个for循环：
 - en: '[PRE35]'
+  id: totrans-108
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: 'The ingest payload is nothing special: a name of non-whitespace characters
     followed by one or more whitespace characters followed by a `u32`, all string
     encoded and utf8 valid:'
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: 消费负载没有什么特别之处：一个非空白字符的名字，后面跟着一个或多个空白字符，然后是一个`u32`，所有字符串都是字符串编码和utf8有效的：
 - en: '[PRE36]'
+  id: totrans-110
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: 'Popping out to the filters, both `HighFilter` and `LowFilter` are done in terms
     of a common `Filter` trait, defined in `src/filter/mod.rs`:'
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 转到过滤器，`HighFilter`和`LowFilter`都是基于一个共同的`Filter`特质完成的，这个特质定义在`src/filter/mod.rs`中：
 - en: '[PRE37]'
+  id: totrans-112
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: Any implementing filter is responsible for providing their own process. It's
     this function that the default run calls when an `Event` is pulled from the `Receiver<Event>`
     and found to be a `Telemetry`. Though neither high nor low filters make use of
@@ -654,24 +896,34 @@
     high-load situations can suffer from mysterious pauses—and so it's good style
     to avoid them where possible if the code isn't twisted into some weird version
     of itself by taking such care.
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
+  zh: 任何实现滤波器的类都需要提供自己的处理过程。这是默认运行函数在从`Receiver<Event>`中拉取`Event`并发现它是一个`Telemetry`时调用的函数。尽管高低通滤波器都没有使用它，但处理函数能够通过在传递的`telems`向量上推送更多内容来将新的`Telemetry`注入到流中。这就是cernan的*可编程滤波器*能够允许最终用户从Lua脚本中创建`telemetry`的原因。此外，为什么传递`telems`而不是让处理函数返回一个`Telemetry`向量呢？这样可以避免持续的小型分配。根据系统不同，线程之间的分配可能不会协调一致——这意味着在高负载情况下可能会出现神秘的暂停——因此，如果代码没有因为这样的关注而扭曲成某种奇怪的版本，那么尽可能避免它们是一种好的编程风格。
 - en: 'Both low and high filters are basically the same. The low filter passes a point
     through itself if the point is less than or equal to a pre-defined limit, where
     the high filter is greater than or equal to it. Here''s `LowFilter`, defined in
     `src/filter/low_filter.rs`:'
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 无论是低通滤波器还是高通滤波器，基本原理都是相同的。当点小于或等于一个预定义的限制时，低通滤波器会通过自身传递这个点，而高通滤波器则大于或等于这个限制。下面是`LowFilter`的定义，位于`src/filter/low_filter.rs`文件中：
 - en: '[PRE38]'
+  id: totrans-115
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE38]'
 - en: '`Egress` of telemetry is defined similarly to the way filter is done, split
     out into a sub-module and a common trait. The trait is present in `src/egress/mod.rs`:'
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: '`Egress`的出口定义与滤波器的方式类似，分为子模块和公共特质。特质存在于`src/egress/mod.rs`文件中：'
 - en: '[PRE39]'
+  id: totrans-117
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE39]'
 - en: 'The deliver function is intended to give the `egress` its `Telemetry` for storage.
     The report is intended to force the implementors of `Egress` to issue their summarized
     telemetry to the outside world. Both of our `Egress` implementors—`CKMSEgress`
@@ -680,11 +932,15 @@
     This is, in fact, exactly what cernan''s `Sinks` do, across many protocols and
     transports. Let''s look at a single egress, as they''re both very similar. `CKMSEgress`
     is defined in `src/egress/ckms_egress.rs`:'
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: 交付函数的目的是为`egress`提供存储其`Telemetry`的功能。报告函数的目的是迫使`Egress`的实现者向外部世界发布他们的汇总`Telemetry`。我们两个`Egress`实现者——`CKMSEgress`和`CMAEgress`——只是打印它们的信息，但你可以想象一个`Egress`通过某种网络协议将信息发送到远程系统。实际上，这正是cernan的`Sinks`所做的事情，跨越许多协议和传输。让我们看看单个出口，因为它们都非常相似。`CKMSEgress`的定义位于`src/egress/ckms_egress.rs`文件中：
 - en: '[PRE40]'
+  id: totrans-119
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE40]'
 - en: 'Note that `data: util::HashMap<String, quantiles::ckms::CKMS<u32>>`. This `util::HashMap`
     is a type alias for `std::collections::HashMap<K, V, hash::BuildHasherDefault<SeaHasher>>`,
     as mentioned previously. The cryptographic security of hashing here is less important
@@ -700,51 +956,76 @@
     is all about. If you flip back to the main function, note that we hard-code the
     error as being 0.01, or, any quantile summary is guaranteed to be off true within
     0.01.'
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: '注意`data: util::HashMap<String, quantiles::ckms::CKMS<u32>>`。这个`util::HashMap`是一个类型别名，代表`std::collections::HashMap<K,
+    V, hash::BuildHasherDefault<SeaHasher>>`，如前所述。在这里，散列的加密安全性不如散列速度重要，这就是我们选择`SeaHasher`的原因。在crates中有很多可用的替代散列器，能够根据你的用例进行交换是一个很酷的技巧。"quantiles::ckms::CKMS"是一种近似数据结构，由Cormode等人定义在《在数据流上有效计算偏斜分位数》一文中。许多摘要系统在有限空间内运行，但愿意容忍错误。CKMS数据结构允许在保持分位数近似误差保证界限的同时进行点丢弃。关于数据结构的讨论超出了本书的范围，但实现很有趣，论文也写得非常好。无论如何，这就是错误设置的全部内容。如果你回到主函数，注意我们硬编码错误为0.01，或者说，任何分位数摘要都保证在0.01内偏离真实值。'
 - en: 'That, honestly, is pretty much it. We''ve just stepped through the majority
     of a non-trivial Rust program built around the MPSC abstraction provided in the
     standard library. Let''s fiddle with it some. In one shell, start `telem`:'
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 实话实说，就是这样了。我们刚刚走过了非平凡Rust程序的大部分内容，这个程序是围绕标准库中提供的MPSC抽象构建的。让我们稍微玩弄一下它。在一个shell中，启动`telem`：
 - en: '[PRE41]'
+  id: totrans-122
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE41]'
 - en: 'In another shell, start sending UDP packets. On macOS, you can use `nc` like
     so:'
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: 在另一个shell中，开始发送UDP数据包。在macOS上，你可以这样使用`nc`：
 - en: '[PRE42]'
+  id: totrans-124
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE42]'
 - en: 'The call is similar on Linux; you just have to be careful not to wait for a
     response is all. In the original shell, you should see an output like this after
     a second:'
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
+  zh: 在Linux上的调用类似；你只需要小心不要等待响应即可。在原始shell中，你在一秒后应该看到如下输出：
 - en: '[PRE43]'
+  id: totrans-126
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE43]'
 - en: 'The points, being below the limit, have gone through the low filter and into
     the CKMS `egress`. Back to our other shell:'
+  id: totrans-127
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于这些点低于限制，它们已经通过了低过滤并进入了CKMS `egress`。回到我们的另一个shell：
 - en: '[PRE44]'
+  id: totrans-128
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE44]'
 - en: 'In the telem shell:'
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: 在`telem` shell中：
 - en: '[PRE45]'
+  id: totrans-130
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE45]'
 - en: Bang, just as expected. The points, being above the limit, have gone through
     the high filter and into the CMA `egress`. So long as no points are coming in,
     the `telem` should be drawing almost no CPU, waking up each of the threads once
     every second or so for the Flush pulse. Memory consumption will also be very low,
     being primarily represented by the large input buffer in `IngestPoint`.
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: 嗯，正如预期的那样。由于这些点超过了限制，它们已经通过了高过滤并进入了CMA `egress`。只要没有点进来，`telem`应该几乎不消耗CPU，大约每秒唤醒一次线程以进行刷新脉冲。内存消耗也将非常低，主要表现为`IngestPoint`中的大输入缓冲区。
 - en: There are problems with this program. In many places, we explicitly panic or
     unwrap on potential problem points, rather than deal with the issues. While it's
     reasonable to unwrap in a production program, you should be *very* sure that the
@@ -760,20 +1041,26 @@
     but these are, admittedly, esoteric. If you're interested in reading through a
     production program that works along the lines of `telem` but has none of the defects
     identified here, I warmly recommend the cernan codebase.
+  id: totrans-132
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个程序存在一些问题。在许多地方，我们明确地在潜在的问题点上panic或unwrap，而不是处理这些问题。虽然在生产程序中unwrap是合理的，但你应该非常确定你为你的程序爆炸的错误无法以其他方式处理。最令人担忧的是，程序没有*背压*的概念。如果`IngestPoint`能够比过滤器或`egress`更快地产生点，它们可以吸收线程之间的通道，从而保持空间分配。将程序稍作修改以使用`mpsc::SyncSender`将是合适的——一旦通道填满到容量，就会应用背压——但前提是删除点是可以接受的。鉴于摄取协议是UDP，这几乎肯定是可以的，但读者可以想象一个它不会是这样的场景。Rust的标准库在需要替代形式的背压的领域存在困难，但诚然，这些是相当晦涩的。如果你对阅读一个类似于`telem`但没有任何这里确定的问题的生产程序感兴趣，我强烈推荐cernan代码库。
 - en: All in all, Rust's MPSC is a very useful tool when constructing parallel systems.
     In this chapter, we built our own buffered channel, Ring, but that isn't common
     at all. You'd need a fairly specialized use case to consider not using the standard
     library's MPSC for intra-thread channel-based communication. We'll examine one
     such use case in the next chapter after we cover more of Rust's basic concurrency
     primitives.
+  id: totrans-133
   prefs: []
   type: TYPE_NORMAL
+  zh: 总的来说，Rust的MPSC在构建并行系统时是一个非常实用的工具。在本章中，我们构建了自己的缓冲通道Ring，但这并不常见。除非你有相当专业的用例，否则你不会考虑不使用标准库的MPSC进行线程间基于通道的通信。在我们介绍更多Rust的基本并发原语之后，下一章我们将探讨这样一个用例。
 - en: Summary
+  id: totrans-134
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 摘要
 - en: In this chapter, we discussed the foundations of Rust concurrency—`Sync` and
     `Send`. Furthermore, we started on what makes a primitive thread-safe in Rust
     and how to build concurrent structures with those primitives. We reasoned through
@@ -785,33 +1072,44 @@
     coarse synchronization primitives that Rust exposes to the programmer. In [Chapter
     6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml), *Atomics – the Primitives of Synchronization*,
     we'll discuss the fine synchronization primitives that modern machines expose.
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们讨论了Rust并发的基石——`Sync`和`Send`。此外，我们开始探讨在Rust中使原语线程安全的原因以及如何使用这些原语构建并发结构。我们通过一个不正确同步的程序进行推理，展示了了解Rust内存模型以及像`helgrind`这样的工具如何帮助我们确定程序中出了什么问题。这对读者来说可能并不意外，这是一个非常繁琐的过程，而且很可能出错。在[第5章](e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml)，*锁——Mutex,
+    Condvar, Barriers和RWLock*，我们将讨论Rust向程序员暴露的高级粗粒度同步原语。在[第6章](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml)，*原子——同步的原始元素*，我们将讨论现代机器暴露的细粒度同步原语。
 - en: Further reading
+  id: totrans-136
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 进一步阅读
 - en: Safe concurrent programming is, unsurprisingly, a very broad topic and the recommendations
     for further reading here reflect that. The careful reader will note that these
     references span time and approach, reflecting the broad changes in machines and
     languages over time.
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
+  zh: 安全的并发编程是一个非常广泛的话题，这里提供的进一步阅读建议反映了这一点。细心的读者会注意到，这些参考文献跨越了时间和方法，反映了机器和语言随时间发生的广泛变化。
 - en: '*The Art of Multiprocessor Programming,* Maurice Herlihy and Nir Shavit. This
     book is an excellent introduction to multiprocessor algorithms. Application to
     systems languages is made a touch difficult by the fact that the authors assume
     a Java environment—garbage collection is a huge win for implementing reclamation
     in that, well, you don''t have to do it.'
+  id: totrans-138
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《多处理器编程的艺术》，作者：Maurice Herlihy和Nir Shavit。这本书是关于多处理器算法的优秀入门书籍。由于作者假设Java环境——垃圾回收在实现回收方面是一个巨大的胜利，因此将应用系统语言变得有些困难。*'
 - en: '*C++ Concurrency in Action: Practical Multithreading*, Anthony Williams. This
     book is an excellent pair to TAoMP, being focused on implementation of similar
     structures in C++. While there is a translation step needed between C++ and Rust,
     it''s not so great a jump as from Java to Rust.'
+  id: totrans-139
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《C++并发实战：实用多线程》，作者：Anthony Williams。这本书是TAoMP的绝佳伴侣，专注于C++中类似结构的实现。虽然C++和Rust之间需要翻译步骤，但与Java到Rust的跳跃相比，这并不是那么大的跳跃。*'
 - en: '*LVars: Lattice-based Data Structures for Deterministic Parallelism*, Lindsey
     Kuper and Ryan Newton. This book presents a certain kind of parallel construction,
     one influenced by current machines. It is possible, however, that our current
@@ -820,9 +1118,11 @@
     This paper presents a construction alternative, influenced by the work done on
     distributed algorithms in recent years. It may or may not be the future but the
     reader is encouraged to keep a look out.'
+  id: totrans-140
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《LVars：基于格的数据结构用于确定性并行性》，作者：Lindsey Kuper和Ryan Newton。这本书展示了一种特定的并行构造方法，它受到当前机器的影响。然而，我们的当前模型可能过于复杂，将来可能会被视为过时，即使在没有牺牲原始性能的情况下，就像我们在转向基于虚拟机的语言时所做的那样。这篇论文提出了一种受近年来分布式算法研究影响的构造替代方案。它可能是或可能不是未来，但鼓励读者保持关注。*'
 - en: '*ffwd: delegation is (much) faster than you think*, Sepideh Roghanchi, Jakob
     Eriksson, and Nilanjana Basu. Modern machines are odd beasts. Conceptually, the
     fastest data structure is one that minimizes the wait time of working threads,
@@ -830,9 +1130,11 @@
     as this paper demonstrates. The authors, by carefully maintaining cache locality,
     are able to outpace more complicated structures that might, theoretically, be
     much faster due to more aggressive sharing between threads with fine-grained locks.'
+  id: totrans-141
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《ffwd：委托比你想的快得多》，作者：Sepideh Roghanchi，Jakob Eriksson，和Nilanjana Basu。现代机器是奇怪的生物。从概念上讲，最快的数据结构是那种最小化工作线程等待时间的数据结构，通过快速执行指令来加速工作完成。但这并不完全是这样，正如这篇论文所展示的。作者通过仔细维护缓存局部性，能够超越那些理论上可能更快但线程间更积极共享的复杂结构。*'
 - en: '*Flat Combining and the Synchronization-Parallelism Tradeoff*, Danny Hendler,
     Itai Incze, and Nir Shavit. Along the same lines as ffwd, the authors present
     a flat combining approach to constructing concurrent structures, which relies
@@ -840,25 +1142,31 @@
     of operations. The interaction with cache makes flat combining *faster* than more
     complicated lock-free/wait-free alternatives, which do not interact with the cache
     as gracefully.'
+  id: totrans-142
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《平坦组合与同步-并行性权衡》，作者：Danny Hendler，Itai Incze，和Nir Shavit。与ffwd类似，作者们提出了一种构建并发结构的方法，这种方法依赖于线程间的粗粒度独占锁定和操作日志的周期性组合。与缓存的交互使得平坦组合比不与缓存优雅交互的更复杂的无锁/等待自由替代方案*更快*。*'
 - en: '*New Rustacean, e022: Send and Sync*, available at [http://www.newrustacean.com/show_notes/e022/struct.Script.html](http://www.newrustacean.com/show_notes/e022/struct.Script.html).
     The New Rustacean is an excellent podcast for Rust developers of all levels. This
     episode dovetails nicely with the material discussed in the current chapter. Warmly
     recommended.'
+  id: totrans-143
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*《新Rustacean，e022：Send和Sync》，可在[http://www.newrustacean.com/show_notes/e022/struct.Script.html](http://www.newrustacean.com/show_notes/e022/struct.Script.html)找到。新Rustacean是一个针对所有水平Rust开发者的优秀播客。这一集与当前章节讨论的内容非常契合。强烈推荐。*'
 - en: '*Effective Computation of Biased Quantiles Over Data Streams*, Graham Cormode,
     Flip Korn, S. Muthukrishnan, and Divesh Srivastava. This paper underpins the CKMS
     structure used in telem. It''s instructive to examine the difference between the
     implementation outlined in the paper—based on linked-lists—and the implementation
     found in the library, a variant of a skip-list. This difference is wholly due
     to cache locality concerns.'
+  id: totrans-144
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*有效计算数据流中的偏斜分位数*，Graham Cormode, Flip Korn, S. Muthukrishnan, 和 Divesh Srivastava。这篇论文奠定了在电信中使用的CKMS结构。考察论文中概述的实现与库中发现的实现之间的差异是有教育意义的——基于链表的实现与跳表的一个变体。这种差异完全是由于缓存局部性考虑。'
 - en: '*The Cernan Project*, various developers, available at [https://github.com/postmates/cernan](https://github.com/postmates/cernan)
     under the MIT license. Cernan is an event multiplexing server, the production
     version of the toy telem discussed in this chapter. As of writing this book, it
@@ -866,6 +1174,8 @@
     to maintain low resource consumption and high levels of performance. I am the
     primary author of this project and the techniques discussed in this book are applied
     in cernan.'
+  id: totrans-145
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*Cernan项目*，多位开发者，可在[https://github.com/postmates/cernan](https://github.com/postmates/cernan)下以MIT许可证获取。Cernan是一个事件多路复用服务器，是本章讨论的玩具电信的生产版本。截至撰写本书时，它由14人贡献了17,000行代码。已经仔细注意到了保持低资源消耗和高性能。我是这个项目的首席作者，本书中讨论的技术已应用于Cernan。'

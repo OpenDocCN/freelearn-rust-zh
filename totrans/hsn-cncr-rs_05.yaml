@@ -1,7 +1,9 @@
 - en: Locks – Mutex, Condvar, Barriers and RWLock
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 锁定机制 – Mutex、Condvar、屏障和RWLock
 - en: In this chapter, we're going to do a deep-dive on hopper, the grown-up version
     of Ring from [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync and
     Send – the Foundation of Rust Concurren**cy*. Hopper's approach to back-pressure—the
@@ -12,49 +14,69 @@
     is able to configure the number of on-disk bytes that are consumed when hopper's
     in-memory capacity is filled and it has to page out to disk. The other properties
     of MSPC are held, in-order delivery, retention of data once stored, and so on.
+  id: totrans-1
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将深入研究hopper，它是[第4章](5a332d94-37e4-4748-8920-1679b07e2880.xhtml)，*Sync和Send – Rust并发基础*中Ring的成熟版本。hopper处理背压——我们在telem*中识别出的弱点——是在填满容量时阻塞，就像`SyncSender`一样。hopper的特殊技巧是将其页面输出到磁盘。hopper用户定义了hopper允许消耗多少内存空间，就像`SyncSender`一样，只是以字节为单位而不是`T`的总元素数。此外，当hopper的内存容量填满并需要页面输出到磁盘时，用户还可以配置消耗的磁盘字节数。MSPC的其他属性保持不变，如有序交付、存储后保留数据等。
 - en: Before we can dig through hopper, however, we need to introduce more of Rust's
     concurrency primitives. We'll work on some puzzles from *The Little Book of Semaphores*
     to explain them, which will get a touch hairy in some places on account of how
     Rust does not have a semaphore available.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，在我们深入挖掘之前，我们需要介绍更多Rust的并发原语。我们将通过解决来自*《信号量小书》*的一些谜题来解释它们，由于Rust没有提供信号量，因此在某些地方可能会有些棘手。
 - en: 'By the close of this chapter, we will have:'
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 到本章结束时，我们将：
 - en: Discussed the purpose and use of Mutex, Condvar, Barriers, and RWLock
+  id: totrans-4
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 讨论了Mutex、Condvar、屏障和RWLock的目的和使用方法
 - en: Investigated a disk-backed specialization of the standard library's MPSC called
     hopper
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 调查了标准库中MPSC的磁盘后端特殊化版本hopper
 - en: Seen how to apply QuickCheck, AFL, and comprehensive benchmarks in a production
     setting
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 看到了如何在生产环境中应用QuickCheck、AFL和全面基准测试
 - en: Technical requirements
+  id: totrans-7
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: This chapter requires a working Rust installation. The details of verifying
     your installation are covered in [Chapter 1](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml),
     *Preliminaries – Machine Architecture and Getting Started with Rust*. No additional
     software tools are required.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章需要安装一个有效的Rust环境。验证安装的详细信息在[第1章](5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml)，*预备知识 – 机器架构和Rust入门*中有所介绍。不需要额外的软件工具。
 - en: 'You can find the source code for this book''s projects on GitHub at: [https://github.com/PacktPublishing/Rust-Concurrency/](https://github.com/PacktPublishing/Rust-Concurrency/).
     This chapter has its source code under `Chapter05`.'
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 您可以在GitHub上找到本书项目的源代码：[https://github.com/PacktPublishing/Rust-Concurrency/](https://github.com/PacktPublishing/Rust-Concurrency/)。本章的源代码位于`Chapter05`。
 - en: Read many, write exclusive locks – RwLock
+  id: totrans-10
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 读取多个，写入独占锁——RwLock
 - en: 'Consider a situation where you have a resource that must be manipulated only
     a single thread at a time, but is safe to be queried by many—that is, you have
     many readers and only one writer. While we could protect this resource with a
@@ -64,32 +86,45 @@
     write. Analogously to Rust''s references, there can only be one write lock taken
     at a time but multiple reader locks, exclusive of a write lock. Let''s look at
     an example:'
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑这样一种情况，你有一个资源，一次只能由一个线程进行操作，但可以被多个线程安全地查询——也就是说，你有多个读者和一个写者。虽然我们可以用`Mutex`来保护这个资源，但问题是互斥锁对它的锁定者没有区分；无论它们的意图如何，每个线程都将被迫等待。`RwLock<T>`是互斥锁概念的替代品，允许两种类型的锁——读锁和写锁。类似于Rust的引用，一次只能有一个写锁，但可以有多个读锁，且不包括写锁。让我们看一个例子：
 - en: '[PRE0]'
+  id: totrans-12
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'The idea here is that we''ll have one writer thread spinning and incrementing,
     in a wrapping fashion, a shared resource—a `u16.` Once the `u16` has been wrapped
     100 times, the writer thread will exit. Meanwhile, a `total_readers` number of
     read threads will attempt to take a read lock on the shared resource—a `u16—until`
     it hits zero `100` times. We''re gambling here, essentially, on thread ordering.
     Quite often, the program will exit with this result:'
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的想法是，我们将有一个写线程在循环中旋转并递增一个共享资源——一个 `u16`。一旦 `u16` 被包装了 100 次，写线程将退出。同时，一定数量的读线程（`total_readers`）将尝试获取共享资源——一个
+    `u16` 的读锁，直到它达到零 `100` 次。本质上，我们在这里是在赌线程的顺序。程序通常会以以下结果退出：
 - en: '[PRE1]'
+  id: totrans-14
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'This means that each reader thread never failed to get its read lock—there
     were no write locks present. That is, the reader threads were scheduled before
     the writer. Our main function only joins on reader handlers and so the writer
     is left writing as we exit. Sometimes, we''ll hit just the right scheduling order,
     and get the following result:'
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 这意味着每个读线程从未失败地获取其读锁——没有写锁存在。也就是说，读线程在写线程之前被调度。我们的主函数只连接到读处理程序，所以写线程在我们退出时仍在写。有时，我们会遇到正确的调度顺序，并得到以下结果：
 - en: '[PRE2]'
+  id: totrans-16
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: In this particular instance, the second and final reader threads were scheduled
     just after the writer and managed to catch a time when the guard was not zero.
     Recall that the first element of the pair is the total number of times the reader
@@ -99,37 +134,55 @@
     ~= 2^21` reads. That's a lot of lost writes, which, maybe, is okay. Of more concern,
     that's a lot of useless loops, approximately `2^26`. Ocean levels are rising and
     we're here burning up electricity like nobody had to die for it.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个特定的例子中，第二个和最后一个读线程在写线程之后被调度，并设法捕捉到守卫不为零的时刻。回想一下，这对中的第一个元素是读线程无法获取读锁并被迫重试的总次数。第二个是获取锁的次数。总的来说，写线程执行了
+    `(2^18 * 100) ~= 2^24` 次写操作，而第二个读线程执行了 `log_2 2630308 ~= 2^21` 次读操作。这丢失了很多写操作，也许是可以接受的。但更令人担忧的是，这导致了大约
+    `2^26` 次无用的循环。海平面正在上升，而我们像没有人需要为此而死一样燃烧着电力。
 - en: 'How do we avoid all this wasted effort? Well, like most things, it depends
     on what we''re trying to do. If we need every reader to get every write, then
     an MPSC is a reasonable choice. It would look like this:'
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们如何避免所有这些浪费的努力？嗯，像大多数事情一样，这取决于我们想要做什么。如果我们需要每个读者都能获取到每个写操作，那么 MPSC 是一个合理的选择。它看起来会是这样：
 - en: '[PRE3]'
+  id: totrans-19
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'It will run—for a while—and print out the following:'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 它将运行——一段时间——并打印出以下内容：
 - en: '[PRE4]'
+  id: totrans-21
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: But what if every reader does not need to see every write, meaning that it's
     acceptable for a reader to miss writes so long as it does not miss all of the
     writes? We have options. Let's look at one.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 但如果每个读者不需要看到每个写操作，也就是说，只要读者没有错过所有写操作，那么错过写操作是可以接受的，我们就有选择了。让我们看看其中一个。
 - en: Blocking until conditions change – condvar
+  id: totrans-23
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 阻塞直到条件改变 —— 条件变量
 - en: One option is a condvar, or CONDition VARiable. Condvars are a nifty way to
     block a thread, pending a change in some Boolean condition. One difficulty is
     that condvars are associated exclusively with mutexes, but in this example, we
     don't mind all that much.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个选项是条件变量，或称 CONDition VARiable。条件变量是一种巧妙的方式来阻塞一个线程，直到某个布尔条件发生变化。一个困难是条件变量仅与互斥锁相关联，但在这个例子中，我们并不太在意这一点。
 - en: The way a condvar works is that, after taking a lock on a mutex, you pass the
     `MutexGuard` into `Condvar::wait`, which blocks the thread. Other threads may
     go through this same process, blocking on the same condition. Some other thread
@@ -139,15 +192,23 @@
     its block without a notification being sent to it. For this reason condvars check
     their conditions in a loop. But, once the condvar wakes, you *are* guaranteed
     to hold the mutex, which prevents deadlocks on spurious wakeup.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 条件变量工作的方式是，在获取互斥锁之后，你将 `MutexGuard` 传递给 `Condvar::wait`，这将阻塞线程。其他线程可能通过这个过程，阻塞在相同的条件下。某个其他线程将获取相同的独占锁，并最终在条件变量上调用
+    `notify_one` 或 `notify_all`。第一个唤醒单个线程，第二个唤醒 *所有* 线程。条件变量可能会发生虚假唤醒，这意味着线程可能在没有收到通知的情况下离开其阻塞状态。因此，条件变量会在循环中检查其条件。但是，一旦条件变量唤醒，你
+    *确实* 保证持有互斥锁，这防止了虚假唤醒时的死锁。
 - en: 'Let''s adapt our example to use a condvar. There''s actually a fair bit going
     on in this example, so we''ll break it down into pieces:'
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们将我们的例子修改为使用`condvar`。实际上，这个例子中有很多内容，所以我们将它分解成几个部分：
 - en: '[PRE5]'
+  id: totrans-27
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'Our preamble is similar to the previous examples, but the setup is already
     quite strange. We''re synchronizing threads on `mutcond`, which is an `Arc<(Mutex<(bool,
     u16)>, Condvar)>`. Rust''s condvar is a touch awkward. It''s undefined behavior
@@ -158,11 +219,16 @@
     of the tuple is our *resource*, which is common to other examples. The first element
     is a Boolean flag, which we use as a signal to mean that there are writes available.
     Here are our reader threads:'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的序言与前面的例子相似，但设置已经相当奇怪。我们正在同步`mutcond`上的线程，它是一个`Arc<(Mutex<(bool, u16)>, Condvar)>`。Rust的`Condvar`有点尴尬。将`Condvar`与多个互斥量关联是未定义的行为，但`Condvar`的类型中并没有使这成为不变量的东西。我们只需记住保持它们关联。为此，在元组中将`Mutex`和`Condvar`配对是很常见的，就像这里一样。现在，为什么是`Mutex<(bool,
+    u16)>`？元组的第二个元素是我们的*资源*，这在其他例子中是常见的。第一个元素是一个布尔标志，我们用它作为信号表示有可用的写入。以下是我们的读取线程：
 - en: '[PRE6]'
+  id: totrans-29
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: 'Until `total_zeros` hits 100, the reader thread locks the mutex, checks the
     guard inside the mutex for write availability, and, if there are no writes, does
     a wait on the condvar, which gives up the lock. The reader thread is then blocked
@@ -175,11 +241,15 @@
     a resource available. However, they will still wake up spuriously and be forced
     to wait again. Maybe. The reader threads are also competing with the writer thread
     to acquire the lock. Let''s look at the writer thread:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 直到`total_zeros`达到100，读取线程会锁定互斥量，检查互斥量内的守卫以检查写入可用性，如果没有写入，就会在`condvar`上等待，放弃锁。然后读取线程会阻塞，直到调用`notify_all`——我们很快就会看到。每个读取线程都会争先恐后地重新获取锁。幸运的获胜者会注意到没有更多的写入要读取，然后执行我们在前面的例子中看到的正常流程。需要重复的是，每个从条件等待中唤醒的线程都在争先恐后地第一个重新获取互斥量。我们的读取者不合作，它会立即阻止其他读取线程发现资源可用。然而，它们仍然会意外地醒来并被迫再次等待。也许。读取线程还在与写入线程竞争获取锁。让我们看看写入线程：
 - en: '[PRE7]'
+  id: totrans-31
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'The writer thread is an infinite loop, which we orphan in an unjoined thread.
     Now, it''s entirely possible that the writer thread will acquire the lock, bump
     the resource, notify waiting reader threads, give up the lock, and then immediately
@@ -187,11 +257,15 @@
     scheduled in. This means it''s entirely possible that the resource being zero
     will happen several times before a reader thread is lucky enough to notice. Let''s
     close out this program:'
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 写入线程是一个无限循环，我们在一个未连接的线程中将其孤儿化。现在，完全有可能写入线程会获取锁，增加资源，通知等待的读取线程，放弃锁，然后在任何读取线程被调度之前立即重新获取锁以开始while过程。这意味着在读取线程足够幸运地注意到之前，资源为零的情况完全可能发生多次。让我们结束这个程序：
 - en: '[PRE8]'
+  id: totrans-33
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'Ideally, what we''d like is some manner of bi-directionality—we''d like the
     writer to signal that there are reads and the reader to signal that there is capacity.
     This is suspiciously like how Ring in the previous chapter worked through its
@@ -199,21 +273,29 @@
     might, for instance, layer another condition variable into the mix, this one for
     the writer, but that''s not what we have here and the program suffers for it.
     Here''s one run:'
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 理想情况下，我们希望有一种双向性——我们希望写入者发出有读取的信号，而读取者发出有容量的信号。这很可疑地类似于上一章中的Ring通过其大小变量工作，当我们小心不要在该变量上竞争时。例如，我们可以在混合中添加另一个条件变量，这个变量是给写入者的，但这里并不是这样，程序因此受到影响。以下是其中一个运行实例：
 - en: '[PRE9]'
+  id: totrans-35
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: Phew! That's significantly more loops than previous examples. None of this is
     to say that condition variables are hard to use—they're not—it's just that they
     need to be used in conjunction with other primitives. We'll see an excellent example
     of this later in the chapter.
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 呼吁！这比之前的例子中的循环要多得多。这并不是说条件变量很难使用——它们并不难——只是它们需要与其他原语一起使用。我们将在本章后面看到一个很好的例子。
 - en: Blocking until the gang's all here - barrier
+  id: totrans-37
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 阻塞直到全员到齐——障碍
 - en: 'A barrier is a synchronization device that blocks threads until such time that
     a predefined number of threads have waited on the same barrier.  When a barrier''s
     waiting threads wake up, one is declared leader—discoverable by inspecting the
@@ -228,12 +310,16 @@
     the CPU to meet requirements, adjusting the runtime of your program live, or burning
     through a section of your program as quickly as possible and then shutting down
     the chip. In the latter approach, a barrier is just the primitive you need.'
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 障碍是一种同步设备，它会阻塞线程，直到预定义数量的线程在同一个障碍上等待。当障碍等待的线程醒来时，会宣布一个领导者——可以通过检查`BarrierWaitResult`来发现——但这并不提供调度优势。当您希望延迟线程在某个资源的不安全初始化之后时，障碍变得有用——比如一个在启动时没有线程安全性的C库的内部结构，或者需要强制参与线程在大约相同的时间开始临界区。后者是更广泛的类别，根据作者的实践经验。当使用原子变量编程时，您会遇到障碍有用的场景。此外，考虑一下为低功耗设备编写多线程代码。如今，在电源管理方面有两种可能的策略：将CPU扩展以满足要求，实时调整程序的运行时间，或者尽可能快地烧毁程序的一部分，然后关闭芯片。在后一种方法中，障碍正是您需要的原语。
 - en: More mutexes, condvars, and friends in action
+  id: totrans-39
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 更多互斥锁、条件变量和类似功能正在行动
 - en: Admittedly, the examples in the preceding sections got a little convoluted.
     There's a reason to that madness, I promise, but before we move on I'd like to
     show you some working examples from the charming *The Little Book of Semaphores*.
@@ -242,18 +328,24 @@
     amusing and coming with good hints. As the title implies, the book does make use
     of the semaphore primitive, which Rust does not have. Though, as mentioned in
     the previous chapter, we will build a semaphore in the next chapter.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 承认，前几节的例子有点复杂。这种疯狂的背后有原因，我保证，但在我们继续之前，我想给你展示一些来自迷人的《信号量小书》的工作示例。如果你跳过了之前的文献注释，这本书是适合自学的一组并发谜题，因为这些谜题很有趣，并且附带很好的提示。正如标题所暗示的，这本书确实使用了信号量原语，而Rust没有。尽管如此，正如前一章提到的，我们将在下一章构建一个信号量。
 - en: The rocket preparation problem
+  id: totrans-41
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 火箭准备问题
 - en: This puzzle does not actually appear in *The Little Book of Semaphores* but
     it is based on one of the puzzles there - the cigarette smoker's problem from
     section 4.5\. Personally, I think cigarettes are gross so we're going to reword
     things a touch. The idea is the same.
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个谜题实际上并没有出现在《信号量小书》中，但它基于那里的一则谜题——4.5节中的吸烟者问题。我个人认为香烟很恶心，所以我们稍微改一下措辞。想法是相同的。
 - en: We have four threads in total. One thread, the `producer`, randomly publishes
     one of `fuel`, `oxidizer`, or `astronauts`. The remaining three threads are the
     consumers, or *rockets*, which must take their resources in the order listed previously.
@@ -261,33 +353,48 @@
     the rocket, and if it doesn't have all three, the rocket can't lift-off. Moreover,
     once all the rockets are prepped, we want to start a 10 second count-down, only
     after which may the rockets lift-off.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们总共有四个线程。一个线程是“生产者”，随机发布“燃料”、“氧化剂”或“宇航员”中的一个。剩下的三个线程是消费者，或者说是“火箭”，它们必须按照之前列出的顺序获取资源。如果火箭没有按照这个顺序获取资源，那么准备火箭是不安全的，而且如果没有全部三个资源，火箭就不能起飞。此外，一旦所有火箭都准备好了，我们想要开始10秒倒计时，只有在这之后火箭才能起飞。
 - en: 'The preamble to our solution is a little longer than usual, in the interest
     of keeping the solution as a standalone:'
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们解决方案的序言比平常要长一些，目的是为了将解决方案作为一个独立的单元：
 - en: '[PRE10]'
+  id: totrans-45
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: 'We don''t really need excellent randomness for this solution—the OS scheduler
     injects enough already—but just something small-ish. `XorShift` fits the bill.
     Now, for our resources:'
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于这个解决方案，我们并不真的需要出色的随机性——操作系统调度器已经注入了足够的随机性——但只需要一点小小的随机性。`XorShift` 就能满足这个要求。现在，对于我们的资源：
 - en: '[PRE11]'
+  id: totrans-47
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: 'The struct is protected by a single `Mutex<(bool, bool, bool)>`, the Boolean
     being a flag to indicate that there''s a resource available. We hold the first
     flag to mean `fuel`, the second `oxidizer`, and the third `astronauts`. The remainder
     of the struct are condvars to match each of these resource concerns. The `producer`
     is a straightforward infinite loop:'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 结构体被一个 `Mutex<(bool, bool, bool)>` 保护，布尔值是一个标志，用来指示是否有资源可用。我们持有第一个标志表示 `燃料`，第二个
+    `氧化剂`，第三个 `宇航员`。结构体的其余部分是匹配每个这些资源关注的条件变量。`生产者` 是一个简单的无限循环：
 - en: '[PRE12]'
+  id: totrans-49
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: 'On each iteration, the producer chooses a new resource—`rng.next_u32() % 3`—and
     sets the Boolean flag for that resource before notifying all threads waiting on
     the `fuel` condvar. Meanwhile, the compiler and CPU are free to re-order instructions
@@ -296,21 +403,32 @@
     was after the notification, the wake-up would be spurious from the point of view
     of the waiting threads and lost from the point of view of the producer. The `rocket`
     is straightforward:'
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 在每次迭代中，生产者选择一个新的资源——`rng.next_u32() % 3`——并为该资源设置布尔标志，然后通知所有等待 `燃料` 条件变量的线程。同时，编译器和
+    CPU 可以自由地重新排序指令，而内存 `notify_all` 则像是一个因果门；代码中的所有内容在因果上都是先于之后的，同样，之后的也是如此。如果资源布尔翻转在通知之后，那么从等待线程的角度来看，唤醒将是虚假的，并且从生产者的角度来看，它将丢失。`火箭`
+    是简单的：
 - en: '[PRE13]'
+  id: totrans-51
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: 'Each thread, regarding the resource requirements, waits on the condvar for
     the producer to make it available. A race occurs to re-acquire the mutex, as discussed,
     and only a single thread gets the resource. Finally, once all the resources are
     acquired, the `all_go` barrier is hit to delay any threads ahead of the count-down.
     Here we need the `main` function:'
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 每个线程，就资源需求而言，都会等待生产者使其可用。正如讨论的那样，发生了一场争夺重新获取互斥锁的竞争，只有一个线程能够获得资源。最后，一旦所有资源都获得，就会遇到
+    `all_go` 障碍，以延迟任何在倒计时之前的线程。这里我们需要 `main` 函数：
 - en: '[PRE14]'
+  id: totrans-53
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: 'Note that, roughly, the first half of the function is made up of the barriers
     and resources or rocket threads. `all_go.wait()` is where it gets interesting.
     This main thread has spawned all the children and is now blocked on the all-go
@@ -322,21 +440,32 @@
     rocket threads are released, the main thread joins on them to allow them to print
     their goodbyes, and the program is finished. Outputs will vary, but here''s one
     representative example:'
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，大致来说，函数的前半部分由障碍和资源或火箭线程组成。`all_go.wait()` 是有趣的地方。这个主线程已经生成了所有子线程，现在正阻塞在来自火箭线程的
+    all-go 信号上，这意味着它们已经收集了资源，并且也阻塞在同一个障碍上。完成这些后，发生倒计时，为解决方案增添一点风采；同时，火箭线程已经开始在 `lift_off`
+    障碍上等待。顺便提一下，值得注意的是，生产者仍在生产，消耗 CPU 和电力。一旦倒计时完成，火箭线程被释放，主线程与它们连接，允许它们打印告别信息，程序结束。输出将会有所不同，但这里有一个代表性的例子：
 - en: '[PRE15]'
+  id: totrans-55
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: The rope bridge problem
+  id: totrans-56
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 绳索桥问题
 - en: 'This puzzle appears in *The Little Book of Semaphores* as the *Baboon crossing
     problem*, section 6.3\. Downey notes that it is adapted from Tanenbaum''s *Operating
     Systems: Design and Implementation*, so you''re getting it third-hand here. The
     problem description is thus:'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个谜题出现在 *《信号量小书》* 中的 *黑猩猩过河问题*，第 6.3 节。Downey 指出，它是从 Tanenbaum 的 *操作系统：设计与实现*
+    中改编的，所以你在这里得到的是第三手资料。问题描述如下：
 - en: '"There is a deep canyon somewhere in Kruger National Park, South Africa, and
     a single rope that spans the canyon. Baboons can cross the canyon by swinging
     hand-over-hand on the rope, but if two baboons going in opposite directions meet
@@ -345,43 +474,61 @@
     at the same time, it will break.Assuming that we can teach the baboons to use
     semaphores, we would like to design a synchronization scheme with the following
     properties:'
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 在南非克鲁格国家公园的某个地方有一个深峡谷，峡谷上只有一根横跨的绳子。狒狒可以通过手拉手的方式在绳子上荡过峡谷，但如果两只朝相反方向行进的狒狒在中间相遇，它们将会打斗并掉入峡谷死亡。此外，这根绳子只能承受5只狒狒的重量。如果有更多的狒狒同时站在绳子上，它将会断裂。假设我们可以教会狒狒使用信号量，我们希望设计一个具有以下特性的同步方案：
 - en: '*Once a baboon has begun to cross, it is guaranteed to get to the other side
     without running into a baboon going the other way.*'
+  id: totrans-59
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*一旦狒狒开始过桥，就保证它能到达对岸而不会遇到朝相反方向行进的狒狒。*'
 - en: '*There are never more than 5 baboons on the rope.*"'
+  id: totrans-60
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '*绳子上永远不会超过5只狒狒。*"'
 - en: 'Our solution does not use semaphores. Instead, we lean on the type system to
     provide guarantees, leaning on it to ensure that no left-traveler will ever meet
     a right-traveler. Let''s dig in:'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的解决方案不使用信号量。相反，我们依赖类型系统来提供保证，依赖它来确保左行狒狒永远不会遇到右行狒狒。让我们深入探讨：
 - en: '[PRE16]'
+  id: totrans-62
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: 'We see here the usual preamble, and then a type, `Bridge`. `Bridge` is the
     model of the `rope` bridge of the problem statement and is either empty, has left-traveling
     baboons on it, or has right-traveling baboons on it; there''s no reason to fiddle
     with flags and infer state when we can just encode it into a type. In fact, leaning
     on the type system, our synchronization is very simple:'
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在这里看到了通常的序言，然后是一个类型，`Bridge`。`Bridge`是问题陈述中绳桥的模型，可以是空的，也可以有左行狒狒或右行狒狒在上面；我们不需要通过标志和推断状态来调整，因为我们可以直接将其编码到类型中。事实上，依赖类型系统，我们的同步非常简单：
 - en: '[PRE17]'
+  id: totrans-64
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: 'Just a single mutex. We represent either side of the bridge as a thread, each
     side trying to get its own baboons across but co-operatively allowing baboons
     to reach its side. Here''s the left side of the bridge:'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 只需要一个互斥锁。我们将桥的每一侧表示为一个线程，每一侧都试图让自己的狒狒过桥，但合作地允许狒狒到达其一侧。这里是桥的左侧：
 - en: '[PRE18]'
+  id: totrans-66
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: 'When the left side of the bridge finds the bridge itself empty, one right-traveling
     baboon is sent on its way. Further, when the left side finds that there are already
     right-traveling baboons on the bridge and the rope''s capacity of five has not
@@ -393,11 +540,15 @@
     make the removal of a baboon more aggressive and set the bridge to `Bridge::Empty`
     as soon as there are no travelers, of course. Here''s the right side of the bridge,
     which is similar to the left:'
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 当桥的左侧发现桥本身是空的，就会派一只右行狒狒上路。进一步地，当左侧发现桥上已经有右行狒狒，且绳子的容量五只尚未达到，就会再派一只狒狒上路。左行狒狒从绳子上被接走，绳子上狒狒的总数减少。这里的特殊情况是`Bridge::Left(0)`的条款。尽管桥上还没有狒狒，但从技术上讲，如果桥的右侧在左侧之前被调度，它就会派一只狒狒上路，正如我们很快就会看到的。当然，我们可以使移除狒狒的操作更加积极，并在没有旅行者时立即将桥设置为`Bridge::Empty`。以下是桥的右侧，与左侧类似：
 - en: '[PRE19]'
+  id: totrans-68
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: Now, is this fair? It depends on your system mutex. Some systems provide mutexes
     that are fair in that, if one thread has acquired the lock repeatedly and starved
     other threads attempting to lock the same primitive, the greedy thread will be
@@ -415,33 +566,45 @@
     layering in more aggressive rope packing, intentional back off, or a host of other
     strategies. Some platforms allow you to dynamically shift the priority of threads
     with regard to locks, but Rust does not offer that in the standard library.
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，这是公平的吗？这取决于你的系统互斥锁。一些系统提供了公平的互斥锁，即如果一个线程反复获取锁并饿死尝试锁定相同原语的其他线程，那么贪婪的线程将在其他线程之下被降级。这种公平性在锁定时可能会或可能不会产生额外的开销，具体取决于实现。实际上，你是否想要公平性，很大程度上取决于你试图解决的问题。如果我们只对尽可能快地将狒狒从绳索桥上运过去感兴趣——最大化吞吐量——那么它们来自哪个方向实际上并不重要。原始问题陈述没有提到公平性，它通过允许狒狒流是无限的来某种程度上打乱了这一点。考虑如果桥的两侧的狒狒是有限的，而我们想减少任何单个狒狒过桥到另一侧所需的时间，以最小化延迟会发生什么。我们目前的解决方案，适应有限流，在这方面相当差。通过偶尔让步、分层更积极的绳索打包、有意后退或其他众多策略，可以改善这种情况。一些平台允许你动态地改变线程相对于锁的优先级，但Rust的标准库并不提供这一点。
 - en: Or, you know, we could use two bounded MPSC channels. That's an option. It all
     depends on what you're trying to get done.
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 或者，你知道的，我们可以使用两个有界MPSC通道。这是一个选择。一切取决于你试图完成的事情。
 - en: Ultimately, the tools in safe Rust are very useful for performing computations
     on existing data structures without having to dip into any funny business. If
     that's your game, you're very unlikely to need to head much past `Mutex` and `Condvar`,
     and possibly into `RwLock` and `Barrier`. But, if you're building structures that
     are made of pointers, you'll have to dip into some of the funny business we saw
     in Ring, with all the dangers that brings.
+  id: totrans-71
   prefs: []
   type: TYPE_NORMAL
+  zh: 最终，在安全的Rust中使用的工具对于在现有数据结构上执行计算非常有用，而无需涉及任何奇怪的业务。如果你是这样的游戏，你很可能不需要深入到`Mutex`和`Condvar`之外，可能还需要到`RwLock`和`Barrier`。但是，如果你正在构建由指针组成的结构，你将不得不深入研究我们在Ring中看到的那些奇怪的业务，以及它带来的所有危险。
 - en: Hopper—an MPSC specialization
+  id: totrans-72
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Hopper——一个MPSC专业化
 - en: As mentioned at the tail end of the last chapter, you'd need a fairly specialized
     use-case to consider not using stdlib's MPSC. In the rest of this chapter, we'll
     discuss such a use-case and the implementation of a library meant to fill it.
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 如上章末所述，你需要一个相当专业的用例来考虑不使用stdlib的MPSC。在本章的其余部分，我们将讨论这样一个用例以及旨在填补这一空白的库的实现。
 - en: The problem
+  id: totrans-74
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 问题
 - en: Recall back to the last chapter, where the role-threads in telem communicated
     with one another over MPSC channels. Recall also that telem was a quick version
     of the cernan ([https://crates.io/crates/cernan](https://crates.io/crates/cernan))
@@ -460,8 +623,10 @@
     resources. In the later two, some thought has to be taken to giving cernan just
     enough resources to do its duties, relative to the expected input of the telemetered
     systems.
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 回想一下上一章，其中telem中的角色线程通过MPSC通道相互通信。还要记住，telem是cernan ([https://crates.io/crates/cernan](https://crates.io/crates/cernan))项目的快速版本，它基本上扮演了相同的角色，但覆盖了更多的入口协议、出口协议，并且边缘更加锋利。cernan的一个关键设计目标是，如果它接收了你的数据，它至少会将它传递到下游一次。这意味着，为了支持入口协议，cernan必须在其配置的路由拓扑的全长中知道，有足够的空间来接受一个新事件，无论它是一段遥测数据、原始字节数据缓冲区还是日志行。现在，这是可能的，正如我们所看到的，通过使用`SyncSender`。技巧在于与cernan的第二个设计目标相结合——非常低、可配置的资源消耗。您的作者看到cernan被部署到高可用性集群中，一个机器专门用于运行cernan，以及cernan与应用程序服务器一起运行或作为k8s集群中daemonset的一部分。在前一种情况下，cernan可以被配置为消耗机器的所有资源。在后两种情况下，需要考虑给cernan提供足够多的资源来完成其任务，相对于遥测系统的预期输入。
 - en: On modern systems, there's often an abundance of disk space and limited—relatively
     speaking—RAM. The use of `SyncSender` would require either a relatively low number
     of ingestible events or a high possible consumption of memory by cernan. These
@@ -469,16 +634,21 @@
     is down. If cernan were to exacerbate a partial system failure by crowding out
     an application server because of a fault in a loosely-coupled system, well, that'd
     be pretty crummy.
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 在现代系统中，通常有大量的磁盘空间和有限的——相对而言——RAM。使用`SyncSender`可能需要相对较少的可摄入事件或cernan可能消耗大量内存。这些情况通常发生在出口协议失败时，可能是因为远端系统关闭。如果cernan因为一个松散耦合系统中的故障而挤占了应用程序服务器，从而加剧了部分系统故障，那么，那将是非常糟糕的。
 - en: For many users, it's also not acceptable to go totally blind during such a partial
     outage. Tricky constraints for `SyncSender`. Tricky enough, in fact, that we decided
     to write our own MPSC, called hopper ([https://crates.io/crates/hopper](https://crates.io/crates/hopper)).
     Hopper allows endusers to configure the total in-memory consumption of the queue,
     in bytes. That's not far off `SyncSender`, with a bit of calculation. What's special
     about hopper is that it can page to disk.
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于许多用户来说，在这样部分中断期间完全失去视线也是不可接受的。对于`SyncSender`来说，这是一个棘手的约束。实际上足够棘手，以至于我们决定编写我们自己的MPSC，称为hopper
+    ([https://crates.io/crates/hopper](https://crates.io/crates/hopper))。hopper允许最终用户配置队列的总内存消耗，以字节为单位。这并不远，通过一些计算就可以达到`SyncSender`的水平。hopper的特殊之处在于它可以分页到磁盘。
 - en: Hopper shines where memory constraints are very tight but you do not want to
     shed events. Or, you want to push shedding events off as far as possible. Similarly
     to the in-memory queue, hopper allows endusers to configure the maximum number
@@ -486,40 +656,61 @@
     + on_disk_bytes` maximally before it's forced to shed events; we'll see the exact
     mechanism here directly. All of this is programmed with an eye toward maximal
     throughput and blocking threads that have no work, to save CPU time.
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: Hopper在内存限制非常严格但又不希望丢弃事件的情况下表现突出。或者，你希望尽可能地将丢弃事件推迟。与内存队列类似，hopper允许最终用户配置磁盘上可消耗的最大字节数。单个hopper队列在被迫丢弃事件之前，最多可以持有`in_memory_bytes
+    + on_disk_bytes`字节；我们将在下面直接看到其确切机制。所有这些编程都是为了实现最大吞吐量和避免阻塞没有工作的线程，以节省CPU时间。
 - en: Hopper in use
+  id: totrans-79
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Hopper的使用
 - en: 'Before we dig into the implementation of hopper, it''ll be instructive to see
     it in practice. Let''s adapt the last iteration of our ring program series. For
     reference, here''s what that looked like:'
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们深入研究hopper的实现之前，看看它在实际中的应用将是有益的。让我们调整我们环形程序系列的最后一迭代。为了参考，这里看起来是这样的：
 - en: '[PRE20]'
+  id: totrans-81
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: 'The hopper version is a touch different. This is the preamble:'
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: hopper版本略有不同。这是前言：
 - en: '[PRE21]'
+  id: totrans-83
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: 'No surprise there. The function that will serve as the `writer` thread is:'
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 没有什么意外的。将作为`writer`线程的功能是：
 - en: '[PRE22]'
+  id: totrans-85
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: 'Other than the switch from `mpsc::SyncSender<u32>` to `hopper::Sender<u32>`—all
     hopper senders are impliclty bounded—the only other difference is that `chan`
     must be mutable. Now, for the `reader` thread:'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 除了从`mpsc::SyncSender<u32>`切换到`hopper::Sender<u32>`——所有hopper发送者都是隐式有界的外——唯一的另一个区别是`chan`必须是可变的。现在，对于`reader`线程：
 - en: '[PRE23]'
+  id: totrans-87
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: 'Here there''s a little more to do. In hopper, the receiver is intended to be
     used as an iterator, which *is* a little awkward here as we want to limit the
     total number of received values. The iterator will block on calls to `next`, never
@@ -532,20 +723,29 @@
     to avoid its loss. Hopper wants to avoid doing a clone of every `T` that comes
     through and, so, hopper smuggles the ownership of the `T` back to the caller.
     What of `Error`? It''s a simple enumeration:'
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: '这里还有更多的事情要做。在hopper中，接收者被设计成用作迭代器，这在某种程度上有些尴尬，因为我们想限制接收到的值的总数。迭代器在调用`next`时会阻塞，永远不会返回`None`。然而，hopper中发送者的`send`与MPSC的非常不同——`hopper::Sender<T>::send(&mut
+    self, event: T) -> Result<(), (T, Error)>`。先忽略`Error`，为什么在包含`T`的错误条件下返回一个元组？为了清楚起见，它是指传递进来的同一个`T`。当调用者将`T`发送到hopper时，它的所有权也传递给了hopper，这在出错的情况下是个问题。调用者可能非常希望将`T`拿回来以避免其丢失。Hopper想要避免对每个通过`T`都进行克隆，因此hopper偷偷地将`T`的所有权带回到调用者那里。那么`Error`呢？它是一个简单的枚举：'
 - en: '[PRE24]'
+  id: totrans-89
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: 'The important one is `Error::Full`. This is the condition that occurs when
     both the in-memory and disk-backed buffers are full at the time of sending. This
     error is recoverable, but in a way that only the caller can determine. Now, finally,
     the `main` function of our hopper example:'
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 重要的是`Error::Full`。这是在发送时内存和基于磁盘的缓冲区都满了的情况。这个错误是可以恢复的，但只有调用者才能确定。现在，最后，我们的hopper示例的`main`函数：
 - en: '[PRE25]'
+  id: totrans-91
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: The `read_limit` is in place as before, but the big difference is the creation
     of the channel. First, hopper has to have some place to put its disk storage.
     Here we're deferring to some temporary directory—`let dir = tempdir::TempDir::new("queue_root").unwrap();`—to
@@ -558,8 +758,11 @@
     `on_disk_capacity`, which is why we have the use of our old friend `mem::size_of`.
     Now, what's that last configuration option there, set to `1`? That's the maximum
     number of *queue files*.
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
+  zh: '`read_limit`仍然在位，但最大的不同是通道的创建。首先，hopper必须有一个地方来存放其磁盘存储。在这里，我们正在推迟到某个临时目录——`let
+    dir = tempdir::TempDir::new("queue_root").unwrap();`——以避免在运行示例后进行清理。在实际使用中，磁盘位置会被仔细选择。`hopper::channel_with_explicit_capacity`创建的发送者与`hopper::channel`相同，除了所有配置旋钮都对调用者开放。第一个参数是通道的*名称*。这个值很重要，因为它将被用来在`dir`下创建一个用于磁盘存储的目录。通道名称必须是唯一的。`in_memory_capacity`和`on_disk_capacity`都是以字节为单位，这就是为什么我们使用了我们那位老朋友`mem::size_of`。现在，最后一个配置选项是什么，设置为`1`？那是*队列文件*的最大数量。'
 - en: Hopper's disk storage is broken into multiple *queue files*, each of `on_disk_capacity`
     size. Senders carefully coordinate their writes to avoid over-filling the queue
     files, and the receiver is responsible for destroying them once it's sure there
@@ -568,31 +771,43 @@
     that it may not otherwise have been able to, were one large file to be used in
     a circular fashion. This does incur some complexity in the sender and receiver
     code, as we'll see, but is worth it to provide a less resource-intensive library.
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: Hopper的磁盘存储被分成多个*队列文件*，每个文件的大小为`on_disk_capacity`。发送者仔细协调他们的写入以避免队列文件过载，接收者负责在确定没有更多写入到来后销毁它们——我们将在本章后面讨论信号机制。使用队列文件允许hopper可能回收它可能无法通过使用一个大型文件以循环方式使用的情况下回收的磁盘空间。这确实会增加发送者和接收者代码的复杂性，但为了提供一个资源消耗更少的库，这是值得的。
 - en: A conceptual view of hopper
+  id: totrans-94
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: hopper的概念视图
 - en: 'Before we dig into the implementation, let''s walk through how the previous
     example works at a conceptual level. We have enough in-memory space for 10 u32s.
     If the writer thread is much faster than the reader thread—or gets more scheduled
     time—we could end up with a situation like this:'
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们深入研究实现之前，让我们从概念层面了解一下之前的例子是如何工作的。我们有足够的内存空间来存储10个u32。如果写入线程比读取线程快得多——或者获得更多的调度时间——我们可能会遇到这种情况：
 - en: '[PRE26]'
+  id: totrans-96
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: 'That is, a write of `99` is entering the system when the in-memory buffer is
     totally full and there are three queued writes in the diskbuffer. While it is
     possible for the state of the world to shift between the time a write enters the
     system for queuing and between the time it is queued, let''s assume that no receivers
     pull items between queuing. The result will then be a system that looks like this:'
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 也就是说，当内存缓冲区完全满并且diskbuffer中有三个排队写入时，写入`99`正在进入系统。虽然世界状态可能在写入进入系统排队和排队之间发生变化，但让我们假设在排队期间没有接收者拉取项目。结果将是一个看起来像这样的系统：
 - en: '[PRE27]'
+  id: totrans-98
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: The receivers, together, must read only three elements from the diskbuffer,
     then all the in-memory elements, and then a single element from the diskbuffer,
     to maintain the queue's ordering. This is further complicated considering that
@@ -602,16 +817,22 @@
     check, and operation. There's a further complication as well; the unified disk
     buffer displayed previously does not actually exist. Instead, there are potentially
     many individual queue files.
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 接收者总共必须从diskbuffer中读取三个元素，然后是所有内存中的元素，最后是从diskbuffer中读取一个元素，以保持队列的顺序。考虑到写入可能被接收者的一个或多个读取操作分割，这进一步增加了复杂性。我们在上一章中看到了类似的情况，即通过执行加载和检查来保护写入——满足检查的条件可能在加载、检查和操作之间发生变化。还有一个更复杂的因素；之前显示的统一磁盘缓冲区实际上并不存在。相反，可能存在许多单独的队列文件。
 - en: 'Let''s say that hopper has been configured to allow for 10 `u32` in-memory,
     as mentioned, and 10 on-disk but split across five possible queue files. Our revised
     after-write system is as follows:'
+  id: totrans-100
   prefs: []
   type: TYPE_NORMAL
+  zh: 假设hopper已经被配置为允许10个`u32`的内存中配置，正如之前提到的，以及10个在磁盘上，但分布在五个可能的队列文件中。我们的修改后的写入系统如下：
 - en: '[PRE28]'
+  id: totrans-101
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: The senders are responsible for creating queue files and filling them to their
     max. The `Receiver` is responsible for reading from the queue file and deleting
     the said file when it's exhausted. The mechanism for determining that a queue
@@ -622,19 +843,23 @@
     bytes will come eventually. If the file is read-only, the file is exhausted. There's
     a little trick to it yet, and further unexplained cooperation between `Sender`
     and `Receiver`, but that should be enough abstract detail to let us dig in effectively.
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
 - en: The deque
+  id: totrans-103
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: Roughly speaking, hopper is a concurrent deque with two cooperating finite state
     machines layered on top. We'll start in with the deque, defined in `src/deque.rs`.
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
 - en: The discussion of hopper that follows lists almost all of its source code. We'll
     call out the few instances where the reader will need to refer to the listing
     in the book's source repository.
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
 - en: 'To be totally clear, a deque is a data structure that allows for queuing and
@@ -646,39 +871,51 @@
     it supports and to hopper''s internal ownership model. That is, you probably can''t
     use hopper''s deque in your own project without some changes. Anyhow, here''s
     the preamble:'
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE29]'
+  id: totrans-107
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: 'The only unfamiliar piece here are the things imported from `std::sync::atomic`.
     We''ll be covering atomics in more detail in the next chapter, but we''re going
     to breeze over them at a high-level as needed in the explanation to follow. Note
     as well the unsafe declarations of `send` and `sync` for some as yet unknown type
     `Queue<T, S>`. We''re about to go off-road:'
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE30]'
+  id: totrans-109
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: 'The `Queue<T, S>` definition is similar to what we saw in previous chapters:
     a simple structure wrapping an inner structure, here called `InnerQueue<T, S>`.
     The `InnerQueue` is wrapped in an `Arc,` meaning there''s only one allocated `InnerQueue`
     on the heap. As you might expect, the clone of `Queue` is a copy of the `Arc`
     into a new struct:'
+  id: totrans-110
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE31]'
+  id: totrans-111
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: 'It''s important that every thread that interacts with `Queue` sees the same
     `InnerQueue`. Otherwise, the threads are dealing with distinct areas of memory
     and have no relationship with one another. Let''s look at `InnerQueue`:'
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE32]'
+  id: totrans-113
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: Okay, this is much more akin to the internals we saw in Rust itself, and there's
     a lot going on. The field `capacity` is the maximum number of elements that the
     `InnerQueue` will hold in data. Like the first `Ring` in the previous chapter,
@@ -689,8 +926,13 @@
     of `Option<T>` simplifies the code, both for insertion and removal, at the cost
     of a single byte of memory per element. The added complication just isn't worth
     it for the performance goals hopper is trying to hit.
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 好吧，这更接近我们在 Rust 本身看到的内部结构，而且有很多事情在进行中。字段 `capacity` 是 `InnerQueue` 将在数据中保留的最大元素数量。就像前一章中的第一个
+    `Ring` 一样，`InnerQueue` 使用连续的内存块来存储其 `T` 元素，通过将 `Vec` 拆分来获得这个连续块。同样，就像第一个 `Ring`
+    一样，我们在连续的内存块中存储 `Option<T>` 元素。技术上，我们可以处理原始指针的连续块或复制内存块。但使用 `Option<T>` 简化了代码，无论是插入还是删除，但每个元素需要牺牲一个字节的内存。这种额外的复杂性对于
+    hopper 尝试达到的性能目标来说并不值得。
 - en: 'The `size` field is an atomic `usize.` Atomics will be covered in more detail
     in the next chapter, but the behavior of `size` is going to be important. For
     now, think of it as a very small piece of synchronization between threads; a little
@@ -702,11 +944,17 @@
     here? Either side of the deque is protected by a mutex, meaning there can be only
     one enqueuer and one dequeuer at a time, but these can be running in parallel
     to each other. Here are the definitions of the two inner values of the mutexes:'
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
+  zh: '`size` 字段是一个原子 `usize`。原子将在下一章中详细介绍，但 `size` 的行为将非常重要。现在，将其视为线程之间非常小的同步机制；一个小的钩子，它将允许我们按顺序进行内存访问，同时也像
+    `usize` 一样操作。`not_empty` condvar 用于向任何等待新元素弹出的潜在读者发出信号，实际上确实有元素可以弹出。condvar 的使用大大减少了
+    hopper 的 CPU 负载，而没有牺牲对忙循环的延迟。现在，`back_lock` 和 `front_lock`。这里发生了什么？双端队列的每一侧都由互斥锁保护，这意味着一次只能有一个入队者和一个出队者，但它们可以相互并行运行。以下是互斥锁的两个内部值的定义：'
 - en: '[PRE33]'
+  id: totrans-116
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: '`FrontGuardInner`   is the easier to explain of the two. The only field is
     `offset`, which defines the offset from the first pointer of `InnerGuard`''s data
     of the thread manipulating the front of the queue. This contiguous store is also
@@ -717,38 +965,54 @@
     the caller to sort everything out, being careful to pass the data around as needed.
     In this fashion, the queue smuggles state through itself but does not have to
     inspect it.'
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: '`FrontGuardInner` 是两个中较容易解释的。唯一的字段是 `offset`，它定义了从 `InnerGuard` 数据的第一个指针到操作队列前端的线程的偏移量。这种连续存储也以环形缓冲区的方式使用。在
+    `BackGuardInner` 中，我们看到相同的偏移量，但还有一个额外的 `inner`，`S`。这是什么？正如我们将看到的，操作缓冲区后端的线程需要它们之间的额外协调。这究竟是什么，队列并不关心。因此，我们将其作为类型参数，并允许调用者整理一切，同时小心地按需传递数据。以这种方式，队列通过自身传递状态，但不需要检查它。'
 - en: 'Let''s start on the implementation of `InnerQueue`:'
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们从 `InnerQueue` 的实现开始：
 - en: '[PRE34]'
+  id: totrans-119
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: The type lacks a `new() -> InnerQueue`, as there was no call for it to be made.
     Instead, there's only `with_capacity` and that's quite similar to what we saw
     of `Ring`'s `with_capacity`—a vector is allocated, and exploded into a raw pointer,
     and the original reference is forgotten before the pointer is loaded into a newly
     minted struct.
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: 该类型缺少一个 `new() -> InnerQueue`，因为没有必要调用它。相反，只有 `with_capacity`，这与我们之前看到的 `Ring`
+    的 `with_capacity` 非常相似——分配了一个向量，并将其拆分为原始指针，然后在指针加载到新创建的结构体之前，原始引用被遗忘。
 - en: 'The type `S` has to implement a default for initialization that is sufficient,
     as the caller''s smuggled state will always be the same value, which is more than
     adequately definable as a default. If this deque were intended for general use,
     we''d probably need to offer a `with_capacity` that also took an `S` directly.
     Now, a few further functions in the implementation that we''ll just breeze right
     past:'
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE35]'
+  id: totrans-122
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: 'The next function, `push_back`, is very important and subtle:'
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE36]'
+  id: totrans-124
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: '`InnerQueue::push_back` is responsible for placing a `T` onto the current back of
     the ring buffer, or failing capacity to signal that the buffer is full. When we
     discussed Ring, we noted that the `size == capacity` check was a race. Not so
@@ -768,34 +1032,43 @@
     returns. The caller has to run the notification. That''s a sharp edge. If the
     caller forgets to notify a thread blocked on the condvar, the blocked thread will
     stay that way forever.'
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
 - en: 'The `InnerQueue::push_front` is a little simpler and not a radical departure
     from `push_back`:'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE37]'
+  id: totrans-127
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: The thread popping front, because it does not have to coordinate, is able to
     take the front lock itself, as there's no state that needs to be threaded through.
     After receiving the lock, the thread then enters a condition check loop to guard
     against spurious wake-ups on `not_empty`, replacing the item at offset with `None`
     when the thread is able to wake up. The usual offset maintenance occurs.
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
 - en: 'The implementation of `Queue<T, S>` is pretty minimal in comparison to the
     inner structure. Here''s `push_back`:'
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE38]'
+  id: totrans-130
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE38]'
 - en: 'The only function that''s substantially new to `Queue` is `notify_not_empty(&self,
     _guard: &MutexGuard<FrontGuardInner>) -> ()`. The caller is responsible for calling
     this whenever `push_back` signals that the dequeuer must be notified and, while
     the guard is not used, one rough edge of the library is smoothed down by requiring
     that it be passed in, proving that it''s held.'
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
 - en: That's the deque at the core of hopper. This structure was very difficult to
@@ -808,9 +1081,11 @@
     were not deterministic but could be reasoned about, given enough time and repeat
     examples. Building concurrent data structures out of very primitive pieces is
     *hard*.
+  id: totrans-132
   prefs: []
   type: TYPE_NORMAL
 - en: The Receiver
+  id: totrans-133
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -822,27 +1097,35 @@
     tedious side. That said, there are two important functions to cover in the `Receiver`,
     and neither of them are in the public interface. The first is `Receiver::next_value`,
     called by the iterator version of the receiver. This function is defined as follows:'
+  id: totrans-134
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE39]'
+  id: totrans-135
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE39]'
 - en: 'A hopper defined to move `T` values does not define a deque—as discussed in
     the previous section—over `T`s. Instead, the deque actually holds `Placement<T>`.
     Placement, defined in `src/private.rs`, is a small enumeration:'
+  id: totrans-136
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE40]'
+  id: totrans-137
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE40]'
 - en: This is the trick that makes hopper work. The primary challenge with a concurrent
     data structure is providing sufficient synchronization between threads that your
     results can remain coherent despite the chaotic nature of scheduling, but not
     require so much synchronization that you're underwater compared to a sequential
     solution.
+  id: totrans-138
   prefs: []
   type: TYPE_NORMAL
 - en: That does happen.
+  id: totrans-139
   prefs: []
   type: TYPE_NORMAL
 - en: Now, recall that maintaining order is a key design need for any channel-style
@@ -858,16 +1141,20 @@
     again. This mode-flipping approach maintains ordering but also has the added benefit
     of requiring no synchronization when in disk mode, saving critical time when reading
     from a slow disk.
+  id: totrans-140
   prefs: []
   type: TYPE_NORMAL
 - en: 'The second important function to examine is `read_disk_value`, referenced in
     `next_value`. It''s long and mostly book-keeping, but I did want to call out the
     first part of that function here:'
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE41]'
+  id: totrans-142
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE41]'
 - en: 'This small chunk of code uses two very useful libraries. Hopper stores its
     disk-slop elements to disk in bincode format. Bincode ([https://crates.io/crates/bincode](https://crates.io/crates/bincode))
     was invented for the servo project and is a serialization library intended for
@@ -883,9 +1170,11 @@
     file—and using the said prefix to read exactly that many bytes from disk, before
     passing those on into the deserializer. That''s it. All hopper on-disk slop elements
     are a 32 bit length prefix chased by that many bytes.'
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
 - en: The Sender
+  id: totrans-144
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -893,19 +1182,25 @@
     defined in `src/sender.rs`. The most important function in the `Sender` is `send.`
     The `Sender` follows the same disk/memory mode idea that `Receiver` uses but is
     more complicated in its operation. Let''s dig in:'
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE42]'
+  id: totrans-146
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE42]'
 - en: 'Recall that the deque allows the holder of the back guard to smuggle state
     for coordination through it. We''re seeing that pay off here. The `Sender`''s
     internal state is called `SenderSync` and is defined as follows:'
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE43]'
+  id: totrans-148
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE43]'
 - en: 'Every sender thread has to be able to write to the current disk queue file,
     which `sender_fp` points to. Likewise, `bytes_written` tracks how many bytes have
     been, well, written to disk. The `Sender` must keep track of this value in order
@@ -920,11 +1215,14 @@
     there has been an additional write go to disk; the sole communication channel
     with the `Receiver` is through the in-memory deque. To that end, the next `Sender`
     thread will flip into a different write mode:'
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE44]'
+  id: totrans-150
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE44]'
 - en: Once there's a single write to disk, the `Sender` flips into disk preferential
     write mode. At the start of this branch the `T` goes to disk, is flushed. Then,
     the `Sender` attempts to push a `Placement::Disk` onto the in-memory deque, which
@@ -934,6 +1232,7 @@
     new events. The next time a `Sender` thread rolls through it may or may not have
     space in the in-memory deque to perform a memory placement but that's the next
     thread's concern.
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
 - en: That's the heart of `Sender`. While there is another large function in-module,
@@ -941,9 +1240,11 @@
     inside a mutex, a topic that has been covered in detail in this and the previous
     chapter, plus filesystem manipulation. That said, the curious reader is warmly
     encouraged to read through the code.
+  id: totrans-152
   prefs: []
   type: TYPE_NORMAL
 - en: Testing concurrent data structures
+  id: totrans-153
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -958,34 +1259,43 @@
     logic bugs (QuickCheck), randomized testing over random inputs searching for crashes
     (fuzz testing), and multiple-million runs of the same program searching for consistency
     failures. In the rest of the chapter, we'll discuss each of these in turn.
+  id: totrans-154
   prefs: []
   type: TYPE_NORMAL
 - en: QuickCheck and loops
+  id: totrans-155
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 'Previous chapters discussed QuickCheck at length and we''ll not duplicate that
     here. Instead, let''s dig into a test from `hopper`, defined in `src/lib.rs`:'
+  id: totrans-156
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE45]'
+  id: totrans-157
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE45]'
 - en: This test sets up a multiple sender, single receiver round trip environment,
     being careful to reject inputs that allow less space in the in-memory buffer than
     64 bits, no senders, or the like. It defers to another function, `multi_thread_concurrent_snd_and_rcv_round_trip_exp`,
     to actually run the test.
+  id: totrans-158
   prefs: []
   type: TYPE_NORMAL
 - en: 'This setup is awkward, admittedly, but has the benefit of allowing `multi_thread_concurrent_snd_and_rcv_round_trip_exp`
     to be run over explicit inputs. That is, when a bug is found you can easily re-play
     that test by creating a manual—or *explicit*, in `hopper` testing terms—test.
     The inner test function is complicated and we''ll consider it in parts:'
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE46]'
+  id: totrans-160
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE46]'
 - en: Much like our example usage of hopper at the start of this section, the inner
     test function uses tempdir ([https://crates.io/crates/tempdir](https://crates.io/crates/tempdir)) to
     create a temporary path for passing into `channel_with_explicit_capacity`. Except,
@@ -994,38 +1304,51 @@
     individual test run will hit a temporary case of file-handler exhaustion. This
     throws QuickCheck off, with the test failure being totally unrelated to the inputs
     of this particular execution.
+  id: totrans-161
   prefs: []
   type: TYPE_NORMAL
 - en: 'The next piece is as follows:'
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE47]'
+  id: totrans-163
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE47]'
 - en: 'Here we have the creation of the sender threads, each of which grabs an equal
     sized chunk of `vals`. Now, because of indeterminacy in thread scheduling, it''s
     not possible for us to model the order in which elements of `vals` will be pushed
     into hopper. All we can do is confirm that there are no lost elements after transmission
     through hopper. They may, in fact, be garbled in terms of order:'
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE48]'
+  id: totrans-165
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE48]'
 - en: 'Another test with a single sender, `single_sender_single_rcv_round_trip`, is
     able to check for correct ordering as well as no data loss:'
+  id: totrans-166
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE49]'
+  id: totrans-167
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE49]'
 - en: 'Like it''s multi-cousin, this QuickCheck test uses an inner function to perform
     the actual test:'
+  id: totrans-168
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE50]'
+  id: totrans-169
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE50]'
 - en: This, too, should appear familiar, except that the Receiver thread is now able
     to check order. Where previously a `Vec<u64>` was fed into the function, we now
     stream `0, 1, 2, .. total_vals` through the hopper queue, asserting that order
@@ -1043,15 +1366,19 @@
     which you see in use in the tests. In practice, in cernan, flushing is unnecessary.
     But, it's a corner of the design that the authors did not expect and may well
     have had a hard time noticing had this gone out into the wild.
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
 - en: 'The inner test of our single-sender variant is also used for the repeat-loop
     variant of hopper testing:'
+  id: totrans-171
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE51]'
+  id: totrans-172
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE51]'
 - en: Notice that here the inner loop is only for 2,500 iterations. This is done in
     deference to the needs of the CI servers which, don't care to run high CPU load
     code for hours at a time. In development, that 2,500 will be adjusted up. But
@@ -1059,9 +1386,11 @@
     the hopper queue in order and intact over and over and over again. QuickCheck
     searches the dark corners of the state space and more traditional manual testing
     hammers the same spot to dig in to computer indeterminism.
+  id: totrans-173
   prefs: []
   type: TYPE_NORMAL
 - en: Searching for crashes with AFL
+  id: totrans-174
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -1071,6 +1400,7 @@
     is a failure to properly control the indeterminism of the underlying machine.
     In some sense that variant of test is using a logical check to search for crashes.
     It is a kind of fuzz test.
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
 - en: Hopper interacts with the filesystem, spawns threads, and manipulates bytes
@@ -1082,6 +1412,7 @@
     `thread::spawn`. It turns out, however, that this function will panic if no thread
     can be created, which is why the tests use the `thread::Builder` pattern instead,
     allowing for recovery.
+  id: totrans-176
   prefs: []
   type: TYPE_NORMAL
 - en: 'Crashes are important to figure out in their own right. To this end, hopper
@@ -1094,11 +1425,14 @@
     problem. Fuzz runs tend to be done in small batches on users'' private machines,
     at least for open-source projects with small communities. Inside hopper-fuzz,
     there''s a single program for fuzzing, the preamble of which is:'
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE52]'
+  id: totrans-178
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE52]'
 - en: 'The fairly straightforward, based on what we''ve seen so far. Getting input
     into a fuzz program is sometimes non-trivial, especially when the input is not
     much more than a set of inputs rather than, say in the case of a parser, an actual
@@ -1107,11 +1441,14 @@
     will fail to decode but not minding all that much. To that end, the top of your
     author''s fuzz programs usually have an input struct filled with control data,
     and this program is no different:'
+  id: totrans-179
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE53]'
+  id: totrans-180
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE53]'
 - en: The seeds are for `XorShiftRng`, whereas `max_in_memory_bytes` and `max_disk_bytes`
     are for hopper. A careful tally of the bytesize of input is made to avoid fuzz
     testing the bincode deserializer's ability to reject abnormally large inputs.
@@ -1120,30 +1457,40 @@
     intends to fuzz is not what gets fuzzed to start. It's not unheard of to shake
     out bugs in any additional libraries brought into the fuzz project. It's to keep
     the libraries drawn in to a minimum and their use minimal.
+  id: totrans-181
   prefs: []
   type: TYPE_NORMAL
 - en: 'The `main` function of the fuzz program starts off with a setup similar to
     other hopper tests:'
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE54]'
+  id: totrans-183
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE54]'
 - en: 'The only oddity is the production of prefix. The entropy in the `tempdir` name
     is relatively low, compared to the many, many millions of tests that AFL will
     run. We want to be especially sure that no two hopper runs are given the same
     data directory, as that is undefined behavior:'
+  id: totrans-184
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE55]'
+  id: totrans-185
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE55]'
 - en: 'The meat of the AFL test is surprising:'
+  id: totrans-186
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE56]'
+  id: totrans-187
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE56]'
 - en: 'This program pulled in a random number generator to switch off between performing
     a read and performing a write into the hopper channel. Why no threads? Well, it
     turns out, AFL struggles to accommodate threading in its model. AFL has a stability
@@ -1151,38 +1498,47 @@
     in terms of instruction execution and the like. This is not going to fly with
     a multi-threaded use of hopper. Still, despite missing out on probing the potential
     races between sender and receiver threads, this fuzz test found:'
+  id: totrans-188
   prefs: []
   type: TYPE_NORMAL
 - en: File-descriptor exhaustion crashes
+  id: totrans-189
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Incorrect offset computations in deque
+  id: totrans-190
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Incorrect offset computations at the Sender/Receiver level
+  id: totrans-191
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Deserialization of elements into a non-cleared buffer, resulting in phantom
     elements
+  id: totrans-192
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Arithmetic overflow/underflow crashes
+  id: totrans-193
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: A failure to allocate enough space for serialization.
+  id: totrans-194
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Issues with the interior deque that happen only in a multi-threaded context
     will be missed, of course, but the preceding list is nothing to sneeze at.
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
 - en: Benchmarking
+  id: totrans-196
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -1195,77 +1551,104 @@
     The target to match is standard library's MPSC, and that sets the baseline for
     hopper. To that end, the benchmark suite performs a comparison, living in `benches/stdlib_comparison.rs`
     in the hopper repository.
+  id: totrans-197
   prefs: []
   type: TYPE_NORMAL
 - en: 'The preamble is typical:'
+  id: totrans-198
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE57]'
+  id: totrans-199
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE57]'
 - en: 'Note that we''ve pulled in both MPSC and hopper. The function for MPSC that
     we''ll be benching is:'
+  id: totrans-200
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE58]'
+  id: totrans-201
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE58]'
 - en: 'Some sender threads get made, and a receiver exists and pulls the values from
     MPSC as rapidly as possible. This is not a logic check in any sense and the collected
     materials are immediately discarded. Like with the fuzz testing, the input to
     the function is structured data. `MpscInput` is defined as follows:'
+  id: totrans-202
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE59]'
+  id: totrans-203
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE59]'
 - en: 'The hopper version of this function is a little longer, as there are more error
     states to cope with, but it''s nothing we haven''t seen before:'
+  id: totrans-204
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE60]'
+  id: totrans-205
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE60]'
 - en: 'The same is true of `HopperInput`:'
+  id: totrans-206
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE61]'
+  id: totrans-207
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE61]'
 - en: 'Criterion has many options for running benchmarks, but we''ve chosen here to
     run over inputs. Here''s the setup for MPSC:'
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE62]'
+  id: totrans-209
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE62]'
 - en: 'To explain, we''ve got a function, `mpsc_benchmark`, that takes the mutable
     criterion structure, which is opaque to use but in which criterion will store
     run data. This structure exposes `bench_function_over_inputs`, which consumes
     a closure that we can thread our `mpsc_test` through. The sole input is listed
     in a vector. The following is a setup that does the same thing, but for hopper:'
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE63]'
+  id: totrans-211
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE63]'
 - en: 'Notice now that we have two inputs, one guaranteed to be all in-memory and
     the other guaranteed to require disk paging. The disk paging input is sized appropriately
     to match the MSPC run. There''d be no harm in doing an in-memory comparison for
     both hopper and MPSC, but your author has a preference for pessimistic benchmarks,
     being an optimistic sort. The final bits needed by criterion are more or less
     stable across all the benchmarks we''ll see in the rest of this book:'
+  id: totrans-212
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE64]'
+  id: totrans-213
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE64]'
 - en: I encourage you to run the benchmarks yourself. We see times for hopper that
     are approximately three times faster for the systems we intended hopper for. That's
     more than fast enough.
+  id: totrans-214
   prefs: []
   type: TYPE_NORMAL
 - en: Summary
+  id: totrans-215
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -1278,12 +1661,15 @@
     atomic programming in [Chapter 6](d42acb0b-a05e-4068-894f-81365d147bf4.xhtml),
     *Atomics – the Primitives of Synchronization*, and in [Chapter 7](2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml),
     *Atomics – Safely Reclaiming Memory*.
+  id: totrans-216
   prefs: []
   type: TYPE_NORMAL
 - en: If you thought lock-based concurrency was hard, wait  until you see atomics.
+  id: totrans-217
   prefs: []
   type: TYPE_NORMAL
 - en: Further reading
+  id: totrans-218
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
@@ -1291,12 +1677,14 @@
     cover much the same space as the notes from [Chapter 4](5a332d94-37e4-4748-8920-1679b07e2880.xhtml), *Sync
     and Send – the Foundation of Rust Concurrency*. Please do refer back to those
     notes.
+  id: totrans-219
   prefs: []
   type: TYPE_NORMAL
 - en: '*The Little Book of Semaphores*, Allen Downey, available at [http://greenteapress.com/wp/semaphores/](http://greenteapress.com/wp/semaphores/).This
     is a charming book of concurrency puzzles, suitable for undergraduates but challenging
     enough in Rust for the absence of semaphores. We''ll revisit this book in the
     next chapter when we build concurrency primitives out of atomics.'
+  id: totrans-220
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1307,6 +1695,7 @@
     data structure and there are a great many possible approaches. This paper discusses
     an interesting notion. Namely, if we relax the ordering constraint of the queue,
     can we squeeze out more performance from a modern machine?'
+  id: totrans-221
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -1316,6 +1705,7 @@
     – Mutex, Condvar, Barriers, and RWLock*, but in significantly more detail. I highly
     encourage readers to look into getting a copy and reading it, especially the eleventh
     chapter on validating implementations.'
+  id: totrans-222
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
