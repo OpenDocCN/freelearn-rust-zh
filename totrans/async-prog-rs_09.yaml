@@ -1,1551 +1,2245 @@
 - en: '9'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: '9'
 - en: Coroutines, Self-Referential Structs, and Pinning
+  id: totrans-1
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 协程、自引用结构体和`Pinning`
 - en: In this chapter, we’ll start by improving our coroutines by adding the ability
     to store variables across state changes. We’ll see how this leads to our coroutines
     needing to take references to themselves and the issues that arise as a result
     of that. The reason for dedicating a whole chapter to this topic is that it’s
     an integral part of getting async/await to work in Rust, and also a topic that
     is somewhat difficult to get a good understanding of.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将首先通过添加在状态变化之间存储变量的能力来改进我们的协程。我们将看到这如何导致我们的协程需要引用自身，以及由此产生的问题。将整个章节专门用于这个主题的原因是，它是Rust中实现`async/await`的一个关键部分，也是一个相对难以良好理解的课题。
 - en: The reason for this is that the whole concept of pinning is foreign to many
     developers and just like the Rust ownership system, it takes some time to get
     a good and working mental model of it.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 原因在于，对于许多开发者来说，`pinning`的概念是陌生的，就像Rust的所有权系统一样，它需要一些时间来建立一个良好且有效的心理模型。
 - en: Fortunately, the concept of pinning is not that difficult to understand, but
     how it’s implemented in the language and how it interacts with Rust’s type system
     is abstract and hard to grasp.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 幸运的是，`pinning`的概念并不难理解，但它在语言中的实现以及它与Rust的类型系统的交互是抽象的，难以掌握。
 - en: While we won’t cover absolutely everything about pinning in this chapter, we’ll
     try to get a good and sound understanding of it. The major goal here is to feel
     confident with the topic and understand why we need it and how to use it.
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 尽管我们不会在本章中涵盖关于`pinning`的方方面面，但我们将努力获得对它的良好和稳固的理解。这里的重大目标是对此主题感到自信，并理解为什么我们需要它以及如何使用它。
 - en: As mentioned previously, this chapter is not only about pinning in Rust, so
     the first thing we’ll do is make some important improvements where we left off
     by improving the final example in [*Chapter* *8*](B20892_08.xhtml#_idTextAnchor138).
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 如前所述，本章不仅关于Rust中的`pinning`，因此我们首先将做一些重要的改进，从我们停止的地方开始，通过改进[*第8章*](B20892_08.xhtml#_idTextAnchor138)中的最终示例。
 - en: Then, we’ll explain what self-referential structs are and how they’re connected
     to futures before we explain how pinning can solve our problems.
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们将在解释如何使用`pinning`解决我们的问题之前，先解释什么是自引用结构体以及它们与`futures`之间的联系。
 - en: This chapter will cover the following main topics
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章将涵盖以下主要主题
 - en: Improving our example 1 – variables
+  id: totrans-9
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 改进我们的示例1——变量
 - en: Improving our example 2 – references
+  id: totrans-10
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 改进我们的示例2——引用
 - en: Improving our example 3 – this is… not… good…
+  id: totrans-11
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 改进我们的示例3——这……不是……好的……
 - en: Discovering self-referential structs
+  id: totrans-12
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 发现自引用结构体
 - en: Pinning in Rust
+  id: totrans-13
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Rust中的`Pinning`
 - en: Improving our example 4 – pinning to the rescue
+  id: totrans-14
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 改进我们的示例4——`pinning`拯救了我们
 - en: Technical requirements
+  id: totrans-15
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: The examples in this chapter will build on the code from the previous chapter,
     so the requirements are the same. The examples will all be cross-platform and
     work on all platforms that Rust ([https://doc.rust-lang.org/stable/rustc/platform-support.html](https://doc.rust-lang.org/stable/rustc/platform-support.html))
     and mio ([https://github.com/tokio-rs/mio#platforms](https://github.com/tokio-rs/mio#platforms))
     support. The only thing you need is Rust installed and this book’s GitHub repository
     downloaded locally. All the code in this chapter can be found in the `ch09` folder.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章中的示例将基于前一章的代码，因此要求相同。所有示例都将跨平台，并在Rust([https://doc.rust-lang.org/stable/rustc/platform-support.html](https://doc.rust-lang.org/stable/rustc/platform-support.html))和mio([https://github.com/tokio-rs/mio#platforms](https://github.com/tokio-rs/mio#platforms))支持的所有平台上运行。您唯一需要的是安装Rust并下载本书的GitHub存储库到本地。本章中的所有代码都可以在`ch09`文件夹中找到。
 - en: 'To follow the examples step by step, you’ll also need `corofy` installed on
     your machine. If you didn’t install it in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
     install it now by going into the `ch``07``/corofy` folder in the repository and
     running the following:'
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 要逐步跟随示例，您还需要在您的机器上安装`corofy`。如果您在[*第7章*](B20892_07.xhtml#_idTextAnchor122)中没有安装它，现在请进入存储库中的`ch07/corofy`文件夹，并运行以下命令来安装：
 - en: '[PRE0]'
+  id: totrans-18
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: We’ll also use `delayserver` in this example, so you need to open a separate
     terminal, enter the `delayserver` folder at the root of the repository, and write
     `cargo run` so that it’s ready and available for the examples going forward.
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们还将在这个示例中使用`delayserver`，因此您需要打开一个单独的终端，进入存储库根目录下的`delayserver`文件夹，并运行`cargo
+    run`，以便它为后续的示例做好准备和可用。
 - en: Remember to change the port number in the code if you have to change what port
     `delayserver` listens on.
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果您需要更改`delayserver`监听的端口号，请记住在代码中更改端口号。
 - en: Improving our example 1 – variables
+  id: totrans-21
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 改进我们的示例 1 – 变量
 - en: 'So, let’s recap what we have at this point by continuing where we left off
     in the previous chapter. We have the following:'
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，让我们回顾一下到目前为止我们所拥有的内容，继续我们在上一章中留下的地方。我们有以下内容：
 - en: A `Future` trait
+  id: totrans-23
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一个`Future`特质
 - en: A coroutine implementation using coroutine/await syntax and a preprocessor
+  id: totrans-24
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用协程/await语法和预处理器实现的协程实现
 - en: A reactor based on `mio::Poll`
+  id: totrans-25
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 基于`mio::Poll`的反应器
 - en: An executor that allows us to spawn as many top-level tasks as we want and schedules
     the ones that are ready to run
+  id: totrans-26
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一个允许我们创建尽可能多的顶级任务并调度准备运行的任务的执行器
 - en: An HTTP client that only makes HTTP GET requests to our local delayserver instance
+  id: totrans-27
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一个只向我们的本地延迟服务器实例发送HTTP GET请求的HTTP客户端
 - en: It’s not that bad – we might argue that our HTTP client is a *little* bit limited,
     but that’s not the focus of this book, so we can live with that. Our coroutine
     implementation, however, is severely limited. Let’s take a look at how we can
     make our coroutines slightly more useful.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 这并不糟糕——我们可能会争论我们的HTTP客户端有点儿限制，但这不是本书的重点，所以我们可以忍受这一点。然而，我们的协程实现却非常有限。让我们看看我们如何使我们的协程稍微更有用。
 - en: The biggest downside with our current implementation is that nothing – and I
     mean nothing – can live across wait points. It makes sense to tackle this problem
     first.
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们当前实现的最大缺点是没有任何东西——我是指没有任何东西——可以跨越等待点。首先解决这个问题是有意义的。
 - en: Let’s start by setting up our example.
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们从设置我们的示例开始。
 - en: We’ll use the “library” code from `d-multiple-threads example` in [*Chapter*
     *8*](B20892_08.xhtml#_idTextAnchor138)(our last version of the example), but we’ll
     change the `main.rs` file by adding a shorter and simpler example.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将使用`d-multiple-threads示例`中的“库”代码（[*第* *8* *章*](B20892_08.xhtml#_idTextAnchor138)（我们上一个版本的示例）），但我们将通过添加一个更短、更简单的示例来修改`main.rs`文件。
 - en: Let’s set up the base example that we’ll iterate on and improve in this chapter.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们设置我们将在此章节中迭代和改进的基本示例。
 - en: Setting up the base example
+  id: totrans-33
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 设置基本示例
 - en: Note
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: You can find this example in this book’s GitHub repository under `ch``09``/a-coroutines-variables`.
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以在本书的GitHub仓库的`ch09/a-coroutines-variables`下找到这个示例。
 - en: 'Perform the following steps:'
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 执行以下步骤：
 - en: Create a folder called `a-coroutines-variables`.
+  id: totrans-37
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 创建一个名为`a-coroutines-variables`的文件夹。
 - en: Enter the folder and run `cargo init`.
+  id: totrans-38
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 进入文件夹并运行`cargo init`。
 - en: Delete the default `main.rs` file and copy everything from the `ch``08``/d-multiple-threads/src`
     folder into the `ch10/a-coroutines-variables/src` folder.
+  id: totrans-39
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 删除默认的`main.rs`文件，并将`ch08/d-multiple-threads/src`文件夹中的所有内容复制到`ch10/a-coroutines-variables/src`文件夹中。
 - en: 'Open `Cargo.toml` and add the dependency on `mio` to the dependencies section:'
+  id: totrans-40
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 打开`Cargo.toml`并在依赖项部分添加对`mio`的依赖：
 - en: '[PRE1]'
+  id: totrans-41
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'You should now have a folder structure that looks like this:'
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 你现在应该有一个看起来像这样的文件夹结构：
 - en: '[PRE2]'
+  id: totrans-43
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'We’ll use `corofy` one last time to generate our boilerplate state machine
     for us. Copy the following into `main.rs`:'
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将最后一次使用`corofy`为我们生成样板状态机。将以下内容复制到`main.rs`中：
 - en: ch09/a-coroutines-variables/src/main.rs
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: ch09/a-coroutines-variables/src/main.rs
 - en: '[PRE3]'
+  id: totrans-46
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'This time, let’s take a shortcut and write our *corofied* file directly back
     to `main.rs` since we’ve compared the files side by side enough times at this
     point. Assuming you’re in the base folder, `a-coroutine-variables`, write the
     following:'
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 这次，让我们走捷径，直接将我们的`corofied`文件写回`main.rs`，因为我们已经足够多次地并排比较了文件。假设你处于基本文件夹，`a-coroutine-variables`，写下以下内容：
 - en: '[PRE4]'
+  id: totrans-48
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: 'The last step is to fix the fact that `corofy` doesn’t know about `Waker`.
     You can let the compiler guide you to where you need to make changes by writing
     `cargo check`, but to help you along the way, there are three minor changes to
     make (note that the line number is the one reported by re-writing the same code
     that we wrote previously):'
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后一步是修复`corofy`不知道`Waker`的事实。你可以通过编写`cargo check`让编译器引导你到需要做出更改的地方，但为了帮助你，这里有三处小的修改要做（注意行号是重写我们之前写的相同代码时报告的）：
 - en: '[PRE5]'
+  id: totrans-50
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: Program starting
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 程序启动
 - en: FIRST POLL - START OPERATION
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一次轮询 - 开始操作
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 'main: 1 个待处理任务。等待通知。'
 - en: HTTP/1.1 200 OK
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: HTTP/1.1 200 OK
 - en: '[==== ABBREVIATED ====]'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: '[==== 简化版 ====]'
 - en: HelloAsyncAwait
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: HelloAsyncAwait
 - en: 'main: All tasks are finished'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 'main: 所有任务已完成'
 - en: '[PRE6]'
+  id: totrans-58
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: coroutine fn async_main() {
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: coroutine fn async_main() {
 - en: println!("Program starting");
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: println!("Program starting");
 - en: let txt = Http::get("/600/HelloAsyncAwait").wait;
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: let txt = Http::get("/600/HelloAsyncAwait").wait;
 - en: println!("{txt}");
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: println!("{txt}");
 - en: let txt = Http::get("/400/HelloAsyncAwait").wait;
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: let txt = Http::get("/400/HelloAsyncAwait").wait;
 - en: println!("{txt}");
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: println!("{txt}");
 - en: '}'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '[PRE7]'
+  id: totrans-66
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: coroutine fn async_main() {
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: coroutine fn async_main() {
 - en: let mut counter = 0;
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: let mut counter = 0;
 - en: println!("Program starting");
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
 - en: let txt = http::Http::get("/600/HelloAsyncAwait").wait;
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{txt}");
+  id: totrans-71
   prefs: []
   type: TYPE_NORMAL
 - en: counter += 1;
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
 - en: let txt = http::Http::get("/400/HelloAsyncAwait").wait;
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{txt}");
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
 - en: counter += 1;
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
 - en: println!("Received {} responses.", counter);
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE8]'
+  id: totrans-78
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: struct Coroutine0 {
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
 - en: 'stack: Stack0,'
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
 - en: 'state: State0,'
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE9]'
+  id: totrans-83
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: '#[derive(Default)]'
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
 - en: struct Stack0 {
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
 - en: 'counter: Option<usize>,'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE10]'
+  id: totrans-88
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: impl Coroutine0 {
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
 - en: fn new() -> Self {
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
 - en: Self {
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
 - en: 'state: State0::Start,'
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
 - en: 'stack: Stack0::default(),'
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE11]'
+  id: totrans-97
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: State0::Start => {
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
 - en: // initialize stack (hoist variables)
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
 - en: self.stack.counter = Some(0);
+  id: totrans-100
   prefs: []
   type: TYPE_NORMAL
 - en: // ---- Code you actually wrote ----
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
 - en: println!("Program starting");
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
 - en: // ---------------------------------
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
 - en: let fut1 = Box::new( http::Http::get("/600/HelloAsyncAwait"));
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
 - en: self.state = State0::Wait1(fut1);
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
 - en: // save stack
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-107
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE12]'
+  id: totrans-108
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: State0::Wait1(ref mut f1) => {
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
 - en: match f1.poll(waker) {
+  id: totrans-110
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::Ready(txt) => {
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
 - en: // Restore stack
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
 - en: let mut counter = self.stack.counter.take().unwrap();
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
 - en: // ---- Code you actually wrote ----
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{txt}");
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
 - en: counter += 1;
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
 - en: // ---------------------------------
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
 - en: let fut2 = Box::new( http::Http::get("/400/HelloAsyncAwait"));
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
 - en: self.state = State0::Wait2(fut2);
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
 - en: // save stack
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
 - en: self.stack.counter = Some(counter);
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::NotReady => break PollState::NotReady,
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE13]'
+  id: totrans-126
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: State0::Wait2(ref mut f2) => {
+  id: totrans-127
   prefs: []
   type: TYPE_NORMAL
 - en: match f2.poll(waker) {
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::Ready(txt) => {
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
 - en: // Restore stack
+  id: totrans-130
   prefs: []
   type: TYPE_NORMAL
 - en: let mut counter = self.stack.counter.take().unwrap();
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
 - en: // ---- Code you actually wrote ----
+  id: totrans-132
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{txt}");
+  id: totrans-133
   prefs: []
   type: TYPE_NORMAL
 - en: counter += 1;
+  id: totrans-134
   prefs: []
   type: TYPE_NORMAL
 - en: println!(«Received {} responses.», counter);
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
 - en: // ---------------------------------
+  id: totrans-136
   prefs: []
   type: TYPE_NORMAL
 - en: self.state = State0::Resolved;
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
 - en: // Save stack (all variables set to None already)
+  id: totrans-138
   prefs: []
   type: TYPE_NORMAL
 - en: break PollState::Ready(String::new());
+  id: totrans-139
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-140
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::NotReady => break PollState::NotReady,
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-142
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE14]'
+  id: totrans-144
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: …
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
 - en: HelloAsyncAwait
+  id: totrans-146
   prefs: []
   type: TYPE_NORMAL
 - en: Received 2 responses.
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: All tasks are finished'
+  id: totrans-148
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE15]'
+  id: totrans-149
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: use std::fmt::Write;
+  id: totrans-150
   prefs: []
   type: TYPE_NORMAL
 - en: coroutine fn async_main() {
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
 - en: let mut buffer = String::from("\nBUFFER:\n----\n");
+  id: totrans-152
   prefs: []
   type: TYPE_NORMAL
 - en: let writer = &mut buffer;
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
 - en: println!("Program starting");
+  id: totrans-154
   prefs: []
   type: TYPE_NORMAL
 - en: let txt = http::Http::get("/600/HelloAsyncAwait").wait;
+  id: totrans-155
   prefs: []
   type: TYPE_NORMAL
 - en: writeln!(writer, "{txt}").unwrap();
+  id: totrans-156
   prefs: []
   type: TYPE_NORMAL
 - en: let txt = http::Http::get("/400/HelloAsyncAwait").wait;
+  id: totrans-157
   prefs: []
   type: TYPE_NORMAL
 - en: writeln!(writer, "{txt}").unwrap();
+  id: totrans-158
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{}", buffer);
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-160
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE16]'
+  id: totrans-161
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: use std::fmt::Write;
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE17]'
+  id: totrans-163
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: '#[derive(Default)]'
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
 - en: struct Stack0 {
+  id: totrans-165
   prefs: []
   type: TYPE_NORMAL
 - en: 'buffer: Option<String>,'
+  id: totrans-166
   prefs: []
   type: TYPE_NORMAL
 - en: 'writer: Option<*mut String>,'
+  id: totrans-167
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-168
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE18]'
+  id: totrans-169
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: State0::Start => {
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
 - en: // initialize stack (hoist variables)
+  id: totrans-171
   prefs: []
   type: TYPE_NORMAL
 - en: self.stack.buffer = Some(String::from("\nBUFFER:\n----\n"));
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
 - en: self.stack.writer = Some(self.stack.buffer.as_mut().unwrap());
+  id: totrans-173
   prefs: []
   type: TYPE_NORMAL
 - en: // ---- Code you actually wrote ----
+  id: totrans-174
   prefs: []
   type: TYPE_NORMAL
 - en: println!("Program starting");
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
 - en: // ---------------------------------
+  id: totrans-176
   prefs: []
   type: TYPE_NORMAL
 - en: let fut1 = Box::new(http::Http::get("/600/HelloAsyncAwait"));
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
 - en: self.state = State0::Wait1(fut1);
+  id: totrans-178
   prefs: []
   type: TYPE_NORMAL
 - en: // save stack
+  id: totrans-179
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-180
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE19]'
+  id: totrans-181
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: State0::Wait1(ref mut f1) => {
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
 - en: match f1.poll(waker) {
+  id: totrans-183
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::Ready(txt) => {
+  id: totrans-184
   prefs: []
   type: TYPE_NORMAL
 - en: // Restore stack
+  id: totrans-185
   prefs: []
   type: TYPE_NORMAL
 - en: let writer = unsafe { &mut *self.stack.writer.take().unwrap() };
+  id: totrans-186
   prefs: []
   type: TYPE_NORMAL
 - en: // ---- Code you actually wrote ----
+  id: totrans-187
   prefs: []
   type: TYPE_NORMAL
 - en: writeln!(writer, «{txt}»).unwrap();
+  id: totrans-188
   prefs: []
   type: TYPE_NORMAL
 - en: // ---------------------------------
+  id: totrans-189
   prefs: []
   type: TYPE_NORMAL
 - en: let fut2 = Box::new(http::Http::get("/400/HelloAsyncAwait"));
+  id: totrans-190
   prefs: []
   type: TYPE_NORMAL
 - en: self.state = State0::Wait2(fut2);
+  id: totrans-191
   prefs: []
   type: TYPE_NORMAL
 - en: // save stack
+  id: totrans-192
   prefs: []
   type: TYPE_NORMAL
 - en: self.stack.writer = Some(writer);
+  id: totrans-193
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-194
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::NotReady => break PollState::NotReady,
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-196
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-197
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE20]'
+  id: totrans-198
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: State0::Wait2(ref mut f2) => {
+  id: totrans-199
   prefs: []
   type: TYPE_NORMAL
 - en: match f2.poll(waker) {
+  id: totrans-200
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::Ready(txt) => {
+  id: totrans-201
   prefs: []
   type: TYPE_NORMAL
 - en: // Restore stack
+  id: totrans-202
   prefs: []
   type: TYPE_NORMAL
 - en: let buffer = self.stack.buffer.as_ref().take().unwrap();
+  id: totrans-203
   prefs: []
   type: TYPE_NORMAL
 - en: let writer = unsafe { &mut *self.stack.writer.take().unwrap() };
+  id: totrans-204
   prefs: []
   type: TYPE_NORMAL
 - en: // ---- Code you actually wrote ----
+  id: totrans-205
   prefs: []
   type: TYPE_NORMAL
 - en: writeln!(writer, «{txt}»).unwrap();
+  id: totrans-206
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{}", buffer);
+  id: totrans-207
   prefs: []
   type: TYPE_NORMAL
 - en: // ---------------------------------
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
 - en: self.state = State0::Resolved;
+  id: totrans-209
   prefs: []
   type: TYPE_NORMAL
 - en: // Save stack / free resources
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
 - en: let _ = self.stack.buffer.take();
+  id: totrans-211
   prefs: []
   type: TYPE_NORMAL
 - en: break PollState::Ready(String::new());
+  id: totrans-212
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-213
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::NotReady => break PollState::NotReady,
+  id: totrans-214
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-215
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-216
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE21]'
+  id: totrans-217
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: Program starting
+  id: totrans-218
   prefs: []
   type: TYPE_NORMAL
 - en: FIRST POLL - START OPERATION
+  id: totrans-219
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-220
   prefs: []
   type: TYPE_NORMAL
 - en: FIRST POLL - START OPERATION
+  id: totrans-221
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-222
   prefs: []
   type: TYPE_NORMAL
 - en: 'BUFFER:'
+  id: totrans-223
   prefs: []
   type: TYPE_NORMAL
 - en: '----'
+  id: totrans-224
   prefs: []
   type: TYPE_NORMAL
 - en: HTTP/1.1 200 OK
+  id: totrans-225
   prefs: []
   type: TYPE_NORMAL
 - en: 'content-length: 15'
+  id: totrans-226
   prefs: []
   type: TYPE_NORMAL
 - en: 'connection: close'
+  id: totrans-227
   prefs: []
   type: TYPE_NORMAL
 - en: 'content-type: text/plain; charset=utf-8'
+  id: totrans-228
   prefs: []
   type: TYPE_NORMAL
 - en: 'date: Thu, 30 Nov 2023 22:48:11 GMT'
+  id: totrans-229
   prefs: []
   type: TYPE_NORMAL
 - en: HelloAsyncAwait
+  id: totrans-230
   prefs: []
   type: TYPE_NORMAL
 - en: HTTP/1.1 200 OK
+  id: totrans-231
   prefs: []
   type: TYPE_NORMAL
 - en: 'content-length: 15'
+  id: totrans-232
   prefs: []
   type: TYPE_NORMAL
 - en: 'connection: close'
+  id: totrans-233
   prefs: []
   type: TYPE_NORMAL
 - en: 'content-type: text/plain; charset=utf-8'
+  id: totrans-234
   prefs: []
   type: TYPE_NORMAL
 - en: 'date: Thu, 30 Nov 2023 22:48:11 GMT'
+  id: totrans-235
   prefs: []
   type: TYPE_NORMAL
 - en: HelloAsyncAwait
+  id: totrans-236
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: All tasks are finished'
+  id: totrans-237
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE22]'
+  id: totrans-238
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: 'pub fn block_on<F>(&mut self, future: F)'
+  id: totrans-239
   prefs: []
   type: TYPE_NORMAL
 - en: where
+  id: totrans-240
   prefs: []
   type: TYPE_NORMAL
 - en: 'F: Future<Output = String> + ''static,'
+  id: totrans-241
   prefs: []
   type: TYPE_NORMAL
 - en: '{'
+  id: totrans-242
   prefs: []
   type: TYPE_NORMAL
 - en: // ===== OPTIMIZATION, ASSUME READY
+  id: totrans-243
   prefs: []
   type: TYPE_NORMAL
 - en: let waker = self.get_waker(usize::MAX);
+  id: totrans-244
   prefs: []
   type: TYPE_NORMAL
 - en: let mut future = future;
+  id: totrans-245
   prefs: []
   type: TYPE_NORMAL
 - en: match future.poll(&waker) {
+  id: totrans-246
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::NotReady => (),
+  id: totrans-247
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::Ready(_) => return,
+  id: totrans-248
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-249
   prefs: []
   type: TYPE_NORMAL
 - en: // ===== END
+  id: totrans-250
   prefs: []
   type: TYPE_NORMAL
 - en: spawn(future);
+  id: totrans-251
   prefs: []
   type: TYPE_NORMAL
 - en: loop {
+  id: totrans-252
   prefs: []
   type: TYPE_NORMAL
 - en: …
+  id: totrans-253
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE23]'
+  id: totrans-254
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: Program starting
+  id: totrans-255
   prefs: []
   type: TYPE_NORMAL
 - en: FIRST POLL - START OPERATION
+  id: totrans-256
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-257
   prefs: []
   type: TYPE_NORMAL
 - en: FIRST POLL - START OPERATION
+  id: totrans-258
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-259
   prefs: []
   type: TYPE_NORMAL
 - en: /400/HelloAsyn
+  id: totrans-260
   prefs: []
   type: TYPE_NORMAL
 - en: 'free(): double free detected in tcache 2'
+  id: totrans-261
   prefs: []
   type: TYPE_NORMAL
 - en: Aborted
+  id: totrans-262
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE24]'
+  id: totrans-263
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: …
+  id: totrans-264
   prefs: []
   type: TYPE_NORMAL
 - en: 'error: process didn''t exit successfully: `target\release\c-coroutines-'
+  id: totrans-265
   prefs: []
   type: TYPE_NORMAL
 - en: 'problem.exe` (exit code: 0xc0000374, STATUS_HEAP_CORRUPTION)'
+  id: totrans-266
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE25]'
+  id: totrans-267
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: use std::{marker::PhantomPinned, pin::Pin};
+  id: totrans-268
   prefs: []
   type: TYPE_NORMAL
 - en: '#[derive(Default)]'
+  id: totrans-269
   prefs: []
   type: TYPE_NORMAL
 - en: struct Foo {
+  id: totrans-270
   prefs: []
   type: TYPE_NORMAL
 - en: 'a: MaybeSelfRef,'
+  id: totrans-271
   prefs: []
   type: TYPE_NORMAL
 - en: 'b: String,'
+  id: totrans-272
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-273
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE26]'
+  id: totrans-274
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: impl MaybeSelfRef {
+  id: totrans-275
   prefs: []
   type: TYPE_NORMAL
 - en: 'fn init(self: Pin<&mut Self>) {'
+  id: totrans-276
   prefs: []
   type: TYPE_NORMAL
 - en: unsafe {
+  id: totrans-277
   prefs: []
   type: TYPE_NORMAL
 - en: let Self { a, b, .. } = self.get_unchecked_mut();
+  id: totrans-278
   prefs: []
   type: TYPE_NORMAL
 - en: '*b = Some(a);'
+  id: totrans-279
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-280
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-281
   prefs: []
   type: TYPE_NORMAL
 - en: 'fn b(self: Pin<&mut Self>) -> Option<&mut usize> {'
+  id: totrans-282
   prefs: []
   type: TYPE_NORMAL
 - en: unsafe { self.get_unchecked_mut().b.map(|b| &mut *b) }
+  id: totrans-283
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-284
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-285
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE27]'
+  id: totrans-286
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: fn main() {
+  id: totrans-287
   prefs: []
   type: TYPE_NORMAL
 - en: let mut x = Box::pin(MaybeSelfRef::default());
+  id: totrans-288
   prefs: []
   type: TYPE_NORMAL
 - en: x.as_mut().init();
+  id: totrans-289
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{}", x.as_ref().a);
+  id: totrans-290
   prefs: []
   type: TYPE_NORMAL
 - en: '*x.as_mut().b().unwrap() = 2;'
+  id: totrans-291
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{}", x.as_ref().a);
+  id: totrans-292
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-293
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE28]'
+  id: totrans-294
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: Finished dev [unoptimized + debuginfo] target(s) in 0.56s
+  id: totrans-295
   prefs: []
   type: TYPE_NORMAL
 - en: Running `target\debug\x-pin-experiments.exe`
+  id: totrans-296
   prefs: []
   type: TYPE_NORMAL
 - en: '0'
+  id: totrans-297
   prefs: []
   type: TYPE_NORMAL
 - en: '2'
+  id: totrans-298
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE29]'
+  id: totrans-299
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: fn stack_pinning_manual() {
+  id: totrans-300
   prefs: []
   type: TYPE_NORMAL
 - en: let mut x = MaybeSelfRef::default();
+  id: totrans-301
   prefs: []
   type: TYPE_NORMAL
 - en: let mut x = unsafe { Pin::new_unchecked(&mut x) };
+  id: totrans-302
   prefs: []
   type: TYPE_NORMAL
 - en: x.as_mut().init();
+  id: totrans-303
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{}", x.as_ref().a);
+  id: totrans-304
   prefs: []
   type: TYPE_NORMAL
 - en: '*x.as_mut().b().unwrap() = 2;'
+  id: totrans-305
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{}", x.as_ref().a);
+  id: totrans-306
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-307
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE30]'
+  id: totrans-308
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: Finished dev [unoptimized + debuginfo] target(s) in 0.58s
+  id: totrans-309
   prefs: []
   type: TYPE_NORMAL
 - en: Running `target\debug\x-pin-experiments.exe`
+  id: totrans-310
   prefs: []
   type: TYPE_NORMAL
 - en: '0'
+  id: totrans-311
   prefs: []
   type: TYPE_NORMAL
 - en: '2'
+  id: totrans-312
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE31]'
+  id: totrans-313
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: use std::mem::swap;
+  id: totrans-314
   prefs: []
   type: TYPE_NORMAL
 - en: fn stack_pinning_manual_problem() {
+  id: totrans-315
   prefs: []
   type: TYPE_NORMAL
 - en: let mut x = MaybeSelfRef::default();
+  id: totrans-316
   prefs: []
   type: TYPE_NORMAL
 - en: let mut y = MaybeSelfRef::default();
+  id: totrans-317
   prefs: []
   type: TYPE_NORMAL
 - en: '{'
+  id: totrans-318
   prefs: []
   type: TYPE_NORMAL
 - en: let mut x = unsafe { Pin::new_unchecked(&mut x) };
+  id: totrans-319
   prefs: []
   type: TYPE_NORMAL
 - en: x.as_mut().init();
+  id: totrans-320
   prefs: []
   type: TYPE_NORMAL
+  zh: x.as_mut().init();
 - en: '*x.as_mut().b().unwrap() = 2;'
+  id: totrans-321
   prefs: []
   type: TYPE_NORMAL
+  zh: '*x.as_mut().b().unwrap() = 2;'
 - en: '}'
+  id: totrans-322
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: swap(&mut x, &mut y);
+  id: totrans-323
   prefs: []
   type: TYPE_NORMAL
+  zh: swap(&mut x, &mut y);
 - en: println!("
+  id: totrans-324
   prefs: []
   type: TYPE_NORMAL
+  zh: println!("
 - en: 'x: {{'
+  id: totrans-325
   prefs: []
   type: TYPE_NORMAL
+  zh: 'x: {{'
 - en: '+----->a: {:p},'
+  id: totrans-326
   prefs: []
   type: TYPE_NORMAL
+  zh: '+----->a: {:p},'
 - en: '|      b: {:?},'
+  id: totrans-327
   prefs: []
   type: TYPE_NORMAL
+  zh: '|      b: {:?},'
 - en: '|  }}'
+  id: totrans-328
   prefs: []
   type: TYPE_NORMAL
+  zh: '|  }}'
 - en: '|'
+  id: totrans-329
   prefs: []
   type: TYPE_NORMAL
+  zh: '|'
 - en: '|  y: {{'
+  id: totrans-330
   prefs: []
   type: TYPE_NORMAL
+  zh: '|  y: {{'
 - en: '|      a: {:p},'
+  id: totrans-331
   prefs: []
   type: TYPE_NORMAL
+  zh: '|      a: {:p},'
 - en: '+-----|b: {:?},'
+  id: totrans-332
   prefs: []
   type: TYPE_NORMAL
+  zh: '+-----|b: {:?},'
 - en: '}}",'
+  id: totrans-333
   prefs: []
   type: TYPE_NORMAL
+  zh: '}}",'
 - en: '&x.a,'
+  id: totrans-334
   prefs: []
   type: TYPE_NORMAL
+  zh: '&x.a,'
 - en: x.b,
+  id: totrans-335
   prefs: []
   type: TYPE_NORMAL
+  zh: x.b,
 - en: '&y.a,'
+  id: totrans-336
   prefs: []
   type: TYPE_NORMAL
+  zh: '&y.a,'
 - en: y.b,
+  id: totrans-337
   prefs: []
   type: TYPE_NORMAL
+  zh: y.b,
 - en: );
+  id: totrans-338
   prefs: []
   type: TYPE_NORMAL
+  zh: );
 - en: '}'
+  id: totrans-339
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '[PRE32]'
+  id: totrans-340
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: Finished dev [unoptimized + debuginfo] target(s) in 0.58s
+  id: totrans-341
   prefs: []
   type: TYPE_NORMAL
+  zh: 完成dev [未优化 + 调试信息] 目标(s) 在 0.58s
 - en: Running `target\debug\x-pin-experiments.exe`
+  id: totrans-342
   prefs: []
   type: TYPE_NORMAL
+  zh: 运行`target\debug\x-pin-experiments.exe`
 - en: 'x: {'
+  id: totrans-343
   prefs: []
   type: TYPE_NORMAL
+  zh: 'x: {'
 - en: '+----->a: 0xe45fcff558,'
+  id: totrans-344
   prefs: []
   type: TYPE_NORMAL
+  zh: '+----->a: 0xe45fcff558,'
 - en: '|      b: None,'
+  id: totrans-345
   prefs: []
   type: TYPE_NORMAL
+  zh: '|      b: None,'
 - en: '|  }'
+  id: totrans-346
   prefs: []
   type: TYPE_NORMAL
+  zh: '|  }'
 - en: '|'
+  id: totrans-347
   prefs: []
   type: TYPE_NORMAL
+  zh: '|'
 - en: '|  y: {'
+  id: totrans-348
   prefs: []
   type: TYPE_NORMAL
+  zh: '|  y: {'
 - en: '|      a: 0xe45fcff570,'
+  id: totrans-349
   prefs: []
   type: TYPE_NORMAL
+  zh: '|      a: 0xe45fcff570,'
 - en: '+-----|b: Some(0xe45fcff558),'
+  id: totrans-350
   prefs: []
   type: TYPE_NORMAL
+  zh: '+-----|b: Some(0xe45fcff558),'
 - en: '}'
+  id: totrans-351
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '[PRE33]'
+  id: totrans-352
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: '#[derive(Default)]'
+  id: totrans-353
   prefs: []
   type: TYPE_NORMAL
+  zh: '#[derive(Default)]'
 - en: struct Foo {
+  id: totrans-354
   prefs: []
   type: TYPE_NORMAL
+  zh: struct Foo {
 - en: 'a: MaybeSelfRef,'
+  id: totrans-355
   prefs: []
   type: TYPE_NORMAL
+  zh: 'a: MaybeSelfRef,'
 - en: 'b: String,'
+  id: totrans-356
   prefs: []
   type: TYPE_NORMAL
+  zh: 'b: String,'
 - en: '}'
+  id: totrans-357
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: impl Foo {
+  id: totrans-358
   prefs: []
   type: TYPE_NORMAL
+  zh: 实现Foo {
 - en: 'fn a(self: Pin<&mut Self>) -> Pin<&mut MaybeSelfRef> {'
+  id: totrans-359
   prefs: []
   type: TYPE_NORMAL
+  zh: 'fn a(self: Pin<&mut Self>) -> Pin<&mut MaybeSelfRef> {'
 - en: unsafe {
+  id: totrans-360
   prefs: []
   type: TYPE_NORMAL
+  zh: unsafe {
 - en: self.map_unchecked_mut(|s| &mut s.a)
+  id: totrans-361
   prefs: []
   type: TYPE_NORMAL
+  zh: self.map_unchecked_mut(|s| &mut s.a)
 - en: '}'
+  id: totrans-362
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '}'
+  id: totrans-363
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: 'fn b(self: Pin<&mut Self>) -> &mut String {'
+  id: totrans-364
   prefs: []
   type: TYPE_NORMAL
+  zh: 'fn b(self: Pin<&mut Self>) -> &mut String {'
 - en: unsafe {
+  id: totrans-365
   prefs: []
   type: TYPE_NORMAL
+  zh: unsafe {
 - en: '&mut self.get_unchecked_mut().b'
+  id: totrans-366
   prefs: []
   type: TYPE_NORMAL
+  zh: '&mut self.get_unchecked_mut().b'
 - en: '}'
+  id: totrans-367
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '}'
+  id: totrans-368
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '}'
+  id: totrans-369
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '[PRE34]'
+  id: totrans-370
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: use std::pin::Pin;
+  id: totrans-371
   prefs: []
   type: TYPE_NORMAL
+  zh: use std::pin::Pin;
 - en: '[PRE35]'
+  id: totrans-372
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: 'fn poll(self: Pin<&mut Self>, waker: &Waker) -> PollState<Self::Output>;'
+  id: totrans-373
   prefs: []
   type: TYPE_NORMAL
+  zh: 'fn poll(self: Pin<&mut Self>, waker: &Waker) -> PollState<Self::Output>;'
 - en: '[PRE36]'
+  id: totrans-374
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: use crate::{future::PollState, runtime::{self, reactor, Waker}, Future};
+  id: totrans-375
   prefs: []
   type: TYPE_NORMAL
+  zh: use crate::{future::PollState, runtime::{self, reactor, Waker}, Future};
 - en: use mio::Interest;
+  id: totrans-376
   prefs: []
   type: TYPE_NORMAL
+  zh: use mio::Interest;
 - en: use std::{io::{ErrorKind, Read, Write}, pin::Pin};
+  id: totrans-377
   prefs: []
   type: TYPE_NORMAL
+  zh: use std::{io::{ErrorKind, Read, Write}, pin::Pin};
 - en: '[PRE37]'
+  id: totrans-378
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: 'fn poll(self is now Pin<&mut Self>, there are several small changes we need
     to make so that the borrow checker stays happy. Let’s start from the top:'
+  id: totrans-379
   prefs: []
   type: TYPE_NORMAL
+  zh: 'fn poll(self is now Pin<&mut Self>, there are several small changes we need
+    to make so that the borrow checker stays happy. Let’s start from the top:'
 - en: ch09/e-coroutines-pin/src/http.rs
+  id: totrans-380
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: ch09/e-coroutines-pin/src/http.rs
 - en: '[PRE38]'
+  id: totrans-381
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE38]'
 - en: The reason for assigning `id` to a variable at the top is that the borrow checker
     gives us some minor trouble when trying to pass in both `&mut self` and `&self`
     as arguments to the register/deregister functions, so we just assign `id` to a
     variable at the top and everyone is happy.
+  id: totrans-382
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 在顶部将`id`分配给变量的原因是，当尝试将`&mut self`和`&self`作为参数传递给register/deregister函数时，借用检查器给我们带来了一些小麻烦，所以我们只是在顶部将`id`分配给一个变量，这样大家就都高兴了。
 - en: 'There are only two more lines to change, and that is where we create a `String`
     type from our internal buffer and deregister interest with the reactor:'
+  id: totrans-383
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 只有两行需要更改，那就是我们从一个内部缓冲区创建`String`类型并从reactor注销兴趣的地方：
 - en: ch09/e-coroutines-pin/src/http.rs
+  id: totrans-384
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: ch09/e-coroutines-pin/src/http.rs
 - en: '[PRE39]'
+  id: totrans-385
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE39]'
 - en: Important
+  id: totrans-386
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 重要
 - en: Notice that this future is `Unpin`. There is nothing that makes it `unsafe`
     to move `HttpGetFuture` around, and this is indeed the case for most futures like
     this. Only the ones created by async/await are self-referential by design. That
     means there is no need for any `unsafe` here.
+  id: totrans-387
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 注意，这个future是`Unpin`。没有东西让它移动`HttpGetFuture`变得`不安全`，对于大多数这样的future来说，情况确实如此。只有由async/await创建的future是按设计自我引用的。这意味着这里不需要任何`不安全`的操作。
 - en: Next, let’s move on to `main.rs` since there are some important changes we need
     to make there.
+  id: totrans-388
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 接下来，让我们继续到`main.rs`，因为那里有一些重要的更改需要我们进行。
 - en: Main.rs
+  id: totrans-389
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: Main.rs
 - en: 'Let’s start from the top and make sure we have the correct imports:'
+  id: totrans-390
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 让我们从顶部开始，确保我们有正确的导入：
 - en: ch09/e-coroutines-pin/src/main.rs
+  id: totrans-391
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: ch09/e-coroutines-pin/src/main.rs
 - en: '[PRE40]'
+  id: totrans-392
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE40]'
 - en: Wait1(Pin<Box<dyn Future<Output = String>>>),
+  id: totrans-393
   prefs: []
   type: TYPE_NORMAL
+  zh: Wait1(Pin<Box<dyn Future<Output = String>>>),
 - en: Wait2(Pin<Box<dyn Future<Output = String>>>),
+  id: totrans-394
   prefs: []
   type: TYPE_NORMAL
+  zh: Wait2(Pin<Box<dyn Future<Output = String>>>),
 - en: '[PRE41]'
+  id: totrans-395
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE41]'
 - en: struct Coroutine0 {
+  id: totrans-396
   prefs: []
   type: TYPE_NORMAL
+  zh: struct Coroutine0 {
 - en: 'stack: Stack0,'
+  id: totrans-397
   prefs: []
   type: TYPE_NORMAL
+  zh: '栈: Stack0,'
 - en: 'state: State0,'
+  id: totrans-398
   prefs: []
   type: TYPE_NORMAL
+  zh: '状态: State0,'
 - en: '_pin: PhantomPinned,'
+  id: totrans-399
   prefs: []
   type: TYPE_NORMAL
+  zh: '_pin: PhantomPinned,'
 - en: '}'
+  id: totrans-400
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '[PRE42]'
+  id: totrans-401
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE42]'
 - en: impl Coroutine0 {
+  id: totrans-402
   prefs: []
   type: TYPE_NORMAL
+  zh: 实现Coroutine0 {
 - en: fn new() -> Self {
+  id: totrans-403
   prefs: []
   type: TYPE_NORMAL
+  zh: fn new() -> Self {
 - en: Self {
+  id: totrans-404
   prefs: []
   type: TYPE_NORMAL
+  zh: Self {
 - en: 'state: State0::Start,'
+  id: totrans-405
   prefs: []
   type: TYPE_NORMAL
+  zh: '状态: State0::Start,'
 - en: 'stack: Stack0::default(),'
+  id: totrans-406
   prefs: []
   type: TYPE_NORMAL
+  zh: '栈: Stack0::default(),'
 - en: '_pin: PhantomPinned,'
+  id: totrans-407
   prefs: []
   type: TYPE_NORMAL
+  zh: '_pin: PhantomPinned,'
 - en: '}'
+  id: totrans-408
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '}'
+  id: totrans-409
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '}'
+  id: totrans-410
   prefs: []
   type: TYPE_NORMAL
+  zh: '}'
 - en: '[PRE43]'
+  id: totrans-411
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE43]'
 - en: fn poll(this, which replaces self everywhere in the function body.
+  id: totrans-412
   prefs: []
   type: TYPE_NORMAL
+  zh: fn poll(this, which replaces self everywhere in the function body.
 - en: 'I won’t go through every line since the change is so trivial, but after the
     first line, it’s a simple search and replace everywhere `self` was used earlier,
     and change it to `this`:'
+  id: totrans-413
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 我不会逐行解释，因为变化如此微不足道，但第一行之后，我们只需在函数体中所有使用`self`的地方进行简单的搜索和替换，将其更改为`this`：
 - en: ch09/e-coroutines-pin/src/main.rs
+  id: totrans-414
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: ch09/e-coroutines-pin/src/main.rs
 - en: '[PRE44]'
+  id: totrans-415
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE44]'
 - en: The important line here was `let this = unsafe { self.get_unchecked_mut() };`.
     Here, we had to use `unsafe` since the pinned value is `!Unpin` because of the
     marker trait we added.
+  id: totrans-416
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 这里重要的行是`let this = unsafe { self.get_unchecked_mut() };`。在这里，我们必须使用`unsafe`，因为由于我们添加的标记trait，固定值是`!Unpin`。
 - en: Getting to the pinned value is `unsafe` since there is no way for Rust to guarantee
     that we won’t move the pinned value.
+  id: totrans-417
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 获取到固定值是`不安全的`，因为Rust无法保证我们不会移动固定值。
 - en: The nice thing about this is that if we encounter any such problems later, we
     know we can search for the places where we used `unsafe` and that the problem
     must be there.
+  id: totrans-418
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 这个好处是，如果我们以后遇到任何这样的问题，我们知道我们可以搜索我们使用 `unsafe` 的地方，问题肯定在那里。
 - en: 'The next thing we need to change is to have the futures we store in our wait
     states pinned. We can do this by calling `Box::pin` instead of `Box::new`:'
+  id: totrans-419
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 我们接下来需要更改的是将我们存储在等待状态中的未来对象固定。我们可以通过调用 `Box::pin` 而不是 `Box::new` 来实现这一点：
 - en: ch09/e-coroutines-pin/src/main.rs
+  id: totrans-420
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: ch09/e-coroutines-pin/src/main.rs
 - en: '[PRE45]'
+  id: totrans-421
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE45]'
 - en: match f1.as_mut().poll(waker)
+  id: totrans-422
   prefs: []
   type: TYPE_NORMAL
+  zh: match f1.as_mut().poll(waker)
 - en: match f2unsafe here since these futures are !Unpin.
+  id: totrans-423
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于这些未来对象是 !Unpin，这里使用 `f2unsafe`。
 - en: The last place we need to change a few lines of code is in `executor.rs`, so
     let’s head over there as our last stop.
+  id: totrans-424
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 我们需要更改几行代码的最后一个地方是在 `executor.rs` 中，所以让我们前往那里作为我们的最后一站。
 - en: executor.rs
+  id: totrans-425
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: executor.rs
 - en: 'The first thing we must do is make sure our dependencies are correct. The only
     change we’re making here is adding `Pin` from the standard library:'
+  id: totrans-426
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 我们必须做的第一件事是确保我们的依赖关系是正确的。我们在这里所做的唯一更改是添加来自标准库的 `Pin`：
 - en: ch09/e-coroutines-pin/src/runtime/executor.rs
+  id: totrans-427
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: ch09/e-coroutines-pin/src/runtime/executor.rs
 - en: '[PRE46]'
+  id: totrans-428
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE46]'
 - en: 'The next line we’ll change is our `Task` type alias so that it now refers to
     `Pin<Box``<``…>>`:'
+  id: totrans-429
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 我们将要更改的下一行是我们的 `Task` 类型别名，使其现在指向 `Pin<Box<...>>`：
 - en: '[PRE47]'
+  id: totrans-430
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE47]'
 - en: 'The last line we’ll change for now is in our spawn function. We have to pin
     the futures to the heap:'
+  id: totrans-431
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 我们现在将要更改的最后一行是在我们的 spawn 函数中。我们必须将未来对象固定在堆上：
 - en: '[PRE48]'
+  id: totrans-432
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE48]'
 - en: 'If we try to run our example now, it won’t even compile and give us the following
     error:'
+  id: totrans-433
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 如果我们现在尝试运行我们的示例，它甚至无法编译并给出以下错误：
 - en: '[PRE49]'
+  id: totrans-434
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE49]'
 - en: It won’t even let us poll the future anymore without us pinning it first since
     `poll` is only callable for `Pin<&mut Self>` types and not `&mut` `self` anymore.
+  id: totrans-435
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 它甚至不允许我们在不先固定它的情况下轮询未来对象，因为 `poll` 只能对 `Pin<&mut Self>` 类型调用，而不能对 `&mut self`
+    调用。
 - en: So, we have to decide whether we pin the value to the stack or the heap before
     we even try to poll it. In our case, our whole executor works by heap allocating
     futures, so that’s the only thing that makes sense to do.
+  id: totrans-436
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 因此，在我们甚至尝试轮询之前，我们必须决定是将值固定在栈上还是堆上。在我们的情况下，我们的整个执行器通过堆分配未来对象，所以这是唯一合理的事情去做。
 - en: 'Let’s remove our optimization entirely and change one line of code to make
     our executor work again:'
+  id: totrans-437
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 让我们完全移除优化，并更改一行代码以使我们的执行器再次工作：
 - en: ch09/e-coroutines-pin/src/runtime/executor.rs
+  id: totrans-438
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_IND
   type: TYPE_NORMAL
+  zh: ch09/e-coroutines-pin/src/runtime/executor.rs
 - en: '[PRE50]'
+  id: totrans-439
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE50]'
 - en: Finished dev [unoptimized + debuginfo] target(s) in 0.02s
+  id: totrans-440
   prefs: []
   type: TYPE_NORMAL
+  zh: 完成开发 [未优化 + 调试信息] 目标(s) 在 0.02 秒
 - en: Running `target\debug\e-coroutines-pin.exe`
+  id: totrans-441
   prefs: []
   type: TYPE_NORMAL
+  zh: 运行 `target\debug\e-coroutines-pin.exe`
 - en: Program starting
+  id: totrans-442
   prefs: []
   type: TYPE_NORMAL
+  zh: 程序开始
 - en: FIRST POLL - START OPERATION
+  id: totrans-443
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一次轮询 - 开始操作
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-444
   prefs: []
   type: TYPE_NORMAL
+  zh: 'main: 1 个待处理任务。等待通知。'
 - en: FIRST POLL - START OPERATION
+  id: totrans-445
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一次轮询 - 开始操作
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-446
   prefs: []
   type: TYPE_NORMAL
+  zh: 'main: 1 个待处理任务。等待通知。'
 - en: 'BUFFER:'
+  id: totrans-447
   prefs: []
   type: TYPE_NORMAL
+  zh: 缓冲区：
 - en: '----'
+  id: totrans-448
   prefs: []
   type: TYPE_NORMAL
+  zh: '----'
 - en: HTTP/1.1 200 OK
+  id: totrans-449
   prefs: []
   type: TYPE_NORMAL
+  zh: HTTP/1.1 200 OK
 - en: 'content-length: 15'
+  id: totrans-450
   prefs: []
   type: TYPE_NORMAL
+  zh: 'content-length: 15'
 - en: '[=== ABBREVIATED ===]'
+  id: totrans-451
   prefs: []
   type: TYPE_NORMAL
+  zh: '[=== 简化版 ===]'
 - en: 'date: Sun, 03 Dec 2023 23:18:12 GMT'
+  id: totrans-452
   prefs: []
   type: TYPE_NORMAL
+  zh: 日期：Sun, 03 Dec 2023 23:18:12 GMT
 - en: HelloAsyncAwait
+  id: totrans-453
   prefs: []
   type: TYPE_NORMAL
+  zh: HelloAsyncAwait
 - en: 'main: All tasks are finished'
+  id: totrans-454
   prefs: []
   type: TYPE_NORMAL
+  zh: 'main: 所有任务已完成'
 - en: '[PRE51]'
+  id: totrans-455
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE51]'
 - en: '[PRE52]'
+  id: totrans-456
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE52]'
 - en: '[PRE53]'
+  id: totrans-457
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE53]'
 - en: '[PRE54]'
+  id: totrans-458
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE54]'
