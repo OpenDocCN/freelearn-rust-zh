@@ -1,32 +1,42 @@
 - en: '8'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: '8'
 - en: Runtimes, Wakers, and the Reactor-Executor Pattern
+  id: totrans-1
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 运行时、Wakers和Reactor-Executor模式
 - en: In the previous chapter, we created our own pausable tasks (coroutines) by writing
     them as state machines. We created a common API for these tasks by requiring them
     to implement the `Future` trait. We also showed how we can create these coroutines
     using some keywords and programmatically rewrite them so that we don’t have to
     implement these state machines by hand, and instead write our programs pretty
     much the same way we normally would.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 在上一章中，我们通过将它们编写为状态机来创建了我们的可暂停任务（协程）。我们通过要求它们实现`Future`特质为这些任务创建了一个通用的API。我们还展示了如何使用一些关键字创建这些协程，并通过编程重写它们，这样我们就不必手动实现这些状态机，而是可以像平时一样编写我们的程序。
 - en: 'If we stop for a moment and take a bird’s eye view over what we got so far,
     it’s conceptually pretty simple: we have an interface for pausable tasks (the
     `Future` trait), and we have two keywords (`coroutine/wait`) to indicate code
     segments we want rewritten as a state machine that divides our code into segments
     we can pause between.'
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们停下来，从宏观的角度审视到目前为止我们所取得的成果，从概念上讲是非常简单的：我们有一个可暂停任务的接口（`Future`特质），并且我们有两个关键字（`coroutine/wait`）来指示我们希望重写的代码段，作为将我们的代码分割成可以暂停的段的状态机。
 - en: However, we have no event loop, and we have no scheduler yet. In this chapter,
     we’ll expand on our example and add a runtime that allows us to run our program
     efficiently and opens up the possibility to schedule tasks concurrently much more
     efficiently than what we do now.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，我们还没有事件循环，也没有调度器。在本章中，我们将扩展我们的示例，并添加一个运行时，使我们能够高效地运行我们的程序，并使我们能够比现在更高效地并发地调度任务。
 - en: This chapter will take you on a journey where we implement our runtime in two
     stages, gradually making it more useful, efficient, and capable. We’ll start with
     a brief overview of what runtimes are and why we want to understand some of their
@@ -34,63 +44,91 @@
     and show how we can make it much more efficient and avoid continuously polling
     the future to make it progress by leveraging the knowledge we gained in [*Chapter
     4*](B20892_04.xhtml#_idTextAnchor081).
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章将带你在两个阶段实现我们的运行时，逐步使其更有用、更高效和更强大。我们将从简要概述运行时是什么以及为什么我们想要了解它们的一些特性开始。我们将基于我们在[*第7章*](B20892_07.xhtml#_idTextAnchor122)中学到的知识，并展示我们如何利用在[*第4章*](B20892_04.xhtml#_idTextAnchor081)中获得的知识，使其变得更加高效，并避免不断轮询未来以使其进展。
 - en: 'Next, we’ll show how we can get a more flexible and loosely coupled design
     by dividing the runtime into two parts: an **executor** and a **reactor**.'
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们将展示如何通过将运行时分为两部分：一个**executor**和一个**reactor**，来获得更灵活和松散耦合的设计。
 - en: In this chapter, you will learn about basic runtime design, reactors, executors,
     wakers, and spawning, and we’ll build on a lot of the knowledge we’ve gained throughout
     the book.
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，你将了解基本的运行时设计、Reactor、Executor、Waker和创建，我们将基于本书中我们学到的很多知识。
 - en: This will be one of the big chapters in this book, not because the topic is
     too complex or difficult, but because we have quite a bit of code to write. In
     addition to that, I try to give you a good mental model of what’s happening by
     providing quite a few diagrams and explaining everything very thoroughly. It’s
     not one of those chapters you typically blaze through before going to bed, though,
     but I do promise it’s absolutely worth it in the end.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将是本书中的一大章节，不是因为主题过于复杂或困难，而是因为我们有很多代码要编写。除此之外，我还试图通过提供很多图表并详细解释一切，给你一个良好的心理模型来了解正在发生的事情。尽管这不是你通常在睡前快速浏览的章节，但我确实承诺最终它绝对值得。
 - en: 'The chapter will be divided into the following segments:'
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章将分为以下部分：
 - en: Introduction to runtimes and why we need them
+  id: totrans-10
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 运行时简介及其必要性
 - en: Improving our base example
+  id: totrans-11
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 改进我们的基础示例
 - en: Creating a proper runtime
+  id: totrans-12
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 创建一个合适的运行时
 - en: Step 1 – Improving our runtime design by adding a Reactor and a Waker
+  id: totrans-13
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 第一步 - 通过添加一个Reactor和一个Waker来改进我们的运行时设计
 - en: Step 2 – Implementing a proper Executor
+  id: totrans-14
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 第二步 - 实现一个合适的Executor
 - en: Step 3 – Implementing a proper Reactor
+  id: totrans-15
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 第三步 - 实现一个合适的Reactor
 - en: Experimenting with our new runtime
+  id: totrans-16
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 尝试我们的新运行时
 - en: So, let’s dive right in!
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，让我们直接进入正题！
 - en: Technical requirements
+  id: totrans-18
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: The examples in this chapter will build on the code from our last chapter, so
     the requirements are the same. The examples will all be cross-platform and work
     on all platforms that Rust ([https://doc.rust-lang.org/beta/rustc/platform-support.html#tier-1-with-host-tools](https://doc.rust-lang.org/beta/rustc/platform-support.html#tier-1-with-host-tools))
@@ -98,139 +136,202 @@
     supports. The only thing you need is Rust installed and the repository that belongs
     to the book downloaded locally. All the code in this chapter will be found in
     the `ch08` folder.
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章中的示例将基于我们上一章的代码，因此要求相同。所有示例都将跨平台，并在Rust([https://doc.rust-lang.org/beta/rustc/platform-support.html#tier-1-with-host-tools](https://doc.rust-lang.org/beta/rustc/platform-support.html#tier-1-with-host-tools))和`mio`([https://github.com/tokio-rs/mio#platforms](https://github.com/tokio-rs/mio#platforms))支持的平台上运行。你需要做的只是安装Rust并将属于本书的存储库下载到本地。本章中的所有代码都将位于`ch08`文件夹中。
 - en: 'To follow the examples step by step, you’ll also need `corofy` installed on
     your machine. If you didn’t install it in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
     install it now by going into the `ch08/corofy` folder in the repository and running
     this command:'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 要逐步跟随示例，你还需要在你的机器上安装`corofy`。如果你在[*第7章*](B20892_07.xhtml#_idTextAnchor122)中没有安装它，现在就通过进入存储库中的`ch08/corofy`文件夹并运行以下命令来安装它：
 - en: '[PRE0]'
+  id: totrans-21
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: Alternatively, you can just copy the relevant files in the repository when we
     come to the points where we use `corofy` to rewrite our `coroutine/wait` syntax.
     Both versions will be available to you there as well.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 或者，当我们在使用`corofy`重写`coroutine/wait`语法时，你也可以直接复制存储库中的相关文件。这两种版本都会在那里供你使用。
 - en: We’ll also use `delayserver` in this example, so you need to open a separate
     terminal, enter the `delayserver` folder at the root of the repository, and write
     `cargo run` so that it’s ready and available for the examples going forward.
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个例子中，我们还将使用`delayserver`，因此你需要打开一个单独的终端，进入存储库根目录下的`delayserver`文件夹，并运行`cargo
+    run`，以便它为后续的示例准备就绪并可用。
 - en: Remember to change the ports in the code if you for some reason have to change
     the port `delayserver` listens on.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果由于某种原因你需要更改`delayserver`监听的端口号，请记住在代码中更改端口号。
 - en: Introduction to runtimes and why we need them
+  id: totrans-25
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 运行时介绍及其必要性
 - en: As you know by now, you need to bring your own runtime for driving and scheduling
     asynchronous tasks in Rust.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 如你所知，你需要自己提供运行时来驱动和调度Rust中的异步任务。
 - en: Runtimes come in many flavors, from the popular **Embassy** embedded runtime
     ([https://github.com/embassy-rs/embassy](https://github.com/embassy-rs/embassy)),
     which centers more on general multitasking and can replace the need for a **real-time
     operating system** (**RTOS**) on many platforms, to **Tokio** ([https://github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio)),
     which centers on non-blocking I/O on popular server and desktop operating systems.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 运行时有多种风味，从流行的**Embassy**嵌入式运行时([https://github.com/embassy-rs/embassy](https://github.com/embassy-rs/embassy))，它更多地关注通用多任务处理，可以在许多平台上替代**实时操作系统**（**RTOS**）的需求，到**Tokio**([https://github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio))，它专注于在流行的服务器和桌面操作系统上的非阻塞I/O。
 - en: 'All runtimes in Rust need to do at least two things: schedule and drive objects
     implementing Rust’s `Future` trait to completion. Going forward in this chapter,
     we’ll mostly focus on runtimes for doing non-blocking I/O on popular desktop and
     server operating systems such as Windows, Linux, and macOS. This is also by far
     the most common type of runtime most programmers will encounter in Rust.'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: Rust中的所有运行时都需要至少完成两件事：调度和驱动实现Rust的`Future`特质的对象以完成。在本章的后续内容中，我们将主要关注在流行的桌面和服务器操作系统（如Windows、Linux和macOS）上执行非阻塞I/O的运行时。这也是程序员在Rust中最常见的运行时类型。
 - en: Taking control over how tasks are scheduled is *very* invasive, and it’s pretty
     much a one-way street. If you rely on a userland scheduler to run your tasks,
     you cannot, at the same time, use the OS scheduler (without jumping through several
     hoops), since mixing them in your code will wreak havoc and might end up defeating
     the whole purpose of writing an asynchronous program.
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 掌控任务调度的方式非常**侵入性**，几乎是一条单行道。如果你依赖用户空间的调度器来运行你的任务，那么你同时就不能使用操作系统调度器（除非跳过几个步骤），因为将它们混合在你的代码中将会造成混乱，并可能最终抵消编写异步程序的全部目的。
 - en: 'The following diagram illustrates the different schedulers:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面的图示说明了不同的调度器：
 - en: '![Figure 8.1 – Task scheduling in a single-threaded asynchronous system](img/B20892_09_1.jpg)'
+  id: totrans-31
   prefs: []
   type: TYPE_IMG
+  zh: '![图 8.1 – 单线程异步系统中的任务调度](img/B20892_09_1.jpg)'
 - en: Figure 8.1 – Task scheduling in a single-threaded asynchronous system
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 8.1 – 单线程异步系统中的任务调度
 - en: 'An example of yielding to the OS scheduler is making a blocking call using
     the default `std::net``     ::TcpStream` or `std::thread::sleep` methods. Even *potentially* blocking calls
     using primitives such as `Mutex` provided by the standard library might yield
     to the OS scheduler.'
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 向操作系统调度器让步的一个例子是使用默认的 `std::net::TcpStream` 或 `std::thread::sleep` 方法进行阻塞调用。甚至使用标准库提供的原语（如
+    `Mutex`）进行的 *可能* 阻塞调用也可能让步给操作系统调度器。
 - en: That’s why you’ll often find that asynchronous programming tends to color everything
     it touches, and it’s tough to only run a part of your program using `async/await`.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 这也是为什么你经常会发现异步编程往往会影响它所触及的一切，并且仅使用 `async/await` 运行程序的一部分是非常困难的。
 - en: The consequence is that runtimes must use a non-blocking version of the standard
     library. In theory, you could make one non-blocking version of the standard library
     that all runtimes use, and that was one of the goals of the `async_std` initiative
     ([https://book.async.rs/introduction](https://book.async.rs/introduction)). However,
     having the community agree upon one way to solve this task was a tall order and
     one that hasn’t really come to fruition yet.
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 结果是，运行时必须使用标准库的非阻塞版本。从理论上讲，你可以制作一个所有运行时都使用的非阻塞版本的标准库，这也是 `async_std` 初始化（[https://book.async.rs/introduction](https://book.async.rs/introduction)）的一个目标。然而，让社区就解决这个任务达成一致意见是一项艰巨的任务，而且至今尚未实现。
 - en: Before we start implementing our examples, we’ll discuss the overall design
     of a typical async runtime in Rust. Most runtimes such as Tokio, Smol, or async-std
     will divide their runtime into two parts.
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们开始实现示例之前，我们将讨论 Rust 中典型异步运行时的整体设计。大多数运行时，如 Tokio、Smol 或 async-std，都会将它们的运行时分为两部分。
 - en: The part that tracks events we’re waiting on and makes sure to wait on notifications
     from the OS in an efficient manner is often called the *reactor* or *driver*.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 跟踪我们等待的事件并确保以高效方式等待来自操作系统的通知的部分通常被称为 *reactor* 或 *driver*。
 - en: The part that schedules tasks and polls them to completion is called the *executor*.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 调度任务并轮询它们直到完成的部分被称为 *executor*。
 - en: Let’s take a high-level look at this design so that we know what we’ll be implementing
     in our example.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们从这个设计的宏观角度看看，这样我们就会知道我们将在示例中实现什么。
 - en: Reactors and executors
+  id: totrans-40
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Reactors 和 executors
 - en: Dividing the runtime into two distinct parts makes a lot of sense when we take
     a look at how Rust models asynchronous tasks. If you read the documentation for
     `Future` ([https://doc.rust-lang.org/std/future/trait.Future.html](https://doc.rust-lang.org/std/future/trait.Future.html))
     and `Waker` ([https://doc.rust-lang.org/std/task/struct.Waker.html](https://doc.rust-lang.org/std/task/struct.Waker.html)),
     you’ll see that Rust doesn’t only define a `Future` trait and a `Waker` type but
     also comes with important information on how they’re supposed to be used.
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 当我们查看 Rust 如何建模异步任务时，将运行时分为两个不同的部分是非常有意义的。如果你阅读了 `Future` ([https://doc.rust-lang.org/std/future/trait.Future.html](https://doc.rust-lang.org/std/future/trait.Future.html))
+    和 `Waker` ([https://doc.rust-lang.org/std/task/struct.Waker.html](https://doc.rust-lang.org/std/task/struct.Waker.html))
+    的文档，你会发现 Rust 不仅定义了一个 `Future` 特征和一个 `Waker` 类型，而且还提供了关于它们应该如何使用的重要信息。
 - en: One example of this is that `Future` traits are *inert*, as we covered in [*Chapter
     6*](B20892_06.xhtml#_idTextAnchor113). Another example is that a call to `Waker::wake`
     will guarantee *at least one call* to `Future::poll` on the corresponding task.
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 这的一个例子是 `Future` 特征是 *惰性的*，正如我们在 [*第 6 章*](B20892_06.xhtml#_idTextAnchor113)
+    中所讨论的。另一个例子是，对 `Waker::wake` 的调用将保证 *至少一次* 对相应任务上的 `Future::poll` 的调用。
 - en: So, already by reading the documentation, you will see that there is at least
     some thought put into how runtimes should behave.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，仅通过阅读文档，你就会看到至少有一些关于运行时应该如何表现的想法。
 - en: The reason for learning this pattern is that it’s almost a glove-to-hand fit
     for Rust’s asynchronous model.
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 学习这种模式的原因是它几乎与 Rust 的异步模型完美契合。
 - en: Since many readers, including me, will not have English as a first language,
     I’ll explain the names here at the start since, well, they seem to be easy to
     misunderstand.
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于许多读者，包括我，英语不是第一语言，所以我会在一开始就解释这些名称，因为，嗯，它们似乎很容易被误解。
 - en: If the name `READABLE` event on `TcpStream`.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果在 `TcpStream` 上有名为 `READABLE` 的事件。
 - en: You could have several kinds of reactors running in the same runtime.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以在同一个运行时中运行几种不同类型的 reactor。
 - en: If the name **executor** gives you associations to *executioners* (the medieval
     times kind) or *executables*, drop that thought as well. If you look up what an
     executor is, it’s a person, often a lawyer, who administers a person’s will. Most
@@ -238,162 +339,234 @@
     model the naming suggests to you falls apart since nothing, and no one, needs
     to come in harm’s way for the executor to have work to do in an asynchronous runtime,
     but I digress.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果“executor”这个名字让你联想到*执行者*（中世纪的那种）或*可执行文件*，那么也请摒弃这种想法。如果你查阅executor的定义，它是一个人，通常是律师，负责管理一个人的遗嘱。通常情况下，由于那个人已经去世。这也正是任何命名所暗示的心理模型崩溃的点，因为异步运行时中，没有任何东西，也没有任何人需要受到伤害，executor才能有工作可做，但我跑题了。
 - en: The important point is that an executor simply decides who gets time on the
     CPU to progress and when they get it. The executor must also call `Future::poll`
     and advance the state machines to their next state. It’s a type of scheduler.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 重要的是，executor只是决定谁能在CPU上获得时间以推进，以及何时获得。executor还必须调用`Future::poll`并推进状态机到下一个状态。它是一种调度器。
 - en: It can be frustrating to get the wrong idea from the start since the subject
     matter is already complex enough without thinking about how on earth nuclear reactors
     and executioners fit in the whole picture.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于主题本身已经足够复杂，无需考虑核反应堆和执行者如何在整体画面中发挥作用，因此一开始就产生错误的想法可能会令人沮丧。
 - en: Since reactors will respond to events, they need some integration with the *source*
     of the event. If we continue using `TcpStream` as an example, something will call
     *read* or *write* on it, and at that point, the reactor needs to know that it
     should track certain events on that source.
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于反应器将对事件做出响应，它们需要与事件的*来源*进行一些集成。如果我们继续以`TcpStream`为例，某个东西将对其调用*read*或*write*，此时，反应器需要知道它应该跟踪该来源上的某些事件。
 - en: For this reason, non-blocking I/O primitives and reactors need tight integration,
     and depending on how you look at it, the I/O primitives will either have to bring
     their own reactor or you’ll have a reactor that provides I/O primitives such as
     sockets, ports, and streams.
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，非阻塞I/O原语和反应器需要紧密集成，具体取决于你如何看待，I/O原语将不得不自带反应器，或者你将有一个提供I/O原语（如套接字、端口和流）的反应器。
 - en: Now that we’ve covered some of the overarching design, we can start writing
     some code.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经讨论了一些总体设计，我们可以开始编写一些代码了。
 - en: Runtimes tend to get complex pretty quickly, so to keep this as simple as possible,
     we’ll avoid any error handling in our code and use `unwrap` or `expect` for everything.
     We’ll also choose simplicity over cleverness and readability over efficiency to
     the best of our abilities.
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 运行时通常会很快变得复杂，因此为了尽可能保持简单，我们将在代码中避免任何错误处理，并使用`unwrap`或`expect`来处理所有事情。我们还将尽我们所能选择简单而不是巧妙，可读性而不是效率。
 - en: Our first task will be to take the first example we wrote in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122)
     and improve it by avoiding having to actively poll it to make progress. Instead,
     we lean on what we learned about non-blocking I/O and `epoll` in the earlier chapters.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的第一项任务将是改进我们在[*第7章*](B20892_07.xhtml#_idTextAnchor122)中编写的第一个示例，避免需要主动轮询它以取得进展。相反，我们将依靠我们在前面章节中学到的非阻塞I/O和`epoll`的知识。
 - en: Improving our base example
+  id: totrans-56
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 改进我们的基础示例
 - en: We’ll create a version of the first example in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122)
     since it’s the simplest one to start with. Our only focus is showing how to schedule
     and drive the runtimes more efficiently.
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将创建[*第7章*](B20892_07.xhtml#_idTextAnchor122)中第一个示例的版本，因为它是最简单的一个开始。我们唯一的重点是展示如何更有效地调度和驱动运行时。
 - en: 'We start with the following steps:'
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将从以下步骤开始：
 - en: Create a new project and name it `a-runtime` (alternatively, navigate to `ch08/a-runtime`
     in the book’s repository).
+  id: totrans-59
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 创建一个新的项目，并将其命名为`a-runtime`（或者，导航到书籍仓库中的`ch08/a-runtime`）。
 - en: Copy the `future.rs` and `http.rs` files in the `src` folder from the first
     project we created in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122), named `a-coroutine`
     (alternatively, copy the files from `ch07/a-coroutine` in the book’s repository)
     to the `src` folder in our new project.
+  id: totrans-60
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将`src`文件夹中的`future.rs`和`http.rs`文件从我们在[*第7章*](B20892_07.xhtml#_idTextAnchor122)中创建的第一个项目`a-coroutine`（或者，从书籍仓库中的`ch07/a-coroutine`复制文件）复制到我们新项目的`src`文件夹中。
 - en: 'Make sure to add `mio` as a dependency by adding the following to `Cargo.toml`:'
+  id: totrans-61
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 确保通过在`Cargo.toml`中添加以下内容将`mio`添加为依赖项：
 - en: '[PRE1]'
+  id: totrans-62
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: Create a new file in the `src` folder called `runtime.rs`.
+  id: totrans-63
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在`src`文件夹中创建一个名为`runtime.rs`的新文件。
 - en: We’ll use `corofy` to change the following `coroutine/wait` program into its
     state machine representation that we can run.
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将使用`corofy`将以下`coroutine/wait`程序转换为我们可以运行的其状态机表示形式。
 - en: 'In `src/main.rs`, add the following code:'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 在`src/main.rs`中添加以下代码：
 - en: ch08/a-runtime/src/main.rs
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: ch08/a-runtime/src/main.rs
 - en: '[PRE2]'
+  id: totrans-67
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: This program is basically the same one we created in [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
     only this time, we create it from our `coroutine/wait` syntax instead of writing
     the state machine by hand. Next, we need to transform this into code by using
     `corofy` since the compiler doesn’t recognize our own `coroutine/wait` syntax.
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个程序基本上与我们创建在[*第7章*](B20892_07.xhtml#_idTextAnchor122)中相同，只是这次我们是从`coroutine/wait`语法创建它，而不是手动编写状态机。接下来，我们需要使用`corofy`将其转换为代码，因为编译器不识别我们自己的`coroutine/wait`语法。
 - en: If you’re in the root folder of `a-runtime`, run `corofy ./src/main.rs`.
+  id: totrans-69
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果你处于`a-runtime`的根目录，运行`corofy ./src/main.rs`。
 - en: You should now have a file that’s called `main_corofied.rs`.
+  id: totrans-70
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 你现在应该有一个名为`main_corofied.rs`的文件。
 - en: Delete the code in `main.rs` and copy the contents of `main_corofied.rs` into
     `main.rs`.
+  id: totrans-71
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 删除`main.rs`中的代码，并将`main_corofied.rs`的内容复制到`main.rs`中。
 - en: You can now delete `main_corofied.rs` since we won’t need it going forward.
+  id: totrans-72
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 你现在可以删除`main_corofied.rs`，因为我们以后不再需要它。
 - en: 'If everything is done right, the project structure should now look like this:'
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果一切按计划进行，项目结构现在应该看起来像这样：
 - en: '[PRE3]'
+  id: totrans-74
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: Tip
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 小贴士
 - en: You can always refer to the book’s repository to make sure everything is correct.
     The correct example is located in the `ch08/a-runtime` folder. In the repository,
     you’ll also find a file called `main_orig.rs` in the root folder that contains
     the `coroutine/wait` program if you want to rerun it or have problems getting
     everything working correctly.
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以随时参考书籍的仓库以确保一切正确。正确的示例位于`ch08/a-runtime`文件夹中。在仓库中，你还可以在根目录找到一个名为`main_orig.rs`的文件，其中包含`coroutine/wait`程序，如果你想要重新运行它或遇到问题使一切正常工作。
 - en: Design
+  id: totrans-77
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 设计
 - en: 'Before we go any further, let’s visualize how our system is currently working
     if we consider it with two futures created by `coroutine/wait` and two calls to
     `Http::get`. The loop that polls our `Future` trait to completion in the `main`
     function takes the role of the executor in our visualization, and as you see,
     we have a chain of futures consisting of:'
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们继续之前，让我们通过考虑由`coroutine/wait`创建的两个未来和两次对`Http::get`的调用来可视化我们的系统当前是如何工作的。在`main`函数中轮询我们的`Future`特遇到完成的循环在我们的可视化中扮演执行器的角色，正如你所看到的，我们有一个由以下组成的一连串未来：
 - en: Non-leaf futures created by `async/await` (or `coroutine/wait` in our example)
     that simply call `poll` on the next future until it reaches a leaf future
+  id: totrans-79
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 由`async/await`（或我们示例中的`coroutine/wait`）创建的非叶子未来，它们简单地调用下一个未来的`poll`，直到它达到一个叶子未来
 - en: Leaf futures that poll an actual source that’s either `Ready` or `NotReady`
+  id: totrans-80
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 轮询实际源（无论是`Ready`还是`NotReady`）的叶子未来
 - en: 'The following diagram shows a simplified overview of our current design:'
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: 以下图表展示了我们当前设计的简化概述：
 - en: '![Figure 8.2 – Executor and Future chain: current design](img/B20892_09_2.jpg)'
+  id: totrans-82
   prefs: []
   type: TYPE_IMG
+  zh: '![图8.2 – 执行器和未来链：当前设计](img/B20892_09_2.jpg)'
 - en: 'Figure 8.2 – Executor and Future chain: current design'
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: 图8.2 – 执行器和未来链：当前设计
 - en: If we take a closer look at the future chain, we can see that when a future
     is polled, it polls all its child futures until it reaches a leaf future that
     represents something we’re actually waiting on. If that future returns `NotReady`,
@@ -401,98 +574,146 @@
     the state machine will advance all the way until the next time a future returns
     `NotReady`. The top-level future will not resolve until all child futures have
     returned `Ready`.
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们更仔细地查看未来链，我们可以看到，当一个未来被轮询时，它会轮询所有子未来，直到它达到一个代表我们实际等待的某个事物的叶子未来。如果该未来返回`NotReady`，它将立即将此状态向上传播。然而，如果它返回`Ready`，状态机将一直前进，直到下一个未来返回`NotReady`。顶级未来将不会解决，直到所有子未来都返回`Ready`。
 - en: 'The next diagram takes a closer look at the future chain and gives a simplified
     overview of how it works:'
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一个图表更详细地查看未来链，并给出了其工作原理的简化概述：
 - en: '![Figure 8.3 – Future chain: a detailed view](img/B20892_09_3.jpg)'
+  id: totrans-86
   prefs: []
   type: TYPE_IMG
+  zh: '![图8.3 – 未来链：详细视图](img/B20892_09_3.jpg)'
 - en: 'Figure 8.3 – Future chain: a detailed view'
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
+  zh: 图8.3 – 未来链：详细视图
 - en: The first improvement we’ll make is to avoid the need for continuous polling
     of our top-level future to drive it forward.
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将要进行的第一个改进是避免对顶级未来的连续轮询以推动其前进。
 - en: 'We’ll change our design so that it looks more like this:'
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将改变我们的设计，使其看起来更像这样：
 - en: '![Figure 8.4 – Executor and Future chain: design 2](img/B20892_09_4.jpg)'
+  id: totrans-90
   prefs: []
   type: TYPE_IMG
+  zh: '![图8.4 – 执行器和Future链：设计2](img/B20892_09_4.jpg)'
 - en: 'Figure 8.4 – Executor and Future chain: design 2'
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 图8.4 – 执行器和Future链：设计2
 - en: In this design, we use the knowledge we gained in [*Chapter 4*](B20892_04.xhtml#_idTextAnchor081),
     but instead of simply relying on `epoll`, we’ll use `mio`’s cross-platform abstraction
     instead. The way it works should be well known to us by now since we already implemented
     a simplified version of it earlier.
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个设计中，我们使用了我们在[*第4章*](B20892_04.xhtml#_idTextAnchor081)中获得的知识，但我们不是简单地依赖于`epoll`，而是使用`mio`的跨平台抽象。由于我们之前已经实现了一个简化的版本，现在我们应该对它的工作方式很熟悉。
 - en: Instead of continuously looping and polling our top-level future, we’ll register
     interest with the `Poll` instance, and when we get a `NotReady` result returned,
     we wait on `Poll`. This will put the thread to sleep, and no work will be done
     until the OS wakes us up again to notify us that an event we’re waiting on is
     ready.
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们不再连续循环并轮询我们的顶级Future，而是向`Poll`实例注册兴趣，当我们得到一个`NotReady`的结果返回时，我们等待在`Poll`上。这将使线程休眠，直到操作系统再次唤醒我们，通知我们我们等待的事件已准备好。
 - en: This design will be much more efficient and scalable.
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 此设计将更加高效和可扩展。
 - en: Changing the current implementation
+  id: totrans-95
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 修改当前实现
 - en: Now that we have an overview of our design and know what to do, we can go on
     and make the necessary changes to our program, so let’s go through each file we
     need to change. We’ll start with `main.rs`.
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经对我们的设计有了概述，并且知道要做什么，我们可以继续进行，对程序进行必要的更改。让我们逐一查看我们需要更改的每个文件。我们将从`main.rs`开始。
 - en: main.rs
+  id: totrans-97
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: main.rs
 - en: We already made some changes to `main.rs` when we ran `corofy` on our updated
     `coroutine/wait` example. I’ll just point out the change here so that you don’t
     miss it since there is really nothing more we need to change here.
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: 当我们在更新的`coroutine/wait`示例上运行`corofy`时，我们已经对`main.rs`做了一些更改。我只想在这里指出这个更改，以免你错过，因为这里实际上没有更多需要更改的内容。
 - en: 'Instead of polling the future in the `main` function, we created a new `Runtime`
     struct and passed the future as an argument to the `Runtime::block_on` method.
     There are no more changes that we need to in this file. Our `main` function changed
     to this:'
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们不再在`main`函数中轮询Future，而是创建了一个新的`Runtime`结构体，并将Future作为参数传递给`Runtime::block_on`方法。在这个文件中我们不再需要做任何更改。我们的`main`函数变成了这样：
 - en: ch08/a-runtime/src/main.rs
+  id: totrans-100
   prefs: []
   type: TYPE_NORMAL
+  zh: ch08/a-runtime/src/main.rs
 - en: '[PRE4]'
+  id: totrans-101
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: The logic we had in the `main` function has now moved into the `runtime` module,
     and that’s also where we need to change the code that polls the future to completion
     from what we had earlier.
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在`main`函数中的逻辑现在已移动到`runtime`模块中，这也是我们需要更改代码以从我们之前的状态中轮询Future完成的地方。
 - en: The next step will, therefore, be to open `runtime.rs`.
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，下一步将是打开`runtime.rs`。
 - en: runtime.rs
+  id: totrans-104
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: runtime.rs
 - en: 'The first thing we do in `runtime.rs` is pull in the dependencies we need:'
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: 在`runtime.rs`中，我们首先做的是引入我们需要的依赖项：
 - en: ch08/a-runtime/src/runtime.rs
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
+  zh: ch08/a-runtime/src/runtime.rs
 - en: '[PRE5]'
+  id: totrans-107
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'The next step is to create a static variable called `REGISTRY`. If you remember,
     `Registry` is the way we register interest in events with our `Poll` instance.
     We want to register interest in events on our `TcpStream` when making the actual
@@ -500,253 +721,363 @@
     it stored for later use, but we want to keep the API clean, and instead, we want
     to access `Registry` inside `HttpGetFuture` without having to pass it around as
     a reference:'
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一步是创建一个名为`REGISTRY`的静态变量。如果你还记得，`Registry`是我们向`Poll`实例注册事件兴趣的方式。当我们实际进行HTTP
+    `GET`请求时，我们希望在`TcpStream`上注册对事件的兴趣。我们本可以将`Registry`结构体作为参数传递给`Http::get`，以便稍后使用，但我们希望保持API的简洁性，因此我们希望在`HttpGetFuture`内部访问`Registry`，而不必将其作为引用传递：
 - en: ch08/a-runtime/src/runtime.rs
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: ch08/a-runtime/src/runtime.rs
 - en: '[PRE6]'
+  id: totrans-110
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: We use `std::sync::OnceLock` so that we can initialize `REGISTRY` when the runtime
     starts, thereby preventing anyone (including ourselves) from calling `Http::get`
     without having a `Runtime` instance running. If we did call `Http::get` without
     having our runtime initialized, it would panic since the only public way to access
     it outside the `runtime` module is through the `pub fn registry(){…}` function,
     and that call would fail.
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们使用`std::sync::OnceLock`，这样我们就可以在运行时启动时初始化`REGISTRY`，从而防止任何人（包括我们自己）在没有运行`Runtime`实例的情况下调用`Http::get`。如果我们没有初始化运行时就调用`Http::get`，它将引发panic，因为访问它的唯一公共方式是通过`runtime`模块外的`pub
+    fn registry(){…}`函数，而这个调用将失败。
 - en: Note
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: We might as well have used a thread-local static variable using the `thread_local!`
     macro from the standard library, but we’ll need to access this from multiple threads
     when we expand the example later in this chapter, so we start the design with
     this in mind.
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们本可以使用标准库中的 `thread_local!` 宏来使用线程局部静态变量，但当我们在这个章节的后面扩展示例时，我们需要从多个线程访问它，所以我们从这一点开始设计。
 - en: 'The next thing we add is a `Runtime` struct:'
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们接下来添加的是 `Runtime` 结构体：
 - en: ch08/a-runtime/src/runtime.rs
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
+  zh: ch08/a-runtime/src/runtime.rs
 - en: '[PRE7]'
+  id: totrans-116
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'For now, our runtime will only store a `Poll` instance. The interesting part
     is in the implementation of `Runtime`. Since it’s not too long, I’ll present the
     whole implementation here and explain it next:'
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: 目前，我们的运行时将只存储一个 `Poll` 实例。有趣的部分在于 `Runtime` 的实现。由于它不是很长，我将在这里展示整个实现，并在接下来解释它：
 - en: ch08/a-runtime/src/runtime.rs
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: ch08/a-runtime/src/runtime.rs
 - en: '[PRE8]'
+  id: totrans-119
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: The first thing we do is create a `new` function. This will initialize our runtime
     and set everything we need up. We create a new `Poll` instance, and from the `Poll`
     instance, we get an owned version of `Registry`. If you remember from [*Chapter
     4*](B20892_04.xhtml#_idTextAnchor081), this is one of the methods we mentioned
     but didn’t implement in our example. However, here, we take advantage of the ability
     to split the two pieces up.
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们首先创建一个 `new` 函数。这将初始化我们的运行时并设置我们所需的一切。我们创建一个新的 `Poll` 实例，然后从 `Poll` 实例中获取
+    `Registry` 的所有者版本。如果你还记得 [第 4 章](B20892_04.xhtml#_idTextAnchor081)，这是我们提到但没有在示例中实现的方法之一。然而，在这里，我们利用了将这两部分分开的能力。
 - en: We store `Registry` in the `REGISTRY` global variable so that we can access
     it from the `http` module later on without having a reference to the runtime itself.
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将 `Registry` 存储在 `REGISTRY` 全局变量中，这样我们就可以在稍后从 `http` 模块中访问它，而不需要运行时的引用。
 - en: 'The next function is the `block_on` function. I’ll go through it step by step:'
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一个函数是 `block_on` 函数。我会一步一步地解释它：
 - en: First of all, this function takes a generic argument and will block on anything
     that implements our `Future` trait with an `Output` type of `String` (remember
     that this is currently the only kind of `Future` trait we support, so we’ll just
     return an empty string if there is no data to return).
+  id: totrans-123
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 首先，这个函数接受一个泛型参数，并将阻塞在实现了我们的 `Future` 特质且 `Output` 类型为 `String` 的任何事物上（记住，这是我们目前唯一支持的
+    `Future` 特质类型，所以如果没有数据返回，我们将只返回一个空字符串）。
 - en: Instead of having to take `mut future` as an argument, we define a variable
     that we declare as `mut` in the function body. It’s just to keep the API slightly
     cleaner and avoid us having to make minor changes later on.
+  id: totrans-124
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们不需要将 `mut future` 作为参数传递，我们可以在函数体中定义一个变量，并将其声明为 `mut`。这样做只是为了使 API 稍微干净一些，并避免我们以后需要做出小的修改。
 - en: Next, we create a loop. We’ll loop until the top-level future we received returns
     `Ready`.
+  id: totrans-125
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 接下来，我们创建一个循环。我们将循环，直到我们接收到的顶级 `future` 返回 `Ready`。
 - en: If the future returns `NotReady`, we write out a message letting us know that
     at this point we could do other things, such as processing something unrelated
     to the future or, more likely, polling another top-level future if our runtime
     supported multiple top-level futures (don’t worry – it will be explained later
     on).
+  id: totrans-126
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 如果 `future` 返回 `NotReady`，我们将输出一条消息，让我们知道在这个时候我们可以做其他事情，例如处理与 `future` 无关的事情，或者更有可能的是，如果我们的运行时支持多个顶级
+    `future`，则轮询另一个顶级 `future`（别担心——稍后会解释）。
 - en: Note that we need to pass in an `Events` collection to `mio`’s `Poll::poll`
     method, but since there is only one top-level future to run, we don’t really care
     which event happened; we only care that something happened and that it most likely
     means that data is ready (remember – we always have to account for false wakeups
     anyway).
+  id: totrans-127
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 注意，我们需要将 `Events` 集合传递给 `mio` 的 `Poll::poll` 方法，但由于只有一个顶级 `future` 需要运行，我们并不关心发生了哪个事件；我们只关心发生了某些事情，并且这很可能意味着数据已准备好（记住——我们总是必须考虑假唤醒）。
 - en: That’s all the changes we need to make to the `runtime` module for now.
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: 目前我们只需要对 `runtime` 模块做出这些更改。
 - en: The last thing we need to do is register *interest* for *read* events after
     we’ve written the request to the server in our `http` module.
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的 `http` 模块中将请求写入服务器后，我们需要注册对 *读取* 事件的 *兴趣*。
 - en: Let’s open `http.rs` and make some changes.
+  id: totrans-130
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们打开 `http.rs` 并做一些修改。
 - en: http.rs
+  id: totrans-131
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: http.rs
 - en: 'First of all, let’s adjust our dependencies so that we pull in everything we
     need:'
+  id: totrans-132
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，让我们调整我们的依赖关系，以便拉入我们需要的所有内容：
 - en: ch08/a-runtime/src/http.rs
+  id: totrans-133
   prefs: []
   type: TYPE_NORMAL
+  zh: ch08/a-runtime/src/http.rs
 - en: '[PRE9]'
+  id: totrans-134
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: We need to add a dependency on our `runtime` module as well as a few types from
     `mio`.
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们需要添加对我们 `runtime` 模块的依赖，以及来自 `mio` 的几个类型。
 - en: 'We only need to make one more change in this file, and that’s in our `Future::poll`
     implementation, so let’s go ahead and locate that:'
+  id: totrans-136
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们只需要在这个文件中做一项更改，那就是在我们的`Future::poll`实现中，所以让我们继续定位它：
 - en: 'We made one important change here that I’ve highlighted for you. The implementation
     is exactly the same, with one important difference:'
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在这里做了一项重要的更改，我已经为你突出显示了。实现方式完全相同，只有一个重要的区别：
 - en: ch08/a-runtime/src/http.rs
+  id: totrans-138
   prefs: []
   type: TYPE_NORMAL
+  zh: ch08/a-runtime/src/http.rs
 - en: '[PRE10]'
+  id: totrans-139
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: 'On the first poll, after we’ve written the request, we register interest in
     `READABLE` events on this `TcpStream`. We also removed the line:'
+  id: totrans-140
   prefs: []
   type: TYPE_NORMAL
+  zh: 在第一次轮询后，在我们写入请求后，我们注册了对这个`TcpStream`的`READABLE`事件的兴趣。我们还删除了以下行：
 - en: '[PRE11]'
+  id: totrans-141
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: By removing his line, we’ll poll `TcpStream` immediately, which makes sense
     since we don’t really want to return control to our scheduler if we get the response
     immediately. You wouldn’t go wrong either way here since we registered our `TcpStream`
     as an event source with our reactor and would get a wakeup in any case. These
     changes were the last piece we needed to get our example back up and running.
+  id: totrans-142
   prefs: []
   type: TYPE_NORMAL
+  zh: 通过删除这一行，我们将立即轮询`TcpStream`，这是有道理的，因为我们不希望立即将控制权返回给我们的调度器。你也不会出错，因为我们已经将`TcpStream`注册为我们的reactor的事件源，并且无论如何都会得到唤醒。这些更改是我们需要的最后一块拼图，以使我们的示例恢复运行。
 - en: 'If you remember the version from [*Chapter 7*](B20892_07.xhtml#_idTextAnchor122),
     we got the following output:'
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你记得[第7章](B20892_07.xhtml#_idTextAnchor122)的版本，我们得到了以下输出：
 - en: '[PRE12]'
+  id: totrans-144
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: 'In our new and improved version, we get the following output if we run it with
     `cargo run`:'
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的新改进版本中，如果我们用`cargo run`运行它，我们会得到以下输出：
 - en: '[PRE13]'
+  id: totrans-146
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: Note
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: If you run the example on Windows, you’ll see that you get two `Schedule other
     tasks` messages after each other. The reason for that is that Windows emits an
     extra event when the `TcpStream` is dropped on the server end. This doesn’t happen
     on Linux. Filtering out these events is quite simple, but we won’t focus on doing
     that in our example since it’s more of an optimization that we don’t really need
     for our example to work.
+  id: totrans-148
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你将示例在Windows上运行，你会看到每次都会连续出现两个“调度其他任务”的消息。这是因为Windows在服务器端`TcpStream`被丢弃时会发出一个额外的事件。在Linux上不会发生这种情况。过滤掉这些事件相当简单，但我们在示例中不会关注这一点，因为它更多的是一种优化，而我们实际上并不需要这种优化来使示例工作。
 - en: The thing to make a note of here is how many times we printed `Schedule other
     tasks`. We print this message every time we poll and get `NotReady`. In the first
     version, we printed this every 100 ms, but that’s just because we had to delay
     on each sleep to not get overwhelmed with printouts. Without it, our CPU would
     work 100% on polling the future.
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里需要注意的一点是我们打印了“调度其他任务”的次数。每次我们在轮询并得到“NotReady”时，都会打印这条消息。在第一个版本中，我们每100毫秒打印一次，但这仅仅是因为我们不得不在每个睡眠周期中延迟，以避免打印输出过多。如果没有它，我们的CPU将会100%地用于轮询未来。
 - en: If we add a delay, we also add latency even if we make the delay much shorter
     than 100 ms since we won’t be able to respond to events immediately.
+  id: totrans-150
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们添加延迟，即使我们使延迟远短于100毫秒，我们也会增加延迟，因为我们无法立即响应事件。
 - en: Our new design makes sure that we respond to events as soon as they’re ready,
     and we do no unnecessary work.
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的新设计确保我们一旦准备好就响应事件，并且我们不进行任何不必要的操作。
 - en: So, by making these minor changes, we have already created a much better and
     more scalable version than we had before.
+  id: totrans-152
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，通过这些小的改动，我们已经创建了一个比之前更好的、更可扩展的版本。
 - en: This version is fully single-threaded, which keeps things simple and avoids
     the complexity and overhead synchronization. When you use Tokio’s `current-thread`
     scheduler, you get a scheduler that is based on the same idea as we showed here.
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个版本是完全单线程的，这使得事情变得简单，避免了复杂性和同步开销。当你使用Tokio的`current-thread`调度器时，你会得到一个基于我们在这里展示的相同理念的调度器。
 - en: However, there are also some drawbacks to our current implementation, and the
     most noticeable one is that it requires a very tight integration between the *reactor
     part* and the *executor part* of the runtime centered on `Poll`.
+  id: totrans-154
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，我们的当前实现也有一些缺点，最明显的一个是它需要在以`Poll`为中心的运行时的**reactor部分**和**executor部分**之间进行非常紧密的集成。
 - en: We want to yield to the OS scheduler *when there is no work to do* and have
     the OS wake us up when an event has happened so that we can progress. In our current
     design, this is done through blocking on `Poll::poll`.
+  id: totrans-155
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们希望在没有任何工作要做的时候让出操作系统调度器，并在有事件发生时让操作系统唤醒我们，以便我们可以继续前进。在我们的当前设计中，这是通过在`Poll::poll`上阻塞来完成的。
 - en: Consequently, both the executor (scheduler) and the reactor must know about
     `Poll`. The downside is, then, that if you’ve created an executor that suits a
     specific use case perfectly and want to allow users to use a different reactor
     that doesn’t rely on `Poll`, you can’t.
+  id: totrans-156
   prefs: []
   type: TYPE_NORMAL
 - en: '*More importantly, you might want to run multiple different reactors that wake
     up the executor for different reasons.* You might find that there is something
     that `mio` doesn’t support, so you create a different reactor for those tasks.
     How are they supposed to wake up the executor when it’s blocking on `mio::Poll::poll(...)`?'
+  id: totrans-157
   prefs: []
   type: TYPE_NORMAL
 - en: To give you a few examples, you could use a separate reactor for handling timers
     (for example, when you want a task to sleep for a given time), or you might want
     to implement a thread pool for handling CPU-intensive or blocking tasks as a reactor
     that wakes up the corresponding future when the task is ready.
+  id: totrans-158
   prefs: []
   type: TYPE_NORMAL
 - en: To solve these problems, we need a loose coupling between the reactor and executor
     part of the runtime by having a way to wake up the executor that’s not tightly
     coupled to a single reactor implementation.
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
 - en: Let’s look at how we can solve this problem by creating a better runtime design.
+  id: totrans-160
   prefs: []
   type: TYPE_NORMAL
 - en: Creating a proper runtime
+  id: totrans-161
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 'So, if we visualize the degree of dependency between the different parts of
     our runtime, our current design could be described this way:'
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
 - en: '![Figure 8.5 – Tight coupling between reactor and executor](img/B20892_09_5.jpg)'
+  id: totrans-163
   prefs: []
   type: TYPE_IMG
 - en: Figure 8.5 – Tight coupling between reactor and executor
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
 - en: 'If we want a loose coupling between the reactor and executor, we need an interface
@@ -755,44 +1086,55 @@
     `Waker` ([https://doc.rust-lang.org/stable/std/task/struct.Waker.html](https://doc.rust-lang.org/stable/std/task/struct.Waker.html))
     in Rust’s standard library. If we change our visualization to reflect this, it
     will look something like this:'
+  id: totrans-165
   prefs: []
   type: TYPE_NORMAL
 - en: '![Figure 8.6 – A loosely coupled reactor and executor](img/B20892_09_6.jpg)'
+  id: totrans-166
   prefs: []
   type: TYPE_IMG
 - en: Figure 8.6 – A loosely coupled reactor and executor
+  id: totrans-167
   prefs: []
   type: TYPE_NORMAL
 - en: It’s no coincidence that we land on the same design as what we have in Rust
     today. It’s a minimal design from Rust’s point of view, but it allows for a wide
     variety of runtime designs without laying too many restrictions for the future.
+  id: totrans-168
   prefs: []
   type: TYPE_NORMAL
 - en: Note
+  id: totrans-169
   prefs: []
   type: TYPE_NORMAL
 - en: Even though the design is pretty minimal today from a language perspective,
     there are plans to stabilize more async-related traits and interfaces in the future.
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
 - en: 'Rust has a working group tasked with including widely used traits and interfaces
     in the standard library, which you can find more information about here: [https://rust-lang.github.io/wg-async/welcome.html](https://rust-lang.github.io/wg-async/welcome.html).
     You can also get an overview of items they work on and track their progress here:
     [https://github.com/orgs/rust-lang/projects/28/views/1](https://github.com/orgs/rust-lang/projects/28/views/1).'
+  id: totrans-171
   prefs: []
   type: TYPE_NORMAL
 - en: Maybe you even want to get involved ([https://rust-lang.github.io/wg-async/welcome.html#-getting-involved](https://rust-lang.github.io/wg-async/welcome.html#-getting-involved))
     in making async Rust better for everyone after reading this book?
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
 - en: 'If we change our system diagram to reflect the changes we need to make to our
     runtime going forward, it will look like this:'
+  id: totrans-173
   prefs: []
   type: TYPE_NORMAL
 - en: '![Figure 8.7 – Executor and reactor: final design](img/B20892_09_7.jpg)'
+  id: totrans-174
   prefs: []
   type: TYPE_IMG
 - en: 'Figure 8.7 – Executor and reactor: final design'
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
 - en: We have two parts that have no direct dependency on each other. We have an `Executor`
@@ -800,146 +1142,184 @@
     will be caught and stored by the `Reactor`. When the `Reactor` receives a notification
     that an event is ready, it locates the `Waker` associated with that task and calls
     `Wake::wake` on it.
+  id: totrans-176
   prefs: []
   type: TYPE_NORMAL
 - en: 'This enables us to:'
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
 - en: Run several OS threads that each have their own executor, but share the same
     reactor
+  id: totrans-178
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Have multiple reactors that handle different kinds of leaf futures and make
     sure to wake up the correct executor when it can progress
+  id: totrans-179
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: So, now that we have an idea of what to do, it’s time to start writing it in
     code.
+  id: totrans-180
   prefs: []
   type: TYPE_NORMAL
 - en: Step 1 – Improving our runtime design by adding a Reactor and a Waker
+  id: totrans-181
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 'In this step, we’ll make the following changes:'
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
 - en: Change the project structure so that it reflects our new design.
+  id: totrans-183
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Find a way for the executor to sleep and wake up that does not rely directly
     on `Poll` and create a `Waker` based on this that allows us to wake up the executor
     and identify which task is ready to progress.
+  id: totrans-184
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Change the trait definition for `Future` so that poll takes a `&Waker` as an
     argument.
+  id: totrans-185
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Tip
+  id: totrans-186
   prefs: []
   type: TYPE_NORMAL
 - en: 'You’ll find this example in the `ch08/b-reactor-executor` folder. If you follow
     along by writing the examples from the book, I suggest that you create a new project
     called `b-reactor-executor` for this example by following these steps:'
+  id: totrans-187
   prefs: []
   type: TYPE_NORMAL
 - en: 1\. Create a new folder called `b-reactor-executor`.
+  id: totrans-188
   prefs: []
   type: TYPE_NORMAL
 - en: 2\. Enter the newly created folder and write `cargo init`.
+  id: totrans-189
   prefs: []
   type: TYPE_NORMAL
 - en: 3\. Copy everything in the `src` folder in the previous example, `a-runtime`,
     into the `src` folder of a new project.
+  id: totrans-190
   prefs: []
   type: TYPE_NORMAL
 - en: 4\. Copy the `dependencies` section of the `Cargo.toml` file into the `Cargo.toml`
     file in the new project.
+  id: totrans-191
   prefs: []
   type: TYPE_NORMAL
 - en: 'Let’s start by making some changes to our project structure to set it up so
     that we can build on it going forward. The first thing we do is divide our `runtime`
     module into two submodules, `reactor` and `executor`:'
+  id: totrans-192
   prefs: []
   type: TYPE_NORMAL
 - en: Create a new subfolder in the `src` folder called `runtime`.
+  id: totrans-193
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Create two new files in the `runtime` folder called `reactor.rs` and `executor.rs`.
+  id: totrans-194
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: 'Just below the imports in `runtime.rs`, declare the two new modules by adding
     these lines:'
+  id: totrans-195
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: '[PRE14]'
+  id: totrans-196
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: 'You should now have a folder structure that looks like this:'
+  id: totrans-197
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE15]'
+  id: totrans-198
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: 'To set everything up, we start by deleting everything in `runtime.rs` and replacing
     it with the following lines of code:'
+  id: totrans-199
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/runtime.rs
+  id: totrans-200
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE16]'
+  id: totrans-201
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: The new content of `runtime.rs` first declares two submodules called `executor`
     and `reactor`. We then declare one function called `init` that starts our `Reactor`
     and creates a new `Executor` that it returns to the caller.
+  id: totrans-202
   prefs: []
   type: TYPE_NORMAL
 - en: The next point on our list is to find a way for our `Executor` to sleep and
     wake up when needed without relying on `Poll`.
+  id: totrans-203
   prefs: []
   type: TYPE_NORMAL
 - en: Creating a Waker
+  id: totrans-204
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: So, we need to find a different way for our executor to sleep and get woken
     up that doesn’t rely directly on `Poll`.
+  id: totrans-205
   prefs: []
   type: TYPE_NORMAL
 - en: It turns out that this is quite easy. The standard library gives us what we
     need to get something working. By calling `std::thread::current()`, we can get
     a `Thread` object. This object is a handle to the current thread, and it gives
     us access to a few methods, one of which is `unpark`.
+  id: totrans-206
   prefs: []
   type: TYPE_NORMAL
 - en: The standard library also gives us a method called `std::thread::park()`, which
     simply asks the OS scheduler to park our thread until we ask for it to get *unparked*
     later on.
+  id: totrans-207
   prefs: []
   type: TYPE_NORMAL
 - en: It turns out that if we combine these, we have a way to both *park* and *unpark*
     the executor, which is exactly what we need.
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
 - en: Let’s create a `Waker` type based on this. In our example, we’ll define the
     `Waker` inside the `executor` module since that’s where we create this exact type
     of `Waker`, but you could argue that it belongs to the `future` module since it’s
     a part of the `Future` trait.
+  id: totrans-209
   prefs: []
   type: TYPE_NORMAL
 - en: Important note
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
 - en: Our `Waker` relies on calling `park/unpark` on the `Thread` type from the standard
@@ -951,40 +1331,53 @@
     libraries create their own `Parker` type or rely on something such as `crossbeam::sync::Parker`
     ([https://docs.rs/crossbeam/latest/crossbeam/sync/struct.Parker.html](https://docs.rs/crossbeam/latest/crossbeam/sync/struct.Parker.html))
     instead.
+  id: totrans-211
   prefs: []
   type: TYPE_NORMAL
 - en: We won’t implement `Waker` as a trait since passing trait objects around will
     significantly increase the complexity of our example, and it’s not in line with
     the current design of `Future` and `Waker` in Rust either.
+  id: totrans-212
   prefs: []
   type: TYPE_NORMAL
 - en: 'Open the `executor.rs` file located inside the `runtime` folder, and let’s
     add all the imports we’re going to need right from the start:'
+  id: totrans-213
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/runtime/executor.rs
+  id: totrans-214
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE17]'
+  id: totrans-215
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: 'The next thing we add is our `Waker`:'
+  id: totrans-216
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/runtime/executor.rs
+  id: totrans-217
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE18]'
+  id: totrans-218
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: 'The `Waker` will hold three things for us:'
+  id: totrans-219
   prefs: []
   type: TYPE_NORMAL
 - en: '`thread` – A handle to the `Thread` object we mentioned earlier.'
+  id: totrans-220
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`id` – An `usize` that identifies which task this `Waker` is associated with.'
+  id: totrans-221
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -992,39 +1385,49 @@
     `Vec<usize>`, where `usize` represents the ID of a task that’s in the ready queue.
     We share this object with the executor so that we can push the task ID associated
     with the `Waker` onto that queue when it’s ready.'
+  id: totrans-222
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: 'The implementation of our `Waker` will be quite simple:'
+  id: totrans-223
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/runtime/executor.rs
+  id: totrans-224
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE19]'
+  id: totrans-225
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: When `Waker::wake` is called, we first take a lock on the `Mutex` that protects
     the ready queue we share with the executor. We then push the `id` value that identifies
     the task that this `Waker` is associated with onto the ready queue.
+  id: totrans-226
   prefs: []
   type: TYPE_NORMAL
 - en: After that’s done, we call `unpark` on the executor thread and wake it up. It
     will now find the task associated with this `Waker` in the ready queue and call
     `poll` on it.
+  id: totrans-227
   prefs: []
   type: TYPE_NORMAL
 - en: It’s worth mentioning that many designs take a *shared reference (for example,
     an Arc<…>)* to the *future/task itself*, and push that onto the queue. By doing
     so, they skip a level of indirection that we get here by representing the task
     as a `usize` instead of passing in a reference to it.
+  id: totrans-228
   prefs: []
   type: TYPE_NORMAL
 - en: However, I personally think this way of doing it is easier to understand and
     reason about, and the end result will be the same.
+  id: totrans-229
   prefs: []
   type: TYPE_NORMAL
 - en: How does this Waker compare to the one in the standard library?
+  id: totrans-230
   prefs: []
   type: TYPE_NORMAL
 - en: The `Waker` we create here will take the same role as the `Waker` type from
@@ -1034,952 +1437,1292 @@
     but neither of these differences is important for understanding the role it plays,
     so that’s why we stick to our own simplified version of asynchronous Rust for
     now.
+  id: totrans-231
   prefs: []
   type: TYPE_NORMAL
 - en: The last thing we need to do is to change the definition of the `Future` trait
     so that it takes `&Waker` as an argument.
+  id: totrans-232
   prefs: []
   type: TYPE_NORMAL
 - en: Changing the Future definition
+  id: totrans-233
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: Since our `Future` definition is in the `future.rs` file, we start by opening
     that file.
+  id: totrans-234
   prefs: []
   type: TYPE_NORMAL
 - en: 'The first thing we need to change is to pull in the `Waker` so that we can
     use it. At the top of the file, add the following code:'
+  id: totrans-235
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/future.rs
+  id: totrans-236
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE20]'
+  id: totrans-237
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: 'The next thing we do is to change our `Future` trait so that it takes `&Waker`
     as an argument:'
+  id: totrans-238
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/future.rs
+  id: totrans-239
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE21]'
+  id: totrans-240
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: 'At this point, you have a choice. We won’t be using the `join_all` function
     or the `JoinAll<F: Future>` struct going forward.'
+  id: totrans-241
   prefs: []
   type: TYPE_NORMAL
 - en: If you don’t want to keep them, you can just delete everything related to `join_all`,
     and that’s all you need to do in `future.rs`.
+  id: totrans-242
   prefs: []
   type: TYPE_NORMAL
 - en: 'If you want to keep them for further experimentation, you need to change the
     `Future` implementation for `JoinAll` so that it accepts a `waker: &Waker` argument,
     and remember to pass the `Waker` when polling the joined futures in `match fut.poll(waker)`.'
+  id: totrans-243
   prefs: []
   type: TYPE_NORMAL
 - en: The remaining things to do in *step 1* are to make some minor changes where
     we implement the `Future` trait.
+  id: totrans-244
   prefs: []
   type: TYPE_NORMAL
 - en: 'Let’s start in `http.rs`. The first thing we do is adjust our dependencies
     a little to reflect the changes we made to our `runtime` module, and we add a
     dependency on our new `Waker`. Replace the `dependencies` section at the top of
     the file with this:'
+  id: totrans-245
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/http.rs
+  id: totrans-246
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE22]'
+  id: totrans-247
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: The compiler will complain about not finding the reactor yet, but we’ll get
     to that shortly.
+  id: totrans-248
   prefs: []
   type: TYPE_NORMAL
 - en: 'Next, we have to navigate to the `impl Future for HttpGetFuture` block, where
     we need to change the `poll` method so that it accepts a `&``Waker` argument:'
+  id: totrans-249
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/http.rs
+  id: totrans-250
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE23]'
+  id: totrans-251
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: The last file we need to change is `main.rs`. Since `corofy` doesn’t know about
     `Waker` types, we need to change a few lines in the coroutines it generated for
     us in `main.rs`.
+  id: totrans-252
   prefs: []
   type: TYPE_NORMAL
 - en: 'First of all, we have to add a dependency on our new `Waker`, so add this at
     the start of the file:'
+  id: totrans-253
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/main.rs
+  id: totrans-254
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE24]'
+  id: totrans-255
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: 'In the `impl Future for Coroutine`block, change the following three lines of
     code that I’ve highlighted:'
+  id: totrans-256
   prefs: []
   type: TYPE_NORMAL
 - en: ch08/b-reactor-executor/src/main.rs
+  id: totrans-257
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE25]'
+  id: totrans-258
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: type Task = Box<dyn Future<Output = String>>;
+  id: totrans-259
   prefs: []
   type: TYPE_NORMAL
 - en: thread_local! {
+  id: totrans-260
   prefs: []
   type: TYPE_NORMAL
 - en: 'static CURRENT_EXEC: ExecutorCore = ExecutorCore::default();'
+  id: totrans-261
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-262
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE26]'
+  id: totrans-263
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: '#[derive(Default)]'
+  id: totrans-264
   prefs: []
   type: TYPE_NORMAL
 - en: struct ExecutorCore {
+  id: totrans-265
   prefs: []
   type: TYPE_NORMAL
 - en: 'tasks: RefCell<HashMap<usize, Task>>,'
+  id: totrans-266
   prefs: []
   type: TYPE_NORMAL
 - en: 'ready_queue: Arc<Mutex<Vec<usize>>>,'
+  id: totrans-267
   prefs: []
   type: TYPE_NORMAL
 - en: 'next_id: Cell<usize>,'
+  id: totrans-268
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-269
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE27]'
+  id: totrans-270
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: 'pub fn spawn<F>(future: F)'
+  id: totrans-271
   prefs: []
   type: TYPE_NORMAL
 - en: where
+  id: totrans-272
   prefs: []
   type: TYPE_NORMAL
 - en: 'F: Future<Output = String> + ''static,'
+  id: totrans-273
   prefs: []
   type: TYPE_NORMAL
 - en: '{'
+  id: totrans-274
   prefs: []
   type: TYPE_NORMAL
 - en: CURRENT_EXEC.with(|e| {
+  id: totrans-275
   prefs: []
   type: TYPE_NORMAL
 - en: let id = e.next_id.get();
+  id: totrans-276
   prefs: []
   type: TYPE_NORMAL
 - en: e.tasks.borrow_mut().insert(id, Box::new(future));
+  id: totrans-277
   prefs: []
   type: TYPE_NORMAL
 - en: e.ready_queue.lock().map(|mut q| q.push(id)).unwrap();
+  id: totrans-278
   prefs: []
   type: TYPE_NORMAL
 - en: e.next_id.set(id + 1);
+  id: totrans-279
   prefs: []
   type: TYPE_NORMAL
 - en: '});'
+  id: totrans-280
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-281
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE28]'
+  id: totrans-282
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: pub struct Executor;
+  id: totrans-283
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE29]'
+  id: totrans-284
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: impl Executor {
+  id: totrans-285
   prefs: []
   type: TYPE_NORMAL
 - en: pub fn new() -> Self {
+  id: totrans-286
   prefs: []
   type: TYPE_NORMAL
 - en: Self {}
+  id: totrans-287
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-288
   prefs: []
   type: TYPE_NORMAL
 - en: fn pop_ready(&self) -> Option<usize> {
+  id: totrans-289
   prefs: []
   type: TYPE_NORMAL
 - en: CURRENT_EXEC.with(|q| q.ready_queue.lock().map(|mut q| q.pop()).unwrap())
+  id: totrans-290
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-291
   prefs: []
   type: TYPE_NORMAL
 - en: 'fn get_future(&self, id: usize) -> Option<Task> {'
+  id: totrans-292
   prefs: []
   type: TYPE_NORMAL
 - en: CURRENT_EXEC.with(|q| q.tasks.borrow_mut().remove(&id))
+  id: totrans-293
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-294
   prefs: []
   type: TYPE_NORMAL
 - en: 'fn get_waker(&self, id: usize) -> Waker {'
+  id: totrans-295
   prefs: []
   type: TYPE_NORMAL
 - en: Waker {
+  id: totrans-296
   prefs: []
   type: TYPE_NORMAL
 - en: id,
+  id: totrans-297
   prefs: []
   type: TYPE_NORMAL
 - en: 'thread: thread::current(),'
+  id: totrans-298
   prefs: []
   type: TYPE_NORMAL
 - en: 'ready_queue: CURRENT_EXEC.with(|q| q.ready_queue.clone()),'
+  id: totrans-299
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-300
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-301
   prefs: []
   type: TYPE_NORMAL
 - en: 'fn insert_task(&self, id: usize, task: Task) {'
+  id: totrans-302
   prefs: []
   type: TYPE_NORMAL
 - en: CURRENT_EXEC.with(|q| q.tasks.borrow_mut().insert(id, task));
+  id: totrans-303
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-304
   prefs: []
   type: TYPE_NORMAL
 - en: fn task_count(&self) -> usize {
+  id: totrans-305
   prefs: []
   type: TYPE_NORMAL
 - en: CURRENT_EXEC.with(|q| q.tasks.borrow().len())
+  id: totrans-306
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-307
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE30]'
+  id: totrans-308
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: 'pub fn block_on<F>(&mut self, future: F)'
+  id: totrans-309
   prefs: []
   type: TYPE_NORMAL
 - en: where
+  id: totrans-310
   prefs: []
   type: TYPE_NORMAL
 - en: 'F: Future<Output = String> + ''static,'
+  id: totrans-311
   prefs: []
   type: TYPE_NORMAL
 - en: '{'
+  id: totrans-312
   prefs: []
   type: TYPE_NORMAL
 - en: spawn(future);
+  id: totrans-313
   prefs: []
   type: TYPE_NORMAL
 - en: loop {
+  id: totrans-314
   prefs: []
   type: TYPE_NORMAL
 - en: while let Some(id) = self.pop_ready() {
+  id: totrans-315
   prefs: []
   type: TYPE_NORMAL
 - en: let mut future = match self.get_future(id) {
+  id: totrans-316
   prefs: []
   type: TYPE_NORMAL
 - en: Some(f) => f,
+  id: totrans-317
   prefs: []
   type: TYPE_NORMAL
 - en: // guard against false wakeups
+  id: totrans-318
   prefs: []
   type: TYPE_NORMAL
 - en: None => continue,
+  id: totrans-319
   prefs: []
   type: TYPE_NORMAL
 - en: '};'
+  id: totrans-320
   prefs: []
   type: TYPE_NORMAL
 - en: let waker = self.get_waker(id);
+  id: totrans-321
   prefs: []
   type: TYPE_NORMAL
 - en: match future.poll(&waker) {
+  id: totrans-322
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::NotReady => self.insert_task(id, future),
+  id: totrans-323
   prefs: []
   type: TYPE_NORMAL
 - en: PollState::Ready(_) => continue,
+  id: totrans-324
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-325
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-326
   prefs: []
   type: TYPE_NORMAL
 - en: let task_count = self.task_count();
+  id: totrans-327
   prefs: []
   type: TYPE_NORMAL
 - en: let name = thread::current().name().unwrap_or_default().to_string();
+  id: totrans-328
   prefs: []
   type: TYPE_NORMAL
 - en: if task_count > 0 {
+  id: totrans-329
   prefs: []
   type: TYPE_NORMAL
 - en: 'println!("{name}: {task_count} pending tasks. Sleep until notified.");'
+  id: totrans-330
   prefs: []
   type: TYPE_NORMAL
 - en: thread::park();
+  id: totrans-331
   prefs: []
   type: TYPE_NORMAL
 - en: '} else {'
+  id: totrans-332
   prefs: []
   type: TYPE_NORMAL
 - en: 'println!("{name}: All tasks are finished");'
+  id: totrans-333
   prefs: []
   type: TYPE_NORMAL
 - en: break;
+  id: totrans-334
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-335
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-336
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-337
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-338
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE31]'
+  id: totrans-339
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: use crate::runtime::Waker;
+  id: totrans-340
   prefs: []
   type: TYPE_NORMAL
 - en: use mio::{net::TcpStream, Events, Interest, Poll, Registry, Token};
+  id: totrans-341
   prefs: []
   type: TYPE_NORMAL
 - en: use std::{
+  id: totrans-342
   prefs: []
   type: TYPE_NORMAL
 - en: collections::HashMap,
+  id: totrans-343
   prefs: []
   type: TYPE_NORMAL
 - en: sync::{
+  id: totrans-344
   prefs: []
   type: TYPE_NORMAL
 - en: atomic::{AtomicUsize, Ordering},
+  id: totrans-345
   prefs: []
   type: TYPE_NORMAL
 - en: Arc, Mutex, OnceLock,
+  id: totrans-346
   prefs: []
   type: TYPE_NORMAL
 - en: '},'
+  id: totrans-347
   prefs: []
   type: TYPE_NORMAL
 - en: thread,
+  id: totrans-348
   prefs: []
   type: TYPE_NORMAL
 - en: '};'
+  id: totrans-349
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE32]'
+  id: totrans-350
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: type Wakers = Arc<Mutex<HashMap<usize, Waker>>>;
+  id: totrans-351
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE33]'
+  id: totrans-352
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: 'static REACTOR: OnceLock<Reactor> = OnceLock::new();'
+  id: totrans-353
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE34]'
+  id: totrans-354
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: pub fn reactor() -> &'static Reactor {
+  id: totrans-355
   prefs: []
   type: TYPE_NORMAL
 - en: REACTOR.get().expect("Called outside an runtime context")
+  id: totrans-356
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-357
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE35]'
+  id: totrans-358
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: pub struct Reactor {
+  id: totrans-359
   prefs: []
   type: TYPE_NORMAL
 - en: 'wakers: Wakers,'
+  id: totrans-360
   prefs: []
   type: TYPE_NORMAL
 - en: 'registry: Registry,'
+  id: totrans-361
   prefs: []
   type: TYPE_NORMAL
 - en: 'next_id: AtomicUsize,'
+  id: totrans-362
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-363
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE36]'
+  id: totrans-364
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: impl Reactor {
+  id: totrans-365
   prefs: []
   type: TYPE_NORMAL
 - en: 'pub fn register(&self, stream: &mut TcpStream, interest: Interest, id: usize)
     {'
+  id: totrans-366
   prefs: []
   type: TYPE_NORMAL
 - en: self.registry.register(stream, Token(id), interest).unwrap();
+  id: totrans-367
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-368
   prefs: []
   type: TYPE_NORMAL
 - en: 'pub fn set_waker(&self, waker: &Waker, id: usize) {'
+  id: totrans-369
   prefs: []
   type: TYPE_NORMAL
 - en: let _ = self
+  id: totrans-370
   prefs: []
   type: TYPE_NORMAL
 - en: .wakers
+  id: totrans-371
   prefs: []
   type: TYPE_NORMAL
 - en: .lock()
+  id: totrans-372
   prefs: []
   type: TYPE_NORMAL
 - en: .map(|mut w| w.insert(id, waker.clone()).is_none())
+  id: totrans-373
   prefs: []
   type: TYPE_NORMAL
 - en: .unwrap();
+  id: totrans-374
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-375
   prefs: []
   type: TYPE_NORMAL
 - en: 'pub fn deregister(&self, stream: &mut TcpStream, id: usize) {'
+  id: totrans-376
   prefs: []
   type: TYPE_NORMAL
 - en: self.wakers.lock().map(|mut w| w.remove(&id)).unwrap();
+  id: totrans-377
   prefs: []
   type: TYPE_NORMAL
 - en: self.registry.deregister(stream).unwrap();
+  id: totrans-378
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-379
   prefs: []
   type: TYPE_NORMAL
 - en: pub fn next_id(&self) -> usize {
+  id: totrans-380
   prefs: []
   type: TYPE_NORMAL
 - en: self.next_id.fetch_add(1, Ordering::Relaxed)
+  id: totrans-381
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-382
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-383
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE37]'
+  id: totrans-384
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: 'fn event_loop(mut poll: Poll, wakers: Wakers) {'
+  id: totrans-385
   prefs: []
   type: TYPE_NORMAL
 - en: let mut events = Events::with_capacity(100);
+  id: totrans-386
   prefs: []
   type: TYPE_NORMAL
 - en: loop {
+  id: totrans-387
   prefs: []
   type: TYPE_NORMAL
 - en: poll.poll(&mut events, None).unwrap();
+  id: totrans-388
   prefs: []
   type: TYPE_NORMAL
 - en: for e in events.iter() {
+  id: totrans-389
   prefs: []
   type: TYPE_NORMAL
 - en: let Token(id) = e.token();
+  id: totrans-390
   prefs: []
   type: TYPE_NORMAL
 - en: let wakers = wakers.lock().unwrap();
+  id: totrans-391
   prefs: []
   type: TYPE_NORMAL
 - en: if let Some(waker) = wakers.get(&id) {
+  id: totrans-392
   prefs: []
   type: TYPE_NORMAL
 - en: waker.wake();
+  id: totrans-393
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-394
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-395
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-396
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-397
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE38]'
+  id: totrans-398
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE38]'
 - en: pub fn start() {
+  id: totrans-399
   prefs: []
   type: TYPE_NORMAL
 - en: use thread::spawn;
+  id: totrans-400
   prefs: []
   type: TYPE_NORMAL
 - en: let wakers = Arc::new(Mutex::new(HashMap::new()));
+  id: totrans-401
   prefs: []
   type: TYPE_NORMAL
 - en: let poll = Poll::new().unwrap();
+  id: totrans-402
   prefs: []
   type: TYPE_NORMAL
 - en: let registry = poll.registry().try_clone().unwrap();
+  id: totrans-403
   prefs: []
   type: TYPE_NORMAL
 - en: let next_id = AtomicUsize::new(1);
+  id: totrans-404
   prefs: []
   type: TYPE_NORMAL
 - en: let reactor = Reactor {
+  id: totrans-405
   prefs: []
   type: TYPE_NORMAL
 - en: 'wakers: wakers.clone(),'
+  id: totrans-406
   prefs: []
   type: TYPE_NORMAL
 - en: registry,
+  id: totrans-407
   prefs: []
   type: TYPE_NORMAL
 - en: next_id,
+  id: totrans-408
   prefs: []
   type: TYPE_NORMAL
 - en: '};'
+  id: totrans-409
   prefs: []
   type: TYPE_NORMAL
 - en: REACTOR.set(reactor).ok().expect("Reactor already running");
+  id: totrans-410
   prefs: []
   type: TYPE_NORMAL
 - en: spawn(move || event_loop(poll, wakers));
+  id: totrans-411
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-412
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE39]'
+  id: totrans-413
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE39]'
 - en: struct HttpGetFuture {
+  id: totrans-414
   prefs: []
   type: TYPE_NORMAL
 - en: 'stream: Option<mio::net::TcpStream>,'
+  id: totrans-415
   prefs: []
   type: TYPE_NORMAL
 - en: 'buffer: Vec<u8>,'
+  id: totrans-416
   prefs: []
   type: TYPE_NORMAL
 - en: 'path: String,'
+  id: totrans-417
   prefs: []
   type: TYPE_NORMAL
 - en: 'id: usize,'
+  id: totrans-418
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-419
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE40]'
+  id: totrans-420
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE40]'
 - en: impl HttpGetFuture {
+  id: totrans-421
   prefs: []
   type: TYPE_NORMAL
 - en: 'fn new(path: String) -> Self {'
+  id: totrans-422
   prefs: []
   type: TYPE_NORMAL
 - en: let id = reactor().next_id();
+  id: totrans-423
   prefs: []
   type: TYPE_NORMAL
 - en: Self {
+  id: totrans-424
   prefs: []
   type: TYPE_NORMAL
 - en: 'stream: None,'
+  id: totrans-425
   prefs: []
   type: TYPE_NORMAL
 - en: 'buffer: vec![],'
+  id: totrans-426
   prefs: []
   type: TYPE_NORMAL
 - en: path,
+  id: totrans-427
   prefs: []
   type: TYPE_NORMAL
 - en: id,
+  id: totrans-428
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-429
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-430
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE41]'
+  id: totrans-431
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE41]'
 - en: if self.stream.is_none() {
+  id: totrans-432
   prefs: []
   type: TYPE_NORMAL
 - en: println!("FIRST POLL - START OPERATION");
+  id: totrans-433
   prefs: []
   type: TYPE_NORMAL
 - en: self.write_request();
+  id: totrans-434
   prefs: []
   type: TYPE_NORMAL
 - en: let stream = self.stream.as_mut().unwrap();
+  id: totrans-435
   prefs: []
   type: TYPE_NORMAL
 - en: runtime::reactor().register(stream, Interest::READABLE, self.id);
+  id: totrans-436
   prefs: []
   type: TYPE_NORMAL
 - en: runtime::reactor().set_waker(waker, self.id);
+  id: totrans-437
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-438
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE42]'
+  id: totrans-439
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE42]'
 - en: match self.stream.as_mut().unwrap().read(&mut buff) {
+  id: totrans-440
   prefs: []
   type: TYPE_NORMAL
 - en: Ok(0) => {
+  id: totrans-441
   prefs: []
   type: TYPE_NORMAL
 - en: let s = String::from_utf8_lossy(&self.buffer);
+  id: totrans-442
   prefs: []
   type: TYPE_NORMAL
 - en: runtime::reactor().deregister(self.stream.as_mut().unwrap(), self.id);
+  id: totrans-443
   prefs: []
   type: TYPE_NORMAL
 - en: break PollState::Ready(s.to_string());
+  id: totrans-444
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-445
   prefs: []
   type: TYPE_NORMAL
 - en: Ok(n) => {
+  id: totrans-446
   prefs: []
   type: TYPE_NORMAL
 - en: self.buffer.extend(&buff[0..n]);
+  id: totrans-447
   prefs: []
   type: TYPE_NORMAL
 - en: continue;
+  id: totrans-448
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-449
   prefs: []
   type: TYPE_NORMAL
 - en: Err(e) if e.kind() == ErrorKind::WouldBlock => {
+  id: totrans-450
   prefs: []
   type: TYPE_NORMAL
 - en: runtime::reactor().set_waker(waker, self.id);
+  id: totrans-451
   prefs: []
   type: TYPE_NORMAL
 - en: break PollState::NotReady;
+  id: totrans-452
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-453
   prefs: []
   type: TYPE_NORMAL
 - en: Err(e) => panic!("{e:?}"),
+  id: totrans-454
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-455
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE43]'
+  id: totrans-456
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE43]'
 - en: mod future;
+  id: totrans-457
   prefs: []
   type: TYPE_NORMAL
 - en: mod http;
+  id: totrans-458
   prefs: []
   type: TYPE_NORMAL
 - en: mod runtime;
+  id: totrans-459
   prefs: []
   type: TYPE_NORMAL
 - en: use future::{Future, PollState};
+  id: totrans-460
   prefs: []
   type: TYPE_NORMAL
 - en: use runtime::Waker;
+  id: totrans-461
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE44]'
+  id: totrans-462
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE44]'
 - en: fn main() {
+  id: totrans-463
   prefs: []
   type: TYPE_NORMAL
 - en: let mut executor = runtime::init();
+  id: totrans-464
   prefs: []
   type: TYPE_NORMAL
 - en: executor.block_on(async_main());
+  id: totrans-465
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-466
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE45]'
+  id: totrans-467
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE45]'
 - en: cargo run.
+  id: totrans-468
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE46]'
+  id: totrans-469
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE46]'
 - en: Program starting
+  id: totrans-470
   prefs: []
   type: TYPE_NORMAL
 - en: FIRST POLL - START OPERATION
+  id: totrans-471
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-472
   prefs: []
   type: TYPE_NORMAL
 - en: HTTP/1.1 200 OK
+  id: totrans-473
   prefs: []
   type: TYPE_NORMAL
 - en: 'content-length: 15'
+  id: totrans-474
   prefs: []
   type: TYPE_NORMAL
 - en: 'connection: close'
+  id: totrans-475
   prefs: []
   type: TYPE_NORMAL
 - en: 'content-type: text/plain; charset=utf-8'
+  id: totrans-476
   prefs: []
   type: TYPE_NORMAL
 - en: 'date: Thu, xx xxx xxxx 15:38:08 GMT'
+  id: totrans-477
   prefs: []
   type: TYPE_NORMAL
 - en: HelloAsyncAwait
+  id: totrans-478
   prefs: []
   type: TYPE_NORMAL
 - en: FIRST POLL - START OPERATION
+  id: totrans-479
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: 1 pending tasks. Sleep until notified.'
+  id: totrans-480
   prefs: []
   type: TYPE_NORMAL
 - en: HTTP/1.1 200 OK
+  id: totrans-481
   prefs: []
   type: TYPE_NORMAL
 - en: 'content-length: 15'
+  id: totrans-482
   prefs: []
   type: TYPE_NORMAL
 - en: 'connection: close'
+  id: totrans-483
   prefs: []
   type: TYPE_NORMAL
 - en: 'content-type: text/plain; charset=utf-8'
+  id: totrans-484
   prefs: []
   type: TYPE_NORMAL
 - en: 'date: Thu, xx xxx xxxx 15:38:08 GMT'
+  id: totrans-485
   prefs: []
   type: TYPE_NORMAL
 - en: HelloAsyncAwait
+  id: totrans-486
   prefs: []
   type: TYPE_NORMAL
 - en: 'main: All tasks are finished'
+  id: totrans-487
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE47]'
+  id: totrans-488
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE47]'
 - en: fn main() {
+  id: totrans-489
   prefs: []
   type: TYPE_NORMAL
 - en: let mut executor = runtime::init();
+  id: totrans-490
   prefs: []
   type: TYPE_NORMAL
 - en: executor.block_on(async_main());
+  id: totrans-491
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-492
   prefs: []
   type: TYPE_NORMAL
 - en: 'coro fn request(i: usize) {'
+  id: totrans-493
   prefs: []
   type: TYPE_NORMAL
 - en: let path = format!("/{}/HelloWorld{i}", i * 1000);
+  id: totrans-494
   prefs: []
   type: TYPE_NORMAL
 - en: let txt = Http::get(&path).wait;
+  id: totrans-495
   prefs: []
   type: TYPE_NORMAL
 - en: println!("{txt}");
+  id: totrans-496
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-497
   prefs: []
   type: TYPE_NORMAL
 - en: coro fn async_main() {
+  id: totrans-498
   prefs: []
   type: TYPE_NORMAL
 - en: println!("Program starting");
+  id: totrans-499
   prefs: []
   type: TYPE_NORMAL
 - en: for i in 0..5 {
+  id: totrans-500
   prefs: []
   type: TYPE_NORMAL
 - en: let future = request(i);
+  id: totrans-501
   prefs: []
   type: TYPE_NORMAL
 - en: runtime::spawn(future);
+  id: totrans-502
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-503
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-504
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE48]'
+  id: totrans-505
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE48]'
 - en: mod future;
+  id: totrans-506
   prefs: []
   type: TYPE_NORMAL
 - en: mod http;
+  id: totrans-507
   prefs: []
   type: TYPE_NORMAL
 - en: mod runtime;
+  id: totrans-508
   prefs: []
   type: TYPE_NORMAL
 - en: use crate::http::Http;
+  id: totrans-509
   prefs: []
   type: TYPE_NORMAL
 - en: use future::{Future, PollState};
+  id: totrans-510
   prefs: []
   type: TYPE_NORMAL
 - en: use runtime::{Executor, Waker};
+  id: totrans-511
   prefs: []
   type: TYPE_NORMAL
 - en: use std::thread::Builder;
+  id: totrans-512
   prefs: []
   type: TYPE_NORMAL
 - en: fn main() {
+  id: totrans-513
   prefs: []
   type: TYPE_NORMAL
 - en: let mut executor = runtime::init();
+  id: totrans-514
   prefs: []
   type: TYPE_NORMAL
 - en: let mut handles = vec![];
+  id: totrans-515
   prefs: []
   type: TYPE_NORMAL
 - en: for i in 1..12 {
+  id: totrans-516
   prefs: []
   type: TYPE_NORMAL
 - en: let name = format!("exec-{i}");
+  id: totrans-517
   prefs: []
   type: TYPE_NORMAL
 - en: let h = Builder::new().name(name).spawn(move || {
+  id: totrans-518
   prefs: []
   type: TYPE_NORMAL
 - en: let mut executor = Executor::new();
+  id: totrans-519
   prefs: []
   type: TYPE_NORMAL
 - en: executor.block_on(async_main());
+  id: totrans-520
   prefs: []
   type: TYPE_NORMAL
 - en: '}).unwrap();'
+  id: totrans-521
   prefs: []
   type: TYPE_NORMAL
 - en: handles.push(h);
+  id: totrans-522
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-523
   prefs: []
   type: TYPE_NORMAL
 - en: executor.block_on(async_main());
+  id: totrans-524
   prefs: []
   type: TYPE_NORMAL
 - en: handles.into_iter().for_each(|h| h.join().unwrap());
+  id: totrans-525
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-526
   prefs: []
   type: TYPE_NORMAL
 - en: 'coroutine fn request(i: usize) {'
+  id: totrans-527
   prefs: []
   type: TYPE_NORMAL
 - en: let path = format!("/{}/HelloWorld{i}", i * 1000);
+  id: totrans-528
   prefs: []
   type: TYPE_NORMAL
 - en: let txt = Http::get(&path).wait;
+  id: totrans-529
   prefs: []
   type: TYPE_NORMAL
 - en: let txt = txt.lines().last().unwrap_or_default();
+  id: totrans-530
   prefs: []
   type: TYPE_NORMAL
 - en: println!(«{txt}»);
+  id: totrans-531
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-532
   prefs: []
   type: TYPE_NORMAL
 - en: coroutine fn async_main() {
+  id: totrans-533
   prefs: []
   type: TYPE_NORMAL
 - en: println!("Program starting");
+  id: totrans-534
   prefs: []
   type: TYPE_NORMAL
 - en: for i in 0..5 {
+  id: totrans-535
   prefs: []
   type: TYPE_NORMAL
 - en: let future = request(i);
+  id: totrans-536
   prefs: []
   type: TYPE_NORMAL
 - en: runtime::spawn(future);
+  id: totrans-537
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-538
   prefs: []
   type: TYPE_NORMAL
 - en: '}'
+  id: totrans-539
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE49]'
+  id: totrans-540
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE49]'
