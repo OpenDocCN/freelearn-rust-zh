@@ -1,0 +1,142 @@
+<html><head></head><body>
+		<div id="_idContainer045">
+			<h1 id="_idParaDest-138"><em class="italic"><a id="_idTextAnchor139"/>Chapter 13</em>: Launching a Rocket Application</h1>
+			<p>After development and testing, an important part of development is preparing the application to serve its intended users. In this chapter, we are going to learn some techniques to generate a production-ready binary. After we generate the binary, we are going to learn about configuring the application behind a general-purpose web server. And finally, we will learn how to generate Docker images for a Rocket application.</p>
+			<p>After learning the information in this chapter, you will be able to optimize binaries using Rust compiler flags and Cargo configurations. You will also learn techniques to prepare your applications to serve their intended users.</p>
+			<p>In this chapter, we are going to cover these main topics:</p>
+			<ul>
+				<li>Optimizing production binaries</li>
+				<li>Setting up the Apache HTTP Server with a Rocket application</li>
+				<li>Generating Docker images for a Rocket application</li>
+			</ul>
+			<h1 id="_idParaDest-139"><a id="_idTextAnchor140"/>Technical requirements</h1>
+			<p>In this chapter, we are going to serve HTTP requests using the Apache HTTP Server (<a href="https://httpd.apache.org/">https://httpd.apache.org/</a>). If you have a Unix-based operating system, you can usually find the Apache HTTP Server in your operating system package manager. If you have a Windows operating system, there are recommended downloads at the following link: <a href="https://httpd.apache.org/docs/2.4/platform/windows.html">https://httpd.apache.org/docs/2.4/platform/windows.html</a>.</p>
+			<p>You also need to generate a TLS (Transport Layer Security) certificate using OpenSSL. If you have a Unix-based operating system, you can usually find the OpenSSL binary using the distribution's package manager. If you have a Windows operating system, you can find the recommended binary at the following link: <a href="https://wiki.openssl.org/index.php/Binaries">https://wiki.openssl.org/index.php/Binaries</a>.</p>
+			<p>For generating Docker images, you can use Docker Desktop from the following link: <a href="https://www.docker.com/products/docker-desktop/">https://www.docker.com/products/docker-desktop/</a>.</p>
+			<p>You can find the source code of this chapter at <a href="https://github.com/PacktPublishing/Rust-Web-Development-with-Rocket/tree/main/Chapter13">https://github.com/PacktPublishing/Rust-Web-Development-with-Rocket/tree/main/Chapter13</a></p>
+			<h1 id="_idParaDest-140"><a id="_idTextAnchor141"/>Optimizing production binaries</h1>
+			<p>After we create the <a id="_idIndexMarker679"/>application, we want to prepare the application to accept a real connection. In software development, there's a production environment, also called a release environment or deployment environment. The production environment contains the configuration of the system and software to make it available to the intended customer. In <a href="B16825_02_ePub.xhtml#_idTextAnchor032"><em class="italic">Chapter 2</em></a>, <em class="italic">Building Our First Rocket Web Application</em>, we learned that we can tell the Rust compiler to build release binary when compiling the Rust application. We can use <strong class="source-inline">cargo build</strong> or <strong class="source-inline">cargo run</strong> with the extra <strong class="source-inline">--release</strong> flag.</p>
+			<p>To refresh, Cargo will read the configuration in <strong class="source-inline">Cargo.toml</strong> in the <strong class="source-inline">[profile.release]</strong> section. There are some compilation optimizations we can do to improve the resulting image: </p>
+			<ol>
+				<li>The first one is the number of <strong class="source-inline">codegen-units</strong> of compilation. Rust compilation can take significant time, and to solve this, the compiler may try to split it into parts and compile them in parallel. But, compiling binaries or libraries in parallel might omit some optimization. By default, the number of <strong class="source-inline">codegen-units</strong> is <strong class="source-inline">3</strong>. We can sacrifice the compilation speed and make <strong class="source-inline">codegen-units</strong> into <strong class="source-inline">1</strong> to optimize the resulting binary further. For example, in <strong class="source-inline">Cargo.toml</strong>, we can have the following:<p class="source-code">[profile.release]</p><p class="source-code">codegen-units = 1</p></li>
+			</ol>
+			<p><strong class="bold">Link Time Optimization</strong> (<strong class="bold">LTO</strong>): The <a id="_idIndexMarker680"/>Rust <strong class="source-inline">codegen</strong> backend, LLVM, can perform various LTOs to produce output with optimized code. To enable LTO, we can set <strong class="source-inline">lto = yes</strong> or <strong class="source-inline">lto = "fat"</strong>. The following is an example of <strong class="source-inline">lto</strong> in <strong class="source-inline">Cargo.toml</strong>:</p>
+			<p class="source-code">[profile.release]</p>
+			<p class="source-code">lto = "fat"</p>
+			<p>Set the optimization level. We can set optimization levels from <strong class="source-inline">0</strong>, <strong class="source-inline">1</strong>, <strong class="source-inline">2</strong>, and <strong class="source-inline">3</strong>, with the default value being <strong class="source-inline">0</strong> (no optimization) up to <strong class="source-inline">3</strong> (all optimization) as in the following:</p>
+			<p class="source-code">[profile.release]</p>
+			<p class="source-code">opt-level = 3</p>
+			<p>Besides optimization level <strong class="source-inline">0</strong> to <strong class="source-inline">3</strong>, we can also also set <strong class="source-inline">"s"</strong> and <strong class="source-inline">"z"</strong>, with <strong class="source-inline">"s"</strong> for binary size optimization and <strong class="source-inline">"z"</strong> for binary size optimization and turn of loop vectorization.</p>
+			<p>Disable <strong class="source-inline">panic</strong> unwinding. We can set <strong class="source-inline">panic</strong> to not show the stack trace. The result is a more optimized binary. Set the following in <strong class="source-inline">Cargo.toml</strong> to disable stack unwinding:</p>
+			<p class="source-code">[profile.release]</p>
+			<p class="source-code">panic = "abort"</p>
+			<ol>
+				<li value="2">The second optimization is compiling the correct architecture. CPU producers will always create a new <a id="_idIndexMarker681"/>CPU with better optimization or instruction sets that can improve the performance of an application. For example, the SSE (Streaming SIMD Extensions) instruction set was introduced by Intel with the release of Intel Pentium III. </li>
+			</ol>
+			<p>By default, the Rust compiler will produce binary with a reasonable amount of CPU support. But, this means newer instruction sets or optimizations are not used when compiling a library or a binary. We can tell the Rust compiler to produce a binary that supports newer optimizations or instruction sets of the target machine. </p>
+			<p>To see the list of the target architecture supported by the Rust compiler, we can use this command:</p>
+			<p class="source-code"><strong class="bold">rustc --print target-cpus</strong></p>
+			<p>For example, if we know the target machine is AMD Ryzen, which supports <em class="italic">znver3</em> architecture, we can compile the Rust program as follows:</p>
+			<p class="source-code"><strong class="bold">RUSTFLAGS='-C target-cpu=znver -C codegen-units=1' cargo build –release</strong></p>
+			<p>The reason we use the <strong class="source-inline">RUSTFLAGS</strong> environment variable is that <strong class="source-inline">target-cpu</strong> is not a recognized option in <strong class="source-inline">Cargo.toml</strong>. Cargo will also use any other <strong class="source-inline">rustc</strong> option <a id="_idIndexMarker682"/>set in the <strong class="source-inline">RUSTFLAGS</strong> environment variable.</p>
+			<p>Now we <a id="_idIndexMarker683"/>know how to compile a Rust <a id="_idIndexMarker684"/>application for a production environment, let's learn about deploying a Rocket application behind a web server.</p>
+			<h1 id="_idParaDest-141"><a id="_idTextAnchor142"/>Setting up the Apache HTTP Server with a Rocket application</h1>
+			<p>We know that Rocket has TLS support in its configuration, so we can set the TCP port to <strong class="source-inline">443</strong>, the default HTTPS connection port. In some cases, it might be acceptable to run web applications directly, for example, when we want to serve content for microservices. </p>
+			<p>One of the reasons why we don't want to run the Rocket application directly is because of this warning in the Rocket guide:</p>
+			<p class="author-quote">Rocket's built-in TLS implements only TLS 1.2 and 1.3. It may not be suitable for production use.</p>
+			<p>The TLS library used by the Rocket framework might not be suitable for production use for various reasons, such as security reasons or it is not yet audited.</p>
+			<p>There are other reasons why we do not want to serve content directly from Rocket aside from the TLS library problem. One example is when we want to serve multiple applications from a single computer. We might want to serve PHP applications from the same machine too.</p>
+			<p>One of the techniques people use when serving a Rust application is putting it behind a general-purpose web server that can do a reverse proxy:</p>
+			<div>
+				<div id="_idContainer042" class="IMG---Figure">
+					<img src="image/Figure_13.1_B16825.jpg" alt="Figure 13.1 ‒ General purpose web server performing a reverse proxy on a Rocket application&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 13.1 ‒ General purpose web server performing a reverse proxy on a Rocket application</p>
+			<p>One of the most used reverse proxy applications is the Apache HTTP Server. The Apache HTTP Server also has other features besides the reverse proxy, including serving static files and compressing files to serve requests faster.</p>
+			<p>Let's try <a id="_idIndexMarker685"/>serving<a id="_idIndexMarker686"/> our application using the Apache HTTP Server and configuring the server to act as a reverse proxy by following these steps:</p>
+			<ol>
+				<li value="1">Download the Apache HTTP Server for your operating system or from <a href="https://httpd.apache.org/">https://httpd.apache.org/</a>. </li>
+				<li>Try starting the application using the following command line:<p class="source-code"><strong class="bold">sudo apachectl -k start</strong></p></li>
+				<li>The Apache HTTP Server's default port is <strong class="source-inline">8080</strong>. Check that Apache is running by using the cURL command:<p class="source-code"><strong class="bold">curl http://127.0.0.1:8080/</strong></p></li>
+				<li>The Apache HTTP Server's functionalities can be extended by modules, and several modules are installed alongside it. We want to enable several modules to enable HTTP requests to our application using a reverse proxy. Find <strong class="source-inline">httpd.conf</strong>, the configuration file for your operating system. In some Linux distributions, the configuration might be in <strong class="source-inline">/etc/httpd/httpd.conf</strong>. In other distributions or operating systems, the file location might be in <strong class="source-inline">/usr/local/etc/httpd/httpd.conf</strong>.</li>
+			</ol>
+			<p>Edit the <strong class="source-inline">httpd.conf</strong> file<a id="_idIndexMarker687"/> and <a id="_idIndexMarker688"/>remove the comment to enable the required modules:</p>
+			<p class="source-code">LoadModule log_config_module libexec/apache2/mod_log_config.so</p>
+			<p class="source-code">LoadModule vhost_alias_module libexec/apache2/mod_vhost_alias.so</p>
+			<p class="source-code">LoadModule socache_shmcb_module libexec/apache2/mod_socache_shmcb.so</p>
+			<p class="source-code">LoadModule ssl_module libexec/apache2/mod_ssl.so</p>
+			<p class="source-code">LoadModule xml2enc_module libexec/apache2/mod_xml2enc.so</p>
+			<p class="source-code">LoadModule proxy_html_module libexec/apache2/mod_proxy_html.so</p>
+			<p class="source-code">LoadModule proxy_module libexec/apache2/mod_proxy.so</p>
+			<p class="source-code">LoadModule proxy_connect_module libexec/apache2/mod_proxy_connect.so</p>
+			<p class="source-code">LoadModule proxy_http_module libexec/apache2/mod_proxy_http.so</p>
+			<ol>
+				<li value="5">In the same <strong class="source-inline">httpd.conf</strong> file, find these lines and uncomment these lines as well: <p class="source-code">Include /usr/local/etc/httpd/extra/httpd-vhosts.conf</p><p class="source-code">Include /usr/local/etc/httpd/extra/httpd-ssl.conf</p><p class="source-code">Include /usr/local/etc/httpd/extra/proxy-html.conf</p></li>
+				<li>We need a server name. In a real server, we can acquire a domain by buying the rights to it from a domain registrar and pointing the <strong class="bold">domain A</strong> record to the server IP address using domain registrar management tools. But, as we're developing in a development environment, we need a fake domain such as <strong class="source-inline">ourapplication.example.net</strong>. Edit <strong class="source-inline">/etc/hosts</strong> and some test domains as follows:<p class="source-code">127.0.0.1 ourapplication.example.net</p></li>
+				<li>Install <strong class="source-inline">openssl</strong> for your operating system. After that, generate a certificate for <strong class="source-inline">ourapplication.example.net</strong> using the <strong class="source-inline">openssl</strong> command line, as <a id="_idIndexMarker689"/>in <a id="_idIndexMarker690"/>the following: <p class="source-code"><strong class="bold">openssl req -x509 -out ourapplication.example.com.crt -keyout ourapplication.example.com.key \</strong></p><p class="source-code"><strong class="bold">  -newkey rsa:2048 -nodes -sha256 \</strong></p><p class="source-code"><strong class="bold">  -subj '/CN=ourapplication.example.com' -extensions </strong></p><p class="source-code"><strong class="bold">  EXT -config &lt;( \</strong></p><p class="source-code"><strong class="bold">   printf "[dn]\nCN=ourapplication.example</strong></p><p class="source-code"><strong class="bold">  .com\n[req]\ndistinguished_name = dn\n[EXT]\</strong></p><p class="source-code"><strong class="bold">  nsubjectAltName=DNS:ourapplication.</strong></p><p class="source-code"><strong class="bold">  example.com\nkeyUsage=digitalSignature\</strong></p><p class="source-code"><strong class="bold">  nextendedKeyUsage=serverAuth")</strong></p></li>
+			</ol>
+			<p>The command line will generate two files, <strong class="source-inline">ourapplication.example.com.crt</strong> and <strong class="source-inline">ourapplication.example.com.key</strong>. </p>
+			<ol>
+				<li value="8">Generate a PEM file, a file format that contains certificate as follows:<p class="source-code">openssl rsa -in ourapplication.example.com.key -text &gt; ourapplication.example.com.private.pem</p><p class="source-code">openssl x509 -inform PEM -in ourapplication.example.com.crt &gt; ourapplication.example.com.public.pem </p></li>
+				<li>Edit <strong class="source-inline">httpd-vhosts.conf</strong>. The file might be in <strong class="source-inline">/usr/local/etc/httpd/extra/</strong>, depending on your operating system configuration. Add a new virtual host. We want the virtual host to point to our Rocket application <a id="_idIndexMarker691"/>at <strong class="source-inline">http://127.0.0.1:8000</strong>. Add the <a id="_idIndexMarker692"/>following lines:<p class="source-code">&lt;VirtualHost *:443&gt;</p><p class="source-code">    ServerName ourapplication.example.com</p><p class="source-code">    SSLEngine On</p><p class="source-code">    SSLCertificateFile /usr/local/etc/httpd/</p><p class="source-code">    ourapplication.example.com.public.pem</p><p class="source-code">    SSLCertificateKeyFile /usr/local/etc/httpd/</p><p class="source-code">    ourapplication.example.com.private.pem</p><p class="source-code">    SSLProxyEngine On</p><p class="source-code">    ProxyRequests Off</p><p class="source-code">    ProxyVia Off</p><p class="source-code">    &lt;Proxy *&gt;</p><p class="source-code">         Require all granted</p><p class="source-code">    &lt;/Proxy&gt;</p><p class="source-code">    ProxyPass "/" "http://127.0.0.1:8000/"</p><p class="source-code">    ProxyPassReverse "/" "http://127.0.0.1:8000/"</p><p class="source-code">&lt;/VirtualHost&gt;</p></li>
+				<li>Check whether the configuration is correct by running the following command:<p class="source-code">sudo apachectl configtest</p></li>
+				<li>Restart and open <a href="https://ourapplication.example.com">https://ourapplication.example.com</a> in your web browser. The web browser might complain because the root certificate is unknown. We can add our generated certificate so it's accepted in our browser. For example, in Firefox, we can go to <strong class="bold">Preferences</strong> | <strong class="bold">Privacy &amp; Security</strong> | <strong class="bold">View Certificates</strong>. After that, choose <strong class="bold">Servers Tab</strong> and click <strong class="bold">Add Exception</strong>. Then, ensure that <strong class="bold">Permanently store this exception</strong> is checked. Finally, click on <strong class="bold">Confirm Security Exception</strong> to store the security exception. If everything goes well, we can use the <a id="_idIndexMarker693"/>example domain in <a id="_idIndexMarker694"/>the browser, as in the following figure:</li>
+			</ol>
+			<div>
+				<div id="_idContainer043" class="IMG---Figure">
+					<img src="image/Figure_13.2_B16825.jpg" alt="Figure 13.2 ‒ Using a domain and TLS certificate&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 13.2 ‒ Using a domain and TLS certificate</p>
+			<p>Now that we have deployed the Rocket application behind a reverse proxy, we can use the same principle with a real server. Set up the Apache HTTP Server or NGINX as a reverse proxy and run the Rocket application behind the reverse proxy.</p>
+			<p>To run the Rocket application automatically when the operating system starts, we can set up some kind of service for the operating system. If we are running a Linux distribution with systemd as a service manager, for example, we can create a <strong class="source-inline">systemd</strong> service file and run the application automatically.</p>
+			<p>In the next section, we are going to learn a different way to deploy an application. We are going to <a id="_idIndexMarker695"/>use<a id="_idIndexMarker696"/> Docker to package and create a Docker container for our Rocket application.</p>
+			<h1 id="_idParaDest-142"><a id="_idTextAnchor143"/>Generating Docker images for a Rocket application</h1>
+			<p>Containerization<a id="_idIndexMarker697"/> has been a popular choice<a id="_idIndexMarker698"/> to ship production applications for a while. One of the most popular applications for containerization is Docker. In this section, we are going to learn how to set up Docker to run our Rocket application. To use the <strong class="source-inline">docker</strong> command line, please install Docker Desktop from <a href="https://www.docker.com/products/docker-desktop/">https://www.docker.com/products/docker-desktop/</a>.</p>
+			<p>Follow these steps to create and run a Docker image of the Rocket application:</p>
+			<ol>
+				<li value="1">In the root folder of the application, create a Dockerfile.</li>
+				<li>There are some base images we can use to build and run the application. We are going to use Rust's official Docker image from <a href="https://hub.docker.com/_/rust">https://hub.docker.com/_/rust</a>. For the Linux distribution, we are going to use <em class="italic">Alpine base</em> because it's one of the smallest base images for Docker.</li>
+			</ol>
+			<p>In the Dockerfile, add the first line:</p>
+			<p class="source-code">FROM rust:alpine as prepare-stage</p>
+			<ol>
+				<li value="3">Set the working directory. Append this line to the Dockerfile:<p class="source-code">WORKDIR /app</p></li>
+				<li>We can use Cargo to install the dependencies, but there is another way to quickly compile the application. We can vendorize the dependencies and use the vendor dependencies to build the application. Run this command on the root folder of the application source code:<p class="source-code"><strong class="bold">cargo vendor</strong></p></li>
+				<li>We want to override the source of the dependencies from the internet to the vendor folder. Create a <strong class="source-inline">.cargo</strong> folder in the root application folder, and create <strong class="source-inline">config.toml</strong> inside the <strong class="source-inline">.cargo</strong> folder.</li>
+			</ol>
+			<p>Append these lines to the <strong class="source-inline">.cargo/config.toml</strong> file:</p>
+			<p class="source-code">[source.crates-io]</p>
+			<p class="source-code">replace-with = "vendored-sources"</p>
+			<p class="source-code">[source.vendored-sources]</p>
+			<p class="source-code">directory = "vendor"</p>
+			<ol>
+				<li value="6">We want to add the required files to build the application as a Docker image. We don't need <strong class="source-inline">Rocket.toml</strong>, templates, or static files to build the application. Append these lines to the Dockerfile:<p class="source-code">COPY src src</p><p class="source-code">COPY Cargo.toml Cargo.toml</p><p class="source-code">COPY .cargo .cargo</p><p class="source-code">COPY vendor vendor</p></li>
+				<li>Add the <a id="_idIndexMarker699"/>instructions<a id="_idIndexMarker700"/> to build the image. We want to use another stage and install the dependencies to build the image. Add the following lines:<p class="source-code">FROM prepare-stage as build-stage</p><p class="source-code">RUN apk add --no-cache musl-dev</p><p class="source-code">RUN cargo build --release</p></li>
+				<li>Try building the application by running the following command:<p class="source-code"><strong class="bold">docker build .</strong></p></li>
+				<li>After testing, add a new part to run the application in the Dockerfile. We want to open port <strong class="source-inline">8000</strong>. We also want to add a default time zone and configure the user to run the application. Append the following lines: <p class="source-code">FROM rust:alpine</p><p class="source-code">EXPOSE 8000</p><p class="source-code">ENV TZ=Asia/Tokyo \</p><p class="source-code">    USER=staff</p><p class="source-code">RUN addgroup -S $USER \</p><p class="source-code">    &amp;&amp; adduser -S -g $USER $USER</p></li>
+				<li>We want the image to have the latest libraries. Append the following lines to the Dockerfile:<p class="source-code">RUN apk update \</p><p class="source-code">    &amp;&amp; apk add --no-cache ca-certificates tzdata \</p><p class="source-code">    &amp;&amp; rm -rf /var/cache/apk/*</p></li>
+				<li>Set the working directory. Append the following line to the Dockerfile:<p class="source-code">WORKDIR /app</p></li>
+				<li>Set <strong class="source-inline">Rocket.toml</strong> to<a id="_idIndexMarker701"/> run <a id="_idIndexMarker702"/>from <strong class="source-inline">0.0.0.0</strong>. We want to tell the application to use the host's running database. In Docker, we can reference the host machine using a special domain, host.docker.internal. Edit <strong class="source-inline">Rocket.toml</strong> as follows:<p class="source-code">[default.databases.main_connection]</p><p class="source-code">url = "postgres://username:passwordR@host.docker.internal:5432/rocket"</p><p class="source-code">[release]</p><p class="source-code">address = "0.0.0.0"</p></li>
+				<li>Copy the resulting binary, <strong class="source-inline">Rocket.toml</strong>, assets, and templates to the final image. Append the following lines to the Dockerfile:<p class="source-code">COPY --from=build-stage /app/target/release/our_application our_application</p><p class="source-code">COPY Rocket.toml Rocket.toml</p><p class="source-code">COPY static static</p><p class="source-code">COPY src/views src/views</p></li>
+				<li>Add the folder to store the log file:<p class="source-code">RUN mkdir logs</p></li>
+				<li>Add changing permission to <strong class="source-inline">$USER</strong> as follows:<p class="source-code">RUN chown -R $USER:$USER /app</p></li>
+				<li>Finally, run<a id="_idIndexMarker703"/> the<a id="_idIndexMarker704"/> entry point to the application to the Dockerfile:<p class="source-code">USER $USER</p><p class="source-code">CMD ["./our_application"]</p></li>
+				<li>Build the image and create a tag for it using this command:<p class="source-code"><strong class="bold">docker build -t our_application .</strong></p></li>
+				<li>After building the Docker image, it's time to run it. Use the following command line:<p class="source-code"><strong class="bold">docker run --add-host host.docker.internal:host-gateway -dp 8000:8000 our_application</strong></p></li>
+			</ol>
+			<p>After everything is done, we should see the Docker container is running and showing the <strong class="source-inline">our_application</strong> output:</p>
+			<div>
+				<div id="_idContainer044" class="IMG---Figure">
+					<img src="image/Figure_13.3_B16825.jpg" alt="Figure 13.3 ‒ Docker Desktop showing the running container and our_application&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 13.3 ‒ Docker Desktop showing the running container and our_application</p>
+			<p>Deploying a Rocket application using Docker is just like deploying other applications. We need to copy the source, build, and run the resulting image. There are some actions that we can perform<a id="_idIndexMarker705"/> to ensure proper deployment, such <a id="_idIndexMarker706"/>as vendoring the libraries and opening the correct ports to ensure requests can be made to the running container and applications running inside the container.</p>
+			<h1 id="_idParaDest-143"><a id="_idTextAnchor144"/>Summary</h1>
+			<p>In this chapter, we have learned about production-ready compilation options. We can use them to ensure the resulting binary is as optimized as possible. We also learned about setting up a general-purpose HTTP server to work in conjunction with a Rocket application. And finally, we learned to create and run Docker images for the Rocket application.</p>
+			<p>After learning these techniques, we expanded them to set up the Rocket application to serve its intended users.</p>
+			<p>In the next chapter, we are going to learn about using Rust to create a frontend WebAssembly application in conjunction with a Rocket application.</p>
+		</div>
+	</body></html>

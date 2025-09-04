@@ -1,0 +1,499 @@
+<html><head></head><body>
+		<div id="_idContainer194">
+			<h1 id="_idParaDest-322" class="chapter-number"><a id="_idTextAnchor323"/>17</h1>
+			<h1 id="_idParaDest-323"><a id="_idTextAnchor324"/>Implementing Actors and Async with the Hyper Framework</h1>
+			<p>The actor model has shown us that we can build async code that is safe and easy to maintain. In this chapter, we take the actor model a little further by building a caching mechanism with a background task that keeps running while we accept incoming HTTP requests <a id="_idIndexMarker1405"/>using the <strong class="bold">Hyper</strong> framework. It must be noted that a Hyper framework is a low-level approach to processing HTTP requests. This enables us to build web applications where we have fine grain control over how the HTTP server handles <a id="_idIndexMarker1406"/>HTTP requests. For instance, if we do not code how to handle <strong class="bold">Universal Resource Identifiers</strong> (<strong class="bold">URIs</strong>) and methods, the HTTP server built in Hyper will handle all requests, in the same way, no matter the method or URI passed in. Hyper is useful for building custom network applications such as <span class="No-Break">caching mechanisms.</span></p>
+			<p>In this chapter, we will cover the <span class="No-Break">following topics:</span></p>
+			<ul>
+				<li>Breaking down the actor async project <span class="No-Break">and requirements</span></li>
+				<li>Defining <span class="No-Break">channel messages</span></li>
+				<li>Building a <span class="No-Break">runner actor</span></li>
+				<li>Building a <span class="No-Break">state actor</span></li>
+				<li>Handling HTTP requests <span class="No-Break">using Hyper</span></li>
+				<li>Building an HTTP server <span class="No-Break">using Hyper</span></li>
+				<li>Running our Hyper <span class="No-Break">HTTP server</span></li>
+			</ul>
+			<p>By the end of this chapter, you will be able to build a low-level HTTP server that runs clean-up processes in the background while accepting HTTP requests. However, it must be noted that in previous chapters, we have built fully functioning applications using frameworks such as Rocket and Actix. It took multiple chapters to build a fully functioning application in Actix. It would not be possible to cover everything needed to build a fully functioning web application in a lower-level framework such as Hyper in one chapter. We are merely using Hyper to set up and receive HTTP requests. However, with what we cover in this chapter, you should be able to build out a fully functioning web application with examples from online Hyper docs as we cover the core concepts of what gets a Hyper HTTP server running. It is advised that if you require a fully functioning web application that supports loads of views and authentication, then it makes sense to go for a higher-level framework such as Actix <span class="No-Break">or Rocket.</span></p>
+			<h1 id="_idParaDest-324"><a id="_idTextAnchor325"/>Technical requirements</h1>
+			<p>In this chapter, we will be purely focusing on how to build a server using the Hyper framework. Therefore, we will not be relying on any previous code as we are building our own <span class="No-Break">new server.</span></p>
+			<p>The code for this chapter can be found <span class="No-Break">at </span><a href="https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter17"><span class="No-Break">https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter17</span></a><span class="No-Break">.</span></p>
+			<h1 id="_idParaDest-325"><a id="_idTextAnchor326"/>Breaking down our project</h1>
+			<p>We are building a simulation platform where users can log in and interact with fake simulated people via chatbots to see what they say to the fake people. We want to see what the <a id="_idIndexMarker1407"/>users say to the fake people at the end of the simulation session. The problem is that there are a lot of messages being sent to a fake person in a short amount of time. If we hit the database every time a message is sent, then we will put our database under a lot of strain. Let us say that a user asks a question every 20 seconds; this means we will be hitting the database 6 times per minute as there is a question and an answer per interaction. If we have 800 users running a session at the same time, then we can have up to 4,800 hits a minute. This can put a strain on the database. To reduce the strain on the database, we can build a server in Hyper that caches the chats and periodically sends multiple questions and answers to the database. Before moving forward, this is a chance for you to think back at all the chapters that we have covered and think of a high-level solution to building this <span class="No-Break">caching mechanism.</span></p>
+			<p>There are multiple approaches to building the caching server, but to improve our understanding of async programming, we will solve our problem with the actor model. Our approach will have an actor that accepts a chat log and caches it under an ID. We then have another actor that periodically gets message data from the cache actor and sends it to another server. The data flow of our server takes the <span class="No-Break">following form:</span></p>
+			<div>
+				<div id="_idContainer192" class="IMG---Figure">
+					<img src="image/Figure_17.1_B18722.jpg" alt="Figure 17.1 – Layers in our app"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 17.1 – Layers in our app</p>
+			<p>With this <a id="_idIndexMarker1408"/>approach, we will need the following file layout for <span class="No-Break">our server:</span></p>
+			<pre class="source-code">
+├── Cargo.toml
+└── src
+    ├── actors
+    │   ├── messages.rs
+    │   ├── mod.rs
+    │   ├── runner.rs
+    │   └── state.rs
+    └── main.rs</pre>
+			<p>We will define our actors in the individual files in the <strong class="source-inline">actors</strong> directory. All our code that handles HTTP requests will be defined in the <strong class="source-inline">main.rs</strong> file. We now have all the files that <a id="_idIndexMarker1409"/>we need. When it comes to our dependencies, we know that we are accepting HTTP requests, sending HTTP requests, serializing data, and running our program in an async manner. With what we are doing in our application, it should not be a surprise that we have the following dependencies in the <span class="No-Break"><strong class="source-inline">Cargo.toml</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "0.14.20", features = ["full"] }
+reqwest = { version = "0.11.12", features = ["json"] }
+serde_json = "1.0.86"
+serde = { version = "1.0.136", features = ["derive"] }</pre>
+			<p>The dependencies should not be a surprise at this stage, apart from the <strong class="source-inline">reqwest</strong> dependency, which we use to send HTTP requests. Now that we have defined the outline of our project, we can move on to building the first part of our system, which is defining the messages for <span class="No-Break">our system.</span></p>
+			<h1 id="_idParaDest-326"><a id="_idTextAnchor327"/>Defining channel messages</h1>
+			<p>Our runner <a id="_idIndexMarker1410"/>actor needs to periodically send messages to our state actor and then send a batch of chats to a server. Considering the functionality of our runner actor, we can see that it does not need a state but does need to send messages. Before building our runner actor, we must build the messages that will be sent to actors and servers. In the <strong class="source-inline">src/actors/messages.rs</strong> file, we start by importing what we need with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use serde::Serialize;
+use std::env;</pre>
+			<p>We will be using the <strong class="source-inline">Serialize</strong> trait to enable us to process the body data from HTTP requests. Now that we have imported what we need, we can define the type of messages that are being sent to actors. If we think about what we need, we will be sending messages to the state actor to either get cached data or insert data. The state actor can return data and return empty data if there are no chats cached. Considering that we have <a id="_idIndexMarker1411"/>three different types of messages, we have the following enum to define the type of message being sent with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+#[derive(Debug, Serialize)]
+pub enum MessageType {
+    INPUT,
+    OUTPUT,
+    EMPTY
+}</pre>
+			<p>We then have the struct for our messages that will be sent to and from actors, which takes the <span class="No-Break">following form:</span></p>
+			<pre class="source-code">
+#[derive(Debug, Serialize)]
+pub struct StateActorMessage {
+    pub message_type: MessageType,
+    pub chat_id: Option&lt;i32&gt;,
+    pub single_data: Option&lt;String&gt;,
+    pub block_data: Option&lt;Vec&lt;String&gt;&gt;
+}</pre>
+			<p>We can see that we must define what type of message is being sent. Everything else is optional. For instance, if the state actor finds that there are no cached chats, then the state actor cannot populate any other fields apart from the message type saying that the message <span class="No-Break">is empty.</span></p>
+			<p>Remember that we must send blocks of cached chat messages to a server. We can implement <a id="_idIndexMarker1412"/>the functionality of sending the data to the server for the <strong class="source-inline">StateActorMessage</strong> struct with the following code. We must note that we have not made the <strong class="source-inline">PostBody</strong> struct yet, but we will do this <span class="No-Break">straight afterward:</span></p>
+			<pre class="source-code">
+impl StateActorMessage {
+    pub async fn send_to_server(&amp;self) {
+        let lib_url = env::var("SERVER_URL").unwrap();
+        let joined =
+            self.block_data.clone().unwrap().join("$");
+        let body = PostBody {
+            chat_id: self.chat_id.unwrap(),
+            block_data: joined
+        };
+        let client = reqwest::Client::new();
+        let res = client.post(lib_url)
+                                  .json(&amp;body)
+                                  .send()
+                                  .await.unwrap();
+        println!("{:?}", res);
+    }
+}</pre>
+			<p>We can see that we merely get the server URL from the environment, create one large string with <strong class="source-inline">$</strong> as a delimiter separating the pairs of questions and answers, and then send it to another server. We could make an actor handling the message send data to the server. However, coupling the sending of data to the server with the message struct gives more flexibility as any actor that handles the message can send the data in the message to <span class="No-Break">the server.</span></p>
+			<p>When it <a id="_idIndexMarker1413"/>comes to the <strong class="source-inline">PostBody</strong> struct, it should be no surprise that it takes the <span class="No-Break">following form:</span></p>
+			<pre class="source-code">
+#[derive(Debug, Serialize)]
+struct PostBody {
+    pub chat_id: i32,
+    pub block_data: String
+}</pre>
+			<p>Our messages for our entire application are now defined. We can now move on to building our <span class="No-Break">runner actor.</span></p>
+			<h1 id="_idParaDest-327"><a id="_idTextAnchor328"/>Building our runner actor</h1>
+			<p>Our runner actor consistently loops, sending messages to the state actor, asking for batched data, and sending the batched data to the server if the batched data is present. This means <a id="_idIndexMarker1414"/>that our actor will be sending and receiving messages throughout the lifetime of the program. With the behavior of the runner actor in mind, it should not be a shock that we need the following imports in the <span class="No-Break"><strong class="source-inline">src/actors/runner.rs</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+use super::messages::{MessageType, StateActorMessage};
+use tokio::sync::mpsc::{Sender, Receiver};
+use std::time;</pre>
+			<p>We have imported the messages and the modules required to sleep for a period of seconds. We have also used type aliases to define the type of channels our runner actor will be supporting. We can now define the runner actor with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub struct RunnerActor {
+    pub interval: i32,
+    pub receiver: Receiver&lt;StateActorMessage&gt;,
+    pub sender: Sender&lt;StateActorMessage&gt;,
+}</pre>
+			<p>Here, we are merely defining the number of seconds our actor will wait before making another request for data. We then have a sender and receiver to send and receive messages. With the <a id="_idIndexMarker1415"/>fields defined, we then need to move on to defining the constructor and run function for our <strong class="source-inline">RunnerActor</strong> struct with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+impl RunnerActor {
+    pub fn new(receiver: Receiver&lt;StateActorMessage&gt;,
+               sender: Sender&lt;StateActorMessage&gt;,
+               interval: i32) -&gt; RunnerActor {
+        return RunnerActor { interval, receiver, sender }
+    }
+    pub async fn run(mut self) {
+        . . .
+    }
+}</pre>
+			<p>We can see that our constructor function (<strong class="source-inline">new</strong>) is not really needed. In our <strong class="source-inline">new</strong> function, we are merely passing arguments directly into the fields of the <strong class="source-inline">RunnerActor</strong> struct. However, for the effort exerted, it is nice to have. For instance, if we need to add some checks later or send a message to the state actor saying that the <strong class="source-inline">RunnerActor</strong> struct has been constructed, all we need to do is change the behavior in the <strong class="source-inline">new</strong> function, and this behavior will propagate throughout the program where the <strong class="source-inline">new</strong> function <span class="No-Break">is used.</span></p>
+			<p>For our <strong class="source-inline">run</strong> function, we run an infinite loop. Inside this loop, we send a message to the state actor. Each <a id="_idIndexMarker1416"/>iteration of the loop is broken with a sleep function with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub async fn run(mut self) {
+    println!("runner actor is running");
+    let seconds = time::Duration::from_secs(self.interval
+                                            as u64);
+    loop {
+        tokio::time::sleep(seconds).await;
+        let message = StateActorMessage {
+            message_type: MessageType::OUTPUT,
+            chat_id: None,
+            single_data: None,
+            block_data: None
+        };
+        match self.sender.send(message).await {
+            . . .
+        };
+    }
+}</pre>
+			<p>Once we have sent the message, we must wait for a response and send the batched data to a server if the response is not empty, which can be done with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+match self.sender.send(message).await {
+    Ok(_) =&gt; {
+        let message = self.receiver.recv().await.unwrap();
+        match message.message_type {
+            MessageType::OUTPUT =&gt; {
+                message.send_to_server().await;
+            },
+            _ =&gt; {
+                println!("state is empty");
+            }
+        }
+    },
+    Err(_) =&gt; {
+        println!("runner is failed to send message");
+    }
+};</pre>
+			<p>Here, we can <a id="_idIndexMarker1417"/>see that, by now, the logic is not too confusing. With that, we will be able to speed through our state actor and then finally get to creating an HTTP server <span class="No-Break">in Hyper.</span></p>
+			<h1 id="_idParaDest-328"><a id="_idTextAnchor329"/>Building our state actor</h1>
+			<p>When it comes to our state actor, we must send and receive messages. Our state actor will also <a id="_idIndexMarker1418"/>have a state where the actor will store the chat logs to be referenced. With the state actor mechanisms in mind, it will not be surprising that we have the following imports in the <span class="No-Break"><strong class="source-inline">src/actors/state.rs</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+use std::collections::{HashMap, VecDeque};
+use std::mem;
+use tokio::sync::mpsc::{Sender, Receiver};
+use super::messages::{MessageType, StateActorMessage};</pre>
+			<p>The only difference in the imports is the <strong class="source-inline">mem</strong> module. The <strong class="source-inline">mem</strong> module will enable us to allocate memory. We will cover how we use the <strong class="source-inline">mem</strong> module when we get the message from the state of the actor. We can also see that we have imported <strong class="source-inline">HashMap</strong> and <strong class="source-inline">VecDeque</strong> to handle the state of <span class="No-Break">the actor.</span></p>
+			<p>Now that we <a id="_idIndexMarker1419"/>have imported what we need, we can define our actor struct with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+#[derive(Debug)]
+pub struct StateActor {
+    pub chat_queue: VecDeque&lt;i32&gt;,
+    pub chat_logs: HashMap&lt;i32, Vec&lt;String&gt;&gt;,
+    pub receiver: Receiver&lt;StateActorMessage&gt;,
+    pub sender: Sender&lt;StateActorMessage&gt;,
+}</pre>
+			<p>The <strong class="source-inline">chat_queue</strong> is where we perform a first-in-first-out queue using the <strong class="source-inline">VecDeque</strong> struct implementation from the standard collections library. We are assuming that the oldest chat logs will generally have more chats than later chat logs, and therefore, we should cache the older chats. The reason we are not merely using a vector as opposed to a queue is that popping off the first element of a queue does not require reallocating all the other elements. If we were to remove the first element of a vector, we would have to reallocate all the other elements in the vector. When it comes to storing the chat logs, we have the chat ID as the key and the question and answers under the <span class="No-Break">chat ID.</span></p>
+			<p>Now that we have defined our state actor, we can define the functions needed for our actor with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+impl StateActor {
+    pub fn new(receiver: Receiver,
+               sender: Sender) -&gt; StateActor {
+        . . .
+    }
+    pub fn get_message_data(&amp;mut self,
+                            chat_id: i32) -&gt; Vec&lt;String&gt; {
+        . . .
+    }
+    pub fn insert_message(&amp;mut self,
+                          chat_id: i32, message_data:
+                              String) {
+        . . .
+    }
+    async fn handle_message(&amp;mut self,
+                            message: StateActorMessage) {
+        . . .
+    }
+    pub async fn run(mut self) {
+        . . .
+    }
+}</pre>
+			<p>Here, we can see <a id="_idIndexMarker1420"/>that we have a constructor, an extraction of chat data, an insertion of a chat log, the handling of a message based on the type of message being received, and a <strong class="source-inline">run</strong> function to wait for incoming messages sent to the <span class="No-Break">state actor.</span></p>
+			<p>We are now ready to shoot through the logic implemented by the functions for the <strong class="source-inline">StateActor</strong> struct. At this stage of the book, you should be able to implement these functions by yourself, which will be <span class="No-Break">good practice.</span></p>
+			<p>For our constructor function, we have the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub fn new(receiver: Receiver, sender: Sender) -&gt; StateActor {
+    let chat_queue: VecDeque&lt;i32&gt; = VecDeque::new();
+    let chat_logs: HashMap&lt;i32, Vec&lt;String&gt;&gt; =
+        HashMap::new();
+    return StateActor {chat_queue, chat_logs, receiver,
+                       sender}
+}</pre>
+			<p>The constructor is merely creating an empty queue and HashMap and accepts the channels that <a id="_idIndexMarker1421"/>send and receive messages. For our <strong class="source-inline">get_message</strong> function, we have the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub fn get_message_data(&amp;mut self, chat_id: i32) -&gt;
+    Vec&lt;String&gt; {
+        self.chat_logs.remove(&amp;chat_id).unwrap()
+}</pre>
+			<p>We can see that we get the chat data based on the chat ID from the chat logs. We then transfer ownership from the HashMap chat logs to the <strong class="source-inline">reference</strong> variable, delete the chat ID key, and then return the data. This enables us to remove and return message data from <span class="No-Break">our state.</span></p>
+			<p>For our <strong class="source-inline">insert_message</strong> function, we utilize the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub fn insert_message(&amp;mut self, chat_id: i32,
+    message_data: String) {
+    match self.chat_logs.get_mut(&amp;chat_id) {
+        Some(patient_log) =&gt; {
+            patient_log.push(message_data);
+        },
+        None =&gt; {
+            self.chat_queue.push_back(chat_id);
+            self.chat_logs.insert(chat_id,
+                                  vec![message_data]);
+        }
+    }
+}</pre>
+			<p>Here we can see that we merely insert the new message data into the vector associated with the chat ID. If the chat ID is not present, we attach the chat ID to the queue and create a new vector under the <span class="No-Break">chat ID.</span></p>
+			<p>We can now <a id="_idIndexMarker1422"/>move on to our function that handles the message with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+async fn handle_message(&amp;mut self,
+    message: StateActorMessage) {
+    println!("state actor is receiving a message");
+    match message.message_type {
+        MessageType::INPUT =&gt; {
+            self.insert_message(message.chat_id.unwrap(),
+                                message.single_data
+                                .unwrap());
+        },
+        MessageType::OUTPUT =&gt; {
+            . . .
+        },
+        MessageType::EMPTY =&gt; {
+            panic!(
+              "empty messages should not be sent to the
+                   state actor"
+            );
+        }
+    }
+    println!("{:?}", self.chat_logs);
+    println!("{:?}", self.chat_queue);
+}</pre>
+			<p>Here, if the message is input, we merely insert the message into our state. If the message is empty, we panic the thread as there should not be any empty messages being sent <a id="_idIndexMarker1423"/>to the state actor. If we have an output message, this means that we must get the oldest chats located down the bottom of the queue, which takes the <span class="No-Break">following form:</span></p>
+			<pre class="source-code">
+MessageType::OUTPUT =&gt; {
+    match self.chat_queue.pop_front() {
+        Some(chat_id) =&gt; {
+            let data = self.get_message_data(chat_id);
+            let message = StateActorMessage {
+                message_type: MessageType::OUTPUT,
+                chat_id: Some(chat_id),
+                single_data: None,
+                block_data: Some(data)
+            };
+            let _ =
+                self.sender.send(message).await.unwrap();
+        },
+        None =&gt; {
+            let message = StateActorMessage {
+                message_type: MessageType::EMPTY,
+                chat_id: None,
+                single_data: None,
+                block_data: None
+            };
+            let _ =
+                self.sender.send(message).await.unwrap();
+        }
+    }
+},</pre>
+			<p>Here we can see that if there is nothing in the queue, then we have no chats; thus we return an <a id="_idIndexMarker1424"/>empty message. If there is a chat ID in the queue, we get the message data and send that data via a message to <span class="No-Break">the runner.</span></p>
+			<p>Finally, the <strong class="source-inline">run</strong> function takes the <span class="No-Break">following form:</span></p>
+			<pre class="source-code">
+pub async fn run(mut self) {
+    println!("state actor is running");
+    while let Some(msg) = self.receiver.recv().await {
+        self.handle_message(msg).await;
+    }
+}</pre>
+			<p>This <strong class="source-inline">run</strong> function merely waits for incoming messages and processes those incoming messages. We have now defined all our actors and can now move on to building our <span class="No-Break">HTTP server.</span></p>
+			<h1 id="_idParaDest-329"><a id="_idTextAnchor330"/>Handling HTTP requests using Hyper</h1>
+			<p>When it <a id="_idIndexMarker1425"/>comes to building our HTTP server, we will <a id="_idIndexMarker1426"/>implement all the server logic in the <strong class="source-inline">src/main.rs</strong> file. First, we import what we need with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use tokio::sync::{mpsc, mpsc::Sender};
+use hyper::{Body, Request, Response, Server};
+use hyper::body;
+use hyper::service::{make_service_fn, service_fn};
+use serde_json;
+use serde::Deserialize;
+use std::net::SocketAddr;</pre>
+			<p>At this stage in the book, these imports should not be confusing to you. Even though we have imported from the <strong class="source-inline">hyper</strong> module, the imports are self-explanatory. We will extract data from a request, create a service to process our request, and create an HTTP server to listen to <span class="No-Break">incoming requests.</span></p>
+			<p>We will also need to utilize the actors that we have created. Our actors can be imported using the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+mod actors;
+use actors::state::StateActor;
+use actors::runner::RunnerActor;
+use actors::messages::StateActorMessage;
+use actors::messages::MessageType;</pre>
+			<p>With all these actors imported, we can work towards accepting requests. Incoming HTTP requests insert new chat logs into our state actor. To achieve inserting the chat log, we will require a chat ID, inputs (a question), and an output (an answer). It would also be good to have a timestamp but to simplify the example, we will use a turn number to denote the time when the chat log was created. To extract all the data that we have just listed from the request, we will need the <span class="No-Break">following struct:</span></p>
+			<pre class="source-code">
+#[derive(Deserialize, Debug)]
+struct IncomingBody {
+      pub chat_id: i32,
+      pub timestamp: i32,
+      pub input: String,
+      pub output: String
+}</pre>
+			<p>The approach we have taken in processing the body of an incoming request is the same as when we built servers with Rocket and Actix. This is because we are relying on <strong class="source-inline">serde</strong>. The fact that the implementation of processing a body of an incoming request is the same is a testament to the flexibility of implementing traits <span class="No-Break">in Rust.</span></p>
+			<p>Seeing as <a id="_idIndexMarker1427"/>we are accepting incoming <a id="_idIndexMarker1428"/>requests, we must handle them. We can define the logic of how to handle a request in a function with the <span class="No-Break">following outline:</span></p>
+			<pre class="source-code">
+async fn handle(req: Request&lt;Body&gt;, channel_sender:
+    Sender&lt;StateActorMessage&gt;) -&gt; Result&lt;Response&lt;Body&gt;,
+        &amp;'static str&gt; {
+    . . .
+}</pre>
+			<p>In this <strong class="source-inline">handle</strong> function, we are accepting a request with a body and a channel where we can send our messages to our actors. If we were not applying the actor model approach, we could get away with merely accepting requests. We must remember that we handle our requests through a function, and therefore nothing stops us from passing in a database connection or anything else for that matter. Our <strong class="source-inline">handle</strong> function is essentially acting <span class="No-Break">as middleware.</span></p>
+			<p>For this example, we are just supporting one view. However, to get a feel for what we can do with Hyper, we might as well print out some basic information about the incoming request with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+println!("incoming message from the outside");
+let method = req.method().clone();
+println!("{}", method);
+let uri = req.uri();
+println!("{}", uri);</pre>
+			<p>If we were to support multiple views, we could implement a <strong class="source-inline">match</strong> statement on the URI of the <a id="_idIndexMarker1429"/>incoming request, passing the request into another function that housed multiple views <a id="_idIndexMarker1430"/>for a particular theme, such as authentication or chat logging. Another <strong class="source-inline">match</strong> statement could then pass the request into the correct view function, which processes the request and returns an HTTP response, which the <strong class="source-inline">handle</strong> function <span class="No-Break">would return.</span></p>
+			<p>Again, because we are merely supporting one view, we will process the request directly in the <strong class="source-inline">handle</strong> function. We do this by extracting the body data from the request with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+let bytes = body::to_bytes(req.into_body()).await.unwrap();
+let string_body = String::from_utf8(bytes.to_vec())
+    expect("response was not valid utf-8");
+let value: IncomingBody = serde_json::from_str(
+    &amp;string_body.as_str()).unwrap();</pre>
+			<p>We now have all the data that we need to send a chat log to our state actor and return an HTTP response that everything is OK with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+let message = StateActorMessage {
+    message_type: MessageType::INPUT,
+    chat_id: Some(value.chat_id),
+    single_data: Some(format!("{}&gt;&gt;{}&gt;&gt;{}&gt;&gt;",
+                               value.input,
+                               value.output,
+                               value.timestamp)),
+    block_data: None
+};
+channel_sender.send(message).await.unwrap();
+Ok(Response::new(format!("{:?}", value).into()))</pre>
+			<p>With this our <strong class="source-inline">handle</strong> function is complete. Considering what we have done in this section, we can <a id="_idIndexMarker1431"/>appreciate how low level Hyper is in <a id="_idIndexMarker1432"/>terms of implementing HTTP. While we have printed out the URI and method, we have not done anything with it. It doesn’t matter what method or URI is passed into our server; if the body has the correct data, our server will work. So, let us get our server working in the <span class="No-Break">next section.</span></p>
+			<h1 id="_idParaDest-330"><a id="_idTextAnchor331"/>Building an HTTP server using Hyper</h1>
+			<p>When it comes to running an HTTP server with Hyper, we will be using Tokio. We have two actors <a id="_idIndexMarker1433"/>running and two channels to facilitate <a id="_idIndexMarker1434"/>the communication between actors and requests. First, in the <strong class="source-inline">main</strong> function, we define the address of the server with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+#[tokio::main]
+async fn main() {
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    . . .
+}</pre>
+			<p>After the address is defined, we define the two channels for messages with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+let (state_tx, state_rx) =
+    mpsc::channel::&lt;StateActorMessage&gt;(1);
+let (runner_tx, runner_rx) =
+    mpsc::channel::&lt;StateActorMessage&gt;(1);
+let channel_sender = state_tx.clone();</pre>
+			<p>We clone <a id="_idIndexMarker1435"/>the sender for the state actor because <a id="_idIndexMarker1436"/>we will pass the sender through the <strong class="source-inline">handle</strong> function with the incoming request. Now that we have our channels, we can spin off two threads to run our actors with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+tokio::spawn(async move {
+    let state_actor = StateActor::new(state_rx, runner_tx);
+    state_actor.run().await;
+});
+tokio::spawn(async move {
+    let lib_runner_actor = RunnerActor::new(runner_rx,
+                                            state_tx, 30);
+    lib_runner_actor.run().await;
+});</pre>
+			<p>Here we must be careful to pass the sender of the other actor into the actor we are creating as the actors send messages to each other; they are not sending messages <span class="No-Break">to themselves.</span></p>
+			<p>Everything for our caching mechanism is now running. All we need now is to accept incoming HTTP requests, which we can achieve with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+let server = Server::bind(&amp;addr).serve(make_service_fn( |_conn| {
+    let channel = channel_sender.clone();
+    async {
+        Ok::&lt;_, hyper::Error&gt;(service_fn(move |req| {
+            let channel = channel.clone();
+            async {handle(req, channel).await}
+        }))
+    }
+}));</pre>
+			<p>It must be noted that we are returning a future with an async syntax, which is required for the <strong class="source-inline">service_fn</strong> function. Here we can see that we bind our address to the server and then call the <strong class="source-inline">serve</strong> function. Inside this <strong class="source-inline">serve</strong> function, we pass in the <strong class="source-inline">make_service_fn</strong> function, which wraps whatever executable we pass into the <strong class="source-inline">make_service_fn</strong> function in a <strong class="source-inline">MakeServiceFn</strong> struct. The executable we pass into the <strong class="source-inline">make_service_fn</strong> function is a closure that passes in <strong class="source-inline">_conn</strong>, which is an <strong class="source-inline">AddrStream</strong> struct. With the <strong class="source-inline">AddrStream</strong> struct, we can get the address of the peer making the connection to the server. We can also consume the <strong class="source-inline">AddrStream</strong> struct and extract the underlying TCP stream using the <strong class="source-inline">into_inner</strong> method of the <strong class="source-inline">AddrStream</strong> struct. We are not going to play with the <strong class="source-inline">AddrStream</strong> struct in this chapter, as we are keeping it simple by just processing standard <span class="No-Break">HTTP requests.</span></p>
+			<p>Inside the <a id="_idIndexMarker1437"/>closure, we clone the sender again. We need <a id="_idIndexMarker1438"/>to do this here because we need to clone the channel for every request coming in, as every request will need to send a message to the state actor. We then create a future with the <strong class="source-inline">async</strong> block returning an <strong class="source-inline">Ok</strong> enum, which wraps around the <strong class="source-inline">service_fn</strong> function, where we insert another closure that processes the incoming request. This is where we clone the channel again and return a future of our <strong class="source-inline">handle</strong> function that accepts the incoming request and channel to be processed and an HTTP response to be returned. We can see that it takes more steps to get an HTTP server running compared to other frameworks such as Rocket. However, we also get a lot of <span class="No-Break">fine-grain control.</span></p>
+			<p>Now that our server block is complete, we can implement a last piece of logic in the <strong class="source-inline">main</strong> function, which prints out the error if there is a problem with the server by implementing the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+if let Err(e) = server.await {
+    eprintln!("server error: {}", e);
+}</pre>
+			<p>With this, our simple HTTP server <span class="No-Break">should work.</span></p>
+			<h1 id="_idParaDest-331"><a id="_idTextAnchor332"/>Running our Hyper HTTP server</h1>
+			<p>When we run our server, we first need to export the URL that we are going to send batched <a id="_idIndexMarker1439"/>chat logs to with the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+export SERVER_URL="https://httpbin.org/post"</pre>
+			<p>This means that we just need to send our HTTP requests to an HTTPBin and get a standard response back. We can then run our server with the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+cargo run</pre>
+			<p>Our server is now running with the <span class="No-Break">following printouts:</span></p>
+			<pre class="console">
+state actor is running
+runner actor is running</pre>
+			<p>Our intervals are every 30 seconds for the runner actor to send a message to the state actor. If we just leave our server running, we will get the <span class="No-Break">following printout:</span></p>
+			<pre class="console">
+state is empty
+state actor is receiving a message
+{}
+[]
+state is empty
+state actor is receiving a message
+{}
+[]
+state is empty
+state actor is receiving a message
+{}
+[]</pre>
+			<p>Here we can see that the chat state and queue are empty and that both of our actors are running in their threads! We can then get our Postman application and send the following <span class="No-Break">HTTP request:</span></p>
+			<div>
+				<div id="_idContainer193" class="IMG---Figure">
+					<img src="image/Figure_17.2_B18722.jpg" alt="Figure 17.2 – HTTP request for our server"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 17.2 – HTTP request for our server</p>
+			<p>Sending the <a id="_idIndexMarker1440"/>previous request will give the <span class="No-Break">following printout:</span></p>
+			<pre class="console">
+incoming message from the outside
+POST
+/test
+state actor is receiving a message
+{23: ["what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;"]}
+[23]</pre>
+			<p>Here we can see that the state and queue have been populated. If we press the <strong class="bold">Send</strong> button in Postman another 2 times before the initial 30 seconds is up, we get the <span class="No-Break">following printout:</span></p>
+			<pre class="console">
+incoming message from the outside
+POST
+/test
+state actor is receiving a message
+{23: ["what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;",
+      "what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;"]}
+[23]
+incoming message from the outside
+POST
+/test
+state actor is receiving a message
+{23: ["what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;",
+      "what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;",
+      "what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;"]}
+[23]</pre>
+			<p>We can see <a id="_idIndexMarker1441"/>that the queue is not increasing as we are sending the same chat ID. We then increase the ID of the chat log and send another request resulting in the <span class="No-Break">following printout:</span></p>
+			<pre class="console">
+incoming message from the outside
+POST
+/test
+state actor is receiving a message
+{24: ["what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;"],
+23: ["what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;",
+     "what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;",
+     "what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;"]}
+[23, 24]</pre>
+			<p>We can see that the new ID has been inserted into the queue and state. We have managed to make all these requests before the 30 seconds is up, then we can simply wait until we get the <span class="No-Break">following printout:</span></p>
+			<pre class="console">
+state actor is receiving a message
+{23: ["what is your name&gt;&gt;my name is maxwell&gt;&gt;1&gt;&gt;"}
+[23]
+Response { url: Url { scheme: "https",
+cannot_be_a_base: false,
+username: "", password: None,
+host: Some(Domain("httpbin.org")),
+port: None, path: "/post",
+. . .
+"*", "access-control-allow-credentials": "true"} }</pre>
+			<p>What has happened here is that the runner has sent a message to the state getting the oldest chat ID <a id="_idIndexMarker1442"/>and then sent it to the server we defined in our environment variables. We can see that the state has been updated, and the response is OK. Some of the HTTP response has been omitted to avoid printout bloat on <span class="No-Break">the page.</span></p>
+			<p>We can conclude that our caching system built with actors on Hyper HTTP is working as we expected! With this, we have come to the end of this chapter, exploring enough about Hyper to get a server up and running with async actors <span class="No-Break">and channels.</span></p>
+			<h1 id="_idParaDest-332"><a id="_idTextAnchor333"/>Summary</h1>
+			<p>In this chapter, we built a network application that cached chat logs. Our network application also has a background task continuously running to periodically clean up the cache by sending the cached data to a server. We broke down and created our background task runner into an actor system with a queue and then implemented it. This gives you a whole new toolset to solve problems with. Background running actors are not just for running on a server for caching. You can run background runner actors for normal programs too if you build your program on a <span class="No-Break">Tokio runtime.</span></p>
+			<p>In the next chapter, we will use Redis persistent storage to manage multiple workers and network applications to transfer messages across multiple <span class="No-Break">network applications.</span></p>
+			<h1 id="_idParaDest-333"><a id="_idTextAnchor334"/>Further reading</h1>
+			<p>Hyper <span class="No-Break">documentation: </span><a href="https://hyper.rs/guides"><span class="No-Break">https://hyper.rs/guides</span></a></p>
+		</div>
+	</body></html>

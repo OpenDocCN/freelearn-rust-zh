@@ -1,0 +1,804 @@
+<html><head></head><body>
+		<div id="_idContainer073">
+			<h1 id="_idParaDest-126" class="chapter-number"><a id="_idTextAnchor127"/>6</h1>
+			<h1 id="_idParaDest-127"><a id="_idTextAnchor128"/>Data Persistence with PostgreSQL </h1>
+			<p>By this point in the book, the frontend for our application has been defined, and our app is working at face value. However, we know that our app is reading and writing from a <span class="No-Break"><strong class="bold">JSON</strong></span><span class="No-Break"> file.</span></p>
+			<p>In this chapter, we will get rid of our JSON file and introduce a <strong class="bold">PostgreSQL</strong> database to store our data. We will do this by setting up a database development environment using Docker. We will also investigate how to monitor the Docker database container. We will then create migrations to build the schema for our database and then build data models in <strong class="bold">Rust</strong> to interact with the database. We will then refactor our app so that the <strong class="source-inline">create</strong>, <strong class="source-inline">edit</strong>, and <strong class="source-inline">delete</strong> endpoints interact with the database instead of the <span class="No-Break">JSON file.</span></p>
+			<p>In this chapter, we will cover the <span class="No-Break">following topics:</span></p>
+			<ul>
+				<li>Building our <span class="No-Break">PostgreSQL database</span></li>
+				<li>Connecting to PostgreSQL <span class="No-Break">with Diesel</span></li>
+				<li>Connecting our application <span class="No-Break">to PostgreSQL</span></li>
+				<li>Configuring <span class="No-Break">our application</span></li>
+				<li>Managing a database connection pool </li>
+			</ul>
+			<p>By the end of this chapter, you will be able to manage an application that performs reading, writing, and deleting data in a PostgreSQL database with data models. If we make changes to the data models, we will be able to manage them with migrations. Once this is done, you will be able to optimize your database connections with pools and get the server to reject the HTTP request before it hits the view if the database connection cannot be made. </p>
+			<h1 id="_idParaDest-128"><a id="_idTextAnchor129"/>Technical requirements</h1>
+			<p>In this chapter, we will be using <strong class="bold">Docker</strong> to define, run a PostgreSQL database, and run it. This will enable our app to interact with a database on our local machine. Docker can be installed by following the instructions <span class="No-Break">at </span><a href="https://docs.docker.com/engine/install/"><span class="No-Break">https://docs.docker.com/engine/install/</span></a><span class="No-Break">.</span></p>
+			<p>We will also be using <strong class="source-inline">docker-compose</strong> on top of Docker to orchestrate our Docker containers. This can be installed by following the instructions <span class="No-Break">at </span><a href="https://docs.docker.com/compose/install/"><span class="No-Break">https://docs.docker.com/compose/install/</span></a><span class="No-Break">.</span></p>
+			<p>The code files for this chapter can be found <span class="No-Break">at </span><a href="https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter06"><span class="No-Break">https://github.com/PacktPublishing/Rust-Web-Programming-2nd-Edition/tree/main/chapter06</span></a><span class="No-Break">.</span></p>
+			<h1 id="_idParaDest-129"><a id="_idTextAnchor130"/>Building our PostgreSQL database</h1>
+			<p>Up<a id="_idIndexMarker590"/> to this point in the book, we have been using a JSON file to store our to-do items. This has served us well so far. In fact, there is no reason why we cannot use a JSON file throughout the rest of the book to complete the tasks. However, if you use a JSON file for production projects, you will come across <span class="No-Break">some downsides.</span></p>
+			<h2 id="_idParaDest-130"><a id="_idTextAnchor131"/>Why we should use a proper database</h2>
+			<p>If the<a id="_idIndexMarker591"/> reads and writes to our JSON file increase, we can face some concurrency issues and data corruption. There is also no checking on the type of data. Therefore, another developer can write a function that writes different data to the JSON file, and nothing will stand in <span class="No-Break">the way.</span></p>
+			<p>There is also an issue with migrations. If we want to add a timestamp to the to-do items, this will only affect new to-do items that we insert into the JSON file. Therefore, some of our to-do items will have a timestamp, and others won’t, which will introduce bugs into our app. Our JSON file also has limitations in terms <span class="No-Break">of filtering.</span></p>
+			<p>Right now, all we do is read the whole data file, alter an item in the whole dataset, and write the whole dataset to<a id="_idIndexMarker592"/> the <strong class="bold">JSON</strong> file. This is not effective and will not scale well. It also inhibits us from linking these to-do items to another data model-like user. Plus, we can only search right now using the status. If we used a SQL database with a user table linked to a to-do item database, we would be able to filter to-do items based on the user, status, or title. We can even use a combination thereof. When it comes to running our database, we are going to use Docker. So why should we use Docker? </p>
+			<h2 id="_idParaDest-131"><a id="_idTextAnchor132"/>Why use Docker?</h2>
+			<p>To understand why we<a id="_idIndexMarker593"/> would use Docker, we first need to understand what Docker is. Docker essentially has containers that work like virtual machines but in a more specific and granular way. Docker containers isolate a single application and all the application’s dependencies. The application is run inside the Docker container. Docker containers can then communicate with each other. Because Docker containers share a single common <strong class="bold">operating system</strong> (<strong class="bold">OS</strong>), they are compartmentalized from one another and from the OS at large, meaning that Docker applications  use less memory compared to virtual machines. Because of Docker containers, we can be more portable with our applications. If the Docker container runs on your machine, it will run on another machine that also has Docker. We can also package our applications, meaning that extra packages specifically required for our application to run do not need to be installed separately, including dependencies on the OS level. As a result, Docker gives us great flexibility in web development as we can simulate servers and databases on our local machine. </p>
+			<h2 id="_idParaDest-132"><a id="_idTextAnchor133"/>How to use Docker to run a database</h2>
+			<p>With all <a id="_idIndexMarker594"/>this in mind, it makes sense to go through the extra steps necessary to set up and run a SQL database. To do this, we are going to use Docker: a tool that helps us create and use containers. Containers themselves are Linux technology that package and isolate applications along with their entire runtime environment. Containers are technically isolated file systems, but to help visualize what we are doing in this chapter, you can think of them as mini lightweight virtual machines. These containers are made from images that can be downloaded from <strong class="bold">Docker Hub</strong>. We can<a id="_idIndexMarker595"/> insert our own code into these images before spinning up a container out of them, as seen in the <span class="No-Break">following diagram:</span></p>
+			<div>
+				<div id="_idContainer066" class="IMG---Figure">
+					<img src="image/Figure_6.1_B18722.jpg" alt="Figure 6.1 – Relationship between Docker images and containers"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.1 – Relationship between Docker images and containers</p>
+			<p>With Docker, we <a id="_idIndexMarker596"/>can download an image, such as a PostgreSQL database, and run it in our development environment. Because of Docker, we can spin up multiple databases and apps and then shut them down as and when we need them. First, we need to take stock of our containers by running the following command in <span class="No-Break">the terminal:</span></p>
+			<pre class="console">
+<strong class="bold">docker container ls -a</strong></pre>
+			<p>If Docker is a fresh install, we get the <span class="No-Break">following output:</span></p>
+			<pre class="console">
+CONTAINER ID  IMAGE  COMMAND  CREATED  STATUS  PORTS  NAMES</pre>
+			<p>As we can see, we have no containers. We also need to take stock of our images. This can be done by running the following <span class="No-Break">terminal command:</span></p>
+			<pre class="console">
+docker image ls</pre>
+			<p>The preceding command gives the <span class="No-Break">following output:</span></p>
+			<pre class="console">
+REPOSITORY  TAG  IMAGE ID  CREATED  SIZE</pre>
+			<p>Again, if <a id="_idIndexMarker597"/>Docker is a fresh install, then there will be <span class="No-Break">no containers.</span></p>
+			<p>There are other ways in which we can create a database in Docker. For instance, we can create our own <strong class="bold">Dockerfile</strong>, where we <a id="_idIndexMarker598"/>define our OS and configurations. However, we have <strong class="source-inline">docker-compose</strong> installed. Using <strong class="source-inline">docker-compose</strong> will make the database definition straightforward. It will also enable us to add more containers and services. To define our PostgreSQL database, we code the following <strong class="bold">YAML</strong> code<a id="_idIndexMarker599"/> in a <strong class="source-inline">docker-compose.yml</strong> file in the <span class="No-Break">root directory:</span></p>
+			<pre class="source-code">
+version: "3.7"
+services:
+  postgres:
+    container_name: 'to-do-postgres'
+    image: 'postgres:11.2'
+    restart: always
+    ports:
+      - '5432:5432'
+    environment:
+      - 'POSTGRES_USER=username'
+      - 'POSTGRES_DB=to_do'
+      - 'POSTGRES_PASSWORD=password'</pre>
+			<p>In the preceding code, at the top of the file, we have defined the version. Older versions, such as <em class="italic">2</em> or <em class="italic">1</em>, have different styles in which the file is laid out. The different versions also support different arguments. At the time of writing this book, version <em class="italic">3</em> is the latest version. The following URL covers the changes between each <strong class="source-inline">docker-compose</strong> <span class="No-Break">version: </span><a href="https://docs.docker.com/compose/compose-file/compose-versioning/"><span class="No-Break">https://docs.docker.com/compose/compose-file/compose-versioning/</span></a><span class="No-Break">.</span></p>
+			<p>We then define our<a id="_idIndexMarker600"/> database service that is nested under the <strong class="source-inline">postgres</strong> tag. Tags such as <strong class="source-inline">postgres</strong> and <strong class="source-inline">services</strong> denote dictionaries, and lists are defined with <strong class="source-inline">-</strong> for each element. If we were to convert our <strong class="source-inline">docker-compose</strong> file to JSON, it would have the <span class="No-Break">following structure:</span></p>
+			<pre class="source-code">
+{
+  "version": "3.7",
+  "services": {
+    "postgres": {
+      "container_name": "to-do-postgres",
+      "image": "postgres:11.2",
+      "restart": "always",
+      "ports": [
+        "5432:5432"
+      ],
+      "environment": [
+        "POSTGRES_USER=username",
+        "POSTGRES_DB=to_do",
+        "POSTGRES_PASSWORD=password"
+      ]
+    }
+  }
+}</pre>
+			<p>In the preceding code, we can see that our services are a dictionary of dictionaries denoting each service. Thus, we can deduce that we cannot have two tags with the same name, as we cannot have two dictionary keys that are the same. The previous code also tells us that we can keep stacking on service tags with their <span class="No-Break">own parameters.</span></p>
+			<h2 id="_idParaDest-133"><a id="_idTextAnchor134"/>Running a database in Docker</h2>
+			<p>With our <a id="_idIndexMarker601"/>database service, we have a name, so when we look at our containers, we know what each container is doing in relation to the service, such as a server or database. In terms of configuring the database and building it, we luckily pull the official <strong class="source-inline">postgres</strong> image. This image has everything configured for us, and Docker will pull it from the repository. The image is like a blueprint. We can spin up multiple containers with their own parameters from that one image that we pulled. We then define the restart policy as always. This means that containers’ restart policies will trigger when the containers exit. We can also define it to only restart based on a failure <span class="No-Break">or stopping.</span></p>
+			<p>It should be noted that Docker containers have their own ports that are not open to the machine. However, we can expose container ports and map the exposed port to an internal port inside the Docker container. Considering these features, we can define <span class="No-Break">our ports.</span></p>
+			<p>However, in our example, we will keep our definition simple. We will state that we accept incoming traffic to the Docker container on port <strong class="source-inline">5432</strong> and route it through to the internal port <strong class="source-inline">5432</strong>. We will then define our environment variables, which are the username, the name of the database, and the password. While we are using generic, easy-to-remember passwords and usernames for this book, it is advised that you switch to more secure passwords and usernames if pushing to production. We can build a spin up for our system by navigating to the root directory where our <strong class="source-inline">docker-compose</strong> file is by running the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+docker-compose up</pre>
+			<p>The preceding command will pull down the <strong class="source-inline">postgres</strong> image from the repository and start constructing the database. After a flurry of log messages, the terminal should come to rest with the <span class="No-Break">following output:</span></p>
+			<pre class="console">
+LOG:  listening on IPv4 address "0.0.0.0", port 5432
+LOG:  listening on IPv6 address "::", port 5432
+LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+LOG:  database system was shut down at 2022-04-23 17:36:45 UTC
+LOG:  database system is ready to accept connections</pre>
+			<p>As you<a id="_idIndexMarker602"/> can see, the date and time will vary. However, what we are told here is that our database is ready to accept connections. Yes, it is really that easy. Therefore, Docker adoption is unstoppable. Clicking <em class="italic">Ctrl</em> + <em class="italic">C</em> will stop our <strong class="source-inline">docker-compose</strong>; thus, shutting down our <span class="No-Break"><strong class="source-inline">postgres</strong></span><span class="No-Break"> container.</span></p>
+			<p>We now list all our containers with the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+docker container ls -a</pre>
+			<p>The preceding command gives us the <span class="No-Break">following output:</span></p>
+			<pre class="console">
+CONTAINER ID        IMAGE               COMMAND                  
+c99f3528690f        postgres:11.2       "docker-entrypoint.s…"
+CREATED             STATUS                          PORTS
+4 hours ago         Exited (0) About a minute ago        
+NAMES
+to-do-postgres</pre>
+			<p>In the preceding output, we can see that all the parameters are there. The ports, however, are empty because we stopped our service. </p>
+			<h2 id="_idParaDest-134"><a id="_idTextAnchor135"/>Exploring routing and ports in Docker</h2>
+			<p>If we were to start our service again and list our containers in another terminal, port <strong class="source-inline">5432</strong> would be<a id="_idIndexMarker603"/> under the <strong class="source-inline">PORTS</strong> tag. We must keep note of the <strong class="source-inline">CONTAINER ID</strong> reference to the <a id="_idIndexMarker604"/>Docker container as it will be unique and different/random<a id="_idIndexMarker605"/> for each container. We will need to reference these if we’re<a id="_idIndexMarker606"/> accessing logs. When we run <strong class="source-inline">docker-compose up</strong>, we essentially use the <span class="No-Break">following structure:</span></p>
+			<div>
+				<div id="_idContainer067" class="IMG---Figure">
+					<img src="image/Figure_6.2_B18722.jpg" alt="Figure 6.2 – ﻿docker-compose serving our database"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.2 – docker-compose serving our database</p>
+			<p>In <span class="No-Break"><em class="italic">Figure 6</em></span><em class="italic">.2</em>, we can <a id="_idIndexMarker607"/>see that our <strong class="source-inline">docker-compose</strong> uses a unique project name to<a id="_idIndexMarker608"/> keep containers and networks in their namespace. It must be<a id="_idIndexMarker609"/> noted that our containers are running on the localhost. Therefore, if<a id="_idIndexMarker610"/> we want to make a call to a container managed by <strong class="source-inline">docker-compose</strong>, we will have to make a localhost request. However, we must make the call to the port that is open from <strong class="source-inline">docker-compose</strong>, and <strong class="source-inline">docker-compose</strong> will route it to the port that is defined in the <strong class="source-inline">docker-compose</strong>.<strong class="source-inline">yml</strong> file. For instance, we have two databases with the following <span class="No-Break"><strong class="source-inline">yml</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+version: "3.7"
+services:
+  postgres:
+    container_name: 'to-do-postgres'
+    image: 'postgres:11.2'
+    restart: always
+    ports:
+      - '5432:5432'
+    environment:
+      - 'POSTGRES_USER=username'
+      - 'POSTGRES_DB=to_do'
+      - 'POSTGRES_PASSWORD=password'
+  postgres_two:
+    container_name: 'to-do-postgres_two'
+    image: 'postgres:11.2'
+    restart: always
+    ports:
+      - '5433:5432'
+    environment:
+      - 'POSTGRES_USER=username'
+      - 'POSTGRES_DB=to_do'
+      - 'POSTGRES_PASSWORD=password'</pre>
+			<p>In the preceding <a id="_idIndexMarker611"/>code, we can see that both of our databases accept traffic into their <a id="_idIndexMarker612"/>containers through port <strong class="source-inline">5432</strong>. However, there would be a clash, so<a id="_idIndexMarker613"/> one of the ports that we open with is port <strong class="source-inline">5433</strong>, which is routed<a id="_idIndexMarker614"/> to port <strong class="source-inline">5432</strong> in the second database container, which gives us the <span class="No-Break">following layout:</span></p>
+			<div>
+				<div id="_idContainer068" class="IMG---Figure">
+					<img src="image/Figure_6.3_B18722.jpg" alt="Figure 6.3 – docker-compose serving multiple databases"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.3 – docker-compose serving multiple databases</p>
+			<p>This routing gives us <a id="_idIndexMarker615"/>flexibility when running multiple containers. We are not going to run<a id="_idIndexMarker616"/> multiple databases for our to-do application, so we should <a id="_idIndexMarker617"/>delete our <strong class="source-inline">postgres_two</strong> service. Once we have deleted our <strong class="source-inline">postgres_two</strong> service, we can run <strong class="source-inline">docker-compose</strong> again and then list our <a id="_idIndexMarker618"/>containers with the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+docker image ls</pre>
+			<p>The preceding command will now give us the <span class="No-Break">following output:</span></p>
+			<pre class="console">
+REPOSITORY          TAG                 IMAGE ID    
+postgres            11.2                3eda284d1840
+CREATED             SIZE
+17 months ago       312MB</pre>
+			<p>In the preceding output, we can see that our image has been pulled from the <strong class="source-inline">postgres</strong> repository. We also have a unique/random ID for the image and a date for when that image <span class="No-Break">was created.</span></p>
+			<p>Now that we have a basic understanding of how to get our database up and running, we can run <strong class="source-inline">docker-compose</strong> in the background with the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+docker-compose up -d</pre>
+			<p>The preceding command just tells us which containers have been spun up with the <span class="No-Break">following output:</span></p>
+			<pre class="console">
+Starting to-do-postgres ... done</pre>
+			<p>We can see our <a id="_idIndexMarker619"/>status <a id="_idIndexMarker620"/>when we list our containers with the <a id="_idIndexMarker621"/><span class="No-Break">following</span><span class="No-Break"><a id="_idIndexMarker622"/></span><span class="No-Break"> output:</span></p>
+			<pre class="console">
+STATUS              PORTS                    NAMES
+Up About a minute   0.0.0.0:5432-&gt;5432/tcp   to-do-postgres</pre>
+			<p>In the previous output, the other tags are the same, but we can also see that the <strong class="source-inline">STATUS</strong> tag tells us how long the container has been running, and which port it is occupying. Although <strong class="source-inline">docker-compose</strong> is running in the background, it does not mean we cannot see what is going on. We can access the logs of the container anytime by calling the <strong class="source-inline">logs</strong> command and referencing the ID of the container using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+docker logs c99f3528690f</pre>
+			<p>The preceding command should give the same output as our standard <strong class="source-inline">docker-compose up</strong> command. To stop <strong class="source-inline">docker-compose</strong>, we can run the <strong class="source-inline">stop</strong> command, shown <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+docker-compose stop</pre>
+			<p>The preceding command will stop our containers in our <strong class="source-inline">docker-compose</strong>. It must be noted that this is different from the <strong class="source-inline">down</strong> command, shown <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+docker-compose down</pre>
+			<p>The <strong class="source-inline">down</strong> command will also stop our containers. However, the <strong class="source-inline">down</strong> command will delete the container. If our database container is deleted, we will also lose all <span class="No-Break">our data.</span></p>
+			<p>There is a <a id="_idIndexMarker623"/>configuration parameter called <strong class="source-inline">volumes</strong> that can prevent the deletion of our<a id="_idIndexMarker624"/> data when the container is removed; however, this is not essential for<a id="_idIndexMarker625"/> local development on our computers. In fact, you will be <a id="_idIndexMarker626"/>wanting to delete containers and images from your laptop regularly. <em class="italic">I did a purge on my laptop once of containers and images that I was no longer using, and this freed </em><span class="No-Break"><em class="italic">up 23GB!</em></span></p>
+			<p>Docker containers<a id="_idIndexMarker627"/> on our local development machines should be treated as temporary. While Docker containers are more lightweight than standard virtual machines, they are not free. The idea behind Docker running on our local machines is that we can simulate what running our application would be like on a server. If it runs in Docker on our laptop, we can be certain that it will also run on our server, especially if the server is being managed by a production-ready Docker orchestration tool such <a id="_idIndexMarker628"/><span class="No-Break">as </span><span class="No-Break"><strong class="bold">Kubernetes</strong></span><span class="No-Break">.</span></p>
+			<h2 id="_idParaDest-135"><a id="_idTextAnchor136"/>Running Docker in the background with Bash scripts</h2>
+			<p>Docker<a id="_idIndexMarker629"/> can also help with consistent testing and <a id="_idIndexMarker630"/>development. We will want to be able to have the same results every time we run a test. We will also want to onboard other developers easily and enable them to tear down and spin up containers that will support development quickly and easily. I have personally seen development delayed when not supporting easy teardown and spin-up procedures. For instance, when working on a complex application, the code that we are adding and testing out might scar the database. Reverting back might not be possible, and deleting the database and starting again would be a pain, as reconstructing this data might take a long time. The developer may not even remember how they constructed the data in the first place. There are multiple ways to prevent this from happening and we will cover these in <a href="B18722_09.xhtml#_idTextAnchor182"><span class="No-Break"><em class="italic">Chapter 9</em></span></a>, <em class="italic">Testing Our Application Endpoints and Components</em>. </p>
+			<p>For now, we will build a script that spins up our database in the background, waits until the connection to our database is ready, and then tears down our database. This will give us the foundations to build pipelines, tests, and onboarding packages to start development. To do this, we will create a directory in the root directory of our Rust web application called <strong class="source-inline">scripts</strong>. We can then create a <strong class="source-inline">scripts/wait_for_database.sh</strong> file housing the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+#!/bin/bash
+cd ..
+docker-compose up -d
+until pg_isready -h localhost -p 5432 -U username
+do
+  echo "Waiting for postgres"
+  sleep 2;
+done
+echo "docker is now running"
+docker-compose down</pre>
+			<p>Using the <a id="_idIndexMarker631"/>preceding code, we move the current <a id="_idIndexMarker632"/>working directory of the script out of the <strong class="source-inline">scripts</strong> directory and into our root directory. We then start <strong class="source-inline">docker-compose</strong> in the background. Next, we loop, pinging port <strong class="source-inline">5432</strong> utilizing the <strong class="source-inline">pq_isready</strong> command to wait until our database is ready to <span class="No-Break">accept connections.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">The <strong class="source-inline">pg_isready</strong> Bash command might not be available on your computer. The <strong class="source-inline">pg_isready</strong> command usually comes with the installation of the PostgreSQL client. Alternatively, you can use the following Docker command instead <span class="No-Break">of </span><span class="No-Break"><strong class="source-inline">pg_isready</strong></span><span class="No-Break">:</span></p>
+			<p class="callout"><strong class="source-inline">until docker run -it postgres --add-host host.docker.internal:host-gateway docker.io/postgres:14-alpine -h localhost -U </strong><span class="No-Break"><strong class="source-inline">username pg_isready</strong></span></p>
+			<p class="callout">What is happening here is that we are using the <strong class="source-inline">postgres</strong> Docker image to run our database check to ensure that our database is ready to accept connections. </p>
+			<p>Once our<a id="_idIndexMarker633"/> database is running, we print out to the<a id="_idIndexMarker634"/> console that our database is running and then tear down our <strong class="source-inline">docker-compose</strong>, destroying the database container. Running the command that runs the <strong class="source-inline">wait_for_database.sh</strong> Bash script will give the <span class="No-Break">following output:</span></p>
+			<pre class="console">
+❯ sh wait_for_database.sh 
+[+] Running 0/0
+ ⠋ Network web_app_default  Creating        0.2s
+ ⠿ Container to-do-postgres      Started    1.5s
+localhost:5432 - no response
+Waiting for postgres
+localhost:5432 - no response
+Waiting for postgres
+localhost:5432 - accepting connections
+docker is now running
+[+] Running 1/1
+ ⠿ Container to-do-postgres  Removed        1.2s
+ ⠿ Network web_app_default   Removed  </pre>
+			<p>From the preceding <a id="_idIndexMarker635"/>output, considering that we tell <a id="_idIndexMarker636"/>our loop to sleep for 2 seconds at every iteration of the loop, we can deduce that it took roughly 4 seconds for our newly spun-up database to accept connections. Thus, we can say that we have achieved basic competency in managing local databases with Docker.    </p>
+			<p>In this section, we set up our environment. We also sufficiently understood the basics of Docker to build, monitor, shut down, and delete our database with just a few simple commands. Now, we can move on to the next section, where we’ll interact with our database with Rust and the <span class="No-Break"><strong class="source-inline">diesel</strong></span><span class="No-Break"> crate.</span></p>
+			<h1 id="_idParaDest-136"><a id="_idTextAnchor137"/>Connecting to PostgreSQL with Diesel</h1>
+			<p>Now that our <a id="_idIndexMarker637"/>database is running, we will build a <a id="_idIndexMarker638"/>connection to this database in this section. To do this, we will be using the <strong class="source-inline">diesel</strong> crate. The <strong class="source-inline">diesel</strong> crate enables us to get our Rust code to connect to databases. We are using the <strong class="source-inline">diesel</strong> crate instead of other crates because the <strong class="source-inline">diesel</strong> crate is the most established, having a lot of support and documentation. To do this, let us go through the <span class="No-Break">following steps:</span></p>
+			<ol>
+				<li>First, we will utilize the <strong class="source-inline">diesel</strong> crate. To do this, we can add the following dependencies in our <span class="No-Break"><strong class="source-inline">cargo.toml</strong></span><span class="No-Break"> file:</span><pre class="source-code">
+diesel = { version = "1.4.8", features = ["postgres", </pre><pre class="source-code">
+                                          "chrono", </pre><pre class="source-code">
+                                          "r2d2"] }</pre><pre class="source-code">
+dotenv = "0.15.0"</pre><pre class="source-code">
+chrono = "0.4.19"</pre></li>
+			</ol>
+			<p>In the preceding code, we have included a <strong class="source-inline">postgres</strong> feature in our <strong class="source-inline">diesel</strong> crate. The <strong class="source-inline">diesel</strong> crate definition also has the <strong class="source-inline">chrono</strong> and <strong class="source-inline">r2d2</strong> features. The <strong class="source-inline">chrono</strong> feature enables our Rust code to utilize datetime structs. The <strong class="source-inline">r2d2</strong> feature enables us to perform connection pooling. We will cover connection pooling at the end of the chapter. We have also included the <strong class="source-inline">dotenv</strong> crate. This crate enables us to define variables in a <strong class="source-inline">.env</strong> file, which will then be passed through into our program. We will use this to pass in the database credentials and then <span class="No-Break">into processes.</span></p>
+			<ol>
+				<li value="2">We now need to install the <strong class="source-inline">diesel</strong> client to run migrations to the database through our terminal as opposed to our app. We can do this with the <span class="No-Break">following command:</span><pre class="source-code">
+<strong class="bold">cargo install diesel_cli --no-default-features </strong></pre><pre class="source-code">
+<strong class="bold">    --features postgres</strong></pre></li>
+				<li>We now need to define the environment <strong class="source-inline">DATABASE_URL</strong> URL. This will enable our client commands to connect to the database with the <span class="No-Break">following command:</span><pre class="source-code">
+<strong class="bold">echo DATABASE_URL=postgres://username:password@localhost/to_do </strong></pre><pre class="source-code">
+<strong class="bold">    &gt; .env</strong></pre></li>
+			</ol>
+			<p>In the<a id="_idIndexMarker639"/> preceding URL, our username<a id="_idIndexMarker640"/> is denoted as username, and our password is denoted as password. Our database is running on our own computer, which is denoted as <strong class="source-inline">localhost</strong>, and our database is called <strong class="source-inline">to_do</strong>. This creates a <strong class="source-inline">.env</strong> file in the root file outputting the <span class="No-Break">following contents:</span></p>
+			<pre class="source-code">
+<strong class="bold">DATABASE_URL=postgres://username:password@localhost/to_do</strong></pre>
+			<ol>
+				<li value="4">Now that our variables are defined, we can start to set up our database. We need to spin up our database container with <strong class="source-inline">docker-compose</strong> with our <strong class="source-inline">docker-compose up</strong> command. We then set up our database with the <span class="No-Break">following command:</span><pre class="source-code">
+<strong class="bold">diesel setup</strong></pre></li>
+			</ol>
+			<p>The preceding command then creates a <strong class="source-inline">migrations</strong> directory in the root with the <span class="No-Break">following structure:</span></p>
+			<pre class="source-code">
+<strong class="bold">── migrations</strong>
+<strong class="bold">│   └── 00000000000000_diesel_initial_setup</strong>
+<strong class="bold">│</strong><strong class="bold">       ├── down.sql</strong>
+<strong class="bold">│       └── up.sql</strong></pre>
+			<p>The <strong class="source-inline">up.sql</strong> file is fired when the migration is upgraded, and the <strong class="source-inline">down.sql</strong> file is fired when the migration <span class="No-Break">is downgraded.</span></p>
+			<ol>
+				<li value="5">Now, we <a id="_idIndexMarker641"/>need to create our migration to <a id="_idIndexMarker642"/>create our to-do items. This can be done by commanding our client to generate the migration with the <span class="No-Break">following command:</span><pre class="source-code">
+<strong class="bold">diesel migration generate create_to_do_items</strong></pre></li>
+			</ol>
+			<p>Once this is run, we should get the following printout in <span class="No-Break">the console:</span></p>
+			<pre class="source-code">
+<strong class="bold">Creating migrations/2022-04-23-201747_create_to_do_items/up.sql</strong>
+<strong class="bold">Creating migrations/2022-04-23-201747_create_to_do_items/down.sql</strong></pre>
+			<p>The preceding command gives us the following file structure in <span class="No-Break">our migrations:</span></p>
+			<pre class="source-code">
+├── migrations
+│   ├── 00000000000000_diesel_initial_setup
+│   │   ├── down.sql
+│   │   └── up.sql
+│   └── 2022-04-23-201747_create_to_do_items
+│       ├── down.sql
+│       └── up.sql</pre>
+			<p>At face value, it might seem unfortunate that with the <strong class="source-inline">diesel</strong> crate, we will have to create our own SQL files. However, this is forcing good practice. While it is easier to allow the crate to automatically write the SQL, this couples our application with the database. For instance, once I was working on refactoring a microservices system. The problem I had was that I was using a Python package to manage all my migrations for the database. However, I wanted to change the code of the server. You will not be surprised to hear that I was going to switch the server from Python to Rust. However, because the migrations were autogenerated by the Python library, I had to construct helper Docker containers that, to this day, spin up when a new release is done and then perform a copy of the schema of the database to the Rust application when it is being built. This is messy. This also justified to me why we had to write all our SQL manually when I was an R&amp;D software engineer in financial tech. </p>
+			<p>Databases are <a id="_idIndexMarker643"/>separate from our applications. Because <a id="_idIndexMarker644"/>of this, we should keep them isolated, so we do not see the writing of SQL manually as a hindrance. Embrace it as you are learning a good skill that will save you headaches in the future. We must remember not to force one tool into everything, it has to be the right tool for the right job. In our <strong class="source-inline">create to-do items</strong> migrations folder, we define our <strong class="source-inline">to_do</strong> table with the following SQL entries in our <span class="No-Break"><strong class="source-inline">up.sql</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+CREATE TABLE to_do (
+  id SERIAL PRIMARY KEY,
+  title VARCHAR NOT NULL,
+  status VARCHAR NOT NULL,
+  date timestamp NOT NULL DEFAULT NOW()
+)</pre>
+			<p>In the preceding code, we have an <strong class="source-inline">id</strong> of the item that will be unique. We then have <strong class="source-inline">title</strong> and <strong class="source-inline">status</strong>. We have also added a <strong class="source-inline">date</strong> field that, by default, has the current time the to-do item is inserted into the table. These fields are wrapped in a <strong class="source-inline">CREATE TABLE</strong> command. In our <strong class="source-inline">down.sql</strong> file, we need to drop the table if we are downgrading the migration with the following <span class="No-Break">SQL command:</span></p>
+			<pre class="source-code">
+DROP TABLE to_do</pre>
+			<p>Now that we have written the SQL code for our <strong class="source-inline">up.sql</strong> and <strong class="source-inline">down.sql</strong> files, we can describe what our code does with the <span class="No-Break">following diagram:</span></p>
+			<div>
+				<div id="_idContainer069" class="IMG---Figure">
+					<img src="image/Figure_6.4_B18722.jpg" alt="Figure 6.4 – The effect of the up.sql and down.sql scripts"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.4 – The effect of the up.sql and down.sql scripts</p>
+			<ol>
+				<li value="6">Now <a id="_idIndexMarker645"/>that our migration is ready, we <a id="_idIndexMarker646"/>can run it with the following <span class="No-Break">terminal command:</span><pre class="source-code">
+<strong class="bold">diesel migration run</strong></pre></li>
+			</ol>
+			<p>The preceding command runs the migration creating the <strong class="source-inline">to_do</strong> table. Sometimes, we might introduce a different field type in the SQL. To rectify this, we can change SQL in our <strong class="source-inline">up.sql</strong> and <strong class="source-inline">down.sql</strong> files and run the following <strong class="source-inline">redo</strong> <span class="No-Break">terminal command:</span></p>
+			<pre class="source-code">
+<strong class="bold">diesel migration redo</strong></pre>
+			<p>The preceding command will run the <strong class="source-inline">down.sql</strong> file and then run the <span class="No-Break"><strong class="source-inline">up.sql</strong></span><span class="No-Break"> file.</span></p>
+			<ol>
+				<li value="7">Next, we can run commands in our database Docker container to inspect that our database has the <strong class="source-inline">to_do</strong> table with the right fields that we defined. We can do this by running commands directly on our database Docker container. We can enter the container under the <strong class="source-inline">username</strong> username, while pointing to the <strong class="source-inline">to_do</strong> database using the following <span class="No-Break">terminal command:</span><pre class="source-code">
+<strong class="bold">docker exec -it 5fdeda6cfe43 psql -U username to_do</strong></pre></li>
+			</ol>
+			<p>It must be noted that, in the preceding command, my container ID is <strong class="source-inline">5fdeda6cfe43</strong>, but your container ID will be different. If you do not input the right container ID, you will not be running the right database commands on the right database. After running this command, we get a shell interface with the <span class="No-Break">following prompt:</span></p>
+			<pre class="source-code">
+<strong class="bold">to_do=#</strong></pre>
+			<p>After the<a id="_idIndexMarker647"/> preceding prompt, when we <a id="_idIndexMarker648"/>type in <strong class="source-inline">\c</strong>, we will be connected to the database. This will usually be denoted with a statement saying that we are now connected to the <strong class="source-inline">to_do</strong> database and as the <strong class="source-inline">username</strong> user. Finally, typing <strong class="source-inline">\d</strong> will list the relations, giving the following table in <span class="No-Break">the terminal:</span></p>
+			<pre class="source-code">
+<strong class="bold">Schema |            Name            </strong><strong class="bold">|   Type   |  Owner   </strong>
+<strong class="bold">--------+----------------------------+----------+----------</strong>
+<strong class="bold"> public | __diesel_schema_migrations | table    | username</strong>
+<strong class="bold"> public | to_do                      | table    </strong><strong class="bold">| username</strong>
+<strong class="bold"> public | to_do_id_seq               | sequence | username</strong></pre>
+			<p>From the preceding table, we can see that there is a migrations table to keep track of the migration version of <span class="No-Break">the database.</span></p>
+			<ol>
+				<li value="8">We also <a id="_idIndexMarker649"/>have our <strong class="source-inline">to_do</strong> table and the<a id="_idIndexMarker650"/> sequence for the <strong class="source-inline">to_do</strong> item IDs. To inspect the schema, all we need to do is type in <strong class="source-inline">\d+ to_do</strong>, which gives us the following schema in <span class="No-Break">the terminal:</span><pre class="source-code">
+<strong class="bold">Table "public.to_do"</strong></pre><pre class="source-code">
+<strong class="bold"> Column |</strong><strong class="bold">            Type             | Collation |</strong></pre><pre class="source-code">
+<strong class="bold">--------+-----------------------------+-----------+</strong></pre><pre class="source-code">
+<strong class="bold"> id     | integer                     |           |</strong></pre><pre class="source-code">
+<strong class="bold"> title  | character varying</strong><strong class="bold">           |           |</strong></pre><pre class="source-code">
+<strong class="bold"> status | character varying           |           |</strong></pre><pre class="source-code">
+<strong class="bold"> date   | timestamp without time zone</strong><strong class="bold"> |           |</strong></pre><pre class="source-code">
+<strong class="bold">| Nullable |              Default              | Storage  |</strong></pre><pre class="source-code">
+<strong class="bold">+----------+-----------------------------------+----------+</strong></pre><pre class="source-code">
+<strong class="bold">| not null | nextval('to_do_id_seq'::regclass) | plain    |             </strong></pre><pre class="source-code">
+<strong class="bold">| not null |                                   | extended |             </strong></pre><pre class="source-code">
+<strong class="bold">| not null |</strong><strong class="bold">                                   | extended |           </strong></pre><pre class="source-code">
+<strong class="bold">| not null | now()                             | plain    |            </strong></pre><pre class="source-code">
+<strong class="bold">Indexes:</strong></pre><pre class="source-code">
+<strong class="bold">    "to_do_pkey" PRIMARY KEY, btree (id)</strong></pre></li>
+			</ol>
+			<p>In the preceding table, we can see that our schema is exactly how we designed it. We get a little more information in the <strong class="source-inline">date</strong> column clarifying that we do not get the time the to-do item was created. Seeing as our migrations have worked, we should explore how migrations show up in the database in the next step. </p>
+			<ol>
+				<li value="9">We can <a id="_idIndexMarker651"/>inspect our migrations table by<a id="_idIndexMarker652"/> running the following <span class="No-Break">SQL command:</span><pre class="source-code">
+<strong class="bold">SELECT * FROM  __diesel_schema_migrations;</strong></pre></li>
+			</ol>
+			<p>The preceding command gives us the following table <span class="No-Break">as output:</span></p>
+			<pre class="source-code">
+<strong class="bold">    version     |           run_on           </strong>
+<strong class="bold">----------------+----------------------------</strong>
+<strong class="bold"> 00000000000000 | 2022-04-25 23:10:07.774008</strong>
+<strong class="bold"> 20220424171018 | 2022-04-25 23:29:55.167845</strong></pre>
+			<p>As you can see, these migrations can be useful for debugging as sometimes we can forget to run a migration after updating a data model. To explore this further, we can revert our last migration with the following command outside the <span class="No-Break">Docker container:</span></p>
+			<pre class="source-code">
+<strong class="bold">diesel migration revert</strong></pre>
+			<p>We then get the following printout informing us that the rollback has <span class="No-Break">been performed:</span></p>
+			<pre class="source-code">
+<strong class="bold">Rolling back migration 2022-04-24-171018_create_to_do_items</strong></pre>
+			<p>Now that our migration has been rolled back, our migrations table will look like the <span class="No-Break">following printout:</span></p>
+			<pre class="source-code">
+<strong class="bold">    version     </strong><strong class="bold">|           run_on           </strong>
+<strong class="bold">----------------+----------------------------</strong>
+<strong class="bold"> 00000000000000 | 2022-04-25 23:10:07.774008</strong></pre>
+			<p>In the preceding printout, we can see that our last migration was removed. Therefore, we can <a id="_idIndexMarker653"/>deduce that the migrations table <a id="_idIndexMarker654"/>is not a log. It only keeps track of migrations that are currently active. The tracking of the migrations will aid the <strong class="source-inline">diesel</strong> client when running a migration to run the right migration.  </p>
+			<p>In this section, we have used the <strong class="source-inline">diesel</strong> client to connect to our database in a Docker container. We then defined the database URL in an environment file. Next, we initialized some migrations and created a table in our database. Even better, we directly connected with the Docker container, where we could run a range of commands to explore our database. Now that our database is fully interactive via our client in the terminal, we can start building our <strong class="source-inline">to-do</strong> item database models so that our Rust app can interact with <span class="No-Break">our database.</span></p>
+			<h1 id="_idParaDest-137"><a id="_idTextAnchor138"/>Connecting our app to PostgreSQL</h1>
+			<p>In the preceding <a id="_idIndexMarker655"/>section, we managed to connect to the PostgreSQL database using the terminal. However, we now need our app to manage the reading and writing to the database for our to-do items. In this section, we will connect our application to the database running in Docker. To connect, we must build a function that establishes a connection and then returns it. It must be stressed that there is a better way to manage the database connection and configuration, which we will cover at the end of the chapter. For now, we will implement the simplest database connection to get our application running. In the <strong class="source-inline">src/database.rs</strong> file, we define the function with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use diesel::prelude::*;
+use diesel::pg::PgConnection;
+use dotenv::dotenv;
+use std::env;
+pub fn establish_connection() -&gt; PgConnection {
+    dotenv().ok();
+    let database_url = env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set");
+    PgConnection::establish(&amp;database_url)
+        .unwrap_or_else(
+        |_| panic!("Error connecting to {}", 
+        database_url))
+}</pre>
+			<p>In the preceding code, first of all, you might notice the <strong class="source-inline">use diesel::prelude::*;</strong> import command. This command imports a range of connection, expression, query, serialization, and result structs. Once the required imports are done, we define the <strong class="source-inline">connection</strong> function. First of all, we need to ensure that the program will not throw an error if we fail to load the environment using the <span class="No-Break"><strong class="source-inline">dotenv().();</strong></span><span class="No-Break"> command.</span></p>
+			<p>Once this is <a id="_idIndexMarker656"/>done, we get our database URL from the environment variables and establish a connection using a reference to our database URL. We then <strong class="source-inline">unwrap</strong> the result, and we might panic displaying the database URL if we do not manage to do this, as we want to ensure that we are using the right URL with the right parameters. As the connection is the final statement in the function, this is what <span class="No-Break">is returned.</span></p>
+			<p>Now that we have our own connection, we need to define the schema. This will map the variables of the <strong class="source-inline">to-do</strong> items to the data types. We can define our schema in the <strong class="source-inline">src/schema.rs</strong> file with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+table! {
+    to_do (id) {
+        id -&gt; Int4,
+        title -&gt; Varchar,
+        status -&gt; Varchar,
+        date -&gt; Timestamp,
+    }
+}</pre>
+			<p>In the preceding code, we are using the <strong class="source-inline">diesel</strong> macro, <strong class="source-inline">table!</strong>, which specifies that a table exists. This map is straightforward, and we will use this schema in the future to reference columns and the table in database queries <span class="No-Break">and inserts.</span></p>
+			<p>Now that we have built our database connection and defined a schema, we must declare them<a id="_idIndexMarker657"/> in our <strong class="source-inline">src/main.rs</strong> file with the <span class="No-Break">following imports:</span></p>
+			<pre class="source-code">
+#[macro_use] extern crate diesel;
+extern crate dotenv;
+use actix_web::{App, HttpServer};
+use actix_service::Service;
+use actix_cors::Cors;
+mod schema;
+mod database;
+mod views;
+mod to_do;
+mod state;
+mod processes;
+mod json_serialization;
+mod jwt;</pre>
+			<p>In the preceding code, our first import also enables procedural macros. If we do not use the <strong class="source-inline">#[macro_use]</strong> tag, then we will not be able to reference our schema in our other files. Our schema definition would also would not be able to use the table macro. We also import the <strong class="source-inline">dotenv</strong> crate. We keep the modules that we created in <a href="B18722_05.xhtml#_idTextAnchor091"><span class="No-Break"><em class="italic">Chapter 5</em></span></a>, <em class="italic">Displaying Content in the Browser</em>. We also define our schema and database modules. After<a id="_idIndexMarker658"/> doing this, we have all we need to start building our <span class="No-Break">data models.</span></p>
+			<h2 id="_idParaDest-138"><a id="_idTextAnchor139"/>Creating our data models </h2>
+			<p>We will use <a id="_idIndexMarker659"/>our data models to define parameters and behavior around the data from the database in Rust. They essentially act as a bridge between the database and the Rust app, as depicted in the <span class="No-Break">following diagram:</span></p>
+			<div>
+				<div id="_idContainer070" class="IMG---Figure">
+					<img src="image/Figure_6.5_B18722.jpg" alt="Figure 6.5 – The relationship between models, schemas, and databases"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.5 – The relationship between models, schemas, and databases</p>
+			<p>In this section, we will define the data models for to-do items. However, we need to enable our app to add more data models if needed. To do this, we carry out the <span class="No-Break">following steps:</span></p>
+			<ol>
+				<li value="1">We define a new to-do item data <span class="No-Break">model struct.</span></li>
+				<li>Then, we define a constructor function for the new to-do <span class="No-Break">item structs.</span></li>
+				<li>And lastly, we define a to-do item data <span class="No-Break">model struct.</span></li>
+			</ol>
+			<p>Before we start writing any code, we define the following file structure in the <strong class="source-inline">src</strong> directory <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+├── models
+│   ├── item
+│   │   ├── item.rs
+│   │   ├── mod.rs
+│   │   └── new_item.rs
+│   └── mod.rs</pre>
+			<p>In the preceding structure, each data model has a directory in the <strong class="source-inline">models</strong> directory. Inside that directory, we have two files that define the model. One for a new insert and another for managing the data around the database. The new insert data model does not have an <span class="No-Break">ID field.</span></p>
+			<p>There is no<a id="_idIndexMarker660"/> ID field because the database will assign an ID to the item; we do not define it before. However, when we interact with items in the database, we will get their ID, and we may want to filter by ID. Therefore, the existing data item model houses an ID field. We can define our new item data model in the <strong class="source-inline">new_item.rs</strong> file with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use crate::schema::to_do;
+use chrono::{NaiveDateTime, Utc};
+#[derive(Insertable)]
+#[table_name="to_do"]
+pub struct NewItem {
+    pub title: String,
+    pub status: String,
+    pub date: NaiveDateTime
+}
+impl NewItem {
+    pub fn new(title: String) -&gt; NewItem {
+        let now = Utc::now().naive_local();
+        return NewItem{
+            title, 
+            status: String::from("PENDING"), 
+            date: now
+        }
+    }
+}</pre>
+			<p>As you can<a id="_idIndexMarker661"/> see in the preceding code, we import our table definition because we are going to reference it. We then define our new item with <strong class="source-inline">title</strong> and <strong class="source-inline">status</strong>, which are to be strings. The <strong class="source-inline">chrono</strong> crate is used to define our <strong class="source-inline">date</strong> field as <strong class="source-inline">NaiveDateTime</strong>. We then use a <strong class="source-inline">diesel</strong> macro to define the table to belong to this struct at the <strong class="source-inline">"to_do"</strong> table. Do not be fooled by the fact that this definition uses <span class="No-Break">quotation marks.</span></p>
+			<p>If we do not import our schema, the app will not compile because it will not understand the reference. We also add another <strong class="source-inline">diesel</strong> macro stating that we allow the data to be inserted into the database with the <strong class="source-inline">Insertable</strong> tag. As covered before, we are not going to add any more tags to this macro because we only want this struct to <span class="No-Break">insert data.</span></p>
+			<p>We have also added a <strong class="source-inline">new</strong> function to enable us to define standard rules around creating a new struct. For instance, we are only going to be creating new items that are pending. This reduces the risk of a rogue status being created. If we want to expand later, the <strong class="source-inline">new</strong> function could accept a <strong class="source-inline">status</strong> input and run it through a match statement, throwing an error if the status is not one of the statuses that we are willing to accept. We also automatically state that the <strong class="source-inline">date</strong> field is the date that we create the item. </p>
+			<p>With this in mind, we can define our item data model in the <strong class="source-inline">item.rs</strong> file with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use crate::schema::to_do;
+use chrono::NaiveDateTime;
+#[derive(Queryable, Identifiable)]
+#[table_name="to_do"]
+pub struct Item {
+    pub id: i32,
+    pub title: String,
+    pub status: String,
+    pub date: NaiveDateTime
+}</pre>
+			<p>As you can see in the preceding code, the only difference between the <strong class="source-inline">NewItem</strong> and <strong class="source-inline">Item</strong> struct is that we do not have a constructor function; we have swapped the <strong class="source-inline">Insertable</strong> tag for <strong class="source-inline">Queryable</strong> and <strong class="source-inline">Identifiable</strong>, and we have added an <strong class="source-inline">id</strong> field to the struct. To make these available to the rest of the application, we define them in the <strong class="source-inline">models/item/mod.rs</strong> file with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub mod new_item;
+pub mod item;</pre>
+			<p>Then, in the <strong class="source-inline">models/mod.rs</strong> file, we make the <strong class="source-inline">item</strong> module public to other modules and the <strong class="source-inline">main.rs</strong> file with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub mod item;</pre>
+			<p>Next, we define<a id="_idIndexMarker662"/> our model’s module in the <strong class="source-inline">main.rs</strong> file with the following line <span class="No-Break">of code:</span></p>
+			<pre class="source-code">
+mod models;</pre>
+			<p>Now we can access our data models throughout the app. We have also locked down the behavior around reading and writing to the database. Next, we can move on to importing these data models and using them in <span class="No-Break">our app.</span></p>
+			<h2 id="_idParaDest-139"><a id="_idTextAnchor140"/>Getting data from the database</h2>
+			<p>When <a id="_idIndexMarker663"/>interacting with a database, it can take some time to get used to how we do this. Different <strong class="bold">object-relational mappers</strong> (<strong class="bold">ORMs</strong>) and <a id="_idIndexMarker664"/>languages have different quirks. While the underlying principles are the same, the syntax for these ORMs can vary greatly. Therefore, just clocking hours using an ORM will enable you to become more confident and solve more complex problems. We can start with the simplest mechanism, getting all the data from <span class="No-Break">a table.</span></p>
+			<p>To explore this, we can get all the items from the <strong class="source-inline">to_do</strong> table and return them at the end of each view. We defined this mechanism in <a href="B18722_04.xhtml#_idTextAnchor073"><span class="No-Break"><em class="italic">Chapter 4</em></span></a>, <em class="italic">Processing HTTP Requests</em>. In terms of our application, you will recall that we have a <strong class="source-inline">get_state</strong> function that packages our to-do items for our frontend. This <strong class="source-inline">get_state</strong> function is housed in the <strong class="source-inline">ToDoItems</strong> struct in the <strong class="source-inline">src/json_serialization/to_do_items.rs</strong> file. Initially, we must import what we need with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use crate::diesel;
+use diesel::prelude::*;
+use crate::database::establish_connection;
+use crate::models::item::item::Item;
+use crate::schema::to_do;</pre>
+			<p>In the <a id="_idIndexMarker665"/>preceding code, we have imported the <strong class="source-inline">diesel</strong> crate and macros, which enable us to build database queries. We then import our <strong class="source-inline">establish_connection</strong> function to make connections to the database and then import the schema and database model to make the query and handle the data. We can then refactor our <strong class="source-inline">get_state</strong> function with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub fn get_state() -&gt; ToDoItems {
+    let connection = establish_connection();
+    let mut array_buffer = Vec::new();
+    let items = to_do::table
+        .order(to_do::columns::id.asc())
+        .load::&lt;Item&gt;(&amp;connection).unwrap();
+    for item in items {
+        let status = 
+            TaskStatus::new(&amp;item.status.as_str());
+        let item = to_do_factory(&amp;item.title, status);
+        array_buffer.push(item);
+    }                            
+    return ToDoItems::new(array_buffer)
+}</pre>
+			<p>In the <a id="_idIndexMarker666"/>preceding code, we first establish the connection. Once the database connection is established, we then get our table and build a database query off it. The first part of the query defines the order. As we can see, our table can also pass references to columns which also have their <span class="No-Break">own function.</span></p>
+			<p>We then define what struct will be used to load the data and pass in a reference to the connection. Because the macros defined the struct in the load, if we passed in the <strong class="source-inline">NewItem</strong> struct into the <strong class="source-inline">load</strong> function, we would get an error because the <strong class="source-inline">Queryable</strong> macro is not enabled for <span class="No-Break">that struct.</span></p>
+			<p>It can also be noted that the <strong class="source-inline">load</strong> function has a prefix before the functions brackets where the parameters are passed in <strong class="source-inline">load::&lt;Item&gt;(&amp;connection)</strong>. This prefix concept was covered in <a href="B18722_01.xhtml#_idTextAnchor015"><span class="No-Break"><em class="italic">Chapter 1</em></span></a>, <em class="italic">A Quick Introduction to Rust</em>,<em class="italic"> </em>the <em class="italic">Verifying with traits</em> section, <em class="italic">step 4</em>, but for now, you can use the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+fn some_function&lt;T: SomeType&gt;(some_input: &amp;T) -&gt; () {
+    . . .
+}</pre>
+			<p>The type that is passed into the prefix <strong class="source-inline">&lt;Item&gt;</strong> defines the type of input accepted. This means that when the compiler runs, a separate function for each type passed into our <strong class="source-inline">load</strong> function is compiled.   </p>
+			<p>We then directly unwrap the <strong class="source-inline">load</strong> function resulting in a vector of items from the database. With the data from the database, we loop through constructing our item structs and appending them to our buffer. Once this is done, we construct the <strong class="source-inline">ToDoItems</strong> JSON schema from our buffer and return it. Now that we have enacted this change, all our views will return data directly from the database. If we run this, there will be no items on display. If we try and create any, they will not appear. However, although they are not being displayed, what we have done is get the data from the database and serialize it in the JSON structure that we want. This is the basis of returning data from a database and returning it to the requester in a standard way. This is the backbone of APIs built in Rust. Because we are no longer relying on reading from a JSON state file when getting the items from the database, we can remove the following imports from the <span class="No-Break"><strong class="source-inline">src/json_serialization/to_do_items.rs</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+use crate::state::read_file;
+use serde_json::value::Value;
+use serde_json::Map;</pre>
+			<p>We remove the <a id="_idIndexMarker667"/>preceding imports because we have not refactored any of the other endpoints. Resultantly, the <strong class="source-inline">create</strong> endpoint will fire correctly; however, the endpoint is just creating items in the JSON state file that <strong class="source-inline">return_state</strong> no longer reads. For us to enable creation again, we must refactor the <strong class="source-inline">create</strong> endpoint to insert a new item into <span class="No-Break">the database.</span></p>
+			<h1 id="_idParaDest-140"><a id="_idTextAnchor141"/>Inserting into the database </h1>
+			<p>In this section, we <a id="_idIndexMarker668"/>will build and create a view that creates a to-do <a id="_idIndexMarker669"/>item. If we remember the rules around our creating of to-do items, we do not want to create duplicate to-do items. This can be done with a unique constraint. However, for now, it is good to keep things simple. Instead, we will make a database fall with a filter based on the title that is passed into the view. We then check, and if no results are returned, we will insert a new <strong class="source-inline">to-do</strong> item into the database. We do this by refactoring the code in the <strong class="source-inline">views/to_do/create.rs</strong> file. First, we reconfigure the imports as seen in the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use crate::diesel;
+use diesel::prelude::*;
+use actix_web::HttpResponse;
+use actix_web::HttpRequest;
+use crate::json_serialization::to_do_items::ToDoItems;
+use crate::database::establish_connection;
+use crate::models::item::new_item::NewItem;
+use crate::models::item::item::Item;
+use crate::schema::to_do;</pre>
+			<p>In the<a id="_idIndexMarker670"/> preceding code, we import the necessary <strong class="source-inline">diesel</strong> imports to make a query as described in the previous section. We then import<a id="_idIndexMarker671"/> the <strong class="source-inline">actix-web</strong> structs needed for the view to process a request and define a result. We then import our database structs and functions to interact with the database. Now that we have everything, we can start working on our <strong class="source-inline">create</strong> view. Inside our <strong class="source-inline">pub async fn create</strong> function, we start by getting two references of the title of the <strong class="source-inline">to-do</strong> item from <span class="No-Break">the request:</span></p>
+			<pre class="source-code">
+pub async fn create(req: HttpRequest) -&gt; HttpResponse {
+    let title: String = req.match_info().get("title"
+    ).unwrap().to_string();
+    . . .
+}</pre>
+			<p>Once we have extracted the title from the URL in the preceding code, we establish a database connection and make a database call to our table using that connection, as seen in the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+let connection = establish_connection();
+let items = to_do::table
+    .filter(to_do::columns::title.eq(&amp;title.as_str()))
+    .order(to_do::columns::id.asc())
+    .load::&lt;Item&gt;(&amp;connection)
+    .unwrap();</pre>
+			<p>As we can<a id="_idIndexMarker672"/> see in the preceding code, the query is pretty <a id="_idIndexMarker673"/>much the same as the query in the previous section. However, we have a <strong class="source-inline">filter</strong> section that refers to our <strong class="source-inline">title</strong> column that must be equal to our <strong class="source-inline">title</strong>. If the item being created is truly new, there will be no items created; therefore, the length of the result will be zero. Subsequently, if the length is zero, we should create a <strong class="source-inline">NewItem</strong> data model and then insert it into the database to return the state at the end of the function, as seen in the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+if items.len() == 0 {
+    let new_post = NewItem::new(title);
+    let _ = 
+     diesel::insert_into(to_do::table).values(&amp;new_post)
+     .execute(&amp;connection);
+}
+return HttpResponse::Ok().json(ToDoItems::get_state())</pre>
+			<p>We can see that Diesel has an <strong class="source-inline">insert</strong> function, which accepts the table, and references to the data model we built. Because we have switched to database storage, we can delete the following imports as they are <span class="No-Break">not needed:</span></p>
+			<pre class="source-code">
+use serde_json::value::Value;
+use serde_json::Map;
+use crate::state::read_file;
+use crate::processes::process_input;
+use crate::to_do::{to_do_factory, enums::TaskStatus};</pre>
+			<p>Now, using our app, we will be able to create to-do items and then see these items pop up on the frontend of our application. Therefore, we can see that our <strong class="source-inline">create</strong> and <strong class="source-inline">get state</strong> functions are working; they are engaging with our database. If you are having trouble, a common mistake is to forget to spin up our <strong class="source-inline">docker-compose</strong>. (<em class="italic">Note: Remember to do this, otherwise, the app will not be able to connect to the database as it is not running</em>). However, we <a id="_idIndexMarker674"/>cannot edit our to-do items status<a id="_idIndexMarker675"/> to <strong class="source-inline">DONE</strong>. We will have to edit our data on the database to <span class="No-Break">do this.</span></p>
+			<h2 id="_idParaDest-141"><a id="_idTextAnchor142"/>Editing the database </h2>
+			<p>When we edit our data, we <a id="_idIndexMarker676"/>are going to get the data model from the database and then edit the entry with a database call function from Diesel. To engage our <strong class="source-inline">edit</strong> function with the database, we can edit our view in the <strong class="source-inline">views/to_do/edit.rs</strong> file. We start by refactoring the imports, as you see in the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use crate::diesel;
+use diesel::prelude::*;
+use actix_web::{web, HttpResponse};
+use crate::json_serialization::{to_do_item::ToDoItem, 
+                                to_do_items::ToDoItems};
+use crate::jwt::JwToken;
+use crate::database::establish_connection;
+use crate::schema::to_do;</pre>
+			<p>As we can see in the preceding code, there is a pattern emerging. The pattern is that we import dependencies to handle authentication, a database connection, and a schema and then build a function that performs the operation that we want. We have covered the imports and the meanings behind them previously. In our <strong class="source-inline">edit</strong> view, we must only get one reference to the title this time, which is denoted in the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub async fn edit(to_do_item: web::Json&lt;ToDoItem&gt;, 
+    token: JwToken) -&gt; HttpResponse {
+    let connection = establish_connection();
+    let results = to_do::table.filter(to_do::columns::title
+        .eq(&amp;to_do_item.title));
+    
+    let _ = diesel::update(results)
+        .set(to_do::columns::status.eq("DONE"))
+        .execute(&amp;connection);
+    return HttpResponse::Ok().json(ToDoItems::get_state())
+}</pre>
+			<p>In the preceding code, we can see that we perform a filter on our database without loading the data. This means that the <strong class="source-inline">results</strong> variable is an <strong class="source-inline">UpdateStatement</strong> struct. We then use this <strong class="source-inline">UpdateStatement</strong> struct to update our item to <strong class="source-inline">DONE</strong> in the database. With the fact that we are no longer using the JSON file, we can delete the following imports in the <span class="No-Break"><strong class="source-inline">views/to_do/edit.rs</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+use crate::processes::process_input;
+use crate::to_do::{to_do_factory, enums::TaskStatus};
+use serde_json::value::Value;
+use serde_json::Map;
+use crate::state::read_file;</pre>
+			<p>In the preceding code, we can see that we call the <strong class="source-inline">update</strong> function and fill it with the results that we got from the<a id="_idIndexMarker677"/> database. We then set the <strong class="source-inline">status</strong> column to <strong class="source-inline">Done</strong>, and then <strong class="source-inline">execut</strong>e using the reference to the connection. Now we can use this to edit our <strong class="source-inline">to-do</strong> items so they shift to the done list. However, we cannot delete them. To do this, we are going to have to refactor our final endpoint to completely refactor our app to be connected to <span class="No-Break">a database.</span></p>
+			<h2 id="_idParaDest-142"><a id="_idTextAnchor143"/>Deleting data</h2>
+			<p>With deleting data, we will take the <a id="_idIndexMarker678"/>same approach that we took in the previous section when editing. We will get an item from the database, pass it through the Diesel <strong class="source-inline">delete</strong> function, and then return the state. Right now, we should be comfortable with this approach, so it is advised that you try and implement it by yourself in the <strong class="source-inline">views/to_do/delete.rs</strong> file. The code is given as follows for <span class="No-Break">the imports:</span></p>
+			<pre class="source-code">
+use crate::diesel;
+use diesel::prelude::*;
+use actix_web::{web, HttpResponse};
+use crate::database::establish_connection;
+use crate::schema::to_do;
+use crate::json_serialization::{to_do_item::ToDoItem, 
+                                to_do_items::ToDoItems};
+use crate::jwt::JwToken;
+use crate::models::item::item::Item;</pre>
+			<p>In the preceding code, we rely on the Diesel crates and the prelude so we can use the Diesel macros. Without <strong class="source-inline">prelude</strong>, we would not be able to use the schema. We then import the Actix Web structs that are needed to return data to the client. We then import the crates that we<a id="_idIndexMarker679"/> have built to manage our to-do item data. For the <strong class="source-inline">delete</strong> function, the code is <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+pub async fn delete(to_do_item: web::Json&lt;ToDoItem&gt;, 
+                    token: JwToken) -&gt; HttpResponse {
+    let connection = establish_connection();
+    let items = to_do::table
+        .filter(to_do::columns::title.eq(
+                &amp;to_do_item.title.as_str()))
+        .order(to_do::columns::id.asc())
+        .load::&lt;Item&gt;(&amp;connection)
+        .unwrap();
+    let _ = diesel::delete(&amp;items[0]).execute(&amp;connection);
+    return HttpResponse::Ok().json(ToDoItems::get_state())
+}</pre>
+			<p>To conduct quality control, let us go<a id="_idIndexMarker680"/> through the <span class="No-Break">following steps:</span></p>
+			<ol>
+				<li value="1">Enter <strong class="source-inline">buy canoe</strong> into the text input and click the <span class="No-Break"><strong class="bold">Create</strong></span><span class="No-Break"> button.</span></li>
+				<li>Enter <strong class="source-inline">go dragon boat racing</strong> into the text input and click the <span class="No-Break"><strong class="bold">Create</strong></span><span class="No-Break"> button.</span></li>
+				<li>Click the <strong class="bold">edit</strong> button on the <strong class="bold">buy canoe</strong> item. After doing this, we should have the following output in <span class="No-Break">the frontend:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer071" class="IMG---Figure">
+					<img src="image/Figure_6.6_B18722.jpg" alt="Figure 6.6 – Expected output"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.6 – Expected output</p>
+			<p>In the preceding figure, we have bought our canoe, but we have not gone dragon boat racing yet. And here we have it, our app is working seamlessly with our PostgreSQL database. We can create, edit, and delete our to-do items. Because of the structure that was defined in previous chapters, chopping out the JSON file mechanism for the database did not require a lot of work. The request for processing and returning of data was already in place. When we run our application now you may have realized that we have the following printout <span class="No-Break">when compiling:</span></p>
+			<pre class="console">
+warning: function is never used: `read_file`
+  --&gt; src/state.rs:17:8
+   |
+17 | pub fn read_file(file_name: &amp;str) -&gt; Map&lt;String, Value&gt; {
+. . .
+warning: function is never used: `process_pending`
+  --&gt; src/processes.rs:18:4
+   |
+18 | fn process_pending(item: Pending, command: String, 
+                        state: &amp;Map&lt;String, Value&gt;) {</pre>
+			<p>What is happening, according to the preceding printout, is that we are no longer using our <strong class="source-inline">src/state.rs</strong> file or our <strong class="source-inline">src/processes.rs</strong> file. These files are no longer being used because our <strong class="source-inline">src/database.rs</strong> file is now managing our storage, deletion, and editing of persistent data with a real database. We are also processing our data from the <a id="_idIndexMarker681"/>database to a struct with our database model structs that have implemented the Diesel <strong class="source-inline">Queryable</strong> and <strong class="source-inline">Identifiable</strong> traits. Thus, we can delete the <strong class="source-inline">src/state.rs</strong> and <strong class="source-inline">src/database.rs</strong> files as they are no longer needed. We also do not need our <strong class="source-inline">src/to_do/traits</strong> module, so this can be removed too. Next, we can remove all the references to the traits. Removing the references essentially means removing traits from the <strong class="source-inline">src/to_do/mod.rs</strong> file and removing the import and implementation of these traits in our structs for the <strong class="source-inline">to_do</strong> module. For instance, to remove the traits from the <strong class="source-inline">src/to_do/structs/pending.rs</strong> file, we must merely remove the <span class="No-Break">following imports:</span></p>
+			<pre class="source-code">
+use super::super::traits::get::Get;
+use super::super::traits::edit::Edit;
+use super::super::traits::create::Create;</pre>
+			<p>We can then remove the following implementation of <span class="No-Break">these traits:</span></p>
+			<pre class="source-code">
+impl Get for Pending {}
+impl Edit for Pending {}
+impl Create for Pending {}</pre>
+			<p>We also must remove the traits in the <strong class="source-inline">src/to_do/structs/done.rs</strong> file. We now have an opportunity to appreciate the payoff of our well-structured isolated code. We can slot in different methods for persistent storage easily, as we can simply remove existing storage methods by deleting a couple of files and the traits directly. We then just removed the implementations of the traits. That was it. We did not have to dig into functions and alter lines of code. Because our reading functionality was in the traits, removing the implementations severed our application completely by just removing the implementations of the traits. Structuring code like this really pays off in the future. In the past, I have had to pull code out of one server into another when refactoring microservices or upgrading or switching a method, such as a storage option. Having isolated code <a id="_idIndexMarker682"/>makes refactoring a lot easier, quicker, and less error-prone. </p>
+			<p>Our application is now fully working with a database. However, we can improve the implementation of our database. Before we do this, however, we should refactor our configuration code in the next section. </p>
+			<h1 id="_idParaDest-143"><a id="_idTextAnchor144"/>Configuring our application</h1>
+			<p>Right now, we are<a id="_idIndexMarker683"/> storing our database URL in a <strong class="source-inline">.env</strong> file. This is fine, but we can also use <strong class="source-inline">yaml</strong> <strong class="source-inline">config</strong> files. When developing web servers, they will be run in different environments. For instance, right now, we are running our Rust server on our local machine. However, later we will package the server into our own Docker image and deploy it on the cloud. With microservices infrastructure, we might use a server that we built in one cluster and slot it into a different cluster with different databases to connect to. Because of this, config files defining all inward and outward traffic become essential. When we deploy our server, we can make a request to file storage, such as AWS S3, to get the right config file for the server. It must be noted that environment variables can be preferred for deployment as they can be passed into containers. We will cover how to configure a web application using environment variables in <span class="No-Break"><em class="italic">Chapter 13</em></span>, <em class="italic">Best Practices for a Clean Web App Repository</em>. For now, we will focus on using config files. We also need to enable our server to be flexible in terms of what config file is being loaded. For instance, we should not have to have a config file in a particular directory and with a particular name to be loaded into our server. We should keep our config files properly named for the right context to reduce the risk of the wrong config file being loaded into the server. Our path to the file can be passed when spinning up our server. Because we are using <strong class="source-inline">yaml</strong> files, we need to define the <strong class="source-inline">serde_yaml</strong> dependency on our <strong class="source-inline">Cargo.toml</strong> file <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+serde_yaml = "0.8.23"</pre>
+			<p>Now that we can read <strong class="source-inline">yaml</strong> files, we can build our own configuration module, which loads to <strong class="source-inline">yaml</strong> file values into a HashMap. This can be done with one struct; therefore, we should put our config module into one file, which is the <strong class="source-inline">src/config.rs</strong> file. First, we import what we need with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use std::collections::HashMap;
+use std::env;
+use serde_yaml;</pre>
+			<p>In the preceding code, we use <strong class="source-inline">env</strong> to capture environment variables passed into the program, <strong class="source-inline">HashMap</strong> to store the data from the config file, and the <strong class="source-inline">serde_yaml</strong> crate to process <strong class="source-inline">yaml</strong> values from the config file. We then define the struct that houses our config data with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub struct Config {
+    pub map: HashMap&lt;String, serde_yaml::Value&gt;
+}</pre>
+			<p>In the preceding code, we <a id="_idIndexMarker684"/>can see that our data key of the value is <strong class="source-inline">String</strong>, and the value belonging to those keys are <strong class="source-inline">yaml</strong> values. We then build a constructor for our struct that takes the last argument passed into the program, opens the file based on the path to the file passed into the program, and loads our <strong class="source-inline">map</strong> field with the data from the file with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+impl Config {
+    pub fn new() -&gt; Config {
+        let args: Vec&lt;String&gt; = env::args().collect();
+        let file_path = &amp;args[args.len() - 1];
+        let file = std::fs::File::open(file_path).unwrap();
+        let map: HashMap&lt;String, serde_yaml::Value&gt; = 
+            serde_yaml::
+                 from_reader(file).unwrap();
+        return Config{map}
+    }
+}</pre>
+			<p>Now that the <strong class="source-inline">config</strong> struct is defined, we can define our <strong class="source-inline">config</strong> module in the <strong class="source-inline">src/main.rs</strong> file with the following line <span class="No-Break">of code:</span></p>
+			<pre class="source-code">
+mod config;</pre>
+			<p>We must then refactor our <strong class="source-inline">src/database.rs</strong> file to load from a <strong class="source-inline">yaml</strong> <strong class="source-inline">config</strong> file. Our refactored imports take the <span class="No-Break">following form:</span></p>
+			<pre class="source-code">
+use diesel::prelude::*;
+use diesel::pg::PgConnection;
+use crate::config::Config;</pre>
+			<p>We can see that all <a id="_idIndexMarker685"/>references to <strong class="source-inline">env</strong> have been removed, as this is now handled in our <strong class="source-inline">config</strong> module. We then load our file, get our <strong class="source-inline">DB_URL</strong> key, and directly unwrap the result of getting the variable associated with the <strong class="source-inline">DB_URL</strong> key, converting the <strong class="source-inline">yaml</strong> value to a string and directly unwrapping the result from that conversion. We directly unwrap the getting and conversion functions because if they fail, we will not be able to connect to the database anyway. If we cannot connect, we want to know about the error as soon as possible with a clear error message showing where this is happening. We can now shift our database URL into our <strong class="source-inline">config.yml</strong> file in the root of our Rust application with the <span class="No-Break">following content:</span></p>
+			<pre class="source-code">
+DB_URL: postgres://username:password@localhost:5433/to_do</pre>
+			<p>Next, we can run our application with the <span class="No-Break">following command:</span></p>
+			<pre class="source-code">
+cargo run config.yml</pre>
+			<p>The <strong class="source-inline">config.yml</strong> file is the path to the config file. If you run <strong class="source-inline">docker-compose</strong> and the frontend, you will see that the database URL from our config file is being loaded and our application is connected to the database. There is one problem with this database connection, however. Every time we execute the <strong class="source-inline">establish_connection</strong> function, we make a connection <a id="_idIndexMarker686"/>to our database. This will work; however, it is not optimal. In the next section, we will be more efficient with our database connections with database connection pooling. </p>
+			<h1 id="_idParaDest-144"><a id="_idTextAnchor145"/>Building a database connection pool</h1>
+			<p>In this section, we will create a <a id="_idIndexMarker687"/>database connection pool. A database connection pool is a limited number of database connections. When our application needs a database connection, it will take the connection from the pool and place it back into the pool when the application no longer needs the connection. If there are no connections left in the pool, the application will wait until there is a connection available, as seen in the <span class="No-Break">following diagram:</span></p>
+			<div>
+				<div id="_idContainer072" class="IMG---Figure">
+					<img src="image/Figure_6.7_B18722.jpg" alt="Figure 6.7 – Database connection pool with a limit of three connections"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.7 – Database connection pool with a limit of three connections</p>
+			<p>Before we<a id="_idIndexMarker688"/> refactor our database connection, we need to install the following dependency in our <span class="No-Break"><strong class="source-inline">Cargo.toml</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+lazy_static = "1.4.0"</pre>
+			<p>We then define our imports with the <strong class="source-inline">src/database.rs</strong> file with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+use actix_web::dev::Payload;
+use actix_web::error::ErrorServiceUnavailable;
+use actix_web::{Error, FromRequest, HttpRequest};
+use futures::future::{Ready, ok, err};
+use lazy_static::lazy_static;
+use diesel::{
+   r2d2::{Pool, ConnectionManager, PooledConnection},
+   pg::PgConnection,
+};
+use crate::config::Config;</pre>
+			<p>From the imports we have defined in the preceding code, what do you think we will do when we write out our new database connection? At this point, it is a good time to stop and think about what you can do with these imports. </p>
+			<p>The first block of<a id="_idIndexMarker689"/> imports, if you remember, will be used to establish a database connection before the request hits the view. The second block of imports enables us to define our database connection pool. The final <strong class="source-inline">Config</strong>  parameter is to get the database URL for the connection. Now that our imports are done, we can define the connection pool struct with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+type PgPool = Pool&lt;ConnectionManager&lt;PgConnection&gt;&gt;;
+pub struct DbConnection {
+   pub db_connection: PgPool,
+}</pre>
+			<p>In the preceding code, we state that our <strong class="source-inline">PgPool</strong> struct is a connection manager that manages connections inside a pool. We then build our connection, which is a static reference, with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+lazy_static! {
+    pub static ref DBCONNECTION: DbConnection = {
+        let connection_string = 
+            Config::new().map.get("DB_URL").unwrap()
+            .as_str().unwrap().to_string();
+      DbConnection {
+          db_connection: PgPool::builder().max_size(8)
+          .build(ConnectionManager::new(connection_string))
+          .expect("failed to create db connection_pool")
+       }
+   };
+}</pre>
+			<p>In the <a id="_idIndexMarker690"/>preceding code, we get the URL from the config file and construct a connection pool that is returned and thus assigned to the <strong class="source-inline">DBCONNECTION</strong> static referenced variable. Because this is a static reference, the lifetime of our <strong class="source-inline">DBCONNECTION</strong> variable matches the lifetime of the server. We can now refactor our <strong class="source-inline">establish_connection</strong> function to take from the database connection pool with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+pub fn establish_connection() -&gt; 
+  PooledConnection&lt;ConnectionManager&lt;PgConnection&gt;&gt;{
+    return DBCONNECTION.db_connection.get().unwrap()
+}</pre>
+			<p>In the preceding code, we can see that we are returning a <strong class="source-inline">PooledConnection</strong> struct. However, we do not want to call the <strong class="source-inline">establish_connection</strong> function every time we need it. We also want to reject the HTTP request before it hits the view if we cannot make the connection for whatever reason, as we do not want to load a view that we cannot process. Just like our <strong class="source-inline">JWToken</strong> struct, we can create a struct that creates a database connection and passes that database connection into the view. Our struct has one field, which is a pooled connection, <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+pub struct DB {
+   pub connection: PooledConnection&lt;ConnectionManager&lt;PgConnection&gt;&gt;
+}</pre>
+			<p>With this <strong class="source-inline">DB</strong> struct, we<a id="_idIndexMarker691"/> can implement the <strong class="source-inline">FromRequest</strong> trait like we did with our <strong class="source-inline">JWToken</strong> struct with the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+impl FromRequest for DB {
+  type Error = Error;
+  type Future = Ready&lt;Result&lt;DB, Error&gt;&gt;;
+  fn from_request(_: &amp;HttpRequest, _: &amp;mut Payload) -&gt; 
+      Self::Future{
+      match DBCONNECTION.db_connection.get() {
+         Ok(connection) =&gt; {
+            return ok(DB{connection})
+         },
+         Err(_) =&gt; {
+            return err(ErrorServiceUnavailable(
+            "could not make connection to database"))
+         }
+      }
+  }
+}</pre>
+			<p>Here we do not directly unwrap the getting the database connection. Instead, if there is an error when connecting, we return an error with a helpful message. If our connection is successful, we then return it. We can implement this in our views. To avoid repetitive code, we shall just use the <strong class="source-inline">edit</strong> view, but we should apply this approach to all our views. First, we define the following imports: </p>
+			<pre class="source-code">
+use crate::diesel;
+use diesel::prelude::*;
+use actix_web::{web, HttpResponse};
+use crate::json_serialization::{to_do_item::ToDoItem, 
+                                to_do_items::ToDoItems};
+use crate::jwt::JwToken;
+use crate::schema::to_do;
+use crate::database::DB;</pre>
+			<p>In the preceding code, we can see that we have imported the <strong class="source-inline">DB</strong> struct. Our <strong class="source-inline">edit</strong> view should now look <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+pub async fn edit(to_do_item: web::Json&lt;ToDoItem&gt;, 
+    token: JwToken, db: DB) -&gt; HttpResponse {
+    let results = to_do::table.filter(to_do::columns::title
+        .eq(&amp;to_do_item.title));
+    
+    let _ = diesel::update(results)
+        .set(to_do::columns::status.eq("DONE"))
+        .execute(&amp;db.connection);
+    return HttpResponse::Ok().json(ToDoItems::get_state())
+}</pre>
+			<p>In the preceding code, we can <a id="_idIndexMarker692"/>see that we directly reference the <strong class="source-inline">connection</strong> field of our <strong class="source-inline">DB</strong> struct. The fact is that we can simply get a pooled connection into our view by passing the <strong class="source-inline">DB</strong> struct into the view like our authentication token.  </p>
+			<h1 id="_idParaDest-145"><a id="_idTextAnchor146"/>Summary</h1>
+			<p>In this chapter, we constructed a development environment where our app could interact with the database using Docker. Once we did this, we explored the listing of containers and images to inspect how our system is going. We then created migrations using the <strong class="source-inline">diesel</strong> crate. After this, we installed the <strong class="source-inline">diesel</strong> client and defined the database URL as an environment variable so that our Rust app and migrations could directly connect with the <span class="No-Break">database container.</span></p>
+			<p>We then ran migrations and defined the SQL scripts that would fire when the migration ran, and in turn, ran them. Once all this was done, we inspected the database container again to see whether the migration had, in fact, been executed. We then defined the data models in Rust, and refactored our API endpoints, so they performed <strong class="source-inline">get</strong>, <strong class="source-inline">edit</strong>, <strong class="source-inline">create</strong>, and <strong class="source-inline">delete</strong> operations on the database in order to keep track of the <span class="No-Break">to-do items.</span></p>
+			<p>What we have done here is upgraded our database storage system. We are one step closer to having a production-ready system as we are no longer relying on a JSON file to store our data. You now have the skills to perform database management tasks that enable you to manage changes, credentials/access, and schemas. We also performed all the basic operations on the database that are needed to run an app that creates, gets, updates, and deletes data. These skills are directly transferable to any other project you wish to undertake in Rust web projects. We then augmented our newly developed database skills by enabling our database connections to be limited by a connection pool. Finally, implementing our database connection structs was made easy by implementing the <strong class="source-inline">FromRequest</strong> trait so other developers can implement our connection just by passing the struct into the view as a parameter. The view is also protected if the database connection cannot be made.  </p>
+			<p>In the next chapter, we will build on these skills to build a user authentication system so we can create users and check credentials when accessing the app. We will use a combination of database, extraction of data from headers, browser storage, and routing to ensure that the user must be logged in to access the <span class="No-Break">to-do items.</span></p>
+			<h1 id="_idParaDest-146"><a id="_idTextAnchor147"/>Questions</h1>
+			<ol>
+				<li value="1">What are the advantages of having a database over a <span class="No-Break">JSON file?</span></li>
+				<li>How do you create <span class="No-Break">a migration?</span></li>
+				<li>How do we <span class="No-Break">check migrations?</span></li>
+				<li>If we wanted to create a user data model in Rust with a name and age, what should <span class="No-Break">we do?</span></li>
+				<li>What is a connection pool, and why should we <span class="No-Break">use it?</span></li>
+			</ol>
+			<h1 id="_idParaDest-147"><a id="_idTextAnchor148"/>Answers</h1>
+			<ol>
+				<li value="1">The database has advantages in terms of multiple reads and writes at the same time. The database also checks the data to see whether it is in the right format before inserting it and we can do advanced queries with <span class="No-Break">linked tables.</span></li>
+				<li>We install the <strong class="source-inline">diesel</strong> client and define the database URL in the <strong class="source-inline">.env</strong> file. We then create migrations using the client and write the desired schema required for the migration. We then run <span class="No-Break">the migration.</span></li>
+				<li>We use the container ID of the database to access the container. We then list the tables; if the table we desire is there, then this is a sign that the migration ran. We can also check the migration table in the database to see when it was <span class="No-Break">last run.</span></li>
+				<li>We define a <strong class="source-inline">NewUser</strong> struct with the name as a string and age as an integer. We then create a <strong class="source-inline">User</strong> struct with the same field and an extra integer field, <span class="No-Break">the ID.</span></li>
+				<li>A connection pool pools a limited number of connections that connect to the database. Our application then passes these connections to the threads that need them. This keeps the number of connections connecting to the database limited to avoid the database being overloaded. </li>
+			</ol>
+		</div>
+	</body></html>

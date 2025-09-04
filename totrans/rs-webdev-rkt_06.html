@@ -1,0 +1,377 @@
+<html><head></head><body>
+		<div id="_idContainer023">
+			<h1 id="_idParaDest-73"><em class="italic"><a id="_idTextAnchor073"/>Chapter 5</em>: Designing a User-Generated Application</h1>
+			<p>We are going to write a Rocket application in order to learn more about the Rocket web framework. In this chapter, we are going to design the application and create an application skeleton. Then, we are going to split the application skeleton into smaller manageable modules.</p>
+			<p>After reading this chapter, you will be able to design and create an application skeleton and modularize your own application to your liking.</p>
+			<p>In this chapter, we're going to cover the following main topics:</p>
+			<ul>
+				<li>Designing a user-generated web application</li>
+				<li>Planning the user struct</li>
+				<li>Creating application routes</li>
+				<li>Modularizing a Rocket application</li>
+			</ul>
+			<h1 id="_idParaDest-74"><a id="_idTextAnchor074"/>Technical requirements</h1>
+			<p>For this chapter, we have the same technical requirements as the previous chapter. We need a Rust compiler, a text editor, an HTTP client, and a PostgreSQL database server.</p>
+			<p>You can find the source code for this chapter at <a href="https://github.com/PacktPublishing/Rust-Web-Development-with-Rocket/tree/main/Chapter05">https://github.com/PacktPublishing/Rust-Web-Development-with-Rocket/tree/main/Chapter05</a>.</p>
+			<h1 id="_idParaDest-75"><a id="_idTextAnchor075"/>Designing a user-generated web application</h1>
+			<p>Up to now, we have gained some fundamental knowledge about the Rocket framework, such as routes, requests, responses, states, and fairings. Let's expand on that knowledge and learn more <a id="_idIndexMarker285"/>about the Rocket framework's other capabilities, such as request guards, cookies systems, forms, uploading, and templating, by creating a full-fledged application.</p>
+			<p>The idea for our <a id="_idIndexMarker286"/>application is one that handles various operations for the user, and each user can create and delete user-generated content such as text, photos, or videos.</p>
+			<p>We can start by creating requirements for what we want to do. In various development methodologies, there are many forms and names for defining requirements, such as user stories, use cases, software requirements, or software requirement specifications.</p>
+			<p>After specifying the requirements, we can usually create an application skeleton. We can then implement the application and test the implementation.</p>
+			<p>In our case, because we want to be practical and understand what is going on at the code level, we will specify the requirements and create the application skeleton in the same step.</p>
+			<p>Let's start by creating a new application. Then, name the application <strong class="source-inline">"our_application"</strong> and include the <strong class="source-inline">rocket</strong> and <strong class="source-inline">rocket_db_pools</strong> crates in <strong class="source-inline">Cargo.toml</strong>:</p>
+			<pre class="source-code">[package]</pre>
+			<pre class="source-code">edition = "2018"</pre>
+			<pre class="source-code">name = "our_application"</pre>
+			<pre class="source-code">version = "0.1.0"</pre>
+			<pre class="source-code">[dependencies]</pre>
+			<pre class="source-code">rocket = {path = "../../../rocket/core/lib/", features = ["uuid"]}</pre>
+			<pre class="source-code">rocket_db_pools = {path = "../../../rocket/contrib/db_pools/lib/", features =[ "sqlx_postgres"]}</pre>
+			<p>Modify the <strong class="source-inline">src/main.rs</strong> file to remove the <strong class="source-inline">main()</strong> function and make sure we have the <a id="_idIndexMarker287"/>most basic Rocket application:</p>
+			<pre class="source-code">#[macro_use]</pre>
+			<pre class="source-code">extern crate rocket;</pre>
+			<pre class="source-code">use rocket::{Build, Rocket};</pre>
+			<pre class="source-code">#[launch]</pre>
+			<pre class="source-code">async fn rocket() -&gt; Rocket&lt;Build&gt; {</pre>
+			<pre class="source-code">    rocket::build()</pre>
+			<pre class="source-code">}</pre>
+			<p>Let's go to the next step by planning what user data we want to have in our application.</p>
+			<h2 id="_idParaDest-76"><a id="_idTextAnchor076"/>Planning the user struct</h2>
+			<p>Let's write the <a id="_idIndexMarker288"/>struct for the user in the application. At the most basic level, we want to have <strong class="source-inline">uuid</strong> with the <strong class="source-inline">Uuid</strong> type as a unique identifier, and <strong class="source-inline">username</strong> with the <strong class="source-inline">String</strong> type as a human-rememberable identifier. Then, we can add extra columns such as <strong class="source-inline">email</strong> and <strong class="source-inline">description</strong> with a <strong class="source-inline">String</strong> type to store a little bit more information about our user.</p>
+			<p>We also want to have <strong class="source-inline">password</strong> for the user data but having a cleartxt <strong class="source-inline">password</strong> field is not an option. There are a couple of hashing options, but obviously, we cannot use insecure old hashing functions such as <strong class="source-inline">md5</strong> or <strong class="source-inline">sha1</strong>. We can, however, use newer secure hashing encryptions such as <strong class="source-inline">bcrypt</strong>, <strong class="source-inline">scrypt</strong>, or <strong class="source-inline">argon2</strong>. In this book, we will use the <strong class="source-inline">argon2id</strong> function, as it is <a id="_idIndexMarker289"/>more resistant to <strong class="bold">graphics processing unit</strong> (<strong class="bold">GPU</strong>) attacks and side-channel attacks. The password hash can <a id="_idIndexMarker290"/>be stored in a text format defined by the <strong class="bold">Password Hashing Competition</strong> (<strong class="bold">PHC</strong>) string format. As we know the format of the password hash is text, we can use <strong class="source-inline">String</strong> as the <strong class="source-inline">password_hash</strong> type.</p>
+			<p>We also want a <strong class="source-inline">status</strong> column for our users. The status can be either <strong class="source-inline">active</strong> or <strong class="source-inline">inactive</strong>, so we can use the <strong class="source-inline">bool</strong> type. But, in the future, we might want it to be expandable and have other statuses, such as <strong class="source-inline">confirmed</strong> if we require the user to include email information and confirm their email before they can use our application. We have to use another type.</p>
+			<p>In Rust, we have <strong class="source-inline">enum</strong>, a type <a id="_idIndexMarker291"/>with many variants. We can either have <a id="_idIndexMarker292"/>an enum with an <strong class="bold">implicit discriminator</strong> or an <strong class="bold">explicit discriminator</strong>.</p>
+			<p>An implicit <a id="_idIndexMarker293"/>discriminator enum is an enum in which the member is not given a discriminator; it automatically starts from <strong class="source-inline">0</strong>, for example, <strong class="source-inline">enum Status {Active, Inactive}</strong>. Using an implicit discriminator enum means we have to add a new data type in PostgreSQL using the <strong class="source-inline">CREATE TYPE</strong> SQL statement, for example, <strong class="source-inline">CREATE TYPE status AS ENUM ('active', 'inactive');</strong>.</p>
+			<p>If we use an explicit discriminator enum, that is, an enum in which the member is given a discriminator, we can use the PostgreSQL <strong class="source-inline">INTEGER</strong> type and map it to <strong class="source-inline">rust i32</strong>. An explicit discriminator enum looks like the following:</p>
+			<pre class="source-code">enum Status {</pre>
+			<pre class="source-code">    Inactive = 0,</pre>
+			<pre class="source-code">    Active = 1,</pre>
+			<pre class="source-code">}</pre>
+			<p>Because it's simpler to use an explicit discriminator enum, we will choose this type for the user status column.</p>
+			<p>We also want to keep track of when user data is created and when it is updated. The Rust standard library provides <strong class="source-inline">std::time</strong> for temporal quantification types, but this module is very primitive and not usable for day-to-day operations. There are several attempts to create a good date and time library for Rust, such as the <strong class="source-inline">time</strong> or <strong class="source-inline">chrono</strong> crates, and fortunately, <strong class="source-inline">sqlx</strong> already supports both crates. We chose to use <strong class="source-inline">chrono</strong> for this book.</p>
+			<p>Based on those requirements, let's write the struct definition and the <strong class="source-inline">sqlx</strong> migration for the <strong class="source-inline">User</strong> type:</p>
+			<ol>
+				<li>In <strong class="source-inline">Cargo.toml</strong>, add the <strong class="source-inline">sqlx</strong>, <strong class="source-inline">chrono</strong>, and <strong class="source-inline">uuid</strong> crates: <p class="source-code">sqlx = {version = "0.5.9", features = ["postgres", "uuid", "runtime-tokio-rustls", "chrono"]}</p><p class="source-code">chrono = "0.4"</p><p class="source-code">uuid = {version = "0.8.2", features = ["v4"]}</p></li>
+				<li>In <strong class="source-inline">src/main.rs</strong>, add <a id="_idIndexMarker294"/>the <strong class="source-inline">UserStatus</strong> enum and the <strong class="source-inline">User</strong> struct:<p class="source-code">use chrono::{offset::Utc, DateTime};</p><p class="source-code">use rocket_db_pools::sqlx::FromRow;</p><p class="source-code">use uuid::Uuid;</p><p class="source-code">#[derive(sqlx::Type, Debug)]</p><p class="source-code">#[repr(i32)]</p><p class="source-code">enum UserStatus {</p><p class="source-code">    Inactive = 0,</p><p class="source-code">    Active = 1,</p><p class="source-code">}</p><p class="source-code">#[derive(Debug, FromRow)]</p><p class="source-code">struct User {</p><p class="source-code">    uuid: Uuid,</p><p class="source-code">    username: String,</p><p class="source-code">    email: String,</p><p class="source-code">    password_hash: String,</p><p class="source-code">    description: String,</p><p class="source-code">    status: UserStatus,</p><p class="source-code">    created_at: DateTime&lt;Utc&gt;,</p><p class="source-code">    updated_at: DateTime&lt;Utc&gt;,</p><p class="source-code">}</p></li>
+			</ol>
+			<p>Notice that we set the <strong class="source-inline">UserStatus</strong> enum with an explicit discriminator and, in the <strong class="source-inline">User</strong> struct, we used <strong class="source-inline">UserStatus</strong> as the status type.</p>
+			<ol>
+				<li value="3">After that, let's <a id="_idIndexMarker295"/>set the database URL configuration in the <strong class="source-inline">Rocket.toml</strong> file:<p class="source-code">[default]</p><p class="source-code">[default.databases.main_connection]</p><p class="source-code">url = "postgres://username:password@localhost/rocket"</p></li>
+				<li>Afterward, create the database migration using the <strong class="source-inline">sqlx migrate add</strong> command again, and modify the generated migration file as follows:<p class="source-code">CREATE TABLE IF NOT EXISTS users</p><p class="source-code">(</p><p class="source-code">    uuid          UUID PRIMARY KEY,</p><p class="source-code">    username      VARCHAR NOT NULL UNIQUE,</p><p class="source-code">    email         VARCHAR NOT NULL UNIQUE,</p><p class="source-code">    password_hash VARCHAR NOT NULL,</p><p class="source-code">    description   TEXT,</p><p class="source-code">    status        INTEGER NOT NULL DEFAULT 0,</p><p class="source-code">    created_at    TIMESTAMPTZ NOT NULL DEFAULT </p><p class="source-code">    CURRENT_TIMESTAMP,</p><p class="source-code">    updated_at    TIMESTAMPTZ NOT NULL DEFAULT </p><p class="source-code">    CURRENT_TIMESTAMP</p><p class="source-code">);</p></li>
+			</ol>
+			<p>Notice that we set <strong class="source-inline">INTEGER</strong>, which corresponds to <strong class="source-inline">i32</strong> in Rust as a <strong class="source-inline">status</strong> column type. One more thing to notice is because the <strong class="source-inline">UNIQUE</strong> constraints in PostgreSQL already automatically create an index for <strong class="source-inline">username</strong> and <strong class="source-inline">email</strong>, we don't need to add custom indices for those two columns.</p>
+			<p>Don't forget to run the <strong class="source-inline">sqlx migrate run</strong> command line again to run this migration.</p>
+			<ol>
+				<li value="5">Let's initialize <a id="_idIndexMarker296"/>the database connection pool fairing by adding these lines in <strong class="source-inline">src/main.rs</strong>:<p class="source-code"><strong class="bold">use rocket_db_pools::{sqlx::{FromRow, PgPool}, Database};</strong></p><p class="source-code">...</p><p class="source-code"><strong class="bold">#[derive(Database)]</strong></p><p class="source-code"><strong class="bold">#[database("main_connection")]</strong></p><p class="source-code"><strong class="bold">struct DBConnection(PgPool);</strong></p><p class="source-code">async fn rocket() -&gt; Rocket&lt;Build&gt; {</p><p class="source-code">    rocket::build<strong class="bold">().attach(DBConnection::init())</strong></p><p class="source-code">}</p></li>
+			</ol>
+			<p>After our <strong class="source-inline">User</strong> struct is ready, the next thing we can do is write the code skeleton for user-related routes, such as creating or deleting users.</p>
+			<h2 id="_idParaDest-77"><a id="_idTextAnchor077"/>Creating user routes</h2>
+			<p>In the previous application, we dealt primarily with getting user data, but in a real-world application, we also <a id="_idIndexMarker297"/>want other operations such as inserting, updating, and deleting data. We can expand the two functions to <a id="_idIndexMarker298"/>get user data (user and users) into <strong class="bold">create, read, update, and delete</strong> (<strong class="bold">CRUD</strong>) functions. These four basic functions can be considered fundamental operations of persistent data storage.</p>
+			<p>In a web application, an architecture style exists to perform operations based on the HTTP method. If we want to get an entity or a collection of entities, we use the <strong class="source-inline">HTTP GET</strong> method. If we want to create an entity, we use the <strong class="source-inline">HTTP POST</strong> method. If we want to update an entity, we use the <strong class="source-inline">HTTP PUT</strong> or <strong class="source-inline">PATCH</strong> method. And finally, if we want to delete an entity, we use the <strong class="source-inline">HTTP DELETE</strong> method. Using those HTTP methods to deliver <a id="_idIndexMarker299"/>data uniformly is called <strong class="bold">representational state transfer</strong> (<strong class="bold">REST</strong>), and an application following that constraint is called <strong class="bold">RESTful</strong>.</p>
+			<p>Before we create RESTful user <a id="_idIndexMarker300"/>routes for our application, let's think about what <a id="_idIndexMarker301"/>incoming parameters we want to handle and what responses we want to return. In the previous chapters, we have created routes that returned <strong class="source-inline">String</strong>, but most of the web is composed of HTML.</p>
+			<p>For user route responses, we want HTML, so we can use <strong class="source-inline">rocket::response::content::RawHtml</strong>. We can wrap it in <strong class="source-inline">Result</strong>, with <strong class="source-inline">Status</strong> as the error type. Let's make a type alias to avoid writing <strong class="source-inline">Result&lt;RawHtml&lt;String&gt;, Status&gt;</strong> every time we use it as a route function return type. Add this in <strong class="source-inline">src/main.rs</strong>:</p>
+			<pre class="source-code">type HtmlResponse = Result&lt;RawHtml&lt;String&gt;, Status&gt;;</pre>
+			<p>For user route requests, the request payload will be different depending on what the request is. For a function that uses GET to obtain a particular user information, we would need to know the identifier of the user, in our case, it would be <strong class="source-inline">uuid</strong> in the <strong class="source-inline">&amp;str</strong> type. We just need the reference (<strong class="source-inline">&amp;str</strong>) because we are not going to process <strong class="source-inline">uuid</strong>, so we don't need the <strong class="source-inline">String</strong> type:</p>
+			<pre class="source-code">#[get("/users/&lt;_uuid&gt;", format = "text/html")]</pre>
+			<pre class="source-code">async fn get_user(mut _db: Connection&lt;DBConnection&gt;, _uuid: &amp;str) -&gt; HtmlResponse {</pre>
+			<pre class="source-code">    todo!("will implement later")</pre>
+			<pre class="source-code">}</pre>
+			<p>The compiler will emit a warning if we define a variable or pass a parameter but do not use it, so we use an underscore (<strong class="source-inline">_</strong>) before the variable name in the function argument to suppress the compiler warning for now. We will change the variable to one without an underscore in front of it when we are implementing the function later.</p>
+			<p>Just like the <strong class="source-inline">unimplemented!</strong> macro, the <strong class="source-inline">todo!</strong> macro is useful for prototyping. The semantic difference is that if we use <strong class="source-inline">todo!</strong>, we are saying that the code will be implemented, but if we use <strong class="source-inline">unimplemented!</strong>, we are not making any promises.</p>
+			<p>Mount the route and try running the application now and make the HTTP request to this endpoint. You can see how the application will panic, but fortunately, Rocket handles catching the panic in the server using the <strong class="source-inline">std::panic::catch_unwind</strong> function.</p>
+			<p>For the <a id="_idIndexMarker302"/>list of users, we have to think about the scalability of our application. If we have a lot of users, it would not be very efficient if we tried to query all the users. We need to introduce some kind of pagination in our application.</p>
+			<p>One of the weaknesses of using <strong class="source-inline">Uuid</strong> as an entity ID is that we cannot sort and order the entity by its ID. We have to use another ordered field. Fortunately, we have defined the <strong class="source-inline">created_at</strong> field with <strong class="source-inline">TIMESTAMPZ</strong>, which has a 1-microsecond resolution and can be ordered.</p>
+			<p>But, be aware that if your application is handling high traffic or will be in distributed systems, the microsecond resolution might not be enough. You can calculate the chance of collision of <strong class="source-inline">TIMESTAMPZ</strong> using a formula to calculate the <em class="italic">birthday paradox</em>. You can solve this problem with a monotonic ID or hardware and a database supporting a nanosecond resolution, but a highly-scalable application is beyond the scope of this book for the Rocket web framework.</p>
+			<p>Let's define the <strong class="source-inline">Pagination</strong> struct for now and then we will implement this struct later. As we want to use <strong class="source-inline">Pagination</strong> in the list of users and we will use it as a <strong class="source-inline">request</strong> parameter, we can automatically use <strong class="source-inline">#[derive(FromForm)]</strong> to make auto-generation for the <strong class="source-inline">rocket::form::FromForm</strong> implementation. But, we have to create a new type, <strong class="source-inline">OurDateTime</strong>, because orphan rules mean we cannot implement <strong class="source-inline">rocket::form::FromForField</strong> for <strong class="source-inline">DateTime&lt;Utc&gt;;</strong>:</p>
+			<pre class="source-code"><strong class="bold">use rocket::form::{self, DataField, FromFormField, ValueField};</strong></pre>
+			<pre class="source-code">...</pre>
+			<pre class="source-code"><strong class="bold">#[derive(Debug, FromRow)]</strong></pre>
+			<pre class="source-code"><strong class="bold">struct OurDateTime(DateTime&lt;Utc&gt;);</strong></pre>
+			<pre class="source-code"><strong class="bold">#[rocket::async_trait]</strong></pre>
+			<pre class="source-code"><strong class="bold">impl&lt;'r&gt; FromFormField&lt;'r&gt; for OurDateTime {</strong></pre>
+			<pre class="source-code"><strong class="bold">    fn from_value(_: ValueField&lt;'r&gt;) -&gt; form::Result&lt;'r, </strong></pre>
+			<pre class="source-code"><strong class="bold">    Self&gt; {</strong></pre>
+			<pre class="source-code"><strong class="bold">        todo!("will implement later")</strong></pre>
+			<pre class="source-code"><strong class="bold">    }</strong></pre>
+			<pre class="source-code"><strong class="bold">    async fn from_data(_: DataField&lt;'r, '_&gt;) -&gt; form::</strong></pre>
+			<pre class="source-code"><strong class="bold">    Result&lt;'r, Self&gt; {</strong></pre>
+			<pre class="source-code"><strong class="bold">        todo!("will implement later")</strong></pre>
+			<pre class="source-code"><strong class="bold">    }</strong></pre>
+			<pre class="source-code"><strong class="bold">}</strong></pre>
+			<pre class="source-code"><strong class="bold">#[derive(FromForm)]</strong></pre>
+			<pre class="source-code"><strong class="bold">struct Pagination {</strong></pre>
+			<pre class="source-code"><strong class="bold">    cursor: OurDateTime,</strong></pre>
+			<pre class="source-code"><strong class="bold">    limit: usize,</strong></pre>
+			<pre class="source-code"><strong class="bold">}</strong></pre>
+			<pre class="source-code">#[derive(sqlx::Type, Debug, <strong class="bold">FromFormField</strong>)]</pre>
+			<pre class="source-code">#[repr(i32)]</pre>
+			<pre class="source-code">enum UserStatus {</pre>
+			<pre class="source-code">    ...</pre>
+			<pre class="source-code">}</pre>
+			<pre class="source-code">#[derive(Debug, FromRow, <strong class="bold">FromForm</strong>)]</pre>
+			<pre class="source-code">struct User {</pre>
+			<pre class="source-code">    ...</pre>
+			<pre class="source-code">    created_at: <strong class="bold">OurDateTime</strong>,</pre>
+			<pre class="source-code">    updated_at: <strong class="bold">OurDateTime</strong>,</pre>
+			<pre class="source-code">}</pre>
+			<p>Now, we <a id="_idIndexMarker303"/>can make an unimplemented function for the list of users:</p>
+			<pre class="source-code">#[get("/users?&lt;_pagination&gt;", format = "text/html")]</pre>
+			<pre class="source-code">async fn get_users(mut _db: Connection&lt;DBConnection&gt;, _pagination: Option&lt;Pagination&gt;) -&gt; HtmlResponse {</pre>
+			<pre class="source-code">    todo!("will implement later")</pre>
+			<pre class="source-code">}</pre>
+			<p>We need a page to fill in the form for inputting new user data:</p>
+			<pre class="source-code">#[get("/users/new", format = "text/html")]</pre>
+			<pre class="source-code">async fn new_user(mut _db: Connection&lt;DBConnection&gt;) -&gt; HtmlResponse {</pre>
+			<pre class="source-code">    todo!("will implement later")</pre>
+			<pre class="source-code">}</pre>
+			<p>After that, we can create a function to handle the creation of user data:</p>
+			<pre class="source-code">use rocket::form::{self, DataField, <strong class="bold">Form</strong>, FromFormField, ValueField};</pre>
+			<pre class="source-code">...</pre>
+			<pre class="source-code"><strong class="bold">#[post("/users", format = "text/html", data = "&lt;_user&gt;")]</strong></pre>
+			<pre class="source-code"><strong class="bold">async fn create_user(mut _db: Connection&lt;DBConnection&gt;, _user: Form&lt;User&gt;) -&gt; HtmlResponse {</strong></pre>
+			<pre class="source-code"><strong class="bold">    todo!("will implement later")</strong></pre>
+			<pre class="source-code"><strong class="bold">}</strong></pre>
+			<p>We need a page to modify existing user data:</p>
+			<pre class="source-code">#[get("/users/edit/&lt;_uuid&gt;", format = "text/html")]</pre>
+			<pre class="source-code">async fn edit_user(mut _db: Connection&lt;DBConnection&gt;, _uuid: &amp;str) -&gt; HtmlResponse {</pre>
+			<pre class="source-code">    todo!("will implement later")</pre>
+			<pre class="source-code">}</pre>
+			<p>We need <a id="_idIndexMarker304"/>functions to handle updating user data:</p>
+			<pre class="source-code">#[put("/users/&lt;_uuid&gt;", format = "text/html", data = "&lt;_user&gt;")]</pre>
+			<pre class="source-code">async fn put_user(mut _db: Connection&lt;DBConnection&gt;, _uuid: &amp;str, _user: Form&lt;User&gt;) -&gt; HtmlResponse {</pre>
+			<pre class="source-code">    todo!("will implement later")</pre>
+			<pre class="source-code">}</pre>
+			<pre class="source-code">#[patch("/users/&lt;_uuid&gt;", format = "text/html", data = "&lt;_user&gt;")]</pre>
+			<pre class="source-code">async fn patch_user(</pre>
+			<pre class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</pre>
+			<pre class="source-code">    _uuid: &amp;str,</pre>
+			<pre class="source-code">    _user: Form&lt;User&gt;,</pre>
+			<pre class="source-code">) -&gt; HtmlResponse {</pre>
+			<pre class="source-code">    todo!("will implement later")</pre>
+			<pre class="source-code">}</pre>
+			<p>What's the difference between <strong class="source-inline">PUT</strong> and <strong class="source-inline">PATCH</strong>? Simply put, in REST, a <strong class="source-inline">PUT</strong> request is used if we want to replace the resource completely, and <strong class="source-inline">PATCH</strong> is used to update data partially.</p>
+			<p>The last <a id="_idIndexMarker305"/>user-related function is a function to execute <strong class="source-inline">HTTP DELETE</strong>:</p>
+			<pre class="source-code">#[delete("/users/&lt;_uuid&gt;", format = "text/html")]</pre>
+			<pre class="source-code">async fn delete_user(mut _db: Connection&lt;DBConnection&gt;, _uuid: &amp;str) -&gt; HtmlResponse {</pre>
+			<pre class="source-code">    todo!("will implement later")</pre>
+			<pre class="source-code">}</pre>
+			<p>After creating user-related route handling functions, we can expand our requirements.</p>
+			<h2 id="_idParaDest-78"><a id="_idTextAnchor078"/>Making user-generated contents</h2>
+			<p>An application that only handles user data is not fun, so we will add the capability for our users <a id="_idIndexMarker306"/>to upload and delete posts. Each post can be either a text post, a photo post, or a video post. Let's look at the steps:</p>
+			<ol>
+				<li value="1">Create the definition for <strong class="source-inline">Post</strong>:<p class="source-code">#[derive(sqlx::Type, Debug, FromFormField)]</p><p class="source-code">#[repr(i32)]</p><p class="source-code">enum PostType {</p><p class="source-code">    Text = 0,</p><p class="source-code">    Photo = 1,</p><p class="source-code">    Video = 2,</p><p class="source-code">}</p><p class="source-code">#[derive(FromForm)]</p><p class="source-code">struct Post {</p><p class="source-code">    uuid: Uuid,</p><p class="source-code">    user_uuid: Uuid,</p><p class="source-code">    post_type: PostType,</p><p class="source-code">    content: String,</p><p class="source-code">    created_at: OurDateTime,</p><p class="source-code">}</p></li>
+			</ol>
+			<p>We want to differentiate the type, so we added the <strong class="source-inline">post_type</strong> column. We also want to make a relationship between the user and posts. As we want the user to <a id="_idIndexMarker307"/>be able to create many posts, we can create a <strong class="source-inline">user_uuid</strong> field in the struct. The content will be used to store either text content or the file path where we store the uploaded file. We will deal with the data migration on application implementation later.</p>
+			<ol>
+				<li value="2">The way each post is presented might be different on our HTML, but it will occupy the same part on the web page, so let's make a <strong class="source-inline">DisplayPostContent</strong> trait and three <strong class="bold">newtypes</strong> for each post type, and implement <strong class="source-inline">DisplayPostContent</strong> for each newtype:<p class="source-code">trait DisplayPostContent {</p><p class="source-code">    fn raw_html() -&gt; String;</p><p class="source-code">}</p><p class="source-code">struct TextPost(Post);</p><p class="source-code">impl DisplayPostContent for TextPost {</p><p class="source-code">    fn raw_html() -&gt; String {</p><p class="source-code">        todo!("will implement later")</p><p class="source-code">    }</p><p class="source-code">}</p><p class="source-code">struct PhotoPost(Post);</p><p class="source-code">impl DisplayPostContent for PhotoPost {</p><p class="source-code">    fn raw_html() -&gt; String {</p><p class="source-code">        todo!("will implement later")</p><p class="source-code">    }</p><p class="source-code">}</p><p class="source-code">struct VideoPost(Post);</p><p class="source-code">impl DisplayPostContent for VideoPost {</p><p class="source-code">    fn raw_html() -&gt; String {</p><p class="source-code">        todo!("will implement later")</p><p class="source-code">    }</p><p class="source-code">}</p></li>
+				<li>Finally, we <a id="_idIndexMarker308"/>can add the routes for handling <strong class="source-inline">Post</strong>. We can create <strong class="source-inline">get_post</strong>, <strong class="source-inline">get_posts</strong>, <strong class="source-inline">create_post</strong>, and <strong class="source-inline">delete_post</strong>. We also want these routes to be under a user:<p class="source-code">#[get("/users/&lt;_user_uuid&gt;/posts/&lt;_uuid&gt;", format = "text/html")]</p><p class="source-code">async fn get_post(mut _db: Connection&lt;DBConnection&gt;, _user_uuid: &amp;str, _uuid: &amp;str) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[get("/users/&lt;_user_uuid&gt;/posts?&lt;_pagination&gt;", format = "text/html")]</p><p class="source-code">async fn get_posts(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _user_uuid: &amp;str,</p><p class="source-code">    _pagination: Option&lt;Pagination&gt;,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[post("/users/&lt;_user_uuid&gt;/posts", format = "text/html", data = "&lt;_upload&gt;")]</p><p class="source-code">async fn create_post(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _user_uuid: &amp;str,</p><p class="source-code">    _upload: Form&lt;Post&gt;,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[delete("/users/&lt;_user_uuid&gt;/posts/&lt;_uuid&gt;", format = "text/html")]</p><p class="source-code">async fn delete_post(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _user_uuid: &amp;str,</p><p class="source-code">    _uuid: &amp;str,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p></li>
+			</ol>
+			<p>After <a id="_idIndexMarker309"/>adding post-related types and functions, we can finalize creating the application skeleton in the next subsection.</p>
+			<h2 id="_idParaDest-79"><a id="_idTextAnchor079"/>Finalizing the application</h2>
+			<p>Don't forget <a id="_idIndexMarker310"/>to add these routes to the Rocket initialization process:</p>
+			<pre class="source-code">async fn rocket() -&gt; Rocket&lt;Build&gt; {</pre>
+			<pre class="source-code">   rocket::build().attach(DBConnection::init())<strong class="bold">.mount(</strong></pre>
+			<pre class="source-code">        <strong class="bold">"/",</strong></pre>
+			<pre class="source-code"><strong class="bold">        routes![</strong></pre>
+			<pre class="source-code"><strong class="bold">            get_user,</strong></pre>
+			<pre class="source-code"><strong class="bold">            get_users,</strong></pre>
+			<pre class="source-code"><strong class="bold">            new_user,</strong></pre>
+			<pre class="source-code"><strong class="bold">            create_user,</strong></pre>
+			<pre class="source-code"><strong class="bold">            edit_user,</strong></pre>
+			<pre class="source-code"><strong class="bold">            put_user,</strong></pre>
+			<pre class="source-code"><strong class="bold">            patch_user,</strong></pre>
+			<pre class="source-code"><strong class="bold">            delete_user,</strong></pre>
+			<pre class="source-code"><strong class="bold">            get_post,</strong></pre>
+			<pre class="source-code"><strong class="bold">            get_posts,</strong></pre>
+			<pre class="source-code"><strong class="bold">            create_post,</strong></pre>
+			<pre class="source-code"><strong class="bold">            delete_post,</strong></pre>
+			<pre class="source-code"><strong class="bold">        ],</strong></pre>
+			<pre class="source-code"><strong class="bold">    )</strong></pre>
+			<pre class="source-code">}</pre>
+			<p>We also want to serve the uploaded file through a route:</p>
+			<pre class="source-code">use rocket::fs::<strong class="bold">{NamedFile, </strong>TempFile<strong class="bold">}</strong>;</pre>
+			<pre class="source-code">...</pre>
+			<pre class="source-code"><strong class="bold">#[get("/&lt;_filename&gt;")]</strong></pre>
+			<pre class="source-code"><strong class="bold">async fn assets(_filename: &amp;str) -&gt; NamedFile {</strong></pre>
+			<pre class="source-code"><strong class="bold">    todo!("will implement later")</strong></pre>
+			<pre class="source-code"><strong class="bold">}</strong></pre>
+			<pre class="source-code">async fn rocket() -&gt; Rocket&lt;Build&gt; {</pre>
+			<pre class="source-code">    rocket::build()</pre>
+			<pre class="source-code">        ...</pre>
+			<pre class="source-code">        <strong class="bold">.mount("/assets", routes![assets])</strong></pre>
+			<pre class="source-code">}</pre>
+			<p>Time to <a id="_idIndexMarker311"/>add our default error handling! Other frameworks usually have a default error handler for HTTP status codes <strong class="source-inline">404</strong>, <strong class="source-inline">422</strong>, and <strong class="source-inline">500</strong>. Let's make a handler for these codes:</p>
+			<pre class="source-code"><strong class="bold">use rocket::request::Request;</strong></pre>
+			<pre class="source-code"><strong class="bold">...</strong></pre>
+			<pre class="source-code"><strong class="bold">#[catch(404)]</strong></pre>
+			<pre class="source-code"><strong class="bold">fn not_found(_: &amp;Request) -&gt; RawHtml&lt;String&gt; {</strong></pre>
+			<pre class="source-code"><strong class="bold">    todo!("will implement later")</strong></pre>
+			<pre class="source-code"><strong class="bold">}</strong></pre>
+			<pre class="source-code"><strong class="bold">#[catch(422)]</strong></pre>
+			<pre class="source-code"><strong class="bold">fn unprocessable_entity(_: &amp;Request) -&gt; RawHtml&lt;String&gt; {</strong></pre>
+			<pre class="source-code"><strong class="bold">    todo!("will implement later")</strong></pre>
+			<pre class="source-code"><strong class="bold">}</strong></pre>
+			<pre class="source-code"><strong class="bold">#[catch(500)]</strong></pre>
+			<pre class="source-code"><strong class="bold">fn internal_server_error(_: &amp;Request) -&gt; RawHtml&lt;String&gt; {</strong></pre>
+			<pre class="source-code"><strong class="bold">    todo!("will implement later")</strong></pre>
+			<pre class="source-code"><strong class="bold">}</strong></pre>
+			<pre class="source-code">async fn rocket() -&gt; Rocket&lt;Build&gt; {</pre>
+			<pre class="source-code">    rocket::build()</pre>
+			<pre class="source-code">        ...</pre>
+			<pre class="source-code">        <strong class="bold">.register(</strong></pre>
+			<pre class="source-code"><strong class="bold">            "/",</strong></pre>
+			<pre class="source-code"><strong class="bold">            catchers![not_found, unprocessable_entity, </strong></pre>
+			<pre class="source-code"><strong class="bold">            internal_server_error],</strong></pre>
+			<pre class="source-code"><strong class="bold">        )</strong></pre>
+			<pre class="source-code">}</pre>
+			<p>When we <a id="_idIndexMarker312"/>run the application using Cargo's <strong class="source-inline">run</strong> command, the application should launch correctly. But, when we look at <strong class="source-inline">src/main.rs</strong>, the file has a lot of functions and type definitions. We will modularize our application in the next section.</p>
+			<h1 id="_idParaDest-80"><a id="_idTextAnchor080"/>Modularizing the Rocket application</h1>
+			<p>Remember <a id="_idIndexMarker313"/>in <a href="B16825_01_ePub.xhtml#_idTextAnchor014"><em class="italic">Chapter 1</em></a>, <em class="italic">Introducing the Rust Language</em>, when we made an application with modules? One of the functions of the application source code is to use it as documentation for the people working on the application. A good readable code can be easily further developed and shared with other people on the team.</p>
+			<p>The compiler does not care whether the program is in one file or multiple files; the resulting application binary is the same. However, people working on a single, long file can get confused very easily.</p>
+			<p>We are going to split our application source code into smaller files and categorize the files into different modules. Programmers come from various backgrounds and may have their own paradigm on how to split the source code of the application. For example, programmers who are used to writing Java programs may prefer organizing their code based on the logical entities or classes. People who are used to Model-Viev-Controller (MVC) frameworks may prefer putting files in models, views, and controllers folders. People who are used to clean architecture may <a id="_idIndexMarker314"/>try to organize their code into layers. But, at the end of the day, what really matters is that the way you organize your code is accepted by the people you work with, and they can all comfortably and easily use the same source code.</p>
+			<p>Rocket does not have specific guidelines on how to organize the code, but there are two things that we can observe to modularize our application. The first one is the <strong class="source-inline">Cargo</strong> project package layout convention, and the second one is the Rocket parts themselves.</p>
+			<p>According to Cargo documentation (<a href="https://doc.rust-lang.org/cargo/guide/project-layout.html">https://doc.rust-lang.org/cargo/guide/project-layout.html</a>), the package layout should be as follows:</p>
+			<pre class="source-code">┌── Cargo.lock</pre>
+			<pre class="source-code">├── Cargo.toml</pre>
+			<pre class="source-code">├── src/</pre>
+			<pre class="source-code">│   ├── lib.rs</pre>
+			<pre class="source-code">│   ├── main.rs</pre>
+			<pre class="source-code">│   └── bin/</pre>
+			<pre class="source-code">│       ├── named-executable.rs</pre>
+			<pre class="source-code">│       ├── another-executable.rs</pre>
+			<pre class="source-code">│       └── multi-file-executable/</pre>
+			<pre class="source-code">│           ├── main.rs</pre>
+			<pre class="source-code">│           └── some_module.rs</pre>
+			<pre class="source-code">├── benches/</pre>
+			<pre class="source-code">│   ├── large-input.rs</pre>
+			<pre class="source-code">│   └── multi-file-bench/</pre>
+			<pre class="source-code">│       ├── main.rs</pre>
+			<pre class="source-code">│       └── bench_module.rs</pre>
+			<pre class="source-code">├── examples/</pre>
+			<pre class="source-code">│   ├── simple.rs</pre>
+			<pre class="source-code">│   └── multi-file-example/</pre>
+			<pre class="source-code">│       ├── main.rs</pre>
+			<pre class="source-code">│       └── ex_module.rs</pre>
+			<pre class="source-code">└── tests/</pre>
+			<pre class="source-code">    ├── some-integration-tests.rs</pre>
+			<pre class="source-code">    └── multi-file-test/</pre>
+			<pre class="source-code">        ├── main.rs</pre>
+			<pre class="source-code">        └── test_module.rs</pre>
+			<p>Since we <a id="_idIndexMarker315"/>don't have benchmarks, examples, or tests yet, let's focus on the <strong class="source-inline">src</strong> folder. We can split the application into an executable in <strong class="source-inline">src/main.rs</strong> and a library in <strong class="source-inline">src/lib.rs</strong>. It's very common in an executable project to make a small executable code that only calls the library.</p>
+			<p>We already know Rocket has different parts, so it's a good idea to split the Rocket components into <a id="_idIndexMarker316"/>their own module. Let's organize our source code into these files and folders:</p>
+			<pre class="source-code">┌── Cargo.lock</pre>
+			<pre class="source-code">├── Cargo.toml</pre>
+			<pre class="source-code">└── src/</pre>
+			<pre class="source-code">    ├── lib.rs</pre>
+			<pre class="source-code">    ├── main.rs</pre>
+			<pre class="source-code">    ├── catchers</pre>
+			<pre class="source-code">    │   └── put catchers modules here</pre>
+			<pre class="source-code">    ├── fairings</pre>
+			<pre class="source-code">    │   └── put fairings modules here</pre>
+			<pre class="source-code">    ├── models</pre>
+			<pre class="source-code">    │   └── put requests, responses, and database related modules here</pre>
+			<pre class="source-code">    ├── routes</pre>
+			<pre class="source-code">    │   └── put route handling functions and modules here</pre>
+			<pre class="source-code">    ├── states</pre>
+			<pre class="source-code">    │   └── put states modules here</pre>
+			<pre class="source-code">    ├── traits</pre>
+			<pre class="source-code">    │   └── put our traits here</pre>
+			<pre class="source-code">    └── views</pre>
+			<pre class="source-code">        └── put our templates here</pre>
+			<ol>
+				<li value="1">First, edit the <strong class="source-inline">Cargo.toml</strong> file:<p class="source-code">[package]</p><p class="source-code">...</p><p class="source-code"><strong class="bold">[[bin]]</strong></p><p class="source-code"><strong class="bold">name = "our_application"</strong></p><p class="source-code"><strong class="bold">path = "src/main.rs"</strong></p><p class="source-code"><strong class="bold">[lib]</strong></p><p class="source-code"><strong class="bold">name = "our_application"</strong></p><p class="source-code"><strong class="bold">path = "src/lib.rs"</strong></p><p class="source-code">[dependencies]</p><p class="source-code">...</p></li>
+				<li>Create the <strong class="source-inline">src/lib.rs</strong> file and the following folders: <strong class="source-inline">src/catchers</strong>, <strong class="source-inline">src/fairings</strong>, <strong class="source-inline">src/models</strong>, <strong class="source-inline">src/routes</strong>, <strong class="source-inline">src/states</strong>, <strong class="source-inline">src/traits</strong>, and <strong class="source-inline">src/views</strong>.</li>
+				<li>After <a id="_idIndexMarker317"/>that, create a <strong class="source-inline">mod.rs</strong> file inside each folder: <strong class="source-inline">src/catchers/mod.rs</strong>, <strong class="source-inline">src/fairings/mod.rs</strong>, <strong class="source-inline">src/models/mod.rs</strong>, <strong class="source-inline">src/routes/mod.rs</strong>, <strong class="source-inline">src/states/mod.rs</strong>, <strong class="source-inline">src/traits/mod.rs</strong>, and <strong class="source-inline">src/views/mod.rs</strong>.</li>
+				<li>Then, edit <strong class="source-inline">src/lib.rs</strong>:<p class="source-code">#[macro_use]</p><p class="source-code">extern crate rocket;</p><p class="source-code">pub mod catchers;</p><p class="source-code">pub mod fairings;</p><p class="source-code">pub mod models;</p><p class="source-code">pub mod routes;</p><p class="source-code">pub mod states;</p><p class="source-code">pub mod traits;</p></li>
+				<li>Write the connection for our database first. Edit <strong class="source-inline">src/fairings/mod.rs</strong>:<p class="source-code">pub mod db;</p></li>
+				<li>Make a new file, <strong class="source-inline">src/fairings/db.rs</strong>, and write the file just like the connection <a id="_idIndexMarker318"/>we defined earlier in <strong class="source-inline">src/main.rs</strong>:<p class="source-code">use rocket_db_pools::{sqlx::PgPool, Database};</p><p class="source-code">#[derive(Database)]</p><p class="source-code">#[database("main_connection")]</p><p class="source-code">pub struct DBConnection(PgPool);</p></li>
+			</ol>
+			<p>Notice that we use only use a smaller number of modules compared to <strong class="source-inline">src/main.rs</strong>. We also added the <strong class="source-inline">pub</strong> keyword in order to make the struct accessible from other modules or from <strong class="source-inline">src/main.rs</strong>.</p>
+			<ol>
+				<li value="7">Because the trait is going to be used by the structs, we need to define the trait first. In <strong class="source-inline">src/traits/mod.rs</strong>, copy the trait from <strong class="source-inline">src/main.rs</strong>:<p class="source-code">pub trait DisplayPostContent {</p><p class="source-code">    fn raw_html() -&gt; String;</p><p class="source-code">}</p></li>
+				<li>After that, let's move all of our structs for requests and responses to the <strong class="source-inline">src/models</strong> folder. Edit <strong class="source-inline">src/models/mod.rs</strong> as follows:<p class="source-code">pub mod our_date_time;</p><p class="source-code">pub mod pagination;</p><p class="source-code">pub mod photo_post;</p><p class="source-code">pub mod post;</p><p class="source-code">pub mod post_type;</p><p class="source-code">pub mod text_post;</p><p class="source-code">pub mod user;</p><p class="source-code">pub mod user_status;</p><p class="source-code">pub mod video_post;</p></li>
+				<li>Then, create <a id="_idIndexMarker319"/>the files and copy the definition from <strong class="source-inline">src/main.rs</strong> to those files. The first one is <strong class="source-inline">src/models/our_date_time.rs</strong>:<p class="source-code">use chrono::{offset::Utc, DateTime};</p><p class="source-code">use rocket::form::{self, DataField, FromFormField, ValueField};</p><p class="source-code">#[derive(Debug)]</p><p class="source-code">pub struct OurDateTime(DateTime&lt;Utc&gt;);</p><p class="source-code">#[rocket::async_trait]</p><p class="source-code">impl&lt;'r&gt; FromFormField&lt;'r&gt; for OurDateTime {</p><p class="source-code">    fn from_value(_: ValueField&lt;'r&gt;) -&gt; form::</p><p class="source-code">    Result&lt;'r, Self&gt; {</p><p class="source-code">        todo!("will implement later")</p><p class="source-code">    }</p><p class="source-code">    async fn from_data(_: DataField&lt;'r, '_&gt;) -&gt; </p><p class="source-code">    form::Result&lt;'r, Self&gt; {</p><p class="source-code">        todo!("will implement later")</p><p class="source-code">    }</p><p class="source-code">}</p></li>
+				<li>Next is <strong class="source-inline">src/models/pagination.rs</strong>:<p class="source-code">use super::our_date_time::OurDateTime;</p><p class="source-code">#[derive(FromForm)]</p><p class="source-code">pub struct Pagination {</p><p class="source-code">    pub next: OurDateTime,</p><p class="source-code">    pub limit: usize,</p><p class="source-code">}</p></li>
+			</ol>
+			<p>Notice the <strong class="source-inline">use</strong> declaration uses the <strong class="source-inline">super</strong> keyword. The Rust module is organized by hierarchy, with a module containing other modules. The <strong class="source-inline">super</strong> keyword is <a id="_idIndexMarker320"/>used to access the module containing the current module. The <strong class="source-inline">super</strong> keyword can be chained, for example, <strong class="source-inline">use super::super::SomeModule;</strong>.</p>
+			<ol>
+				<li value="11">After that, write <strong class="source-inline">src/models/post_type.rs</strong>:<p class="source-code">use rocket::form::FromFormField;</p><p class="source-code">use rocket_db_pools::sqlx;</p><p class="source-code">#[derive(sqlx::Type, Debug, FromFormField)]</p><p class="source-code">#[repr(i32)]</p><p class="source-code">pub enum PostType {</p><p class="source-code">    Text = 0,</p><p class="source-code">    Photo = 1,</p><p class="source-code">    Video = 2,</p><p class="source-code">}</p></li>
+				<li>Also, write <strong class="source-inline">src/models/post.rs</strong>:<p class="source-code">use super::our_date_time::OurDateTime;</p><p class="source-code">use super::post_type::PostType;</p><p class="source-code">use rocket::form::FromForm;</p><p class="source-code">use uuid::Uuid;</p><p class="source-code">#[derive(FromForm)]</p><p class="source-code">pub struct Post {</p><p class="source-code">    pub uuid: Uuid,</p><p class="source-code">    pub user_uuid: Uuid,</p><p class="source-code">    pub post_type: PostType,</p><p class="source-code">    pub content: String,</p><p class="source-code">    pub created_at: OurDateTime,</p><p class="source-code">}</p></li>
+			</ol>
+			<p>And <a id="_idIndexMarker321"/>then, write <strong class="source-inline">src/models/user_status.rs</strong>:</p>
+			<p class="source-code">use rocket::form::FromFormField;</p>
+			<p class="source-code">use rocket_db_pools::sqlx;</p>
+			<p class="source-code">#[derive(sqlx::Type, Debug, FromFormField)]</p>
+			<p class="source-code">#[repr(i32)]</p>
+			<p class="source-code">pub enum UserStatus {</p>
+			<p class="source-code">    Inactive = 0,</p>
+			<p class="source-code">    Active = 1,</p>
+			<p class="source-code">}</p>
+			<ol>
+				<li value="13">Write <strong class="source-inline">src/models/user.rs</strong>:<p class="source-code">use super::our_date_time::OurDateTime;</p><p class="source-code">use super::user_status::UserStatus;</p><p class="source-code">use rocket::form::FromForm;</p><p class="source-code">use rocket_db_pools::sqlx::FromRow;</p><p class="source-code">use uuid::Uuid;</p><p class="source-code">#[derive(Debug, FromRow, FromForm)]</p><p class="source-code">pub struct User {</p><p class="source-code">    pub uuid: Uuid,</p><p class="source-code">    pub username: String,</p><p class="source-code">    pub email: String,</p><p class="source-code">    pub password_hash: String,</p><p class="source-code">    pub description: Option&lt;String&gt;,</p><p class="source-code">    pub status: UserStatus,</p><p class="source-code">    pub created_at: OurDateTime,</p><p class="source-code">    pub updated_at: OurDateTime,</p><p class="source-code">}</p></li>
+			</ol>
+			<p>And then, write <a id="_idIndexMarker322"/>the three <strong class="source-inline">post</strong> newtypes, <strong class="source-inline">src/models/photo_post.rs</strong>, <strong class="source-inline">src/models/text_post.rs</strong>, and <strong class="source-inline">src/models/video_post.rs</strong>:</p>
+			<p class="source-code">use super::post::Post;</p>
+			<p class="source-code">use crate::traits::DisplayPostContent;</p>
+			<p class="source-code">pub struct PhotoPost(Post);</p>
+			<p class="source-code">impl DisplayPostContent for PhotoPost {</p>
+			<p class="source-code">    fn raw_html() -&gt; String {</p>
+			<p class="source-code">        todo!("will implement later")</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p class="source-code">use super::post::Post;</p>
+			<p class="source-code">use crate::traits::DisplayPostContent;</p>
+			<p class="source-code">pub struct TextPost(Post);</p>
+			<p class="source-code">impl DisplayPostContent for TextPost {</p>
+			<p class="source-code">    fn raw_html() -&gt; String {</p>
+			<p class="source-code">        todo!("will implement later")</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p class="source-code">use super::post::Post;</p>
+			<p class="source-code">use crate::traits::DisplayPostContent;</p>
+			<p class="source-code">pub struct VideoPost(Post);</p>
+			<p class="source-code">impl DisplayPostContent for VideoPost {</p>
+			<p class="source-code">    fn raw_html() -&gt; String {</p>
+			<p class="source-code">        todo!("will implement later")</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p>In all three files, we use the <strong class="source-inline">crate</strong> keyword in the <strong class="source-inline">use</strong> declaration. We have discussed the <strong class="source-inline">super</strong> keyword before; the <strong class="source-inline">crate</strong> keyword is referring to the current library <a id="_idIndexMarker323"/>we are working on, which is the <strong class="source-inline">our_application</strong> library. In Rust 2015 edition, it's written as a double semicolon (<strong class="source-inline">::</strong>), but since Rust 2018 edition, <strong class="source-inline">::</strong> changed to <strong class="source-inline">crate</strong>. Now, <strong class="source-inline">::</strong> means the root path of the external crate, for example, <strong class="source-inline">::rocket::fs::NamedFile;</strong>.</p>
+			<p>Besides <strong class="source-inline">super</strong>, <strong class="source-inline">::</strong>, and <strong class="source-inline">crate</strong>, there are a couple more <strong class="bold">path qualifiers</strong> we can use in a <strong class="source-inline">use</strong> declaration: <strong class="source-inline">self</strong> and <strong class="source-inline">Self</strong>. We can use <strong class="source-inline">self</strong> to avoid ambiguity when referring to items in code, as shown in this example:</p>
+			<p class="source-code">use super::haha;</p>
+			<p class="source-code">mod a {</p>
+			<p class="source-code">    fn haha() {}</p>
+			<p class="source-code">    fn other_func() {</p>
+			<p class="source-code">        self::haha();</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">}</p>
+			<p><strong class="source-inline">Self</strong> is used to refer to an associated type in a trait, as shown in this example:</p>
+			<p class="source-code">trait A {</p>
+			<p class="source-code">  type Any;</p>
+			<p class="source-code">  fn any(&amp;self) -&gt; Self::Any;</p>
+			<p class="source-code">}</p>
+			<p class="source-code">struct B;</p>
+			<p class="source-code">impl A for B {</p>
+			<p class="source-code">  type Any = usize;</p>
+			<p class="source-code">  fn any(&amp;self) -&gt; self::Any {</p>
+			<p class="source-code">    100</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">}</p>
+			<ol>
+				<li value="14">Now, let's get <a id="_idIndexMarker324"/>back to the application skeleton. After all the structs, it's time to write routes for the application. Modify <strong class="source-inline">src/routes/mod.rs</strong>:<p class="source-code">use rocket::fs::NamedFile;</p><p class="source-code">use rocket::http::Status;</p><p class="source-code">use rocket::response::content::RawHtml;</p><p class="source-code">pub mod post;</p><p class="source-code">pub mod user;</p><p class="source-code">type HtmlResponse = Result&lt;RawHtml&lt;String&gt;, Status&gt;;</p><p class="source-code">#[get("/&lt;_filename&gt;")]</p><p class="source-code">pub async fn assets(_filename: &amp;str) -&gt; NamedFile {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p></li>
+			</ol>
+			<p>We could put the function handling assets in their own Rust file, but since there's only one function and it's very simple, we can just put the function in the <strong class="source-inline">mod.rs</strong> file.</p>
+			<ol>
+				<li value="15">Next, create <a id="_idIndexMarker325"/>and write <strong class="source-inline">src/routes/post.rs</strong>:<p class="source-code">use super::HtmlResponse;</p><p class="source-code">use crate::fairings::db::DBConnection;</p><p class="source-code">use crate::models::{pagination::Pagination, post::Post};</p><p class="source-code">use rocket::form::Form;</p><p class="source-code">use rocket_db_pools::Connection;</p><p class="source-code">#[get("/users/&lt;_user_uuid&gt;/posts/&lt;_uuid&gt;", format = "text/html")]</p><p class="source-code">pub async fn get_post(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _user_uuid: &amp;str,</p><p class="source-code">    _uuid: &amp;str,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[get("/users/&lt;_user_uuid&gt;/posts?&lt;_pagination&gt;", format = "text/html")]</p><p class="source-code">pub async fn get_posts(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _user_uuid: &amp;str,</p><p class="source-code">    _pagination: Option&lt;Pagination&gt;,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[post("/users/&lt;_user_uuid&gt;/posts", format = "text/html", data = "&lt;_upload&gt;")]</p><p class="source-code">pub async fn create_post(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _user_uuid: &amp;str,</p><p class="source-code">    _upload: Form&lt;Post&gt;,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[delete("/users/&lt;_user_uuid&gt;/posts/&lt;_uuid&gt;", format = "text/html")]</p><p class="source-code">pub async fn delete_post(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _user_uuid: &amp;str,</p><p class="source-code">    _uuid: &amp;str,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p></li>
+				<li>Create <a id="_idIndexMarker326"/>and write <strong class="source-inline">src/routes/user.rs</strong>:<p class="source-code">use super::HtmlResponse;</p><p class="source-code">use crate::fairings::db::DBConnection;</p><p class="source-code">use crate::models::{pagination::Pagination, user::User};</p><p class="source-code">use rocket::form::Form;</p><p class="source-code">use rocket_db_pools::Connection;</p><p class="source-code">#[get("/users/&lt;_uuid&gt;", format = "text/html")]</p><p class="source-code">pub async fn get_user(mut _db: Connection&lt;DBConnection&gt;, _uuid: &amp;str) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[get("/users?&lt;_pagination&gt;", format = "text/html")]</p><p class="source-code">pub async fn get_users(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _pagination: Option&lt;Pagination&gt;,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[get("/users/new", format = "text/html")]</p><p class="source-code">pub async fn new_user(mut _db: Connection&lt;DBConnection&gt;) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[post("/users", format = "text/html", data = "&lt;_user&gt;")]</p><p class="source-code">pub async fn create_user(mut _db: Connection&lt;DBConnection&gt;, _user: Form&lt;User&gt;) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[get("/users/edit/&lt;_uuid&gt;", format = "text/html")]</p><p class="source-code">pub async fn edit_user(mut _db: Connection&lt;DBConnection&gt;, _uuid: &amp;str) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[put("/users/&lt;_uuid&gt;", format = "text/html", data = "&lt;_user&gt;")]</p><p class="source-code">pub async fn put_user(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _uuid: &amp;str,</p><p class="source-code">    _user: Form&lt;User&gt;,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[patch("/users/&lt;_uuid&gt;", format = "text/html", data = "&lt;_user&gt;")]</p><p class="source-code">pub async fn patch_user(</p><p class="source-code">    mut _db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    _uuid: &amp;str,</p><p class="source-code">    _user: Form&lt;User&gt;,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[delete("/users/&lt;_uuid&gt;", format = "text/html")]</p><p class="source-code">pub async fn delete_user(mut _db: Connection&lt;DBConnection&gt;, _uuid: &amp;str) -&gt; HtmlResponse {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p></li>
+				<li>And, to finalize <a id="_idIndexMarker327"/>the library, add the catchers in <strong class="source-inline">src/catchers/mod.rs</strong>:<p class="source-code">use rocket::request::Request;</p><p class="source-code">use rocket::response::content::RawHtml;</p><p class="source-code">#[catch(404)]</p><p class="source-code">pub fn not_found(_: &amp;Request) -&gt; RawHtml&lt;String&gt; {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[catch(422)]</p><p class="source-code">pub fn unprocessable_entity(_: &amp;Request) -&gt; RawHtml&lt;String&gt; {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p><p class="source-code">#[catch(500)]</p><p class="source-code">pub fn internal_server_error(_: &amp;Request) -&gt; RawHtml&lt;String&gt; {</p><p class="source-code">    todo!("will implement later")</p><p class="source-code">}</p></li>
+				<li>When the <a id="_idIndexMarker328"/>library is ready, we can modify <strong class="source-inline">src/main.rs</strong> itself:<p class="source-code">#[macro_use]</p><p class="source-code">extern crate rocket;</p><p class="source-code">use our_application::catchers;</p><p class="source-code">use our_application::fairings::db::DBConnection;</p><p class="source-code">use our_application::routes::{self, post, user};</p><p class="source-code">use rocket::{Build, Rocket};</p><p class="source-code">use rocket_db_pools::Database;</p><p class="source-code">#[launch]</p><p class="source-code">async fn rocket() -&gt; Rocket&lt;Build&gt; {</p><p class="source-code">    rocket::build()</p><p class="source-code">        .attach(DBConnection::init())</p><p class="source-code">        .mount(</p><p class="source-code">            "/",</p><p class="source-code">            routes![</p><p class="source-code">                user::get_user,</p><p class="source-code">                user::get_users,</p><p class="source-code">                user::new_user,</p><p class="source-code">                user::create_user,</p><p class="source-code">                user::edit_user,</p><p class="source-code">                user::put_user,</p><p class="source-code">                user::patch_user,</p><p class="source-code">                user::delete_user,</p><p class="source-code">                post::get_post,</p><p class="source-code">                post::get_posts,</p><p class="source-code">                post::create_post,</p><p class="source-code">                post::delete_post,</p><p class="source-code">            ],</p><p class="source-code">        )</p><p class="source-code">        .mount("/assets", routes![routes::assets])</p><p class="source-code">        .register(</p><p class="source-code">            "/",</p><p class="source-code">            catchers![</p><p class="source-code">                catchers::not_found,</p><p class="source-code">                catchers::unprocessable_entity,</p><p class="source-code">                catchers::internal_server_error</p><p class="source-code">            ],</p><p class="source-code">        )</p><p class="source-code">}</p></li>
+			</ol>
+			<p>Our <strong class="source-inline">src/main.rs</strong> file has become cleaner.</p>
+			<p>Now, if we want <a id="_idIndexMarker329"/>to add more structs or routes, we can easily add new modules in the corresponding folders. We can also add more states or fairings and easily find the file location for those items.</p>
+			<h1 id="_idParaDest-81"><a id="_idTextAnchor081"/>Summary</h1>
+			<p>In this chapter, we learned how to design an application, create a Rocket application skeleton, and organize the Rust application into smaller manageable modules.</p>
+			<p>We also learned about concepts such as CRUD and RESTful applications, Rust <strong class="source-inline">enum</strong> discriminators, and Rust path qualifiers.</p>
+			<p>Hopefully, after reading this chapter, you can apply those concepts to help you organize your code better.</p>
+			<p>We will start implementing this application and learn more about Rust and Rocket concepts such as templating, request guards, cookies, and JSON, in the following chapters.</p>
+		</div>
+	</body></html>
