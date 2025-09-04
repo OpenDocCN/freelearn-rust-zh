@@ -1,6 +1,5 @@
 <html><head></head><body>
-		<div id="_idContainer038">
-			<h1 id="_idParaDest-124"><em class="italic"><a id="_idTextAnchor125"/>Chapter 11</em>: Securing and Adding an API and JSON</h1>
+		<div><h1 id="_idParaDest-124"><em class="italic"><a id="_idTextAnchor125"/>Chapter 11</em>: Securing and Adding an API and JSON</h1>
 			<p>Two of the most important aspects of a web application are authentication and authorization. In this chapter, we are going to learn how to implement simple authentication and authorization systems. After we have created these systems, we are going to learn how to create a simple <strong class="bold">Application Programming Interface</strong> (<strong class="bold">API</strong>) and how to protect the API endpoint using a <strong class="bold">JSON Web Token</strong> (<strong class="bold">JWT</strong>).</p>
 			<p>At the end of this chapter, you will be able to create an authentication system, with functionality such as logging in and logging out and setting access rights for logged-in users. You will also be able to create an API server and know how to secure the API endpoints.</p>
 			<p>In this chapter, we are going to cover these main topics:</p>
@@ -20,138 +19,491 @@
 			<p>To make sure we don't have to implement the cookie for every request, we can create a request guard that validates the cookie automatically if we use the request guard in a route handling function.</p>
 			<p>Let's start implementing a user login system<a id="_idIndexMarker600"/> by following these steps:</p>
 			<ol>
-				<li>Create a request guard to handle user authentication cookies. We can organize request guards in the same place to make it easier if we want to add new request guards. In <strong class="source-inline">src/lib.rs</strong>, add a new module:<p class="source-code">pub mod guards;</p></li>
-				<li>Then, create a folder called <strong class="source-inline">src/guards</strong>. Inside <strong class="source-inline">src/guards</strong>, add a file called <strong class="source-inline">src/guards/mod.rs</strong>. Add a new module in this new file:<p class="source-code">pub mod auth;</p></li>
-				<li>After that, create a new file called <strong class="source-inline">src/guards/auth.rs</strong>.</li>
-				<li>Create a struct to handle user authentication cookies. Let's name the struct <strong class="source-inline">CurrentUser</strong>. In <strong class="source-inline">src/guards/auth.rs</strong>, add a struct to store the <strong class="source-inline">User</strong> information:<p class="source-code">use crate::fairings::db::DBConnection;</p><p class="source-code">use crate::models::user::User;</p><p class="source-code">use rocket::http::Status;</p><p class="source-code">use rocket::request::{FromRequest, Outcome, Request};</p><p class="source-code">use rocket::serde::Serialize;</p><p class="source-code">use rocket_db_pools::{sqlx::Acquire, Connection};</p><p class="source-code">#[derive(Serialize)]</p><p class="source-code">pub struct CurrentUser {</p><p class="source-code">    pub user: User,</p><p class="source-code">}</p></li>
-				<li>Define a <a id="_idIndexMarker601"/>constant that will be used as a key for the cookie to <a id="_idIndexMarker602"/>store the user's <strong class="bold">universally unique identifier</strong> (<strong class="bold">UUID</strong>):<p class="source-code">pub const LOGIN_COOKIE_NAME: &amp;str = "user_uuid";</p></li>
-				<li>Implement the <strong class="source-inline">FromRequest</strong> trait for <strong class="source-inline">CurrentUser</strong> to make the struct a request guard. Add the implementation skeleton as follows:<p class="source-code">#[rocket::async_trait]</p><p class="source-code">impl&lt;'r&gt; FromRequest&lt;'r&gt; for CurrentUser {</p><p class="source-code">    type Error = ();</p><p class="source-code">    async fn from_request(req: &amp;'r Request&lt;'_&gt;) -&gt; </p><p class="source-code">    Outcome&lt;Self, Self::Error&gt; {</p><p class="source-code">    }</p><p class="source-code">}</p></li>
-				<li>Inside the <strong class="source-inline">from_request</strong> function, define an error that will be returned if something goes wrong:<p class="source-code">let error = Outcome::Failure((Status::Unauthorized, ()));</p></li>
-				<li>Get the cookie from the request, and extract the UUID from the cookie as follows:<p class="source-code">let parsed_cookie = req.cookies().get_private(LOGIN_COOKIE_NAME);</p><p class="source-code">if parsed_cookie.is_none() {</p><p class="source-code">    return error;</p><p class="source-code">}</p><p class="source-code">let cookie = parsed_cookie.unwrap();</p><p class="source-code">let uuid = cookie.value();</p></li>
-				<li>We <a id="_idIndexMarker603"/>want to get a connection to the database to find the user information. We can obtain another request guard (such as <strong class="source-inline">Connection&lt;DBConnection&gt;</strong>) inside a request guard implementation. Add the following lines: <p class="source-code">let parsed_db = req.guard::&lt;Connection&lt;DBConnection&gt;&gt;().await;</p><p class="source-code">if !parsed_db.is_success() {</p><p class="source-code">    return error;</p><p class="source-code">}</p><p class="source-code">let mut db = parsed_db.unwrap();</p><p class="source-code">let parsed_connection = db.acquire().await;</p><p class="source-code">if parsed_connection.is_err() {</p><p class="source-code">    return error;</p><p class="source-code">}</p><p class="source-code">let connection = parsed_connection.unwrap();</p></li>
-				<li>Find and return the user. Add the following lines:<p class="source-code">let found_user = User::find(connection, uuid).await;</p><p class="source-code">if found_user.is_err() {</p><p class="source-code">    return error;</p><p class="source-code">}</p><p class="source-code">let user = found_user.unwrap();</p><p class="source-code">Outcome::Success(CurrentUser { user })</p></li>
-				<li>Next, we want to implement the login itself. We will create a <strong class="source-inline">like sessions/new</strong> route to get the page for the login, a <strong class="source-inline">sessions/create</strong> route to send the username and password for login, and a <strong class="source-inline">sessions/delete</strong> route for logging out. Before implementing those routes, let's create a template for the login. In <strong class="source-inline">src/views</strong>, add a new folder called <strong class="source-inline">sessions</strong>. Then, create a file called <strong class="source-inline">src/views/sessions/new.html.tera</strong>. Append the following lines <a id="_idIndexMarker604"/>into the file:<p class="source-code">{% extends "template" %}</p><p class="source-code">{% block body %}</p><p class="source-code">  &lt;form accept-charset="UTF-8" action="login" </p><p class="source-code">  autocomplete="off" method="POST"&gt;</p><p class="source-code">    &lt;input type="hidden" name="authenticity_token" </p><p class="source-code">    value="{{ csrf_token }}"/&gt;</p><p class="source-code">    &lt;fieldset&gt;</p><p class="source-code">      &lt;legend&gt;Login&lt;/legend&gt;</p><p class="source-code">      &lt;div class="row"&gt;</p><p class="source-code">        &lt;div class="col-sm-12 col-md-3"&gt;</p><p class="source-code">          &lt;label for="username"&gt;Username:&lt;/label&gt;</p><p class="source-code">        &lt;/div&gt;</p><p class="source-code">        &lt;div class="col-sm-12 col-md"&gt;</p><p class="source-code">          &lt;input name="username" type="text" value="" </p><p class="source-code">          /&gt;</p><p class="source-code">        &lt;/div&gt;</p><p class="source-code">      &lt;/div&gt;</p><p class="source-code">      &lt;div class="row"&gt;</p><p class="source-code">        &lt;div class="col-sm-12 col-md-3"&gt;</p><p class="source-code">          &lt;label for="password"&gt;Password:&lt;/label&gt;</p><p class="source-code">        &lt;/div&gt;</p><p class="source-code">        &lt;div class="col-sm-12 col-md"&gt;</p><p class="source-code">          &lt;input name="password" type="password" /&gt;</p><p class="source-code">        &lt;/div&gt;</p><p class="source-code">      &lt;/div&gt;</p><p class="source-code">      &lt;button type="submit" value="Submit"&gt;</p><p class="source-code">      Submit&lt;/button&gt;</p><p class="source-code">    &lt;/fieldset&gt;</p><p class="source-code">  &lt;/form&gt;</p><p class="source-code">{% endblock %}</p></li>
-				<li>In <strong class="source-inline">src/models/user.rs</strong>, add a <a id="_idIndexMarker605"/>struct for the login information:<p class="source-code">#[derive(FromForm)]</p><p class="source-code">pub struct Login&lt;'r&gt; {</p><p class="source-code">    pub username: &amp;'r str,</p><p class="source-code">    pub password: &amp;'r str,</p><p class="source-code">    pub authenticity_token: &amp;'r str,</p><p class="source-code">}</p></li>
-				<li>Staying in the <a id="_idIndexMarker606"/>same file, we want to create a method for the <strong class="source-inline">User</strong> struct to be able to find the user from the database based on the login username information, and verify whether the login password is correct or not. After verifying that the password is correct by using the <strong class="source-inline">update</strong> method, it is time to refactor this. Create a new function to verify passwords:<p class="source-code">fn verify_password(ag: &amp;Argon2, reference: &amp;str, password: &amp;str) -&gt; Result&lt;(), OurError&gt; {</p><p class="source-code">    let reference_hash = PasswordHash::new(</p><p class="source-code">    reference).map_err(|e| {</p><p class="source-code">        OurError::new_internal_server_error(</p><p class="source-code">        String::from("Input error"), Some(</p><p class="source-code">        Box::new(e)))</p><p class="source-code">    })?;</p><p class="source-code">    Ok(ag</p><p class="source-code">        .verify_password(password.as_bytes(), </p><p class="source-code">        &amp;reference_hash)</p><p class="source-code">        .map_err(|e| {</p><p class="source-code">            OurError::new_internal_server_error(</p><p class="source-code">                String::from("Cannot verify </p><p class="source-code">                password"),</p><p class="source-code">                Some(Box::new(e)),</p><p class="source-code">            )</p><p class="source-code">        })?)</p><p class="source-code">}</p></li>
-				<li>Change the <strong class="source-inline">update</strong> method from these lines:<p class="source-code">let old_password_hash = PasswordHash::new(&amp;old_user.password_hash).map_err(|e| {</p><p class="source-code">    OurError::new_internal_server_error(</p><p class="source-code">    String::from("Input error"), Some(Box::new(e)))</p><p class="source-code">})?;</p><p class="source-code">let argon2 = Argon2::default();</p><p class="source-code">argon2</p><p class="source-code">    .verify_password(user.old_password.as_bytes(), </p><p class="source-code">    &amp;old_password_hash)</p><p class="source-code">    .map_err(|e| {</p><p class="source-code">        OurError::new_internal_server_error(</p><p class="source-code">            String::from("Cannot confirm old </p><p class="source-code">            password"),</p><p class="source-code">            Some(Box::new(e)),</p><p class="source-code">        )</p><p class="source-code">    })?;</p></li>
+				<li>Create a request guard to handle user authentication cookies. We can organize request guards in the same place to make it easier if we want to add new request guards. In <code>src/lib.rs</code>, add a new module:<pre>pub mod guards;</pre></li>
+				<li>Then, create a folder called <code>src/guards</code>. Inside <code>src/guards</code>, add a file called <code>src/guards/mod.rs</code>. Add a new module in this new file:<pre>pub mod auth;</pre></li>
+				<li>After that, create a new file called <code>src/guards/auth.rs</code>.</li>
+				<li>Create a struct to handle user authentication cookies. Let's name the struct <code>CurrentUser</code>. In <code>src/guards/auth.rs</code>, add a struct to store the <code>User</code> information:<pre>use crate::fairings::db::DBConnection;
+use crate::models::user::User;
+use rocket::http::Status;
+use rocket::request::{FromRequest, Outcome, Request};
+use rocket::serde::Serialize;
+use rocket_db_pools::{sqlx::Acquire, Connection};
+#[derive(Serialize)]
+pub struct CurrentUser {
+    pub user: User,
+}</pre></li>
+				<li>Define a <a id="_idIndexMarker601"/>constant that will be used as a key for the cookie to <a id="_idIndexMarker602"/>store the user's <strong class="bold">universally unique identifier</strong> (<strong class="bold">UUID</strong>):<pre>pub const LOGIN_COOKIE_NAME: &amp;str = "user_uuid";</pre></li>
+				<li>Implement the <code>FromRequest</code> trait for <code>CurrentUser</code> to make the struct a request guard. Add the implementation skeleton as follows:<pre>#[rocket::async_trait]
+impl&lt;'r&gt; FromRequest&lt;'r&gt; for CurrentUser {
+    type Error = ();
+    async fn from_request(req: &amp;'r Request&lt;'_&gt;) -&gt; 
+    Outcome&lt;Self, Self::Error&gt; {
+    }
+}</pre></li>
+				<li>Inside the <code>from_request</code> function, define an error that will be returned if something goes wrong:<pre>let error = Outcome::Failure((Status::Unauthorized, ()));</pre></li>
+				<li>Get the cookie from the request, and extract the UUID from the cookie as follows:<pre>let parsed_cookie = req.cookies().get_private(LOGIN_COOKIE_NAME);
+if parsed_cookie.is_none() {
+    return error;
+}
+let cookie = parsed_cookie.unwrap();
+let uuid = cookie.value();</pre></li>
+				<li>We <a id="_idIndexMarker603"/>want to get a connection to the database to find the user information. We can obtain another request guard (such as <code>Connection&lt;DBConnection&gt;</code>) inside a request guard implementation. Add the following lines: <pre>let parsed_db = req.guard::&lt;Connection&lt;DBConnection&gt;&gt;().await;
+if !parsed_db.is_success() {
+    return error;
+}
+let mut db = parsed_db.unwrap();
+let parsed_connection = db.acquire().await;
+if parsed_connection.is_err() {
+    return error;
+}
+let connection = parsed_connection.unwrap();</pre></li>
+				<li>Find and return the user. Add the following lines:<pre>let found_user = User::find(connection, uuid).await;
+if found_user.is_err() {
+    return error;
+}
+let user = found_user.unwrap();
+Outcome::Success(CurrentUser { user })</pre></li>
+				<li>Next, we want to implement the login itself. We will create a <code>like sessions/new</code> route to get the page for the login, a <code>sessions/create</code> route to send the username and password for login, and a <code>sessions/delete</code> route for logging out. Before implementing those routes, let's create a template for the login. In <code>src/views</code>, add a new folder called <code>sessions</code>. Then, create a file called <code>src/views/sessions/new.html.tera</code>. Append the following lines <a id="_idIndexMarker604"/>into the file:<pre>{% extends "template" %}
+{% block body %}
+  &lt;form accept-charset="UTF-8" action="login" 
+  autocomplete="off" method="POST"&gt;
+    &lt;input type="hidden" name="authenticity_token" 
+    value="{{ csrf_token }}"/&gt;
+    &lt;fieldset&gt;
+      &lt;legend&gt;Login&lt;/legend&gt;
+      &lt;div class="row"&gt;
+        &lt;div class="col-sm-12 col-md-3"&gt;
+          &lt;label for="username"&gt;Username:&lt;/label&gt;
+        &lt;/div&gt;
+        &lt;div class="col-sm-12 col-md"&gt;
+          &lt;input name="username" type="text" value="" 
+          /&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="row"&gt;
+        &lt;div class="col-sm-12 col-md-3"&gt;
+          &lt;label for="password"&gt;Password:&lt;/label&gt;
+        &lt;/div&gt;
+        &lt;div class="col-sm-12 col-md"&gt;
+          &lt;input name="password" type="password" /&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;button type="submit" value="Submit"&gt;
+      Submit&lt;/button&gt;
+    &lt;/fieldset&gt;
+  &lt;/form&gt;
+{% endblock %}</pre></li>
+				<li>In <code>src/models/user.rs</code>, add a <a id="_idIndexMarker605"/>struct for the login information:<pre>#[derive(FromForm)]
+pub struct Login&lt;'r&gt; {
+    pub username: &amp;'r str,
+    pub password: &amp;'r str,
+    pub authenticity_token: &amp;'r str,
+}</pre></li>
+				<li>Staying in the <a id="_idIndexMarker606"/>same file, we want to create a method for the <code>User</code> struct to be able to find the user from the database based on the login username information, and verify whether the login password is correct or not. After verifying that the password is correct by using the <code>update</code> method, it is time to refactor this. Create a new function to verify passwords:<pre>fn verify_password(ag: &amp;Argon2, reference: &amp;str, password: &amp;str) -&gt; Result&lt;(), OurError&gt; {
+    let reference_hash = PasswordHash::new(
+    reference).map_err(|e| {
+        OurError::new_internal_server_error(
+        String::from("Input error"), Some(
+        Box::new(e)))
+    })?;
+    Ok(ag
+        .verify_password(password.as_bytes(), 
+        &amp;reference_hash)
+        .map_err(|e| {
+            OurError::new_internal_server_error(
+                String::from("Cannot verify 
+                password"),
+                Some(Box::new(e)),
+            )
+        })?)
+}</pre></li>
+				<li>Change the <code>update</code> method from these lines:<pre>let old_password_hash = PasswordHash::new(&amp;old_user.password_hash).map_err(|e| {
+    OurError::new_internal_server_error(
+    String::from("Input error"), Some(Box::new(e)))
+})?;
+let argon2 = Argon2::default();
+argon2
+    .verify_password(user.old_password.as_bytes(), 
+    &amp;old_password_hash)
+    .map_err(|e| {
+        OurError::new_internal_server_error(
+            String::from("Cannot confirm old 
+            password"),
+            Some(Box::new(e)),
+        )
+    })?;</pre></li>
 			</ol>
 			<p>And, change it to the following lines:</p>
-			<p class="source-code">let argon2 = Argon2::default();</p>
-			<p class="source-code">verify_password(&amp;argon2, &amp;old_user.password_hash, user.old_password)?;</p>
+			<pre>let argon2 = Argon2::default();
+verify_password(&amp;argon2, &amp;old_user.password_hash, user.old_password)?;</pre>
 			<ol>
-				<li value="15">Create a<a id="_idIndexMarker607"/> method to find a user based on the login username. Inside the <strong class="source-inline">impl User</strong> block, add the following method:<p class="source-code">pub async fn find_by_login&lt;'r&gt;(</p><p class="source-code">    connection: &amp;mut PgConnection,</p><p class="source-code">    login: &amp;'r Login&lt;'r&gt;,</p><p class="source-code">) -&gt; Result&lt;Self, OurError&gt; {</p><p class="source-code">    let query_str = "SELECT * FROM users WHERE </p><p class="source-code">    username = $1";</p><p class="source-code">    let user = sqlx::query_as::&lt;_, Self&gt;(query_str)</p><p class="source-code">        .bind(&amp;login.username)</p><p class="source-code">        .fetch_one(connection)</p><p class="source-code">        .await</p><p class="source-code">        .map_err(OurError::from_sqlx_error)?;</p><p class="source-code">    let argon2 = Argon2::default();</p><p class="source-code">    verify_password(&amp;argon2, &amp;user.password_hash, </p><p class="source-code">    &amp;login.password)?;</p><p class="source-code">    Ok(user)</p><p class="source-code">}</p></li>
-				<li>Now, implement <a id="_idIndexMarker608"/>routes for handling login. Create a new <strong class="source-inline">mod</strong> in <strong class="source-inline">src/routes/mod.rs</strong>:<p class="source-code">pub mod session;</p></li>
+				<li value="15">Create a<a id="_idIndexMarker607"/> method to find a user based on the login username. Inside the <code>impl User</code> block, add the following method:<pre>pub async fn find_by_login&lt;'r&gt;(
+    connection: &amp;mut PgConnection,
+    login: &amp;'r Login&lt;'r&gt;,
+) -&gt; Result&lt;Self, OurError&gt; {
+    let query_str = "SELECT * FROM users WHERE 
+    username = $1";
+    let user = sqlx::query_as::&lt;_, Self&gt;(query_str)
+        .bind(&amp;login.username)
+        .fetch_one(connection)
+        .await
+        .map_err(OurError::from_sqlx_error)?;
+    let argon2 = Argon2::default();
+    verify_password(&amp;argon2, &amp;user.password_hash, 
+    &amp;login.password)?;
+    Ok(user)
+}</pre></li>
+				<li>Now, implement <a id="_idIndexMarker608"/>routes for handling login. Create a new <code>mod</code> in <code>src/routes/mod.rs</code>:<pre>pub mod session;</pre></li>
 			</ol>
-			<p>Then, create a new file called <strong class="source-inline">src/routes/session.rs</strong>.</p>
+			<p>Then, create a new file called <code>src/routes/session.rs</code>.</p>
 			<ol>
-				<li value="17">In <strong class="source-inline">src/routes/session.rs</strong>, create a route handling function called <strong class="source-inline">new</strong>. We want the function to serve the rendered template for the login that we created earlier. Add the following lines:<p class="source-code">use super::HtmlResponse;</p><p class="source-code">use crate::fairings::csrf::Token as CsrfToken;</p><p class="source-code">use rocket::request::FlashMessage;</p><p class="source-code">use rocket_dyn_templates::{context, Template};</p><p class="source-code">#[get("/login", format = "text/html")]</p><p class="source-code">pub async fn new&lt;'r&gt;(flash: Option&lt;FlashMessage&lt;'_&gt;&gt;, csrf_token: CsrfToken) -&gt; HtmlResponse {</p><p class="source-code">    let flash_string = flash</p><p class="source-code">        .map(|fl| format!("{}", fl.message()))</p><p class="source-code">        .unwrap_or_else(|| "".to_string());</p><p class="source-code">    let context = context! {</p><p class="source-code">        flash: flash_string,</p><p class="source-code">        csrf_token: csrf_token,</p><p class="source-code">    };</p><p class="source-code">    Ok(Template::render("sessions/new", context))</p><p class="source-code">}</p></li>
-				<li>Then, create<a id="_idIndexMarker609"/> a new function called <strong class="source-inline">create</strong>. In this function, we want to find the user and verify the password with the password hash in the database. If everything goes well, set the cookie with the user information. Append the following lines:<p class="source-code">use crate::fairings::db::DBConnection;</p><p class="source-code">use crate::guards::auth::LOGIN_COOKIE_NAME;</p><p class="source-code">use crate::models::user::{Login, User};</p><p class="source-code">use rocket::form::{Contextual, Form};</p><p class="source-code">use rocket::http::{Cookie, CookieJar};</p><p class="source-code">use rocket::response::{Flash, Redirect};</p><p class="source-code">use rocket_db_pools::{sqlx::Acquire, Connection};</p><p class="source-code">...</p><p class="source-code">#[post("/login", format = "application/x-www-form-urlencoded", data = "&lt;login_context&gt;")]</p><p class="source-code">pub async fn create&lt;'r&gt;(</p><p class="source-code">    mut db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    login_context: Form&lt;Contextual&lt;'r, Login&lt;'r&gt;&gt;&gt;,</p><p class="source-code">    csrf_token: CsrfToken,</p><p class="source-code">    cookies: &amp;CookieJar&lt;'_&gt;,</p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {</p><p class="source-code">    let login_error = || Flash::error(</p><p class="source-code">    Redirect::to("/login"), "Cannot login");</p><p class="source-code">    if login_context.value.is_none() {</p><p class="source-code">        return Err(login_error());</p><p class="source-code">    }</p><p class="source-code">    let login = login_context.value.as_ref().unwrap();</p><p class="source-code">    csrf_token</p><p class="source-code">        .verify(&amp;login.authenticity_token)</p><p class="source-code">        .map_err(|_| login_error())?;</p><p class="source-code">    let connection = db.acquire().await.map_err(|_| </p><p class="source-code">    login_error())?;</p><p class="source-code">    let user = User::find_by_login(connection, login)</p><p class="source-code">        .await</p><p class="source-code">        .map_err(|_| login_error())?;</p><p class="source-code">    cookies.add_private(Cookie::new(LOGIN_COOKIE_NAME, </p><p class="source-code">    user.uuid.to_string()));</p><p class="source-code">    Ok(Flash::success(Redirect::to("/users"), "Login </p><p class="source-code">    successfully"))</p><p class="source-code">}</p></li>
-				<li>Finally, create <a id="_idIndexMarker610"/>a function called <strong class="source-inline">delete</strong>. We will use this function as a route for logging out. Append the following lines:<p class="source-code">#[post("/logout", format = "application/x-www-form-urlencoded")]</p><p class="source-code">pub async fn delete(cookies: &amp;CookieJar&lt;'_&gt;) -&gt; Flash&lt;Redirect&gt; {</p><p class="source-code">    cookies.remove_private(</p><p class="source-code">    Cookie::named(LOGIN_COOKIE_NAME));</p><p class="source-code">    Flash::success(Redirect::to("/users"), "Logout </p><p class="source-code">    successfully")</p><p class="source-code">}</p></li>
-				<li>Add <strong class="source-inline">session::new</strong>, <strong class="source-inline">session::create</strong>, and <strong class="source-inline">session::delete</strong> into <strong class="source-inline">src/main.rs</strong>:<p class="source-code">use our_application::routes::{self, post, <strong class="bold">session</strong>, user};</p><p class="source-code">...</p><p class="source-code">async fn rocket() -&gt; Rocket&lt;Build&gt; {</p><p class="source-code">    ...</p><p class="source-code">    routes![</p><p class="source-code">    ...</p><p class="source-code"><strong class="bold">        session::new,</strong></p><p class="source-code"><strong class="bold">        session::create,</strong></p><p class="source-code"><strong class="bold">        session::delete,</strong></p><p class="source-code">    ]</p><p class="source-code">    ...</p><p class="source-code">}</p></li>
-				<li>Now, we can use <strong class="source-inline">CurrentUser</strong> to ensure that only logged-in users can have access to some endpoints in our application. In <strong class="source-inline">src/routes/user.rs</strong>, remove the<a id="_idIndexMarker611"/> routine to find the user in the <strong class="source-inline">edit</strong> endpoint. Delete the following lines:<p class="source-code">pub async fn edit_user(</p><p class="source-code">    <strong class="bold">mut db: Connection&lt;DBConnection&gt;,</strong></p><p class="source-code">    ...</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code"><strong class="bold">    let connection = db</strong></p><p class="source-code"><strong class="bold">        .acquire()</strong></p><p class="source-code"><strong class="bold">        .await</strong></p><p class="source-code"><strong class="bold">        .map_err(|_| Status::InternalServerError)?;</strong></p><p class="source-code"><strong class="bold">    let user = User::find(connection, </strong></p><p class="source-code">    <strong class="bold">uuid).await.map_err(|e| e.status)?;</strong></p><p class="source-code">    ...</p><p class="source-code">}</p></li>
-				<li>Then, add <strong class="source-inline">CurrentUser</strong> to the route that requires a logged-in user as follows:<p class="source-code"><strong class="bold">use crate::guards::auth::CurrentUser;</strong></p><p class="source-code">...</p><p class="source-code">pub async fn edit_user(...</p><p class="source-code">    <strong class="bold">current_user: CurrentUser</strong>,</p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    ...</p><p class="source-code">    let context = context! {</p><p class="source-code">        form_url: format!("/users/{}", <strong class="bold">uuid</strong>),</p><p class="source-code">        ...</p><p class="source-code"><strong class="bold">        user: &amp;current_user.user,</strong></p><p class="source-code"><strong class="bold">        current_user: &amp;current_user,</strong></p><p class="source-code">        ...</p><p class="source-code">    };</p><p class="source-code">    ...</p><p class="source-code">}</p><p class="source-code">...</p><p class="source-code">pub async fn update_user&lt;'r&gt;(...</p><p class="source-code">    <strong class="bold">current_user: CurrentUser,</strong></p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {</p><p class="source-code">    ...</p><p class="source-code">    match user_value.method {</p><p class="source-code">        "PUT" =&gt; put_user(db, uuid, user_context, </p><p class="source-code">        csrf_token<strong class="bold">, current_user</strong>).await,</p><p class="source-code">        "PATCH" =&gt; patch_user(db, uuid, user_context, </p><p class="source-code">        csrf_token<strong class="bold">, current_user</strong>).await,</p><p class="source-code">        ...</p><p class="source-code">    }</p><p class="source-code">}</p><p class="source-code">...</p><p class="source-code">pub async fn put_user&lt;'r&gt;(...</p><p class="source-code">    <strong class="bold">_current_user: CurrentUser,</strong></p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {...}</p><p class="source-code">...</p><p class="source-code">pub async fn patch_user&lt;'r&gt;(...</p><p class="source-code">    <strong class="bold">current_user: CurrentUser,</strong></p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {</p><p class="source-code">    put_user(db, uuid, user_context, csrf_token<strong class="bold">, </strong></p><p class="source-code">    <strong class="bold">current_user</strong>).await</p><p class="source-code">}</p><p class="source-code">...</p><p class="source-code">pub async fn delete_user_entry_point(...</p><p class="source-code">    <strong class="bold">current_user: CurrentUser,</strong></p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {</p><p class="source-code">    delete_user(db, uuid<strong class="bold">, current_user</strong>).await</p><p class="source-code">}</p><p class="source-code">...</p><p class="source-code">pub async fn delete_user(...</p><p class="source-code">    <strong class="bold">_current_user: CurrentUser,</strong></p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {...}</p></li>
-				<li>Finally, protect<a id="_idIndexMarker612"/> the endpoint in <strong class="source-inline">src/routes/post.rs</strong> as well. Only logged-in users can upload and delete the post, so modify the code into the following:<p class="source-code"><strong class="bold">crate::guards::auth::CurrentUser;</strong></p><p class="source-code">...</p><p class="source-code">pub async fn create_post&lt;'r&gt;(...</p><p class="source-code">    <strong class="bold">_current_user: CurrentUser,</strong></p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {...}</p><p class="source-code">...</p><p class="source-code">pub async fn delete_post(...</p><p class="source-code">    <strong class="bold">_current_user: CurrentUser,</strong></p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {...}</p></li>
+				<li value="17">In <code>src/routes/session.rs</code>, create a route handling function called <code>new</code>. We want the function to serve the rendered template for the login that we created earlier. Add the following lines:<pre>use super::HtmlResponse;
+use crate::fairings::csrf::Token as CsrfToken;
+use rocket::request::FlashMessage;
+use rocket_dyn_templates::{context, Template};
+#[get("/login", format = "text/html")]
+pub async fn new&lt;'r&gt;(flash: Option&lt;FlashMessage&lt;'_&gt;&gt;, csrf_token: CsrfToken) -&gt; HtmlResponse {
+    let flash_string = flash
+        .map(|fl| format!("{}", fl.message()))
+        .unwrap_or_else(|| "".to_string());
+    let context = context! {
+        flash: flash_string,
+        csrf_token: csrf_token,
+    };
+    Ok(Template::render("sessions/new", context))
+}</pre></li>
+				<li>Then, create<a id="_idIndexMarker609"/> a new function called <code>create</code>. In this function, we want to find the user and verify the password with the password hash in the database. If everything goes well, set the cookie with the user information. Append the following lines:<pre>use crate::fairings::db::DBConnection;
+use crate::guards::auth::LOGIN_COOKIE_NAME;
+use crate::models::user::{Login, User};
+use rocket::form::{Contextual, Form};
+use rocket::http::{Cookie, CookieJar};
+use rocket::response::{Flash, Redirect};
+use rocket_db_pools::{sqlx::Acquire, Connection};
+...
+#[post("/login", format = "application/x-www-form-urlencoded", data = "&lt;login_context&gt;")]
+pub async fn create&lt;'r&gt;(
+    mut db: Connection&lt;DBConnection&gt;,
+    login_context: Form&lt;Contextual&lt;'r, Login&lt;'r&gt;&gt;&gt;,
+    csrf_token: CsrfToken,
+    cookies: &amp;CookieJar&lt;'_&gt;,
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {
+    let login_error = || Flash::error(
+    Redirect::to("/login"), "Cannot login");
+    if login_context.value.is_none() {
+        return Err(login_error());
+    }
+    let login = login_context.value.as_ref().unwrap();
+    csrf_token
+        .verify(&amp;login.authenticity_token)
+        .map_err(|_| login_error())?;
+    let connection = db.acquire().await.map_err(|_| 
+    login_error())?;
+    let user = User::find_by_login(connection, login)
+        .await
+        .map_err(|_| login_error())?;
+    cookies.add_private(Cookie::new(LOGIN_COOKIE_NAME, 
+    user.uuid.to_string()));
+    Ok(Flash::success(Redirect::to("/users"), "Login 
+    successfully"))
+}</pre></li>
+				<li>Finally, create <a id="_idIndexMarker610"/>a function called <code>delete</code>. We will use this function as a route for logging out. Append the following lines:<pre>#[post("/logout", format = "application/x-www-form-urlencoded")]
+pub async fn delete(cookies: &amp;CookieJar&lt;'_&gt;) -&gt; Flash&lt;Redirect&gt; {
+    cookies.remove_private(
+    Cookie::named(LOGIN_COOKIE_NAME));
+    Flash::success(Redirect::to("/users"), "Logout 
+    successfully")
+}</pre></li>
+				<li>Add <code>session::new</code>, <code>session::create</code>, and <code>session::delete</code> into <code>src/main.rs</code>:<pre>use our_application::routes::{self, post, <strong class="bold">session</strong>, user};
+...
+async fn rocket() -&gt; Rocket&lt;Build&gt; {
+    ...
+    routes![
+    ...
+<strong class="bold">        session::new,</strong>
+<strong class="bold">        session::create,</strong>
+<strong class="bold">        session::delete,</strong>
+    ]
+    ...
+}</pre></li>
+				<li>Now, we can use <code>CurrentUser</code> to ensure that only logged-in users can have access to some endpoints in our application. In <code>src/routes/user.rs</code>, remove the<a id="_idIndexMarker611"/> routine to find the user in the <code>edit</code> endpoint. Delete the following lines:<pre>pub async fn edit_user(
+    <strong class="bold">mut db: Connection&lt;DBConnection&gt;,</strong>
+    ...
+) -&gt; HtmlResponse {
+<strong class="bold">    let connection = db</strong>
+<strong class="bold">        .acquire()</strong>
+<strong class="bold">        .await</strong>
+<strong class="bold">        .map_err(|_| Status::InternalServerError)?;</strong>
+<strong class="bold">    let user = User::find(connection, </strong>
+    <strong class="bold">uuid).await.map_err(|e| e.status)?;</strong>
+    ...
+}</pre></li>
+				<li>Then, add <code>CurrentUser</code> to the route that requires a logged-in user as follows:<pre><strong class="bold">use crate::guards::auth::CurrentUser;</strong>
+...
+pub async fn edit_user(...
+    <strong class="bold">current_user: CurrentUser</strong>,
+) -&gt; HtmlResponse {
+    ...
+    let context = context! {
+        form_url: format!("/users/{}", <strong class="bold">uuid</strong>),
+        ...
+<strong class="bold">        user: &amp;current_user.user,</strong>
+<strong class="bold">        current_user: &amp;current_user,</strong>
+        ...
+    };
+    ...
+}
+...
+pub async fn update_user&lt;'r&gt;(...
+    <strong class="bold">current_user: CurrentUser,</strong>
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {
+    ...
+    match user_value.method {
+        "PUT" =&gt; put_user(db, uuid, user_context, 
+        csrf_token<strong class="bold">, current_user</strong>).await,
+        "PATCH" =&gt; patch_user(db, uuid, user_context, 
+        csrf_token<strong class="bold">, current_user</strong>).await,
+        ...
+    }
+}
+...
+pub async fn put_user&lt;'r&gt;(...
+    <strong class="bold">_current_user: CurrentUser,</strong>
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {...}
+...
+pub async fn patch_user&lt;'r&gt;(...
+    <strong class="bold">current_user: CurrentUser,</strong>
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {
+    put_user(db, uuid, user_context, csrf_token<strong class="bold">, </strong>
+    <strong class="bold">current_user</strong>).await
+}
+...
+pub async fn delete_user_entry_point(...
+    <strong class="bold">current_user: CurrentUser,</strong>
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {
+    delete_user(db, uuid<strong class="bold">, current_user</strong>).await
+}
+...
+pub async fn delete_user(...
+    <strong class="bold">_current_user: CurrentUser,</strong>
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {...}</pre></li>
+				<li>Finally, protect<a id="_idIndexMarker612"/> the endpoint in <code>src/routes/post.rs</code> as well. Only logged-in users can upload and delete the post, so modify the code into the following:<pre><strong class="bold">crate::guards::auth::CurrentUser;</strong>
+...
+pub async fn create_post&lt;'r&gt;(...
+    <strong class="bold">_current_user: CurrentUser,</strong>
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {...}
+...
+pub async fn delete_post(...
+    <strong class="bold">_current_user: CurrentUser,</strong>
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {...}</pre></li>
 			</ol>
 			<p>Before we <a id="_idIndexMarker613"/>implemented authentication, we could edit and delete any user or post. Now try editing or deleting something without logging in. Then, try logging in and deleting and editing.</p>
 			<p>One problem still exists: after logging in, users can edit and delete other users' information. We will learn how to prevent this problem by implementing authorization in the next section.</p>
 			<h1 id="_idParaDest-127"><a id="_idTextAnchor128"/>Authorizing users</h1>
 			<p>Authentication<a id="_idIndexMarker614"/> and authorization<a id="_idIndexMarker615"/> are two of the main concepts of information security. If authentication is a way to prove that an entity is who they say they are, then authorization is a way to give rights to the entity. One entity might be able to modify some resources, one entity might be able to modify all resources, one entity might only be able to see limited resources, and so on.</p>
-			<p>In the previous section, we <a id="_idIndexMarker616"/>implemented authentication concepts such as login and <strong class="source-inline">CurrentUser</strong>; now it's time to implement authorization. The idea is that we make sure logged-in users can only modify their own information and posts. </p>
-			<p>Please keep in mind that this example is very simple. In more advanced information security, there are more advanced concepts, such as role-based access control. For example, we can create a role called <strong class="source-inline">admin</strong>, we can set a certain user as <strong class="source-inline">admin</strong>, and <strong class="source-inline">admin</strong> can do everything without restrictions.</p>
+			<p>In the previous section, we <a id="_idIndexMarker616"/>implemented authentication concepts such as login and <code>CurrentUser</code>; now it's time to implement authorization. The idea is that we make sure logged-in users can only modify their own information and posts. </p>
+			<p>Please keep in mind that this example is very simple. In more advanced information security, there are more advanced concepts, such as role-based access control. For example, we can create a role called <code>admin</code>, we can set a certain user as <code>admin</code>, and <code>admin</code> can do everything without restrictions.</p>
 			<p>Let's try implementing simple authorization by following these steps:</p>
 			<ol>
-				<li value="1">Add a simple method for <strong class="source-inline">CurrentUser</strong> to compare its instance with a UUID. Append the following lines in <strong class="source-inline">src/guards/auth.rs</strong>:<p class="source-code">impl CurrentUser {</p><p class="source-code">    pub fn is(&amp;self, uuid: &amp;str) -&gt; bool {</p><p class="source-code">        self.user.uuid.to_string() == uuid</p><p class="source-code">    }</p><p class="source-code">    pub fn is_not(&amp;self, uuid: &amp;str) -&gt; bool {</p><p class="source-code">        !self.is(uuid)</p><p class="source-code">    }</p><p class="source-code">}</p></li>
-				<li>Add a new <a id="_idIndexMarker617"/>type of error as well. Add a <strong class="source-inline">new</strong> method in <strong class="source-inline">src/errors/our_error.rs</strong> in the <strong class="source-inline">impl OurError {}</strong> block:<p class="source-code">pub fn new_unauthorized_error(debug: Option&lt;Box&lt;dyn Error&gt;&gt;) -&gt; Self {</p><p class="source-code">    Self::new_error_with_status(Status::Unauthorized, </p><p class="source-code">    String::from("unauthorized"), debug)</p><p class="source-code">}</p></li>
-				<li>We can check the <strong class="source-inline">CurrentUser</strong> instance on the templates to control the flow of the application. For example, if there's no <strong class="source-inline">CurrentUser</strong> instance, we show the link to sign up and log in. If there is a <strong class="source-inline">CurrentUser</strong> instance, we show the link to log out. Let's modify the Tera template. Edit <strong class="source-inline">src/views/template.html.tera</strong> and append the following lines:<p class="source-code">&lt;body&gt;</p><p class="source-code">  <strong class="bold">&lt;header&gt;</strong></p><p class="source-code"><strong class="bold">    &lt;a href="/users" class="button"&gt;Home&lt;/a&gt;</strong></p><p class="source-code"><strong class="bold">    {% if current_user %}</strong></p><p class="source-code"><strong class="bold">      &lt;form accept-charset="UTF-8" action="/logout" </strong></p><p class="source-code">      <strong class="bold">autocomplete="off" method="POST" id="logout"  </strong></p><p class="source-code">      <strong class="bold">class="hidden"&gt;&lt;/form&gt;</strong></p><p class="source-code"><strong class="bold">      &lt;button type="submit" value="Submit" form="</strong></p><p class="source-code">      <strong class="bold">logout"&gt;Logout&lt;/button&gt;</strong></p><p class="source-code"><strong class="bold">    {% else %}</strong></p><p class="source-code"><strong class="bold">      &lt;a href="/login" class="button"&gt;Login&lt;/a&gt;</strong></p><p class="source-code"><strong class="bold">      &lt;a href="/users/new" class="button"&gt;Signup&lt;/a&gt;</strong></p><p class="source-code"><strong class="bold">    {% endif %}</strong></p><p class="source-code"><strong class="bold">  &lt;/header&gt;</strong></p><p class="source-code">  &lt;div class="container"&gt;</p></li>
-				<li>Edit <strong class="source-inline">src/views/users/index.html.tera</strong> and <a id="_idIndexMarker618"/>remove the following line:<p class="source-code">&lt;a href="/users/new" class="button"&gt;New user&lt;/a&gt;</p></li>
+				<li value="1">Add a simple method for <code>CurrentUser</code> to compare its instance with a UUID. Append the following lines in <code>src/guards/auth.rs</code>:<pre>impl CurrentUser {
+    pub fn is(&amp;self, uuid: &amp;str) -&gt; bool {
+        self.user.uuid.to_string() == uuid
+    }
+    pub fn is_not(&amp;self, uuid: &amp;str) -&gt; bool {
+        !self.is(uuid)
+    }
+}</pre></li>
+				<li>Add a new <a id="_idIndexMarker617"/>type of error as well. Add a <code>new</code> method in <code>src/errors/our_error.rs</code> in the <code>impl OurError {}</code> block:<pre>pub fn new_unauthorized_error(debug: Option&lt;Box&lt;dyn Error&gt;&gt;) -&gt; Self {
+    Self::new_error_with_status(Status::Unauthorized, 
+    String::from("unauthorized"), debug)
+}</pre></li>
+				<li>We can check the <code>CurrentUser</code> instance on the templates to control the flow of the application. For example, if there's no <code>CurrentUser</code> instance, we show the link to sign up and log in. If there is a <code>CurrentUser</code> instance, we show the link to log out. Let's modify the Tera template. Edit <code>src/views/template.html.tera</code> and append the following lines:<pre>&lt;body&gt;
+  <strong class="bold">&lt;header&gt;</strong>
+<strong class="bold">    &lt;a href="/users" class="button"&gt;Home&lt;/a&gt;</strong>
+<strong class="bold">    {% if current_user %}</strong>
+<strong class="bold">      &lt;form accept-charset="UTF-8" action="/logout" </strong>
+      <strong class="bold">autocomplete="off" method="POST" id="logout"  </strong>
+      <strong class="bold">class="hidden"&gt;&lt;/form&gt;</strong>
+<strong class="bold">      &lt;button type="submit" value="Submit" form="</strong>
+      <strong class="bold">logout"&gt;Logout&lt;/button&gt;</strong>
+<strong class="bold">    {% else %}</strong>
+<strong class="bold">      &lt;a href="/login" class="button"&gt;Login&lt;/a&gt;</strong>
+<strong class="bold">      &lt;a href="/users/new" class="button"&gt;Signup&lt;/a&gt;</strong>
+<strong class="bold">    {% endif %}</strong>
+<strong class="bold">  &lt;/header&gt;</strong>
+  &lt;div class="container"&gt;</pre></li>
+				<li>Edit <code>src/views/users/index.html.tera</code> and <a id="_idIndexMarker618"/>remove the following line:<pre>&lt;a href="/users/new" class="button"&gt;New user&lt;/a&gt;</pre></li>
 			</ol>
 			<p>Find this line:</p>
-			<p class="source-code">&lt;a href="/users/edit/{{ user.uuid }}" class="button"&gt;Edit User&lt;/a&gt;</p>
+			<pre>&lt;a href="/users/edit/{{ user.uuid }}" class="button"&gt;Edit User&lt;/a&gt;</pre>
 			<p>Modify it into the following lines:</p>
-			<p class="source-code">{% if current_user and current_user.user.uuid == user.uuid %}</p>
-			<p class="source-code">    &lt;a href="/users/edit/{{user.uuid}}" class="</p>
-			<p class="source-code">    button"&gt;Edit User&lt;/a&gt;</p>
-			<p class="source-code">{% endif %}</p>
+			<pre>{% if current_user and current_user.user.uuid == user.uuid %}
+    &lt;a href="/users/edit/{{user.uuid}}" class="
+    button"&gt;Edit User&lt;/a&gt;
+{% endif %}</pre>
 			<ol>
-				<li value="5">Edit <strong class="source-inline">src/views/users/show.html.tera</strong> and find these lines:<p class="source-code">&lt;a href="/users/edit/{{user.uuid}}" class="button"&gt;Edit User&lt;/a&gt;</p><p class="source-code">&lt;form accept-charset="UTF-8" action="/users/delete/{{user.uuid}}" autocomplete="off" method="POST" id="deleteUser" class="hidden"&gt;&lt;/form&gt;</p><p class="source-code">&lt;button type="submit" value="Submit" form="deleteUser"&gt;Delete&lt;/button&gt;</p></li>
+				<li value="5">Edit <code>src/views/users/show.html.tera</code> and find these lines:<pre>&lt;a href="/users/edit/{{user.uuid}}" class="button"&gt;Edit User&lt;/a&gt;
+&lt;form accept-charset="UTF-8" action="/users/delete/{{user.uuid}}" autocomplete="off" method="POST" id="deleteUser" class="hidden"&gt;&lt;/form&gt;
+&lt;button type="submit" value="Submit" form="deleteUser"&gt;Delete&lt;/button&gt;</pre></li>
 			</ol>
 			<p>And, surround those lines with conditional checking as follows:</p>
-			<p class="source-code">{% if current_user and current_user.user.uuid == user.uuid %}</p>
-			<p class="source-code">     &lt;a href... </p>
-			<p class="source-code">    ... </p>
-			<p class="source-code">    &lt;/button&gt;</p>
-			<p class="source-code">{% endif %}</p>
+			<pre>{% if current_user and current_user.user.uuid == user.uuid %}
+     &lt;a href... 
+    ... 
+    &lt;/button&gt;
+{% endif %}</pre>
 			<ol>
-				<li value="6">Next, we want to allow upload only for logged-in users. Find the form lines in <strong class="source-inline">src/views/posts/index.html.tera</strong>:<p class="source-code">&lt;form action="/users/{{ user.uuid }}/posts" enctype="multipart/form-data" method="POST"&gt;</p><p class="source-code">...</p><p class="source-code">&lt;/form&gt;</p></li>
+				<li value="6">Next, we want to allow upload only for logged-in users. Find the form lines in <code>src/views/posts/index.html.tera</code>:<pre>&lt;form action="/users/{{ user.uuid }}/posts" enctype="multipart/form-data" method="POST"&gt;
+...
+&lt;/form&gt;</pre></li>
 			</ol>
 			<p>Surround the form lines with the following conditional:</p>
-			<p class="source-code">{% if current_user %}</p>
-			<p class="source-code">     &lt;form action="/users/{{ user.uuid }}/posts" enctype="multipart/form-data" method="POST"&gt; </p>
-			<p class="source-code">    ... </p>
-			<p class="source-code">    &lt;/form&gt;</p>
-			<p class="source-code">{% endif %}</p>
+			<pre>{% if current_user %}
+     &lt;form action="/users/{{ user.uuid }}/posts" enctype="multipart/form-data" method="POST"&gt; 
+    ... 
+    &lt;/form&gt;
+{% endif %}</pre>
 			<ol>
-				<li value="7">Now for the <a id="_idIndexMarker619"/>final modification for the template. We want only the owner of the post to be able to delete the post. Find these lines in <strong class="source-inline">src/views/posts/show.html.tera</strong>:<p class="source-code">&lt;form accept-charset="UTF-8" action="/users/{{user.uuid}}/posts/delete/{{post.uuid}}" autocomplete="off" method="POST" id="deletePost" class="hidden"&gt;&lt;/form&gt;</p><p class="source-code">&lt;button type="submit" value="Submit" form="deletePost"&gt;Delete&lt;/button&gt;</p></li>
+				<li value="7">Now for the <a id="_idIndexMarker619"/>final modification for the template. We want only the owner of the post to be able to delete the post. Find these lines in <code>src/views/posts/show.html.tera</code>:<pre>&lt;form accept-charset="UTF-8" action="/users/{{user.uuid}}/posts/delete/{{post.uuid}}" autocomplete="off" method="POST" id="deletePost" class="hidden"&gt;&lt;/form&gt;
+&lt;button type="submit" value="Submit" form="deletePost"&gt;Delete&lt;/button&gt;</pre></li>
 			</ol>
 			<p>Surround them with the following lines:</p>
-			<p class="source-code">{% if current_user and current_user.user.uuid == user.uuid %}</p>
-			<p class="source-code">    &lt;form... </p>
-			<p class="source-code">    ... </p>
-			<p class="source-code">    &lt;/button&gt;</p>
-			<p class="source-code">{% endif %}</p>
+			<pre>{% if current_user and current_user.user.uuid == user.uuid %}
+    &lt;form... 
+    ... 
+    &lt;/button&gt;
+{% endif %}</pre>
 			<ol>
-				<li value="8">Modify the route handling functions to get the value of <strong class="source-inline">current_user</strong>. Remember, we can wrap a request guard in <strong class="source-inline">Option</strong>, such as <strong class="source-inline">Option&lt;CurrentUser&gt;</strong>. When a route handling function fails to get a <strong class="source-inline">CurrentUser</strong> instance (for example, there is no logged-in user), it will generate a <strong class="source-inline">None</strong> variant of <strong class="source-inline">Option</strong>. We can then pass the instance to a template.</li>
+				<li value="8">Modify the route handling functions to get the value of <code>current_user</code>. Remember, we can wrap a request guard in <code>Option</code>, such as <code>Option&lt;CurrentUser&gt;</code>. When a route handling function fails to get a <code>CurrentUser</code> instance (for example, there is no logged-in user), it will generate a <code>None</code> variant of <code>Option</code>. We can then pass the instance to a template.</li>
 			</ol>
-			<p>Let's convert <a id="_idIndexMarker620"/>route handling functions, starting from <strong class="source-inline">src/routes/post.rs</strong>. Modify the <strong class="source-inline">get_post()</strong> function as follows:</p>
-			<p class="source-code">pub async fn get_post(...</p>
-			<p class="source-code">    <strong class="bold">current_user: Option&lt;CurrentUser&gt;,</strong></p>
-			<p class="source-code">) -&gt; HtmlResponse {</p>
-			<p class="source-code">    ...</p>
-			<p class="source-code">    let context = context! {user, <strong class="bold">current_user,</strong> post: </p>
-			<p class="source-code">    &amp;(post.to_show_post())};</p>
-			<p class="source-code">    Ok(Template::render("posts/show", context))</p>
-			<p class="source-code">}</p>
+			<p>Let's convert <a id="_idIndexMarker620"/>route handling functions, starting from <code>src/routes/post.rs</code>. Modify the <code>get_post()</code> function as follows:</p>
+			<pre>pub async fn get_post(...
+    <strong class="bold">current_user: Option&lt;CurrentUser&gt;,</strong>
+) -&gt; HtmlResponse {
+    ...
+    let context = context! {user, <strong class="bold">current_user,</strong> post: 
+    &amp;(post.to_show_post())};
+    Ok(Template::render("posts/show", context))
+}</pre>
 			<ol>
-				<li value="9">Let's do the same thing with the <strong class="source-inline">get_posts()</strong> function. Modify the function as follows:<p class="source-code">pub async fn get_posts(...</p><p class="source-code">    <strong class="bold">current_user: Option&lt;CurrentUser&gt;,</strong></p><p class="source-code">) -&gt; HtmlResponse {</p><p class="source-code">    let context = context! {</p><p class="source-code">        ...</p><p class="source-code">        <strong class="bold">current_user,</strong></p><p class="source-code">    };</p><p class="source-code">    Ok(Template::render("posts/index", context))</p><p class="source-code">}</p></li>
-				<li>One thing we can do to secure the <strong class="source-inline">create_post()</strong> function is to check whether the user uploading the file has the same UUID as <strong class="source-inline">user_uuid</strong> on the URL. This check is to prevent logged-in attackers from doctoring the request and sending false requests. Put the check in the <strong class="source-inline">create_post()</strong> function before we do file <a id="_idIndexMarker621"/>manipulation, as follows:<p class="source-code">pub async fn create_post&lt;'r&gt;(...</p><p class="source-code">    <strong class="bold">current_user</strong>: CurrentUser,</p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {</p><p class="source-code">    ...</p><p class="source-code">    <strong class="bold">if current_user.is_not(user_uuid) {</strong></p><p class="source-code"><strong class="bold">        return Err(create_err());</strong></p><p class="source-code"><strong class="bold">    }</strong></p><p class="source-code">    ...</p><p class="source-code">}</p></li>
-				<li>We can do the same check for the <strong class="source-inline">delete_post()</strong> function in <strong class="source-inline">src/routes/post.rs</strong>. We want to prevent unauthorized users from being able to send doctored requests and delete other people's posts. Modify <strong class="source-inline">delete_post()</strong> as follows:<p class="source-code">pub async fn delete_post(...</p><p class="source-code">    <strong class="bold">current_user</strong>: CurrentUser,</p><p class="source-code">) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {</p><p class="source-code">    ...</p><p class="source-code">    <strong class="bold">if current_user.is_not(user_uuid) {</strong></p><p class="source-code"><strong class="bold">        return Err(delete_err());</strong></p><p class="source-code"><strong class="bold">    }</strong></p><p class="source-code">    ...</p><p class="source-code">}</p></li>
-				<li>Try restarting the application, logging in, and seeing whether you can delete other people's posts. Try also modifying <strong class="source-inline">src/routes/user.rs</strong> by applying the same principle: getting the <strong class="source-inline">CurrentUser</strong> instance and applying the necessary check, or passing the <strong class="source-inline">CurrentUser</strong> instance to the template. You can find the full code, including <a id="_idIndexMarker622"/>protecting user-related routes, at <a href="https://github.com/PacktPublishing/Rust-Web-Development-with-Rocket/tree/main/Chapter11/02Authorization">https://github.com/PacktPublishing/Rust-Web-Development-with-Rocket/tree/main/Chapter11/02Authorization</a>.</li>
+				<li value="9">Let's do the same thing with the <code>get_posts()</code> function. Modify the function as follows:<pre>pub async fn get_posts(...
+    <strong class="bold">current_user: Option&lt;CurrentUser&gt;,</strong>
+) -&gt; HtmlResponse {
+    let context = context! {
+        ...
+        <strong class="bold">current_user,</strong>
+    };
+    Ok(Template::render("posts/index", context))
+}</pre></li>
+				<li>One thing we can do to secure the <code>create_post()</code> function is to check whether the user uploading the file has the same UUID as <code>user_uuid</code> on the URL. This check is to prevent logged-in attackers from doctoring the request and sending false requests. Put the check in the <code>create_post()</code> function before we do file <a id="_idIndexMarker621"/>manipulation, as follows:<pre>pub async fn create_post&lt;'r&gt;(...
+    <strong class="bold">current_user</strong>: CurrentUser,
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {
+    ...
+    <strong class="bold">if current_user.is_not(user_uuid) {</strong>
+<strong class="bold">        return Err(create_err());</strong>
+<strong class="bold">    }</strong>
+    ...
+}</pre></li>
+				<li>We can do the same check for the <code>delete_post()</code> function in <code>src/routes/post.rs</code>. We want to prevent unauthorized users from being able to send doctored requests and delete other people's posts. Modify <code>delete_post()</code> as follows:<pre>pub async fn delete_post(...
+    <strong class="bold">current_user</strong>: CurrentUser,
+) -&gt; Result&lt;Flash&lt;Redirect&gt;, Flash&lt;Redirect&gt;&gt; {
+    ...
+    <strong class="bold">if current_user.is_not(user_uuid) {</strong>
+<strong class="bold">        return Err(delete_err());</strong>
+<strong class="bold">    }</strong>
+    ...
+}</pre></li>
+				<li>Try restarting the application, logging in, and seeing whether you can delete other people's posts. Try also modifying <code>src/routes/user.rs</code> by applying the same principle: getting the <code>CurrentUser</code> instance and applying the necessary check, or passing the <code>CurrentUser</code> instance to the template. You can find the full code, including <a id="_idIndexMarker622"/>protecting user-related routes, at <a href="https://github.com/PacktPublishing/Rust-Web-Development-with-Rocket/tree/main/Chapter11/02Authorization">https://github.com/PacktPublishing/Rust-Web-Development-with-Rocket/tree/main/Chapter11/02Authorization</a>.</li>
 				<li>One of the most common tasks of a web server is providing APIs, and some APIs must be secured from unwanted usage. We will learn how to serve an API and protect the API endpoint in the next sections. </li>
 			</ol>
 			<h1 id="_idParaDest-128"><a id="_idTextAnchor129"/>Handling JSON</h1>
 			<p>One of the common <a id="_idIndexMarker623"/>tasks of web applications is handling APIs. APIs can return a lot of different formats, but modern APIs have converged into two common formats: JSON and XML.</p>
-			<p>Building an endpoint that returns JSON is pretty simple in the Rocket web framework. For handling the request body in JSON format, we can use <strong class="source-inline">rocket::serde::json::Json&lt;T&gt;</strong> as a data guard. The generic <strong class="source-inline">T</strong> type must implement the <strong class="source-inline">serde::Deserialize</strong> trait or else the Rust compiler will refuse to compile.</p>
-			<p>For responding, we can do the same thing by responding with <strong class="source-inline">rocket::serde::json::Json&lt;T&gt;</strong>. The generic <strong class="source-inline">T</strong> type must only implement the <strong class="source-inline">serde::Serialize</strong> trait when used as a response.</p>
-			<p>Let's see an example of how to handle JSON requests and responses. We want to create a single API endpoint, <strong class="source-inline">/api/users</strong>. This endpoint can receive a JSON body similar to the structure of <strong class="source-inline">our_application::models::pagination::Pagination</strong>, as follows:</p>
-			<p class="source-code">{"next":"2022-02-22T22:22:22.222222Z","limit":10}</p>
+			<p>Building an endpoint that returns JSON is pretty simple in the Rocket web framework. For handling the request body in JSON format, we can use <code>rocket::serde::json::Json&lt;T&gt;</code> as a data guard. The generic <code>T</code> type must implement the <code>serde::Deserialize</code> trait or else the Rust compiler will refuse to compile.</p>
+			<p>For responding, we can do the same thing by responding with <code>rocket::serde::json::Json&lt;T&gt;</code>. The generic <code>T</code> type must only implement the <code>serde::Serialize</code> trait when used as a response.</p>
+			<p>Let's see an example of how to handle JSON requests and responses. We want to create a single API endpoint, <code>/api/users</code>. This endpoint can receive a JSON body similar to the structure of <code>our_application::models::pagination::Pagination</code>, as follows:</p>
+			<pre>{"next":"2022-02-22T22:22:22.222222Z","limit":10}</pre>
 			<p>Follow these steps to implement the API endpoint:</p>
 			<ol>
-				<li value="1">Implement <strong class="source-inline">serde::Serialize</strong> for <strong class="source-inline">OurError</strong>. Append<a id="_idIndexMarker624"/> these lines into <strong class="source-inline">src/errors/our_error.rs</strong>:<p class="source-code">use rocket::serde::{Serialize, Serializer};</p><p class="source-code">use serde::ser::SerializeStruct;</p><p class="source-code">...</p><p class="source-code">impl Serialize for OurError {</p><p class="source-code">    fn serialize&lt;S&gt;(&amp;self, serializer: S) -&gt; </p><p class="source-code">    Result&lt;S::Ok, S::Error&gt;</p><p class="source-code">    where</p><p class="source-code">        S: Serializer,</p><p class="source-code">    {</p><p class="source-code">        let mut state = serializer.</p><p class="source-code">        serialize_struct("OurError", 2)?;</p><p class="source-code">        state.serialize_field("status", &amp;self</p><p class="source-code">        .status.code)?;</p><p class="source-code">        state.serialize_field("message", &amp;self</p><p class="source-code">        .message)?;</p><p class="source-code">        state.end()</p><p class="source-code">    }</p><p class="source-code">}</p></li>
-				<li>We want <strong class="source-inline">Pagination</strong> to derive <strong class="source-inline">Deserialize</strong> and to automatically implement the <strong class="source-inline">Deserialize</strong> trait, as <strong class="source-inline">Pagination</strong> will be used in the JSON data guard, <strong class="source-inline">Json&lt;Pagination&gt;</strong>. Because <strong class="source-inline">Pagination</strong> contains the <strong class="source-inline">OurDateTime</strong> member, <strong class="source-inline">OurDateTime</strong> has to implement the <strong class="source-inline">Deserialize</strong> trait as well. Modify <strong class="source-inline">src/models/our_date_time.rs</strong> and add the <strong class="source-inline">Deserialize</strong> derive macro:<p class="source-code">use rocket::serde::{<strong class="bold">Deserialize,</strong> Serialize};</p><p class="source-code">...</p><p class="source-code">#[derive(Debug, sqlx::Type, Clone, Serialize<strong class="bold">, Deserialize</strong>)]</p><p class="source-code">#[sqlx(transparent)]</p><p class="source-code">pub struct OurDateTime(pub DateTime&lt;Utc&gt;);</p></li>
-				<li>Derive <strong class="source-inline">Serialize</strong> and <strong class="source-inline">Deserialize</strong> for <strong class="source-inline">Pagination</strong>. We also want to derive <strong class="source-inline">Serialize</strong> because we want to use <strong class="source-inline">Pagination</strong> as part of the response from the <strong class="source-inline">/api/users</strong> endpoint. Modify <strong class="source-inline">src/models/pagination.rs</strong> as follows:<p class="source-code">use rocket::serde::{<strong class="bold">Deserialize</strong>, Serialize};</p><p class="source-code">...</p><p class="source-code">#[derive(FromForm<strong class="bold">, Serialize, Deserialize</strong>)]</p><p class="source-code">pub struct Pagination {...}</p></li>
-				<li>For the <strong class="source-inline">User</strong> struct, it <a id="_idIndexMarker625"/>already derives <strong class="source-inline">Serialize</strong> automatically, so we can use it in a vector of <strong class="source-inline">User</strong>. One thing to be fixed is we don't want the password to be included in the resulting JSON. Serde has many macros to control how to generate serialized data from a struct. Append a single macro that will skip the <strong class="source-inline">password_hash</strong> field. Modify <strong class="source-inline">src/models/user.rs</strong>:<p class="source-code">pub struct User {</p><p class="source-code">    ...</p><p class="source-code">    #[serde(skip_serializing)]</p><p class="source-code">    pub password_hash: String,</p><p class="source-code">    ...</p><p class="source-code">}</p></li>
-				<li>We want to return the vector of <strong class="source-inline">User</strong> and <strong class="source-inline">Pagination</strong> as the resulting JSON. We can create a new struct to wrap those in a field. Append the following lines in <strong class="source-inline">src/models/user.rs</strong>:<p class="source-code">#[derive(Serialize)]</p><p class="source-code">pub struct UsersWrapper {</p><p class="source-code">    pub users: Vec&lt;User&gt;,</p><p class="source-code">    #[serde(skip_serializing_if = "Option::is_none")]</p><p class="source-code">    #[serde(default)]</p><p class="source-code">    pub pagination: Option&lt;Pagination&gt;,</p><p class="source-code">}</p></li>
+				<li value="1">Implement <code>serde::Serialize</code> for <code>OurError</code>. Append<a id="_idIndexMarker624"/> these lines into <code>src/errors/our_error.rs</code>:<pre>use rocket::serde::{Serialize, Serializer};
+use serde::ser::SerializeStruct;
+...
+impl Serialize for OurError {
+    fn serialize&lt;S&gt;(&amp;self, serializer: S) -&gt; 
+    Result&lt;S::Ok, S::Error&gt;
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.
+        serialize_struct("OurError", 2)?;
+        state.serialize_field("status", &amp;self
+        .status.code)?;
+        state.serialize_field("message", &amp;self
+        .message)?;
+        state.end()
+    }
+}</pre></li>
+				<li>We want <code>Pagination</code> to derive <code>Deserialize</code> and to automatically implement the <code>Deserialize</code> trait, as <code>Pagination</code> will be used in the JSON data guard, <code>Json&lt;Pagination&gt;</code>. Because <code>Pagination</code> contains the <code>OurDateTime</code> member, <code>OurDateTime</code> has to implement the <code>Deserialize</code> trait as well. Modify <code>src/models/our_date_time.rs</code> and add the <code>Deserialize</code> derive macro:<pre>use rocket::serde::{<strong class="bold">Deserialize,</strong> Serialize};
+...
+#[derive(Debug, sqlx::Type, Clone, Serialize<strong class="bold">, Deserialize</strong>)]
+#[sqlx(transparent)]
+pub struct OurDateTime(pub DateTime&lt;Utc&gt;);</pre></li>
+				<li>Derive <code>Serialize</code> and <code>Deserialize</code> for <code>Pagination</code>. We also want to derive <code>Serialize</code> because we want to use <code>Pagination</code> as part of the response from the <code>/api/users</code> endpoint. Modify <code>src/models/pagination.rs</code> as follows:<pre>use rocket::serde::{<strong class="bold">Deserialize</strong>, Serialize};
+...
+#[derive(FromForm<strong class="bold">, Serialize, Deserialize</strong>)]
+pub struct Pagination {...}</pre></li>
+				<li>For the <code>User</code> struct, it <a id="_idIndexMarker625"/>already derives <code>Serialize</code> automatically, so we can use it in a vector of <code>User</code>. One thing to be fixed is we don't want the password to be included in the resulting JSON. Serde has many macros to control how to generate serialized data from a struct. Append a single macro that will skip the <code>password_hash</code> field. Modify <code>src/models/user.rs</code>:<pre>pub struct User {
+    ...
+    #[serde(skip_serializing)]
+    pub password_hash: String,
+    ...
+}</pre></li>
+				<li>We want to return the vector of <code>User</code> and <code>Pagination</code> as the resulting JSON. We can create a new struct to wrap those in a field. Append the following lines in <code>src/models/user.rs</code>:<pre>#[derive(Serialize)]
+pub struct UsersWrapper {
+    pub users: Vec&lt;User&gt;,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub pagination: Option&lt;Pagination&gt;,
+}</pre></li>
 			</ol>
-			<p>Note that we are skipping the <strong class="source-inline">pagination</strong> field if it's <strong class="source-inline">None</strong>.</p>
+			<p>Note that we are skipping the <code>pagination</code> field if it's <code>None</code>.</p>
 			<ol>
-				<li value="6">Add a new<a id="_idIndexMarker626"/> module in <strong class="source-inline">src/routes/mod.rs</strong>:<p class="source-code">pub mod api;</p></li>
+				<li value="6">Add a new<a id="_idIndexMarker626"/> module in <code>src/routes/mod.rs</code>:<pre>pub mod api;</pre></li>
 			</ol>
-			<p>Then, create a new file in <strong class="source-inline">src/routes/api.rs</strong>.</p>
+			<p>Then, create a new file in <code>src/routes/api.rs</code>.</p>
 			<ol>
-				<li value="7">In <strong class="source-inline">src/routes/api.rs</strong>, add the usual <strong class="source-inline">use</strong> declarations, models, errors, and database connection:<p class="source-code">use crate::errors::our_error::OurError;</p><p class="source-code">use crate::fairings::db::DBConnection;</p><p class="source-code">use crate::models::{</p><p class="source-code">    pagination::Pagination,</p><p class="source-code">    user::{User, UsersWrapper},</p><p class="source-code">};</p><p class="source-code">use rocket_db_pools::Connection;</p></li>
-				<li>Add a <strong class="source-inline">use</strong> declaration for <strong class="source-inline">rocket::serde::json::Json</strong> as well:<p class="source-code">use rocket::serde::json::Json;</p></li>
-				<li>Add a route <a id="_idIndexMarker627"/>handling function definition to get users:<p class="source-code">#[get("/users", format = "json", data = "&lt;pagination&gt;")]</p><p class="source-code">pub async fn users(</p><p class="source-code">    mut db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    pagination: Option&lt;Json&lt;Pagination&gt;&gt;,</p><p class="source-code">) -&gt; Result&lt;Json&lt;UsersWrapper&gt;, Json&lt;OurError&gt;&gt; {}</p></li>
-				<li>Implement the function. In the function, we can get the content of the JSON using the <strong class="source-inline">into_inner()</strong> method as follows:<p class="source-code">let parsed_pagination = pagination.map(|p| p.into_inner());</p></li>
-				<li>Find the users. Append the following lines:<p class="source-code">let (users, new_pagination) = User::find_all(&amp;mut db, parsed_pagination)</p><p class="source-code">    .await</p><p class="source-code">    .map_err(|_| OurError::new_internal_server_</p><p class="source-code">    error(String::from("Internal Error"), None))?;</p></li>
+				<li value="7">In <code>src/routes/api.rs</code>, add the usual <code>use</code> declarations, models, errors, and database connection:<pre>use crate::errors::our_error::OurError;
+use crate::fairings::db::DBConnection;
+use crate::models::{
+    pagination::Pagination,
+    user::{User, UsersWrapper},
+};
+use rocket_db_pools::Connection;</pre></li>
+				<li>Add a <code>use</code> declaration for <code>rocket::serde::json::Json</code> as well:<pre>use rocket::serde::json::Json;</pre></li>
+				<li>Add a route <a id="_idIndexMarker627"/>handling function definition to get users:<pre>#[get("/users", format = "json", data = "&lt;pagination&gt;")]
+pub async fn users(
+    mut db: Connection&lt;DBConnection&gt;,
+    pagination: Option&lt;Json&lt;Pagination&gt;&gt;,
+) -&gt; Result&lt;Json&lt;UsersWrapper&gt;, Json&lt;OurError&gt;&gt; {}</pre></li>
+				<li>Implement the function. In the function, we can get the content of the JSON using the <code>into_inner()</code> method as follows:<pre>let parsed_pagination = pagination.map(|p| p.into_inner());</pre></li>
+				<li>Find the users. Append the following lines:<pre>let (users, new_pagination) = User::find_all(&amp;mut db, parsed_pagination)
+    .await
+    .map_err(|_| OurError::new_internal_server_
+    error(String::from("Internal Error"), None))?;</pre></li>
 			</ol>
-			<p>Because we have implemented the <strong class="source-inline">Serialize</strong> trait for <strong class="source-inline">OurError</strong>, we can return the type automatically.</p>
+			<p>Because we have implemented the <code>Serialize</code> trait for <code>OurError</code>, we can return the type automatically.</p>
 			<ol>
-				<li value="12">Now, it's time to return <strong class="source-inline">UsersWrapper</strong>. Append the following lines:<p class="source-code">Ok(Json(UsersWrapper {</p><p class="source-code">    users,</p><p class="source-code">    pagination: new_pagination,</p><p class="source-code">}))</p></li>
-				<li>The last thing to do is to add the route to <strong class="source-inline">src/main.rs</strong>:<p class="source-code">use our_application::routes::{self<strong class="bold">, api</strong>, post, session, user};</p><p class="source-code">...</p><p class="source-code">.mount("/", ...)</p><p class="source-code">.mount("/assets", FileServer::from(relative!("static")))</p><p class="source-code"><strong class="bold">.mount("/api", routes![api::users])</strong></p></li>
-				<li>Try running the application and sending a request to <strong class="source-inline">http://127.0.0.1:8000/api/users</strong>. We can use any HTTP client, but if we're using cURL, it will be as follows:<p class="source-code"><strong class="bold">curl -X GET -H "Content-Type: application/json" -d "{\"next\":\"2022-02-22T22:22:22.222222Z\",\"limit\":1}" http://127.0.0.1:8000/api/users</strong></p></li>
+				<li value="12">Now, it's time to return <code>UsersWrapper</code>. Append the following lines:<pre>Ok(Json(UsersWrapper {
+    users,
+    pagination: new_pagination,
+}))</pre></li>
+				<li>The last thing to do is to add the route to <code>src/main.rs</code>:<pre>use our_application::routes::{self<strong class="bold">, api</strong>, post, session, user};
+...
+.mount("/", ...)
+.mount("/assets", FileServer::from(relative!("static")))
+<strong class="bold">.mount("/api", routes![api::users])</strong></pre></li>
+				<li>Try running the application and sending a request to <code>http://127.0.0.1:8000/api/users</code>. We can use any HTTP client, but if we're using cURL, it will be as follows:<pre><strong class="bold">curl -X GET -H "Content-Type: application/json" -d "{\"next\":\"2022-02-22T22:22:22.222222Z\",\"limit\":1}" http://127.0.0.1:8000/api/users</strong></pre></li>
 			</ol>
 			<p>The application <a id="_idIndexMarker628"/>should return something similar to the following output:</p>
-			<p class="source-code">{"users":[{"uuid":"8faa59d6-1079-424a-8eb9-09ceef1969c8","username":"example","email":"example@example.com","description":"example","status":"Inactive","created_at":"2021-11-06T06:09:09.534864Z","updated_at":"2021-11-06T06:09:09.534864Z"}],"pagination":{"next":"2021-11-06T06:09:09.534864Z","limit":1}}</p>
+			<pre>{"users":[{"uuid":"8faa59d6-1079-424a-8eb9-09ceef1969c8","username":"example","email":"example@example.com","description":"example","status":"Inactive","created_at":"2021-11-06T06:09:09.534864Z","updated_at":"2021-11-06T06:09:09.534864Z"}],"pagination":{"next":"2021-11-06T06:09:09.534864Z","limit":1}}</pre>
 			<p>Now that we have finished creating an API endpoint, let's try securing the endpoint in the next section.</p>
 			<h1 id="_idParaDest-129"><a id="_idTextAnchor130"/>Protecting the API with a JWT</h1>
 			<p>One<a id="_idIndexMarker629"/> common task <a id="_idIndexMarker630"/>we want to do is protect the API endpoints from unauthorized access. There are a lot of reasons why API endpoints have to be protected, such as wanting to protect sensitive data, conducting financial services, or offering subscription services.</p>
@@ -167,69 +519,198 @@
 			</ol>
 			<p>Let's try implementing API endpoint protection by following these steps:</p>
 			<ol>
-				<li value="1">Append the required libraries in the <strong class="source-inline">Cargo.toml</strong> dependencies section:<p class="source-code">hmac = "0.12.1"</p><p class="source-code">jwt = "0.16.0"</p><p class="source-code">sha2 = "0.10.2"</p></li>
-				<li>We want to use a secret token to sign the JWT token. Add a new entry in <strong class="source-inline">Rocket.toml</strong> as follows:<p class="source-code">jwt_secret = "fill with your own secret"</p></li>
-				<li>Add a new state to store a secret for the token. We want to retrieve the secret when the application creates or verifies JWT. Add the following lines in <strong class="source-inline">src/states/mod.rs</strong>:<p class="source-code">pub struct JWToken {</p><p class="source-code">    pub secret: String,</p><p class="source-code">}</p></li>
-				<li>Modify <strong class="source-inline">src/main.rs</strong> to make the <a id="_idIndexMarker633"/>application retrieve the secret from the configuration<a id="_idIndexMarker634"/> and manage the state:<p class="source-code"><strong class="bold">use our_application::states::JWToken;</strong></p><p class="source-code">...</p><p class="source-code">struct Config {...</p><p class="source-code">    <strong class="bold">jwt_secret: String,</strong></p><p class="source-code">}</p><p class="source-code">...</p><p class="source-code">async fn rocket() -&gt; Rocket&lt;Build&gt; {</p><p class="source-code">    ...</p><p class="source-code">    let config: Config = our_rocket...</p><p class="source-code">    <strong class="bold">let jwt_secret = JWToken {</strong></p><p class="source-code"><strong class="bold">        secret: String::from(config.jwt_</strong></p><p class="source-code">        <strong class="bold">secret.clone()),</strong></p><p class="source-code"><strong class="bold">    };</strong></p><p class="source-code">    <strong class="bold">let final_rocket = our_rocket.manage(jwt_secret);</strong></p><p class="source-code">    ...</p><p class="source-code">    <strong class="bold">final_rocket</strong></p><p class="source-code">}</p></li>
-				<li>Make one struct to hold JSON data that is sent for authentication, and another struct to hold JSON data containing the token to be returned to the client. In <strong class="source-inline">src/models/user.rs</strong>, add the following <strong class="source-inline">use</strong> declaration:<p class="source-code">use rocket::serde::{Deserialize, Serialize};</p></li>
+				<li value="1">Append the required libraries in the <code>Cargo.toml</code> dependencies section:<pre>hmac = "0.12.1"
+jwt = "0.16.0"
+sha2 = "0.10.2"</pre></li>
+				<li>We want to use a secret token to sign the JWT token. Add a new entry in <code>Rocket.toml</code> as follows:<pre>jwt_secret = "fill with your own secret"</pre></li>
+				<li>Add a new state to store a secret for the token. We want to retrieve the secret when the application creates or verifies JWT. Add the following lines in <code>src/states/mod.rs</code>:<pre>pub struct JWToken {
+    pub secret: String,
+}</pre></li>
+				<li>Modify <code>src/main.rs</code> to make the <a id="_idIndexMarker633"/>application retrieve the secret from the configuration<a id="_idIndexMarker634"/> and manage the state:<pre><strong class="bold">use our_application::states::JWToken;</strong>
+...
+struct Config {...
+    <strong class="bold">jwt_secret: String,</strong>
+}
+...
+async fn rocket() -&gt; Rocket&lt;Build&gt; {
+    ...
+    let config: Config = our_rocket...
+    <strong class="bold">let jwt_secret = JWToken {</strong>
+<strong class="bold">        secret: String::from(config.jwt_</strong>
+        <strong class="bold">secret.clone()),</strong>
+<strong class="bold">    };</strong>
+    <strong class="bold">let final_rocket = our_rocket.manage(jwt_secret);</strong>
+    ...
+    <strong class="bold">final_rocket</strong>
+}</pre></li>
+				<li>Make one struct to hold JSON data that is sent for authentication, and another struct to hold JSON data containing the token to be returned to the client. In <code>src/models/user.rs</code>, add the following <code>use</code> declaration:<pre>use rocket::serde::{Deserialize, Serialize};</pre></li>
 			</ol>
 			<p>Add the following structs:</p>
-			<p class="source-code">#[derive(Deserialize)]</p>
-			<p class="source-code">pub struct JWTLogin&lt;'r&gt; {</p>
-			<p class="source-code">    pub username: &amp;'r str,</p>
-			<p class="source-code">    pub password: &amp;'r str,</p>
-			<p class="source-code">}</p>
-			<p class="source-code">#[derive(Serialize)]</p>
-			<p class="source-code">pub struct Auth {</p>
-			<p class="source-code">    pub token: String,</p>
-			<p class="source-code">}</p>
+			<pre>#[derive(Deserialize)]
+pub struct JWTLogin&lt;'r&gt; {
+    pub username: &amp;'r str,
+    pub password: &amp;'r str,
+}
+#[derive(Serialize)]
+pub struct Auth {
+    pub token: String,
+}</pre>
 			<ol>
-				<li value="6">Implement a<a id="_idIndexMarker635"/> method to verify the username and password <a id="_idIndexMarker636"/>for <strong class="source-inline">JWTLogin</strong>. Add the <strong class="source-inline">impl</strong> block and method:<p class="source-code">impl&lt;'r&gt; JWTLogin&lt;'r&gt; {</p><p class="source-code">    pub async fn authenticate(</p><p class="source-code">        &amp;self,</p><p class="source-code">        connection: &amp;mut PgConnection,</p><p class="source-code">        secret: &amp;'r str,</p><p class="source-code">    ) -&gt; Result&lt;Auth, OurError&gt; {}</p><p class="source-code">}</p></li>
-				<li>Inside the <strong class="source-inline">authenticate()</strong> method, add the <strong class="source-inline">error</strong> closure:<p class="source-code">let auth_error =</p><p class="source-code">    || OurError::new_bad_request_error(</p><p class="source-code">    String::from("Cannot verify password"), None);</p></li>
-				<li>Then, find the user according to the username and verify the password:<p class="source-code">let user = User::find_by_login(</p><p class="source-code">    connection,</p><p class="source-code">    &amp;Login {</p><p class="source-code">        username: self.username,</p><p class="source-code">        password: self.password,</p><p class="source-code">        authenticity_token: "",</p><p class="source-code">    },</p><p class="source-code">)</p><p class="source-code">.await</p><p class="source-code">.map_err(|_| auth_error())?;</p><p class="source-code">verify_password(&amp;Argon2::default(), &amp;user.password_hash, self.password)?;</p></li>
-				<li>Add <a id="_idIndexMarker637"/>the<a id="_idIndexMarker638"/> following <strong class="source-inline">use</strong> declaration:<p class="source-code">use hmac::{Hmac, Mac};</p><p class="source-code">use jwt::{SignWithKey};</p><p class="source-code">use sha2::Sha256;</p><p class="source-code">use std::collections::BTreeMap; </p></li>
+				<li value="6">Implement a<a id="_idIndexMarker635"/> method to verify the username and password <a id="_idIndexMarker636"/>for <code>JWTLogin</code>. Add the <code>impl</code> block and method:<pre>impl&lt;'r&gt; JWTLogin&lt;'r&gt; {
+    pub async fn authenticate(
+        &amp;self,
+        connection: &amp;mut PgConnection,
+        secret: &amp;'r str,
+    ) -&gt; Result&lt;Auth, OurError&gt; {}
+}</pre></li>
+				<li>Inside the <code>authenticate()</code> method, add the <code>error</code> closure:<pre>let auth_error =
+    || OurError::new_bad_request_error(
+    String::from("Cannot verify password"), None);</pre></li>
+				<li>Then, find the user according to the username and verify the password:<pre>let user = User::find_by_login(
+    connection,
+    &amp;Login {
+        username: self.username,
+        password: self.password,
+        authenticity_token: "",
+    },
+)
+.await
+.map_err(|_| auth_error())?;
+verify_password(&amp;Argon2::default(), &amp;user.password_hash, self.password)?;</pre></li>
+				<li>Add <a id="_idIndexMarker637"/>the<a id="_idIndexMarker638"/> following <code>use</code> declaration:<pre>use hmac::{Hmac, Mac};
+use jwt::{SignWithKey};
+use sha2::Sha256;
+use std::collections::BTreeMap; </pre></li>
 			</ol>
-			<p>Continue the following inside <strong class="source-inline">authenticate</strong> to generate a token from the user's UUID and return the token:</p>
-			<p class="source-code">let user_uuid = &amp;user.uuid.to_string();</p>
-			<p class="source-code">let key: Hmac&lt;Sha256&gt; =</p>
-			<p class="source-code">    Hmac::new_from_slice(secret.as_bytes()</p>
-			<p class="source-code">    ).map_err(|_| auth_error())?;</p>
-			<p class="source-code">let mut claims = BTreeMap::new();</p>
-			<p class="source-code">claims.insert("user_uuid", user_uuid);</p>
-			<p class="source-code">let token = claims.sign_with_key(&amp;key).map_err(|_| auth_error())?;</p>
-			<p class="source-code">Ok(Auth {</p>
-			<p class="source-code">    token: token.as_str().to_string(),</p>
-			<p class="source-code">})</p>
+			<p>Continue the following inside <code>authenticate</code> to generate a token from the user's UUID and return the token:</p>
+			<pre>let user_uuid = &amp;user.uuid.to_string();
+let key: Hmac&lt;Sha256&gt; =
+    Hmac::new_from_slice(secret.as_bytes()
+    ).map_err(|_| auth_error())?;
+let mut claims = BTreeMap::new();
+claims.insert("user_uuid", user_uuid);
+let token = claims.sign_with_key(&amp;key).map_err(|_| auth_error())?;
+Ok(Auth {
+    token: token.as_str().to_string(),
+})</pre>
 			<ol>
-				<li value="10">Create a<a id="_idIndexMarker639"/> function to <a id="_idIndexMarker640"/>authenticate. Let's call this function <strong class="source-inline">login()</strong>. In <strong class="source-inline">src/routes/api.rs</strong>, add the required <strong class="source-inline">use</strong> declaration:<p class="source-code">use crate::models::user::{<strong class="bold">Auth, JWTLogin, </strong>User, UsersWrapper};</p><p class="source-code"><strong class="bold">use crate::states::JWToken;</strong></p><p class="source-code"><strong class="bold">use rocket::State;</strong></p><p class="source-code">use rocket_db_pools::{<strong class="bold">sqlx::Acquire,</strong> Connection};</p></li>
-				<li>Then, add the <strong class="source-inline">login()</strong> function as follows:<p class="source-code">#[post("/login", format = "json", data = "&lt;jwt_login&gt;")]</p><p class="source-code">pub async fn login&lt;'r&gt;(</p><p class="source-code">    mut db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    jwt_login: Option&lt;Json&lt;JWTLogin&lt;'r&gt;&gt;&gt;,</p><p class="source-code">    jwt_secret: &amp;State&lt;JWToken&gt;,</p><p class="source-code">) -&gt; Result&lt;Json&lt;Auth&gt;, Json&lt;OurError&gt;&gt; {</p><p class="source-code">    let connection = db</p><p class="source-code">        .acquire()</p><p class="source-code">        .await</p><p class="source-code">        .map_err(|_| OurError::new_internal_server_</p><p class="source-code">        error(String::from("Cannot login"), None))?;</p><p class="source-code">    let parsed_jwt_login = jwt_login</p><p class="source-code">        .map(|p| p.into_inner())</p><p class="source-code">        .ok_or_else(|| OurError::new_bad_request_</p><p class="source-code">        error(String::from("Cannot login"), None))?;</p><p class="source-code">    Ok(Json(</p><p class="source-code">        parsed_jwt_login</p><p class="source-code">            .authenticate(connection, &amp;jwt_secret</p><p class="source-code">            .secret)</p><p class="source-code">            .await</p><p class="source-code">            .map_err(|_| OurError::new_internal_</p><p class="source-code">            server_error(String::from("Cannot login"), </p><p class="source-code">            None))?,</p><p class="source-code">    ))</p><p class="source-code">}</p></li>
-				<li>Now that we have<a id="_idIndexMarker641"/> created login functionality, the next action is to <a id="_idIndexMarker642"/>create a request guard that handles the authorization token in the request header. In <strong class="source-inline">src/guards/auth.rs</strong>, add the following <strong class="source-inline">use</strong> declarations:<p class="source-code">use crate::states::JWToken;</p><p class="source-code">use hmac::{Hmac, Mac};</p><p class="source-code">use jwt::{Header, Token, VerifyWithKey};</p><p class="source-code">use sha2::Sha256;</p><p class="source-code">use std::collections::BTreeMap;</p></li>
-				<li>Add a<a id="_idIndexMarker643"/> new struct <a id="_idIndexMarker644"/>for a request guard called <strong class="source-inline">APIUser</strong>:<p class="source-code">pub struct APIUser {</p><p class="source-code">    pub user: User,</p><p class="source-code">}</p></li>
-				<li>Implement <strong class="source-inline">FromRequest</strong> for <strong class="source-inline">APIUser</strong>. Add the following block:<p class="source-code">#[rocket::async_trait]</p><p class="source-code">impl&lt;'r&gt; FromRequest&lt;'r&gt; for APIUser {</p><p class="source-code">    type Error = ();</p><p class="source-code">    async fn from_request(req: &amp;'r Request&lt;'_&gt;) -&gt; </p><p class="source-code">    Outcome&lt;Self, Self::Error&gt; {}</p><p class="source-code">}</p></li>
-				<li>Inside <strong class="source-inline">from_request()</strong>, add the closure to return an error:<p class="source-code">let error = || Outcome::Failure ((Status::Unauthorized, ()));</p></li>
-				<li>Get the token from the request header:<p class="source-code">let parsed_header = req.headers().get_one("Authorization");</p><p class="source-code">if parsed_header.is_none() {</p><p class="source-code">    return error();</p><p class="source-code">}</p><p class="source-code">let token_str = parsed_header.unwrap();</p></li>
-				<li>Get the secret from state:<p class="source-code">let parsed_secret = req.rocket().state::&lt;JWToken&gt;();</p><p class="source-code">if parsed_secret.is_none() {</p><p class="source-code">    return error();</p><p class="source-code">}</p><p class="source-code">let secret = &amp;parsed_secret.unwrap().secret;</p></li>
-				<li>Verify<a id="_idIndexMarker645"/> the token <a id="_idIndexMarker646"/>and get the user's UUID:<p class="source-code">let parsed_key: Result&lt;Hmac&lt;Sha256&gt;, _&gt; = Hmac::new_from_slice(secret.as_bytes());</p><p class="source-code">if parsed_key.is_err() {</p><p class="source-code">    return error();</p><p class="source-code">}</p><p class="source-code">let key = parsed_key.unwrap();</p><p class="source-code">let parsed_token: Result&lt;Token&lt;Header, BTreeMap&lt;String, String&gt;, _&gt;, _&gt; = token_str.verify_with_key(&amp;key);</p><p class="source-code">if parsed_token.is_err() {</p><p class="source-code">    return error();</p><p class="source-code">}</p><p class="source-code">let token = parsed_token.unwrap();</p><p class="source-code">let claims = token.claims();</p><p class="source-code">let parsed_user_uuid = claims.get("user_uuid");</p><p class="source-code">if parsed_user_uuid.is_none() {</p><p class="source-code">    return error();</p><p class="source-code">}</p><p class="source-code">let user_uuid = parsed_user_uuid.unwrap();</p></li>
-				<li>Find the user and return the user data:<p class="source-code">let parsed_db = req.guard::&lt;Connection&lt;DBConnection&gt;&gt;().await;</p><p class="source-code">if !parsed_db.is_success() {</p><p class="source-code">    return error();</p><p class="source-code">}</p><p class="source-code">let mut db = parsed_db.unwrap();</p><p class="source-code">let parsed_connection = db.acquire().await;</p><p class="source-code">if parsed_connection.is_err() {</p><p class="source-code">    return error();</p><p class="source-code">}</p><p class="source-code">let connection = parsed_connection.unwrap();</p><p class="source-code">let found_user = User::find(connection, &amp;user_uuid).await;</p><p class="source-code">if found_user.is_err() {</p><p class="source-code">    return error();</p><p class="source-code">}</p><p class="source-code">let user = found_user.unwrap();</p><p class="source-code">Outcome::Success(APIUser { user })</p></li>
-				<li>Finally, add <a id="_idIndexMarker647"/>a new protected<a id="_idIndexMarker648"/> API endpoint in <strong class="source-inline">src/routes/api.rs</strong>:<p class="source-code">use crate::guards::auth::APIUser;</p><p class="source-code">...</p><p class="source-code">#[get("/protected_users", format = "json", data = "&lt;pagination&gt;")]</p><p class="source-code">pub async fn authenticated_users(</p><p class="source-code">    db: Connection&lt;DBConnection&gt;,</p><p class="source-code">    pagination: Option&lt;Json&lt;Pagination&gt;&gt;,</p><p class="source-code">    _authorized_user: APIUser,</p><p class="source-code">) -&gt; Result&lt;Json&lt;UsersWrapper&gt;, Json&lt;OurError&gt;&gt; {</p><p class="source-code">    users(db, pagination).await</p><p class="source-code">}</p></li>
-				<li>In <strong class="source-inline">src/main.rs</strong>, add the routes to Rocket:<p class="source-code">...</p><p class="source-code">.mount("/api", routes![api::users<strong class="bold">, api::login, </strong></p><p class="source-code"><strong class="bold"> api::authenticated_users</strong>])</p><p class="source-code">...</p></li>
+				<li value="10">Create a<a id="_idIndexMarker639"/> function to <a id="_idIndexMarker640"/>authenticate. Let's call this function <code>login()</code>. In <code>src/routes/api.rs</code>, add the required <code>use</code> declaration:<pre>use crate::models::user::{<strong class="bold">Auth, JWTLogin, </strong>User, UsersWrapper};
+<strong class="bold">use crate::states::JWToken;</strong>
+<strong class="bold">use rocket::State;</strong>
+use rocket_db_pools::{<strong class="bold">sqlx::Acquire,</strong> Connection};</pre></li>
+				<li>Then, add the <code>login()</code> function as follows:<pre>#[post("/login", format = "json", data = "&lt;jwt_login&gt;")]
+pub async fn login&lt;'r&gt;(
+    mut db: Connection&lt;DBConnection&gt;,
+    jwt_login: Option&lt;Json&lt;JWTLogin&lt;'r&gt;&gt;&gt;,
+    jwt_secret: &amp;State&lt;JWToken&gt;,
+) -&gt; Result&lt;Json&lt;Auth&gt;, Json&lt;OurError&gt;&gt; {
+    let connection = db
+        .acquire()
+        .await
+        .map_err(|_| OurError::new_internal_server_
+        error(String::from("Cannot login"), None))?;
+    let parsed_jwt_login = jwt_login
+        .map(|p| p.into_inner())
+        .ok_or_else(|| OurError::new_bad_request_
+        error(String::from("Cannot login"), None))?;
+    Ok(Json(
+        parsed_jwt_login
+            .authenticate(connection, &amp;jwt_secret
+            .secret)
+            .await
+            .map_err(|_| OurError::new_internal_
+            server_error(String::from("Cannot login"), 
+            None))?,
+    ))
+}</pre></li>
+				<li>Now that we have<a id="_idIndexMarker641"/> created login functionality, the next action is to <a id="_idIndexMarker642"/>create a request guard that handles the authorization token in the request header. In <code>src/guards/auth.rs</code>, add the following <code>use</code> declarations:<pre>use crate::states::JWToken;
+use hmac::{Hmac, Mac};
+use jwt::{Header, Token, VerifyWithKey};
+use sha2::Sha256;
+use std::collections::BTreeMap;</pre></li>
+				<li>Add a<a id="_idIndexMarker643"/> new struct <a id="_idIndexMarker644"/>for a request guard called <code>APIUser</code>:<pre>pub struct APIUser {
+    pub user: User,
+}</pre></li>
+				<li>Implement <code>FromRequest</code> for <code>APIUser</code>. Add the following block:<pre>#[rocket::async_trait]
+impl&lt;'r&gt; FromRequest&lt;'r&gt; for APIUser {
+    type Error = ();
+    async fn from_request(req: &amp;'r Request&lt;'_&gt;) -&gt; 
+    Outcome&lt;Self, Self::Error&gt; {}
+}</pre></li>
+				<li>Inside <code>from_request()</code>, add the closure to return an error:<pre>let error = || Outcome::Failure ((Status::Unauthorized, ()));</pre></li>
+				<li>Get the token from the request header:<pre>let parsed_header = req.headers().get_one("Authorization");
+if parsed_header.is_none() {
+    return error();
+}
+let token_str = parsed_header.unwrap();</pre></li>
+				<li>Get the secret from state:<pre>let parsed_secret = req.rocket().state::&lt;JWToken&gt;();
+if parsed_secret.is_none() {
+    return error();
+}
+let secret = &amp;parsed_secret.unwrap().secret;</pre></li>
+				<li>Verify<a id="_idIndexMarker645"/> the token <a id="_idIndexMarker646"/>and get the user's UUID:<pre>let parsed_key: Result&lt;Hmac&lt;Sha256&gt;, _&gt; = Hmac::new_from_slice(secret.as_bytes());
+if parsed_key.is_err() {
+    return error();
+}
+let key = parsed_key.unwrap();
+let parsed_token: Result&lt;Token&lt;Header, BTreeMap&lt;String, String&gt;, _&gt;, _&gt; = token_str.verify_with_key(&amp;key);
+if parsed_token.is_err() {
+    return error();
+}
+let token = parsed_token.unwrap();
+let claims = token.claims();
+let parsed_user_uuid = claims.get("user_uuid");
+if parsed_user_uuid.is_none() {
+    return error();
+}
+let user_uuid = parsed_user_uuid.unwrap();</pre></li>
+				<li>Find the user and return the user data:<pre>let parsed_db = req.guard::&lt;Connection&lt;DBConnection&gt;&gt;().await;
+if !parsed_db.is_success() {
+    return error();
+}
+let mut db = parsed_db.unwrap();
+let parsed_connection = db.acquire().await;
+if parsed_connection.is_err() {
+    return error();
+}
+let connection = parsed_connection.unwrap();
+let found_user = User::find(connection, &amp;user_uuid).await;
+if found_user.is_err() {
+    return error();
+}
+let user = found_user.unwrap();
+Outcome::Success(APIUser { user })</pre></li>
+				<li>Finally, add <a id="_idIndexMarker647"/>a new protected<a id="_idIndexMarker648"/> API endpoint in <code>src/routes/api.rs</code>:<pre>use crate::guards::auth::APIUser;
+...
+#[get("/protected_users", format = "json", data = "&lt;pagination&gt;")]
+pub async fn authenticated_users(
+    db: Connection&lt;DBConnection&gt;,
+    pagination: Option&lt;Json&lt;Pagination&gt;&gt;,
+    _authorized_user: APIUser,
+) -&gt; Result&lt;Json&lt;UsersWrapper&gt;, Json&lt;OurError&gt;&gt; {
+    users(db, pagination).await
+}</pre></li>
+				<li>In <code>src/main.rs</code>, add the routes to Rocket:<pre>...
+.mount("/api", routes![api::users<strong class="bold">, api::login, </strong>
+<strong class="bold"> api::authenticated_users</strong>])
+...</pre></li>
 			</ol>
 			<p>Now, try <a id="_idIndexMarker649"/>accessing the new endpoint. Here is an example when using the<a id="_idIndexMarker650"/> cURL command line:</p>
-			<p class="source-code">curl -X GET -H "Content-Type: application/json" \</p>
-			<p class="source-code"> http://127.0.0.1:8000/api/protected_users</p>
+			<pre>curl -X GET -H "Content-Type: application/json" \
+ http://127.0.0.1:8000/api/protected_users</pre>
 			<p>The response will be an error. Now try sending a request to get the access token. Here is an example:</p>
-			<p class="source-code">curl -X POST -H "Content-Type: application/json" \</p>
-			<p class="source-code">  -d "{\"username\":\"example\", \"password\": \"password\"}" \</p>
-			<p class="source-code"> http://127.0.0.1:8000/api/login</p>
+			<pre>curl -X POST -H "Content-Type: application/json" \
+  -d "{\"username\":\"example\", \"password\": \"password\"}" \
+ http://127.0.0.1:8000/api/login</pre>
 			<p>There's a token returned, as shown in this example:</p>
-			<p class="source-code">{"token":"eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX3V1aWQiOiJmMGMyZDM4Yy0zNjQ5LTRkOWQtYWQ4My0wZGE4ZmZlY2 E2MDgifQ.XJIaKlIfrBEUw_Ho2HTxd7hQkowTzHkx2q_xKy8HMKA"}</p>
+			<pre>{"token":"eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX3V1aWQiOiJmMGMyZDM4Yy0zNjQ5LTRkOWQtYWQ4My0wZGE4ZmZlY2 E2MDgifQ.XJIaKlIfrBEUw_Ho2HTxd7hQkowTzHkx2q_xKy8HMKA"}</pre>
 			<p>Use the token to send the request, as in this example:</p>
-			<p class="source-code">curl -X GET -H "Content-Type: application/json" \T -H "Content-Type: application/json" \</p>
-			<p class="source-code"> -H "Authorization: eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX3V1aWQiOiJmMGMyZDM4Yy0zNjQ5LTRkOWQtYWQ4My0wZGE4ZmZlY2 E2MDgifQ.XJIaKlIfrBEUw_Ho2HTxd7hQkowTzHkx2q_xKy8HMKA" \</p>
-			<p class="source-code"> http://127.0.0.1:8000/api/protected_users</p>
+			<pre>curl -X GET -H "Content-Type: application/json" \T -H "Content-Type: application/json" \
+ -H "Authorization: eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX3V1aWQiOiJmMGMyZDM4Yy0zNjQ5LTRkOWQtYWQ4My0wZGE4ZmZlY2 E2MDgifQ.XJIaKlIfrBEUw_Ho2HTxd7hQkowTzHkx2q_xKy8HMKA" \
+ http://127.0.0.1:8000/api/protected_users</pre>
 			<p>Then, the<a id="_idIndexMarker651"/> correct response will be returned. JWT is a good way to protect API<a id="_idIndexMarker652"/> endpoints, so use the technique that we have learned when necessary. </p>
 			<h1 id="_idParaDest-130"><a id="_idTextAnchor131"/>Summary</h1>
-			<p>In this chapter, we learned about authenticating users and then creating a cookie to store logged-in user information. We also introduced <strong class="source-inline">CurrentUser</strong> as a request guard that works as authorization for certain parts of the application. </p>
+			<p>In this chapter, we learned about authenticating users and then creating a cookie to store logged-in user information. We also introduced <code>CurrentUser</code> as a request guard that works as authorization for certain parts of the application. </p>
 			<p>After creating authentication and authorization systems, we also learned about API endpoints. We parsed the incoming request body as a request guard in an API and then created an API response.</p>
 			<p>Finally, we learned a little bit about the JWT and how to use it to protect API endpoints.</p>
 			<p>In the next chapter, we are going to learn how to test the code that we have created.</p>

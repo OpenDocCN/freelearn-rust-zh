@@ -1,99 +1,84 @@
-<html><head></head><body><div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">High-Level Parallelism – Threadpools, Parallel Iterators and Processes</h1>
-                </header>
-            
-            <article>
+<html><head></head><body><div><h1 class="header-title">High-Level Parallelism – Threadpools, Parallel Iterators and Processes</h1>
                 
-<p>In previous chapters, we introduced the basic mechanisms of concurrency in the Rust—programming language. In <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>, we discussed the interplay of the type system of Rust with concurrent programs, how Rust ensures memory safety in this most difficult of circumstances. In <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>, we discussed the higher, so-called coarse, synchronization mechanisms available to us, common among many languages. In <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics<span> </span><span>– </span>the Primitives of Synchronization</em>, and <a href="2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml" target="_blank">Chapter 7</a>, <em>Atomics<span> </span>–<span> </span>Safely Reclaiming Memory</em>, we discussed the finer synchronization primitives available on modern machines, exposed through Rust's concurrent memory model. This has all been well and good but, though we've done deep-dives into select libraries or data structures, we have yet to see the <em>consequences</em> of all of these tools on the structure of programs, or how you might choose to split up your workloads across CPUs depending on need.</p>
+            
+            
+                
+<p>In previous chapters, we introduced the basic mechanisms of concurrency in the Rust—programming language. In <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>, we discussed the interplay of the type system of Rust with concurrent programs, how Rust ensures memory safety in this most difficult of circumstances. In <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>, we discussed the higher, so-called coarse, synchronization mechanisms available to us, common among many languages. In <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics – the Primitives of Synchronization</em>, and <a href="2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml" target="_blank">Chapter 7</a>, <em>Atomics – Safely Reclaiming Memory</em>, we discussed the finer synchronization primitives available on modern machines, exposed through Rust's concurrent memory model. This has all been well and good but, though we've done deep-dives into select libraries or data structures, we have yet to see the <em>consequences</em> of all of these tools on the structure of programs, or how you might choose to split up your workloads across CPUs depending on need.</p>
 <p>In this chapter, we will explore higher-level techniques for exploiting concurrent machines without dipping into manual locking or atomic synchronization. We'll examine thread pooling, a technique common in other programming languages, data parallelism with the rayon library, and demonstrate multiprocessing in the context of a genetic programming project that will carry us into the next chapter, as well.</p>
 <p>By the end of this chapter, we will have:</p>
 <ul>
-<li><span>Explored the implementation of thread pool</span></li>
-<li><span>Understood how thread pooling relates to the operation of rayon</span></li>
-<li><span>Explored rayon's internal mechanism in-depth</span></li>
-<li><span>Demonstrated the use of rayon in a non-trivial exercise</span></li>
+<li>Explored the implementation of thread pool</li>
+<li>Understood how thread pooling relates to the operation of rayon</li>
+<li>Explored rayon's internal mechanism in-depth</li>
+<li>Demonstrated the use of rayon in a non-trivial exercise</li>
 </ul>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Technical requirements</h1>
-                </header>
-            
-            <article>
+<div><h1 class="header-title">Technical requirements</h1>
                 
-<p>This chapter requires a working Rust installation. The details of verifying your installation are covered in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries<span> </span>–<span> </span>Machine Architecture and Getting Started with Rust. </em>A pMARS executable is required and must be on your PATH. Please follow the instructions in the pMARS (<a href="http://www.koth.org/pmars/">http://www.koth.org/pmars/</a>) source tree for building instructions.<br/>
+            
+            
+                
+<p>This chapter requires a working Rust installation. The details of verifying your installation are covered in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust. </em>A pMARS executable is required and must be on your PATH. Please follow the instructions in the pMARS (<a href="http://www.koth.org/pmars/">http://www.koth.org/pmars/</a>) source tree for building instructions.<br/>
 You can find the source code for this book's projects on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust">https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust</a>. The source code for this chapter is under <kbd>Chapter08</kbd>.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Thread pooling</h1>
-                </header>
+<div><h1 class="header-title">Thread pooling</h1>
+                
             
-            <article>
+            
                 
 <p>To this point in the book, whenever we have needed a thread, we've simply called <kbd>thread::spawn</kbd>. This is not necessarily a safe thing to do. Let's inspect two projects that suffer from a common defect—potential over-consumption of OS threads. The first will be obviously deficient, the second less so.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Slowloris – attacking thread-per-connection servers</h1>
-                </header>
-            
-            <article>
+<div><h1 class="header-title">Slowloris – attacking thread-per-connection servers</h1>
                 
-<p>The thread-per-connection architecture is a networking architecture that allocates one OS thread per inbound connection. This works well for servers that will receive a total number of connections relatively similar to the number of CPUs available to the server. Depending on the operating system, this architecture tends to reduce time-to-response latency of network transactions, as a nice bonus. The major defect with thread-per-connection systems has to do with slowloris attacks. In this style of attack, a malicious user opens a connection to the server<span>–</span>a relatively cheap operation, requiring only a single file-handler and simply holds it. Thread-per-connection systems can mitigate the slowloris attack by aggressively timing out idle connections, which the attacker can then mitigate by sending data through the connection at a very slow rate, say one byte per 100 milliseconds. The attacker, which could easily be just buggy software if you're deploying solely inside a trusted network, spends very little resources to carry out their attack. Meanwhile, for every new connection into the system, the server is forced to allocate a full stack frame and forced to cram another thread into the OS scheduler. That's not cheap.</p>
+            
+            
+                
+<p>The thread-per-connection architecture is a networking architecture that allocates one OS thread per inbound connection. This works well for servers that will receive a total number of connections relatively similar to the number of CPUs available to the server. Depending on the operating system, this architecture tends to reduce time-to-response latency of network transactions, as a nice bonus. The major defect with thread-per-connection systems has to do with slowloris attacks. In this style of attack, a malicious user opens a connection to the server–a relatively cheap operation, requiring only a single file-handler and simply holds it. Thread-per-connection systems can mitigate the slowloris attack by aggressively timing out idle connections, which the attacker can then mitigate by sending data through the connection at a very slow rate, say one byte per 100 milliseconds. The attacker, which could easily be just buggy software if you're deploying solely inside a trusted network, spends very little resources to carry out their attack. Meanwhile, for every new connection into the system, the server is forced to allocate a full stack frame and forced to cram another thread into the OS scheduler. That's not cheap.</p>
 
-
-            </article>
 
             
-        </section>
+
+            
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">The server</h1>
-                </header>
+<div><h1 class="header-title">The server</h1>
+                
             
-            <article>
+            
                 
 <p>Let's put together a vulnerable server, then blow it up. Lay out your <kbd>Cargo.toml</kbd> like so:</p>
 <pre>[package]
@@ -214,7 +199,7 @@ static TOTAL_STREAMS: AtomicUsize = AtomicUsize::new(0);</pre>
         TOTAL_STREAMS.fetch_sub(1, Ordering::Relaxed);
     })
 }</pre>
-<p>A network protocol must, anyway, be resilient to hangups on either end, owing to the unreliable nature of networks. In fact, the reader who has enjoyed this book and especially <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml">Chapter 6</a>, <em>Atomics<span> </span>–<span> </span>the Primitives of Synchronization</em>, and <a href="2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml" target="_blank">Chapter 7</a>, <em>Atomics<span> </span>–<span> </span>Safely Reclaiming Memory</em>, will be delighted to learn that distributed systems face many of the same difficulties with the added bonus of unreliable transmission. Anyway, note that <kbd>handle_client</kbd> isn't doing all that much, merely using the <kbd>thread::Builder</kbd> API to construct threads, which we discussed in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>. Otherwise, it's a fairly standard TCP echo.</p>
+<p>A network protocol must, anyway, be resilient to hangups on either end, owing to the unreliable nature of networks. In fact, the reader who has enjoyed this book and especially <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml">Chapter 6</a>, <em>Atomics – the Primitives of Synchronization</em>, and <a href="2099e79d-45cd-46cb-bf58-fc27b27b84ec.xhtml" target="_blank">Chapter 7</a>, <em>Atomics – Safely Reclaiming Memory</em>, will be delighted to learn that distributed systems face many of the same difficulties with the added bonus of unreliable transmission. Anyway, note that <kbd>handle_client</kbd> isn't doing all that much, merely using the <kbd>thread::Builder</kbd> API to construct threads, which we discussed in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>. Otherwise, it's a fairly standard TCP echo.</p>
 <p>Let's see the server in operation. In the top of the project, run <kbd>cargo run --release --bin server</kbd> and you should be rewarded with something much like:</p>
 <pre><strong>&gt; cargo run --release --bin server
     Finished release [optimized] target(s) in 0.26 secs
@@ -235,22 +220,19 @@ hello server</strong></pre>
   Apr 22 21:32:54.943 INFO Received a 14 bytes: hello server</strong></pre>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">The client</h1>
-                </header>
+<div><h1 class="header-title">The client</h1>
+                
             
-            <article>
+            
                 
 <p>The real challenge for our server comes with a specially constructed client. Let's go through it before we see the client in action. The preamble is typical:</p>
 <pre>#[macro_use]
@@ -349,22 +331,19 @@ meta: report
 <p>What this program needs is a way of fixing the number of threads available for connections. That's exactly what a thread pool is.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">A thread-pooling server</h1>
-                </header>
+<div><h1 class="header-title">A thread-pooling server</h1>
+                
             
-            <article>
+            
                 
 <p>Let's adapt our overwhelmed TCP server to use a fixed number of threads. We'll start a new project whose <kbd>Cargo.toml</kbd> looks like:</p>
 <pre>[package]
@@ -384,7 +363,7 @@ name = "server"
 
 [[bin]]
 name = "client"</pre>
-<p>This is almost exactly the same as the unbounded thread project, save that the name has been changed from <kbd>overwhelmed_tpc_server</kbd> to <kbd>fixed_threads_tcp_server</kbd> and we've added a new dependency<span>–</span>threadpool. There are a few different, stable thread-pool libraries available in crates, each with a slightly different feature set or focus. The workerpool project (<a href="https://crates.io/crates/workerpool">https://crates.io/crates/workerpool</a>), for example, sports almost the same API as threadpool, save that it comes rigged up so in/out communication with the worker thread is enforced at the type-level, where threadpool requires the user to establish this themselves if they want. In this project, we don't have a need to communicate with the worker thread.</p>
+<p>This is almost exactly the same as the unbounded thread project, save that the name has been changed from <kbd>overwhelmed_tpc_server</kbd> to <kbd>fixed_threads_tcp_server</kbd> and we've added a new dependency–threadpool. There are a few different, stable thread-pool libraries available in crates, each with a slightly different feature set or focus. The workerpool project (<a href="https://crates.io/crates/workerpool">https://crates.io/crates/workerpool</a>), for example, sports almost the same API as threadpool, save that it comes rigged up so in/out communication with the worker thread is enforced at the type-level, where threadpool requires the user to establish this themselves if they want. In this project, we don't have a need to communicate with the worker thread.</p>
 <p>The server preamble is only slightly altered from the previous project:</p>
 <pre>#[macro_use]
 extern crate slog;
@@ -499,25 +478,22 @@ static TOTAL_STREAMS: AtomicUsize = AtomicUsize::new(0);</pre>
 <p>This server implementation does not suffer from an ever-growing <kbd>JoinHandle</kbd> vector, as the last server did. The pool takes care to remove panicked threads from its internal buffers and we take care to never allow more workers than there are threads available to work them. Let's find out how that works!</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Looking into thread pool</h1>
-                </header>
+<div><h1 class="header-title">Looking into thread pool</h1>
+                
             
-            <article>
+            
                 
 <p>Let's look into threadpool and understand its implementation. Hopefully by this point in the book, you have a sense of how you'd go about building your own thread-pooling library. Consider that for a moment, before we continue, and see how well your idea stacks up against this particular approach. We'll inspect the library (<a href="https://crates.io/crates/threadpool">https://crates.io/crates/threadpool</a>) at SHA <kbd>a982e060ea2e3e85113982656014b212c5b88ba2</kbd>.</p>
-<div class="packt_infobox"><span>The thread pool crate is not listed in its entirety. You can find the full listing in the book's source repository. </span></div>
+<p>The thread pool crate is not listed in its entirety. You can find the full listing in the book's source repository. </p>
 <p>Let's look first at the project's <kbd>Cargo.toml</kbd>:</p>
 <pre>[package]
 
@@ -531,8 +507,8 @@ homepage = "https://github.com/rust-threadpool/rust-threadpool"
 documentation = "https://docs.rs/threadpool"
 description = """
 A thread pool for running a number of jobs on a fixed set of worker threads.
-"""</pre>
-<pre>keywords = ["threadpool", "thread", "pool", "threading", "parallelism"]
+"""
+keywords = ["threadpool", "thread", "pool", "threading", "parallelism"]
 categories = ["concurrency", "os"]
 
 [dependencies]
@@ -587,7 +563,7 @@ impl&lt;F: FnOnce()&gt; FnBox for F {
         (*self)()
     }
 }</pre>
-<p>It is the <kbd>FnOnce</kbd> trait we encountered in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>, <em>The Rust Memory Model<span> </span>–<span> </span>Ownership, References and Manipulation</em>, so if you read that chapter, you know that <kbd>F</kbd> will only be called once. The boxing of the function closure means its captured variables are available on the heap and don't get deallocated when the pool caller moves the closure out of scope. Great. Now, let's jump back to build and look at <kbd>shared_data</kbd>:</p>
+<p>It is the <kbd>FnOnce</kbd> trait we encountered in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>, <em>The Rust Memory Model – Ownership, References and Manipulation</em>, so if you read that chapter, you know that <kbd>F</kbd> will only be called once. The boxing of the function closure means its captured variables are available on the heap and don't get deallocated when the pool caller moves the closure out of scope. Great. Now, let's jump back to build and look at <kbd>shared_data</kbd>:</p>
 <pre>        let shared_data = Arc::new(ThreadPoolSharedData {
             name: self.thread_name,
             job_receiver: Mutex::new(rx),
@@ -751,22 +727,19 @@ impl&lt;F: FnOnce()&gt; FnBox for F {
 <p>That's it! That's a thread pool, a thing built out of the pieces we've discussed so far in this book. If you wanted to make a thread pool without queuing, you'd push an additional check into <kbd>execute</kbd>. Some of the sequentially consistent atomic operations could likely be relaxed, as well, as potentially the consequence of making a simple implementation more challenging to reason with. It's potentially worth it for the performance gain if your executed jobs are very brief. In fact, we'll discuss a library later in this chapter that ships an alternative thread pool implementation for just such a use case, though it is quite a bit more complex than the one we've just discussed.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">The Ethernet sniffer</h1>
-                </header>
+<div><h1 class="header-title">The Ethernet sniffer</h1>
+                
             
-            <article>
+            
                 
 <p>Of equal importance to understanding a technique in-depth is understanding when not to apply it. Let's consider another thread-per-unit-of-work system, but this time we'll be echoing Ethernet packets rather than lines received over a TCP socket. Our project's <kbd>Cargo.toml</kbd>:</p>
 <pre>[package]
@@ -782,7 +755,7 @@ name = "sniffer"
 
 [[bin]]
 name = "poor_threading"</pre>
-<p>Like the TCP example, we'll create two binaries, one that is susceptible to thread overload–<kbd>poor_threading</kbd><span>–</span>and another–<kbd>sniffer</kbd>–that is not. The premise here is that we want to sniff a network interface for Ethernet packets, reverse the source and destination headers on that packet, and send the modified packet back to the original source. Simultaneously, we'll collect summary statistics of the packets we collect. On a saturated network, our little programs will be very busy and there will have to be trade-offs made somewhere in terms of packet loss and receipt.</p>
+<p>Like the TCP example, we'll create two binaries, one that is susceptible to thread overload–<kbd>poor_threading</kbd>–and another–<kbd>sniffer</kbd>–that is not. The premise here is that we want to sniff a network interface for Ethernet packets, reverse the source and destination headers on that packet, and send the modified packet back to the original source. Simultaneously, we'll collect summary statistics of the packets we collect. On a saturated network, our little programs will be very busy and there will have to be trade-offs made somewhere in terms of packet loss and receipt.</p>
 <p>The only dependency we're pulling in here is <a href="https://github.com/libpnet/libpnet">pnet</a>. libpnet is a low-level packet manipulation library, useful for building network utilities or for prototyping transport protocols. I think it's pretty fun to fuzz-test transport implementations with libpnet on commodity network devices. Mostly, though, the reward is a crashed home router, but I find that amusing. Anyhow, let's look into <kbd>poor_threading</kbd>. It's preamble is fairly ho-hum:</p>
 <pre>extern crate pnet;
 
@@ -916,7 +889,7 @@ use std::{env, thread};</pre>
                     });
                 }</pre>
 <p>Uh oh. The EthernetPacket has normalized into <kbd>Payload::Packet</kbd> just fine, but when we send the packet down the channel to <kbd>gather</kbd> we do so by spawning a thread. The decision being made here is that no incoming packet should be lost—implying we have to read them off the network interface as quickly as possible—and if the channel blocks, we'll need to store that packet in some pool, somewhere.</p>
-<p>The <em>pool</em> is, in fact, a thread stack. Or, a bunch of them. Even if we were to drop the thread's stack size to a sensible low size on a saturated network, we're still going to overwhelm the operating system at some point. If we absolutely could not stand to lose packets, we could use something such as hopper (<a href="https://github.com/postmates/hopper">https://github.com/postmates/hopper</a>), discussed in detail in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>, which was designed for just this use case. Or, we could defer these sends to threadpool, allow it to queue the jobs, and run them on a finite number of threads. Anyway, let's set this aside for just a second and wrap up <kbd>watch_interface</kbd>:</p>
+<p>The <em>pool</em> is, in fact, a thread stack. Or, a bunch of them. Even if we were to drop the thread's stack size to a sensible low size on a saturated network, we're still going to overwhelm the operating system at some point. If we absolutely could not stand to lose packets, we could use something such as hopper (<a href="https://github.com/postmates/hopper">https://github.com/postmates/hopper</a>), discussed in detail in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>, which was designed for just this use case. Or, we could defer these sends to threadpool, allow it to queue the jobs, and run them on a finite number of threads. Anyway, let's set this aside for just a second and wrap up <kbd>watch_interface</kbd>:</p>
 <pre>                tx.build_and_send(1, packet.packet().len(), <br/>                                  &amp;mut |new_packet| <br/>                {
                     let mut new_packet = <br/>                        MutableEthernetPacket::new(new_packet).unwrap();
 
@@ -991,45 +964,39 @@ use std::{env, thread};</pre>
 <p>This report came from the sixth second of my sniffer run and 75 packets were dropped for lack of storage. That's better than 75 threads.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Iterators</h1>
-                </header>
+<div><h1 class="header-title">Iterators</h1>
+                
             
-            <article>
+            
                 
 <p>So far, we've assumed that the reader has been at least passingly familiar with Rust iterators. It's possible that you've used them extensively but have never written your own iterator implementation. That knowledge is important for what follows and we'll discuss Rust's iteration facility now.</p>
 <p>A Rust iterator is any type that implements <kbd>std::iter::Iterator</kbd>. The <kbd>Iterator</kbd> trait has an interior <kbd>Item</kbd> type that allows the familiar iterator functions, such as <kbd>next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;</kbd>, to be defined in terms of that generic <kbd>Item</kbd>. Many of the iterator functions are, well, functional in nature: <kbd>map</kbd>, <kbd>filter</kbd>, and <kbd>fold</kbd> are all higher-order functions on a stream of <kbd>Item</kbd>. Many of the iterator functions are searches on that stream of <kbd>Item</kbd>: <kbd>max</kbd>, <kbd>min</kbd>, <kbd>position</kbd>, and <kbd>find</kbd>. It is a versatile trait. If you find it limited in some manner, the community has put together a crate with more capability: itertools (<a href="https://crates.io/crates/itertools">https://crates.io/crates/itertools</a>). Here, we're less concerned with the interface of <kbd>Iterator</kbd> than how to implement it for our own types.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Smallcheck iteration</h1>
-                </header>
-            
-            <article>
+<div><h1 class="header-title">Smallcheck iteration</h1>
                 
-<p>In <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapters 2</a>, <em>Sequential Rust Performance and Testing</em>, <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank"><span>Chapters </span>5</a>,<em> Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>, and <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank"><span>Chapters </span>6</a>, <em>Atomics<span> </span>–<span> </span>the Primitives of Synchronization</em>, we've discussed the QuickCheck testing methodology, a structured way of inserting random, type-driven input into a function to search function property failures. Inspired by the work done by Claessen and Hughes in their QuickCheck paper, Runciman, Naylor and Lindblad observed that, in their experience, most failures were on small input and put forward the observation that a library that tested from small output to big first might find failures faster than purely random methods. Their hypothesis was more or less correct, for a certain domain of function, but the approach suffers from duplication of effort, resolved somewhat by the authors in the same paper with Lazy Smallcheck. We won't go into further detail here, but the paper is included in the <em>Further reading</em> section of this chapter and the reader is encouraged to check out the paper.</p>
+            
+            
+                
+<p>In <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapters 2</a>, <em>Sequential Rust Performance and Testing</em>, <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapters 5</a>,<em> Locks – Mutex, Condvar, Barriers and RWLock</em>, and <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapters 6</a>, <em>Atomics – the Primitives of Synchronization</em>, we've discussed the QuickCheck testing methodology, a structured way of inserting random, type-driven input into a function to search function property failures. Inspired by the work done by Claessen and Hughes in their QuickCheck paper, Runciman, Naylor and Lindblad observed that, in their experience, most failures were on small input and put forward the observation that a library that tested from small output to big first might find failures faster than purely random methods. Their hypothesis was more or less correct, for a certain domain of function, but the approach suffers from duplication of effort, resolved somewhat by the authors in the same paper with Lazy Smallcheck. We won't go into further detail here, but the paper is included in the <em>Further reading</em> section of this chapter and the reader is encouraged to check out the paper.</p>
 <p>Anyway, producing all values of a <em>small</em> to <em>big</em> type sounds like iteration. In fact, it is. Let's walk through producing iterators for signed and unsigned integers. The project's <kbd>Cargo.toml</kbd> is minimal:</p>
 <pre>[package]
 name = "smalliters"
@@ -1179,22 +1146,19 @@ mod tests {
 <p>If you run the tests, you should find that they pass. It'll take a minute for the larger types. But, that's iterators. All they are is some kind of base type—in this case, the built-in integers—plus a state-tracking type—our <kbd>Small*</kbd> structs—and an implementation of <kbd>Iterator</kbd> for that state-tracking type. Remarkably useful, and the optimizer is reasonably good at turning iterator chains into loops and getting better at it all the time.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">rayon – parallel iterators</h1>
-                </header>
+<div><h1 class="header-title">rayon – parallel iterators</h1>
+                
             
-            <article>
+            
                 
 <p>In the previous section, we built an iterator over Rust integer types. The essential computation of each <kbd>next</kbd> call was small—some branch checks, and possibly a negation or an addition. If we were to try to parallelize this, we'd drown out any potential performance bump with the time it takes to allocate a new thread from the operating systems. No matter how fast that becomes, it will still be slower than an addition. But, say we've gone all-in on writing in iteration style and do have computations that would benefit from being run in parallel. How do you make <kbd>std::iter::Iterator</kbd> parallel?</p>
 <p>You use rayon.</p>
@@ -1204,8 +1168,8 @@ mod tests {
 <li>rayon-core</li>
 <li>rayon-futures</li>
 </ul>
-<p>We'll discuss rayon—the top-level crate—and rayon-core in this chapter, touching on the fundamental technology behind rayon-futures in <a href="2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml" target="_blank">Chapter 10</a>, <em>Futurism<span> </span>–<span> </span>Near-Term</em> <em>Rus</em><em>t</em>. The interested reader can flag rayon-futures on to play with that interface but please do refer to the <kbd>README</kbd> at the top of that sub-crate for details.</p>
-<div class="packt_infobox"><span>The rayon crate is not listed in its entirety. You can find the full listing in this book's source repository. </span></div>
+<p>We'll discuss rayon—the top-level crate—and rayon-core in this chapter, touching on the fundamental technology behind rayon-futures in <a href="2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml" target="_blank">Chapter 10</a>, <em>Futurism – Near-Term</em> <em>Rus</em><em>t</em>. The interested reader can flag rayon-futures on to play with that interface but please do refer to the <kbd>README</kbd> at the top of that sub-crate for details.</p>
+<p>The rayon crate is not listed in its entirety. You can find the full listing in this book's source repository. </p>
 <p>The dependencies of rayon are minimal, being that rayon-core is the sole dependency by default. The rayon-core dependencies are:</p>
 <pre>[dependencies]
 rand = "&gt;= 0.3, &lt; 0.5"
@@ -1213,7 +1177,7 @@ num_cpus = "1.2"
 libc = "0.2.16"
 lazy_static = "1"</pre>
 <p>We've seen these dependencies before, except <kbd>libc</kbd>. This library exposes the <kbd>libc</kbd> platform in a stable interface. From the project's documentation:</p>
-<div class="packt_quote">"This crate does not strive to have any form of compatibility across platforms, but rather it is simply a straight binding to the system libraries on the platform in question."</div>
+<p>"This crate does not strive to have any form of compatibility across platforms, but rather it is simply a straight binding to the system libraries on the platform in question."</p>
 <p>It's quite useful. Now, rayon is a large library and it can be a challenge to navigate. That's okay, though, because it's simple to use. To give ourselves an in, let's pull the example code from rayon's <kbd>README</kbd> and do an exploration from that point. The example is:</p>
 <pre>use rayon::prelude::*;
 
@@ -1616,42 +1580,36 @@ fn global_registry() -&gt; &amp;'static Arc&lt;Registry&gt; {
 <p>Now you know! That's not all that rayon can do—it's a <em>very</em> useful library—but that's the central idea. I warmly encourage you to read through rayon's documentation.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Data parallelism and OS processes – evolving corewars players</h1>
-                </header>
+<div><h1 class="header-title">Data parallelism and OS processes – evolving corewars players</h1>
+                
             
-            <article>
+            
                 
 <p>In this final section of the chapter, I'd like to introduce a project that will carry us over into the next chapter. This project will tie together the concepts we've introduced so far in this chapter and introduce a new one: processes. Compared to threads, processes have a lot to recommend them: memory isolation, independent priority scheduling, convenient integration of existing programs into your own, and a long history of standardized syscalls (in Unix) to deal with them. But, memory isolation is less ideal when your aim is to fiddle with the same memory from multiple concurrent actors—as in atomic programming—or when you otherwise have to set up expensive IPC channels. Worse, some operating systems are not fast to spawn new processes, limiting a multi-processesing program's ability to exploit CPUs on a few fronts. All that said, knowing how to spawn and manipulate OS processes <em>is</em> very useful and we'd be remiss not to cover it in this book.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Corewars</h1>
-                </header>
+<div><h1 class="header-title">Corewars</h1>
+                
             
-            <article>
+            
                 
 <p>Corewars is a computer programmer game from the 1980s. Introduced in a 1984 Scientific American article, the game is a competition between two or more programs—or warriors—that are written in an obscure assembly language called Redcode. Realistically, there are effectively two variants of Redcode, one of which has nice features, such as labels or pseudo-opcodes for variable assignments. This is usually referred to as Redcode. The other variant is referred to as <em>load file Redcode</em> or simply <em>load file</em> and is a straight listening of opcodes. The machine that Redcode targets is the Memory Array Redcode Simulator (MARS). It is… peculiar. Memory is bounded and circular, the maximum address prior to wrap-around is <kbd>core_size-1</kbd>. Most players set <kbd>core_size</kbd> to 8000 but any value is valid. Each memory location is an instruction. There is no distinction between instruction cache and data storage. In fact, there's not <em>really</em> data storage per se, though you can store information in unused sections of an instruction. There is no such thing as absolute memory addressing in the MARS machine: every address is relative in the ring of memory to the current instruction. For instance, the following instruction will tell MARS to jump backward two spots in memory and continue execution from there:</p>
 <pre>JMP -2</pre>
@@ -1700,22 +1658,19 @@ Results: 0 463 537</strong></pre>
 <p>Writing warriors is fun, but teaching a computer to write warriors is even more fun and so that's what we're going to set out to do. Specifically, we'll write an <em>evolver,</em> a program that uses a simulated evolution of a population of warriors to produce ever more fit specimens. We'll call out to the pMARS executable to evaluate our population and, with enough time, hopefully pop out something pretty impressive.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Feruscore – a Corewars evolver</h1>
-                </header>
+<div><h1 class="header-title">Feruscore – a Corewars evolver</h1>
+                
             
-            <article>
+            
                 
 <p>I want to make sure we're all on the same page, before we start digging through source code. The way simulated evolution works is you make a population—maybe totally random, maybe not—and call it generation <kbd>0</kbd>. You then run some <kbd>fitness</kbd> function on the members of the population. Fitness may be defined in terms of some known absolute or as a relative value between members of the population. The fittest members of the population are then taken to form a subset of parents. Many algorithms take two members, but the sky's the limit and your species could well require six individuals for reproduction. That's what we're after—reproduction.</p>
 <p>The individuals of the population are non-destructively recombined to form children. The population is then mutated, changing genes in an individual's genomes with some domain-specific probability. This may be <em>all</em> members of the population or just children, or just parents, or whatever you'd like. There's no perfect answer here. After mutation, the parents, their children, and any non-reproducing members of the population that did not die during fitness evaluation are then promoted to generation 2. The cycle continues:</p>
@@ -1728,43 +1683,37 @@ Results: 0 463 537</strong></pre>
 <p>Simulated evolution is not magic. Much like QuickCheck, which uses randomness to probe programs for property violations, this algorithm is probing a problem space for the most fit solution. It's an optimization strategy, mimicking the biological process. As you can probably infer from the description I just gave, there are a lot of knobs and alternatives to the basic approach. We'll be putting together a straightforward approach here but the you are warmly encouraged to make your own modifications.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Representing the domain</h1>
-                </header>
+<div><h1 class="header-title">Representing the domain</h1>
+                
             
-            <article>
+            
                 
 <p>Before we can start evolving anything, we have to figure out how to represent the individuals; we need to decide how to structure their chromosome. Many genetic algorithm implementations represent these as a [u8], serializing and deserializing as appropriate. There's a lot to recommend this representation. For one, modern computers have instructions specifically tailored to operate on many bytes in parallel—a topic we'll touch on in <a href="2dc30216-c606-471f-a94a-dc4891a0cb1b.xhtml" target="_blank">Chapter 10</a>, <em>Futurism – Near-Term Rust,</em>—which is especially helpful in the mutation and reproduction stages of a genetic algorithm. You see, one of the key things to a successful simulation of evolution is <em>speed</em>. We need a large population and many, many generations to discover fit individuals. <kbd>[u8]</kbd> is a convenient representation for serialization and deserialization, especially with something such as serde <a href="https://crates.io/crates/serde">(https://crates.io/crates/serde</a>) and bincode (<a href="https://crates.io/crates/bincode">https://crates.io/crates/bincode</a>) at hand. The downside to a <kbd>[u8]</kbd> representation is creating individuals that don't deserialize into something valid, in addition to eating up CPU time moving back and forth between <kbd>[u8]</kbd> and structs.</p>
 <p>Program optimization comes down to carefully structuring one's computation to suit the computer or finding clever ways to avoid computation altogether. In this particular project, we do have a trick we can play. A valid individual is a finite list of instructions—feruscore targets producing <em>load files</em>—and all we have to do, then, is represent an instruction as a Rust struct and pop it into a vector. Not bad! This will save us a significant amount of CPU time, though our mutation step will be a tad slower. That's okay, though, as fitness evaluation will be the biggest time sink, as we'll see that shortly.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Exploring the source</h1>
-                </header>
+<div><h1 class="header-title">Exploring the source</h1>
+                
             
-            <article>
+            
                 
 <p>Let's look at feruscore's <kbd>Cargo.toml</kbd> first. It is:</p>
 <pre>[package]
@@ -1776,7 +1725,7 @@ authors = ["Brian L. Troutwine &lt;brian@troutwine.us&gt;"]
 rand = "0.4"
 rayon = "1.0"
 tempdir = "0.3"</pre>
-<p>We saw the tempdir crate back in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>; its purpose is to create temporary directories that get deleted when the directory handler is dropped. We discussed rayon earlier in the chapter. The rand crate is new, though we did mention it in passing in both <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapter 2</a>, <em>Sequential Rust Performance and Testing</em>,  and <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks<span> </span>–<span> </span>Mutex, Condvar, Barriers and RWLock</em>, when we produced our own XorShift. The rand crate implements many different pseudo-random algorithms, in addition to providing a convenient interface to OS facilities for randomness. We'll be putting rand to good use.</p>
+<p>We saw the tempdir crate back in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>; its purpose is to create temporary directories that get deleted when the directory handler is dropped. We discussed rayon earlier in the chapter. The rand crate is new, though we did mention it in passing in both <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapter 2</a>, <em>Sequential Rust Performance and Testing</em>,  and <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>, when we produced our own XorShift. The rand crate implements many different pseudo-random algorithms, in addition to providing a convenient interface to OS facilities for randomness. We'll be putting rand to good use.</p>
 <p>The project is a standard library/executable bundle. Unlike many other projects in this book, we are not creating multiple executables and so there's only a single <kbd>src/main.rs</kbd>. We'll talk through that in due course. The library root, in <kbd>src/lib.rs</kbd>:</p>
 <pre>extern crate rand;
 extern crate rayon;
@@ -1786,22 +1735,19 @@ pub mod individual;
 pub mod instruction;</pre>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Instructions</h1>
-                </header>
+<div><h1 class="header-title">Instructions</h1>
+                
             
-            <article>
+            
                 
 <p>No surprises here. We import the project dependencies and expose two public modules: instruction and individual. The instruction module at <kbd>src/instruction.rs</kbd> is feruscore's version of <kbd>[u8]</kbd>, or, rather, the <kbd>u8</kbd> in the array. Let's take a look. The structure at the root is <kbd>Instruction</kbd>:</p>
 <pre>#[derive(PartialEq, Eq, Copy, Clone, Debug)]
@@ -1895,22 +1841,19 @@ pub enum Modifier {
 }</pre>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Individuals</h1>
-                </header>
+<div><h1 class="header-title">Individuals</h1>
+                
             
-            <article>
+            
                 
 <p>Nothing special, especially by this point in the book. The <kbd>random() -&gt; Self</kbd> functions are a touch fragile because you can't query an enumeration for its total number of fields, meaning that if we add or remove a field from <kbd>Modifier</kbd>, for instance, we also have to remember to update <kbd>gen_range(0, 7)</kbd> appropriately. Removal is not so bad, the compiler will complain some, but addition is easy to forget and overlook.</p>
 <p>Let's now look at the individual module. The bulk of the code is in src/individual/mod.rs. The struct for Individual is very short:</p>
@@ -1935,8 +1878,8 @@ pub struct Individual {
 <pre>map(|_| {
     if thread_rng().gen_weighted_bool(OpCode::total() * 2) {
         None
-    } else {</pre>
-<pre>        Some(Instruction::random(core_size))
+    } else {
+        Some(Instruction::random(core_size))
     }
 })</pre>
 <p>The input that the interior map is so studiously ignoring is <kbd>(0..(chromosome_size as usize)).into_par_iter()</kbd>. That's a <kbd>ParallelIterator</kbd> over a range of numbers, from 0 to the maximum number of chromosomes an Individual is allowed to have. One creative solution in early Corewars was to submit a <kbd>MOV 0 1</kbd> imp followed by 7999 <kbd>DAT</kbd> instructions. If the MARS loaded your warrior and wasn't programmed to carefully check warrior offsets, your opponent would lose by being immediately overwritten. <kbd>Instruction</kbd> length limits were quickly put into place and we obey that here, too. Serialization of an <kbd>Individual</kbd> follows the pattern we're familiar with:</p>
@@ -1953,22 +1896,19 @@ pub struct Individual {
     }</pre>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Mutation and reproduction</h1>
-                </header>
+<div><h1 class="header-title">Mutation and reproduction</h1>
+                
             
-            <article>
+            
                 
 <p>Before we discuss competition between two <kbd>Individual</kbd>s, let's talk about mutation and reproduction. Mutation is the easier of the two to understand, in my opinion, because it operates on one <kbd>Individual</kbd> at a time. Our implementation:</p>
 <pre>    pub fn mutate(&amp;mut self, mutation_chance: u32, core_size: u16) -&gt; () {
@@ -1999,22 +1939,19 @@ pub struct Individual {
 <p>Feruscore uses a reproduction strategy called half-uniform crossover. Each gene from a parent has even odds of finding its way into the child. The child is passed as a mutable reference, which is creepy if you think about it too hard. I'm not sure of any real species that takes over the body of a less fit individual and hot-swaps DNA into it to form a child in order to save on energy (or computation, in our case) but here we are. Note that, unlike mutation, reproduction is done serially. Remember that rayon is chunking work and distributing it through a threadpool. If we were to make this parallel, there'd have to be a mechanism in place to rectify the choices made from the zipper of the parents' chromosomes into the child. If the chromosomes were many multiple megabytes, this would be a good thing to tinker with. As is, the chromosomes are very small. Most Corewars games limit a warrior to 100 instructions. rayon is impressive but it is not <em>free</em>, either in runtime cost or programming effort.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Competition – calling out to pMARS</h1>
-                </header>
+<div><h1 class="header-title">Competition – calling out to pMARS</h1>
+                
             
-            <article>
+            
                 
 <p>It's now time to consider how each <kbd>Individual</kbd> competes. Earlier, we discussed calling out to pmars on-system, which requires on-disk representations of the two competing Individual warriors. True to that, competition first serializes both warriors to temporary locations on the disk:</p>
 <pre>    pub fn compete(&amp;self, other: &amp;Individual) -&gt; Winner {
@@ -2113,22 +2050,19 @@ pub struct Individual {
 <p>Now, on to <kbd>main</kbd>!</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Main</h1>
-                </header>
+<div><h1 class="header-title">Main</h1>
+                
             
-            <article>
+            
                 
 <p>The preamble to <kbd>src/main.rs</kbd> is typical for the programs we've seen so far in this book:</p>
 <pre>extern crate feruscore;
@@ -2303,22 +2237,19 @@ static NEW_PARENTS: AtomicUsize = AtomicUsize::new(0);</pre>
 <p>Okay! Let's evolve some warriors.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Running feruscore</h1>
-                </header>
+<div><h1 class="header-title">Running feruscore</h1>
+                
             
-            <article>
+            
                 
 <p>Before you attempt to run feruscore, please make sure pmars is available on your PATH. Some operating systems bundle pmars in their package distribution, others, such as OS X, require gcc to compile the program. The pMARS project is <em>venerable</em> C code and getting it compiled can be a bit fiddly. On my Debian system, I had to tweak the makefile some, but on OS X I found a helpful brew cask to get pMARS installed.</p>
 <p>Once you've got pMARS installed, you should be able to run <kbd>cargo run --release</kbd> at the head of the project and receive output like the following:</p>
@@ -2368,42 +2299,36 @@ static NEW_PARENTS: AtomicUsize = AtomicUsize::new(0);</pre>
 <p>Should be fun!</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Summary</h1>
-                </header>
+<div><h1 class="header-title">Summary</h1>
+                
             
-            <article>
+            
                 
 <p>In this chapter, we set the lower-level details of concurrency in Rust as a foundation. We discussed thread pools, which, it turns out, we had all the pieces in-hand from previous chapters, to understand a fairly sophisticated one. Then we looked into rayon and discovered that we could also understand an <em>extremely</em> sophisticated threadpool, hidden behind the type system to enable data parallelism in the programming model. We discussed architectural concerns with the thread-per-connection model and the challenges of splitting small datasets up into data parallel iterators. Finally, we did a walkthrough of a rayon and multi-processing-based genetics algorithm project. The <kbd>std::process</kbd> interface is lean compared to that exposed by some operating systems, but well-thought-out and quite useful, as demonstrated in the feruscore project that closed out the chapter. We'll pick up feruscore in the next chapter when we integrate C code into it, in lieu of calling out to a process.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Further reading</h1>
-                </header>
+<div><h1 class="header-title">Further reading</h1>
+                
             
-            <article>
+            
                 
 <p>The notes for the chapter are a bit unusual for the book. Rather than call out papers the reader could look to for further research these notes are, overwhelmingly, suggestions of codebases to read. Data parallel iterators are <em>amazing</em> but take a little getting used to.</p>
 <p>Nothing helps more than reading existing projects. Me, I figure every thousand lines of source code takes an hour to understand well. Makes for a peaceful afternoon:</p>
@@ -2421,10 +2346,10 @@ static NEW_PARENTS: AtomicUsize = AtomicUsize::new(0);</pre>
 </ul>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 

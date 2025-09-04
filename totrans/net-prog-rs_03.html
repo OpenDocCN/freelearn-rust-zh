@@ -1,11 +1,11 @@
 <html><head></head><body>
-        <section>
+        
 
-                            <header>
-                    </header><h1 class="header-title" id="calibre_pb_0">TCP and UDP Using Rust</h1>
+                            
+                    <h1 class="header-title" id="calibre_pb_0">TCP and UDP Using Rust</h1>
                 
             
-            <article>
+            
                 
 <p class="calibre2">Being a system programming language, the Rust Standard Library has support for interacting with the network stack. All the networking-related functionality is located in the <kbd class="calibre11">std::net</kbd> namespace; reading and writing to sockets also uses <kbd class="calibre11">Read</kbd> and <kbd class="calibre11">Write</kbd> traits from <kbd class="calibre11">std::io</kbd>. Some of the most important structures here are <kbd class="calibre11">IpAddr</kbd>, which represents a generic IP address that can either be v4 or v6, <kbd class="calibre11">SocketAddr</kbd>, which represents a generic socket address (a combination of an IP and a port on a host), <kbd class="calibre11">TcpListener</kbd> and <kbd class="calibre11">TcpStream</kbd> for communicating over TCP, <kbd class="calibre11">UdpSocket</kbd> for UDP, and more. Currently, the standard library does not provide any APIs to deal with the network stack at a lower level. While this might change in the future, a number of crates fill that gap. The most important of these is <kbd class="calibre11">libpnet</kbd>, which provides a set of APIs for lower-level networking.</p>
 <p class="calibre2">Some other important crates for networking are <kbd class="calibre11">net2</kbd> and <kbd class="calibre11">socket2</kbd>. These were meant to be incubators for APIs that might be moved to the standard library. Some of the functionality here is ported to Rust core repo when it is deemed to be useful and stable enough. Unfortunately, this doesn't work out as planned in all cases. On the whole, the community now suggests using the tokio ecosystem of crates for writing high-performance networking applications that do not require fine-grained control of socket semantics. Note that tokio is not in the scope of this chapter, and that we will cover it in a following chapter.</p>
@@ -19,26 +19,26 @@
 <p class="calibre2">For the sake of simplicity, all code in this chapter will deal with IPv4 only. Extending the given examples to IPv6 should be trivial.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     
 
-        <section>
+        
 
-                            <header>
-                    </header><h1 class="header-title" id="calibre_pb_0">A Simple TCP server and client</h1>
+                            
+                    <h1 class="header-title" id="calibre_pb_0">A Simple TCP server and client</h1>
                 
             
-            <article>
+            
                 
 <p class="calibre2">Most networking examples start with an echo server. So, let's go ahead and write a basic echo server in Rust to see how all the pieces fit together. We will use the threading model from the standard library for handling multiple clients in parallel. The code is as follows:</p>
 <pre class="calibre17">// chapter3/tcp-echo-server.rs<br class="title-page-name"/><br class="title-page-name"/>use std::net::{TcpListener, TcpStream};<br class="title-page-name"/>use std::thread;<br class="title-page-name"/><br class="title-page-name"/>use std::io::{Read, Write, Error};<br class="title-page-name"/><br class="title-page-name"/>// Handles a single client<br class="title-page-name"/>fn handle_client(mut stream: TcpStream) -&gt; Result&lt;(), Error&gt; {<br class="title-page-name"/>    println!("Incoming connection from: {}", stream.peer_addr()?);<br class="title-page-name"/>    let mut buf = [0; 512];<br class="title-page-name"/>    loop {<br class="title-page-name"/>        let bytes_read = stream.read(&amp;mut buf)?;<br class="title-page-name"/>        if bytes_read == 0 { return Ok(()); }<br class="title-page-name"/>        stream.write(&amp;buf[..bytes_read])?;<br class="title-page-name"/>    }<br class="title-page-name"/>}<br class="title-page-name"/><br class="title-page-name"/>fn main() {<br class="title-page-name"/>    let listener = TcpListener::bind("0.0.0.0:8888")<br class="title-page-name"/>                               .expect("Could not bind");<br class="title-page-name"/>    for stream in listener.incoming() {<br class="title-page-name"/>        match stream {<br class="title-page-name"/>            Err(e) =&gt; { eprintln!("failed: {}", e) }<br class="title-page-name"/>            Ok(stream) =&gt; {<br class="title-page-name"/>                thread::spawn(move || {<br class="title-page-name"/>                    handle_client(stream)<br class="title-page-name"/>                    .unwrap_or_else(|error| eprintln!("{:?}", error));<br class="title-page-name"/>                });<br class="title-page-name"/>            }<br class="title-page-name"/>        }<br class="title-page-name"/>    }<br class="title-page-name"/>}</pre>
 <p class="calibre2">In our <kbd class="calibre11">main</kbd> function, we create a new <kbd class="calibre11">TcpListener</kbd>, which in Rust, represents a TCP socket that is listening for incoming connections from clients. For our example, we have hardcoded the local address and the port; the local address being set to <kbd class="calibre11">0.0.0.0</kbd> tells the kernel to bind this socket to all available interfaces on this host. Setting a well-known port here is important since we will need to know that to connect from the client. In a real application, this should be a configurable parameter taken from the CLI or a configuration file. We call <kbd class="calibre11">bind</kbd> on the local IP and port pair to create a local listening socket. As discussed earlier, our given choice of IP will bind this socket to all interfaces available on the host, on port 8888. As a result, any client that can reach a network connected to this host will be able to talk to this host. As we have seen in the last chapter, the <kbd class="calibre11">expect</kbd> function returns the listener if there were no errors. If that is not the case, it panics with the given message. Panicking on failing to bind to the port is actually okay here, since if that fails, there is no way the server will continue working. The <kbd class="calibre11">incoming</kbd> method on <kbd class="calibre11">listener</kbd> returns an iterator over streams that have connected to the server. We loop over them and check if any of those have encountered an error. In that case, we can print the error and move on to the next connected client. Note that panicking in this case is not appropriate since the server can function fine if some of the clients run into errors for some reason.</p>
 <p class="calibre2">Now, we must read data from each of the clients in an infinite loop. But running an infinite loop in the main thread will block it and no other clients will be able to connect. That behavior is definitely not desirable. Thus, we must spawn a worker thread to handle each client connection. The logic of reading from each stream and writing it back is encapsulated in the function called <kbd class="calibre11">handle_client</kbd>. Each thread receives a closure that calls this function. This closure must be a <kbd class="calibre11">move</kbd> closure, since this must read a variable (<kbd class="calibre11">stream</kbd>) from the enclosing scope. In the function, we print the remote endpoint address and port, and then define a buffer to hold data temporarily. We also make sure that the buffer is zeroed out. We then run an infinite loop in which we read all data in the stream. The read method in the stream returns the length of the data it has read. It can return zero in two cases, if it has reached the end of the stream or if the given buffer was zero in length. We know for sure that the second case is not true. Thus, we break out of the loop (and the function) when the read method returns a zero. In that case, we return a <kbd class="calibre11">Ok()</kbd>. We then write the same data back to the stream using the slice syntax. Note that we have used <kbd class="calibre11">eprintln!</kbd> to output errors. This macro writes the given string to a standard error, and has been stabilized recently.</p>
 <p class="calibre2">One might notice the apparent lack of error handling in reading from and writing to the stream. But that is not actually the case. We have used the <kbd class="calibre11">?</kbd> operator to handle errors in these invocations. This operator unwraps the result to an <kbd class="calibre11">Ok</kbd> if everything was fine; otherwise, it does an early return of the error to the calling function. Given this setup, the return type of the function must be either the empty type, to handle success cases, or the <kbd class="calibre11">io::Error</kbd> type, to handle error cases. Note that it might be a good idea to implement custom errors in such cases and return those instead of built-in errors. Also note that the <kbd class="calibre11">?</kbd> operator cannot be used in the <kbd class="calibre11">main</kbd> function currently since the <kbd class="calibre11">main</kbd> function does not return a <kbd class="calibre11">Result</kbd>.</p>
-<div class="packt_infobox">Rust recently accepted an RFC which proposes the ability to use the <kbd class="calibre31">?</kbd> operator in the <kbd class="calibre31">main</kbd> function.</div>
+<p>Rust recently accepted an RFC which proposes the ability to use the <kbd class="calibre31">?</kbd> operator in the <kbd class="calibre31">main</kbd> function.</p>
 <p class="calibre2">Interacting with the server from the terminal is easy. When we run the server on a Linux machine and <kbd class="calibre11">nc</kbd> on another terminal, any text entered to <kbd class="calibre11">nc</kbd> should be echoed back. Note that if the client and the server are running on the same node, we can use 127.0.0.1 as the server address:</p>
 <pre class="calibre17"><strong class="calibre1">$ nc &lt;server ip&gt; 8888</strong><br class="title-page-name"/>test<br class="title-page-name"/>test<br class="title-page-name"/>foobar<br class="title-page-name"/>foobar<br class="title-page-name"/>foobarbaz<br class="title-page-name"/>foobarbaz<br class="title-page-name"/>^C</pre>
 <p class="calibre2">While using <kbd class="calibre11">nc</kbd> to interact with the server is fine, it is much more fun to write a client from scratch. In this section, we will see what a simple TCP client might look like. This client will read input from <kbd class="calibre11">stdin</kbd> as a string and send it over to the server. When it gets back a reply, it will print that in <kbd class="calibre11">stdout</kbd>. In our example here, the client and the server are running on the same physical host, so we can use 127.0.0.1 as the server address:</p>
@@ -61,19 +61,19 @@
 <p class="calibre2">For the first three inputs, the server chose delays which were less than three seconds. The client got a response back within three seconds and did not abort the connection. For the last message, the delay was five seconds, which caused the client to abort reading.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     
 
-        <section>
+        
 
-                            <header>
-                    </header><h1 class="header-title" id="calibre_pb_0">A Simple UDP server and client</h1>
+                            
+                    <h1 class="header-title" id="calibre_pb_0">A Simple UDP server and client</h1>
                 
             
-            <article>
+            
                 
 <p class="calibre2">There are a few semantic differences between the UDP server and the TCP server we wrote earlier. Unlike TCP, UDP does not have a stream structure. This derives from the semantic differences between the two protocols. Let's take a look at what a UDP server might look like:</p>
 <pre class="calibre17">// chapter3/udp-echo-server.rs<br class="title-page-name"/><br class="title-page-name"/>use std::thread;<br class="title-page-name"/>use std::net::UdpSocket;<br class="title-page-name"/><br class="title-page-name"/>fn main() {<br class="title-page-name"/>    let socket = UdpSocket::bind("0.0.0.0:8888")<br class="title-page-name"/>                           .expect("Could not bind socket");<br class="title-page-name"/><br class="title-page-name"/>    loop {<br class="title-page-name"/>        let mut buf = [0u8; 1500];<br class="title-page-name"/>        let sock = socket.try_clone().expect("Failed to clone socket");<br class="title-page-name"/>        match socket.recv_from(&amp;mut buf) {<br class="title-page-name"/>            Ok((_, src)) =&gt; {<br class="title-page-name"/>                thread::spawn(move || {<br class="title-page-name"/>                    println!("Handling connection from {}", src);<br class="title-page-name"/>                    sock.send_to(&amp;buf, &amp;src)<br class="title-page-name"/>                        .expect("Failed to send a response");<br class="title-page-name"/>                });<br class="title-page-name"/>            },<br class="title-page-name"/>            Err(e) =&gt; {<br class="title-page-name"/>                eprintln!("couldn't recieve a datagram: {}", e);<br class="title-page-name"/>            }<br class="title-page-name"/>        }<br class="title-page-name"/>    }<br class="title-page-name"/>}</pre>
@@ -89,19 +89,19 @@
 <pre class="calibre17"><strong class="calibre1">$ rustc udp-client.rs &amp;&amp; ./udp-client</strong><br class="title-page-name"/>test<br class="title-page-name"/>test<br class="title-page-name"/>foo<br class="title-page-name"/>foo<br class="title-page-name"/>bar<br class="title-page-name"/>bar<br class="title-page-name"/>^C</pre>
 
 
-            </article>
+            
 
             
-        </section>
+        
     
 
-        <section>
+        
 
-                            <header>
-                    </header><h1 class="header-title" id="calibre_pb_0">UDP multicasting</h1>
+                            
+                    <h1 class="header-title" id="calibre_pb_0">UDP multicasting</h1>
                 
             
-            <article>
+            
                 
 <p class="calibre2">The <kbd class="calibre11">UdpSocket</kbd> type has a number of methods that the corresponding TCP types do not. Of these, the most interesting ones are for multicasting and broadcasting. Let's look at how multicasting works with an example server and client. For this example, we will combine the client and the server in one file. In the <kbd class="calibre11">main</kbd> function, we will check whether a CLI argument has been passed. If there has, we will run the client; otherwise, we will run the server. Note that the value of the argument will not be used; it will be treated as a Boolean:</p>
 <pre class="calibre17">// chapter3/udp-multicast.rs<br class="title-page-name"/><br class="title-page-name"/>use std::{env, str};<br class="title-page-name"/>use std::net::{UdpSocket, Ipv4Addr};<br class="title-page-name"/><br class="title-page-name"/>fn main() {<br class="title-page-name"/>    let mcast_group: Ipv4Addr = "239.0.0.1".parse().unwrap();<br class="title-page-name"/>    let port: u16 = 6000;<br class="title-page-name"/>    let any = "0.0.0.0".parse().unwrap();<br class="title-page-name"/>    let mut buffer = [0u8; 1600];<br class="title-page-name"/>    if env::args().count() &gt; 1 {<br class="title-page-name"/>        // client case<br class="title-page-name"/>        let socket = UdpSocket::bind((any, port))<br class="title-page-name"/>                               .expect("Could not bind client socket");<br class="title-page-name"/>        socket.join_multicast_v4(&amp;mcast_group, &amp;any)<br class="title-page-name"/>              .expect("Could not join multicast group");<br class="title-page-name"/>        socket.recv_from(&amp;mut buffer)<br class="title-page-name"/>              .expect("Failed to write to server");<br class="title-page-name"/>        print!("{}", str::from_utf8(&amp;buffer)<br class="title-page-name"/>                         .expect("Could not write buffer as string"));<br class="title-page-name"/>    } else {<br class="title-page-name"/>        // server case<br class="title-page-name"/>        let socket = UdpSocket::bind((any, 0))<br class="title-page-name"/>                               .expect("Could not bind socket");<br class="title-page-name"/>        socket.send_to("Hello world!".as_bytes(), &amp;(mcast_group, port))<br class="title-page-name"/>              .expect("Failed to write data");<br class="title-page-name"/>    }<br class="title-page-name"/>}</pre>
@@ -110,19 +110,19 @@
 <pre class="calibre17"><strong class="calibre1">$ rustc udp-multicast.rs &amp;&amp; ./udp-multicast server</strong><br class="title-page-name"/>Hello world!</pre>
 
 
-            </article>
+            
 
             
-        </section>
+        
     
 
-        <section>
+        
 
-                            <header>
-                    </header><h1 class="header-title" id="calibre_pb_0">Miscellaneous utilities in std::net</h1>
+                            
+                    <h1 class="header-title" id="calibre_pb_0">Miscellaneous utilities in std::net</h1>
                 
             
-            <article>
+            
                 
 <p class="calibre2">Another important type in the standard library is <kbd class="calibre11">IpAddr</kbd>, which represents an IP address. Not surprisingly, it is an enum with two variants, one for v4 addresses and the other for v6 addresses. All of these types have methods to classify addresses according to their types (global, loopback, multicast, and so on). Note that a number of these methods are not stabilized yet and hence are only available in the nightly compiler. They are behind a feature flag named <kbd class="calibre11">ip</kbd> which must be included in the crate root so that you can use those methods. A closely related type is <kbd class="calibre11">SocketAddr</kbd>, which is a combination of an IP address and a port number. Thus, this also has two variants, one for v4 and one for v6. Let's look at some examples:</p>
 <pre class="calibre17">// chapter3/ip-socket-addr.rs<br class="title-page-name"/><br class="title-page-name"/>#![feature(ip)]<br class="title-page-name"/><br class="title-page-name"/>use std::net::{IpAddr, SocketAddr};<br class="title-page-name"/><br class="title-page-name"/>fn main() {<br class="title-page-name"/>    // construct an IpAddr from a string and check it<br class="title-page-name"/>    // represents the loopback address<br class="title-page-name"/>    let local: IpAddr = "127.0.0.1".parse().unwrap();<br class="title-page-name"/>    assert!(local.is_loopback());<br class="title-page-name"/><br class="title-page-name"/>    // construct a globally routable IPv6 address from individual<br class="title-page-name"/>    octets<br class="title-page-name"/>    // and assert it is classified correctly<br class="title-page-name"/>    let global: IpAddr = IpAddr::from([0, 0, 0x1c9, 0, 0, 0xafc8, 0,<br class="title-page-name"/>    0x1]);<br class="title-page-name"/>    assert!(global.is_global());<br class="title-page-name"/><br class="title-page-name"/>    // construct a SocketAddr from a string an assert that the<br class="title-page-name"/>    underlying<br class="title-page-name"/>    // IP is a IPv4 address<br class="title-page-name"/>    let local_sa: SocketAddr = "127.0.0.1:80".parse().unwrap();<br class="title-page-name"/>    assert!(local_sa.is_ipv4());<br class="title-page-name"/><br class="title-page-name"/>    // construct a SocketAddr from a IPv6 address and a port, assert<br class="title-page-name"/>    that<br class="title-page-name"/>    // the underlying address is indeed IPv6<br class="title-page-name"/>    let global_sa = SocketAddr::new(global, 80u16);<br class="title-page-name"/>    assert!(global_sa.is_ipv6());<br class="title-page-name"/>}</pre>
@@ -134,19 +134,19 @@
 <p class="calibre2">Currently, reverse DNS lookup is not possible in the standard library. In the next section, we will discuss some crates in the ecosystem that can be used for the advanced networking functionality. For instance, the <kbd class="calibre11">trust-dns</kbd> crate supports interacting with DNS servers in more detail, and it also supports querying all record types and also reverse DNS.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     
 
-        <section>
+        
 
-                            <header>
-                    </header><h1 class="header-title" id="calibre_pb_0">Some related crates</h1>
+                            
+                    <h1 class="header-title" id="calibre_pb_0">Some related crates</h1>
                 
             
-            <article>
+            
                 
 <p class="calibre2">A careful reader might have noticed that a lot of common networking-related functionalities are missing from the standard library. For instance, there is no way to deal with IP networks (CIDRs). Let's look at how the <kbd class="calibre11">ipnetwork</kbd> crate helps with that. Since we are going to use an external crate, the example has to be in a cargo project. We will need to add it as a dependency to <kbd class="calibre11">Cargo.toml</kbd>. Let's start by setting up a project:</p>
 <pre class="calibre17"><strong class="calibre1">$ cargo new --bin ipnetwork-example</strong></pre>
@@ -186,32 +186,32 @@
 <p class="calibre2">Our app depends on <kbd class="calibre11">trust-dns</kbd> for DNS-related things. As usual, we will add it to our <kbd class="calibre11">Cargo.toml</kbd> before using it in our app:</p>
 <pre class="calibre17">// chapter3/trust-dns-example/src/main.rs<br class="title-page-name"/><br class="title-page-name"/>extern crate trust_dns_resolver;<br class="title-page-name"/>extern crate trust_dns;<br class="title-page-name"/><br class="title-page-name"/>use std::env;<br class="title-page-name"/><br class="title-page-name"/>use trust_dns_resolver::Resolver;<br class="title-page-name"/>use trust_dns_resolver::config::*;<br class="title-page-name"/><br class="title-page-name"/>use trust_dns::rr::record_type::RecordType;<br class="title-page-name"/><br class="title-page-name"/>fn main() {<br class="title-page-name"/>    let args: Vec&lt;String&gt; = env::args().collect();<br class="title-page-name"/>    if args.len() != 2 {<br class="title-page-name"/>        eprintln!("Please provide a name to query");<br class="title-page-name"/>        std::process::exit(1);<br class="title-page-name"/>    }<br class="title-page-name"/>    let resolver = Resolver::new(ResolverConfig::default(),<br class="title-page-name"/>                                 ResolverOpts::default()).unwrap();<br class="title-page-name"/><br class="title-page-name"/>    // Add a dot to the given name<br class="title-page-name"/>    let query = format!("{}.", args[1]);<br class="title-page-name"/><br class="title-page-name"/>    // Run the DNS query<br class="title-page-name"/>    let response = resolver.lookup_ip(query.as_str());<br class="title-page-name"/>    println!("Using the synchronous resolver");<br class="title-page-name"/>    for ans in response.iter() {<br class="title-page-name"/>        println!("{:?}", ans);<br class="title-page-name"/>    }<br class="title-page-name"/><br class="title-page-name"/>    println!("Using the system resolver");<br class="title-page-name"/>    let system_resolver = Resolver::from_system_conf().unwrap();<br class="title-page-name"/>    let system_response = system_resolver.lookup_ip(query.as_str());<br class="title-page-name"/>    for ans in system_response.iter() {<br class="title-page-name"/>        println!("{:?}", ans);<br class="title-page-name"/>    }<br class="title-page-name"/><br class="title-page-name"/>    let ns = resolver.lookup(query.as_str(), RecordType::NS);<br class="title-page-name"/>    println!("NS records using the synchronous resolver");<br class="title-page-name"/>    for ans in ns.iter() {<br class="title-page-name"/>        println!("{:?}", ans);<br class="title-page-name"/>    }<br class="title-page-name"/>}</pre>
 <p class="calibre2">We set up all required imports and <kbd class="calibre11">extern</kbd> crate declarations. Here, we expect to get the name to resolve as a CLI argument, and if everything goes well, it should be in <kbd class="calibre11">args[1]</kbd>. This crate supports two types of synchronous DNS resolver. <kbd class="calibre11">Resolver::new</kbd> creates a synchronous resolver, and with default options, it will use Google's public DNS as upstream servers. The <kbd class="calibre11">Resolver::from_system_conf</kbd> creates a synchronous resolver with configurations from the system's <kbd class="calibre11">resolv.conf</kbd>. Thus, this second option is only available on Unix systems. Before we pass the query to the <kbd class="calibre11">resolver</kbd>, we format it to FQDN by appending a <kbd class="calibre11">.</kbd> to the name, using the <kbd class="calibre11">format!</kbd> macro. We pass the query using the <kbd class="calibre11">lookup_ip</kbd> function, which then returns an iterator over the answers of the DNS question. Once we get that, we can iterate over it and print out each answer. As the name suggests, the <kbd class="calibre11">lookup_ip</kbd> function only looks up <kbd class="calibre11">A</kbd> and <kbd class="calibre11">AAAA</kbd> records. There is a more general <kbd class="calibre11">lookup</kbd> function that can take in a record type to query. In the last step, we want to get all <kbd class="calibre11">NS</kbd> records for the given name. Once we get back an answer, we loop over it and print the results.</p>
-<div class="packt_tip"><kbd class="calibre31">trust-dns</kbd> also supports a tokio-based asynchronous DNS resolver.</div>
+<div><kbd class="calibre31">trust-dns</kbd> also supports a tokio-based asynchronous DNS resolver.</div>
 <p class="calibre2">An example session will look like this:</p>
 <pre class="calibre17"><strong class="calibre1">$ cargo run google.com</strong><br class="title-page-name"/>    Finished dev [unoptimized + debuginfo] target(s) in 0.0 secs<br class="title-page-name"/>     Running `target/debug/trust-dns-example google.com`<br class="title-page-name"/>Using the synchronous resolver<br class="title-page-name"/>LookupIp(Lookup { rdatas: [AAAA(2a00:1450:4009:811::200e), A(216.58.206.142)] })<br class="title-page-name"/>Using the system resolver<br class="title-page-name"/>LookupIp(Lookup { rdatas: [A(216.58.206.110), AAAA(2a00:1450:4009:810::200e)] })<br class="title-page-name"/>NS records using the synchronous resolver<br class="title-page-name"/>Lookup { rdatas: [NS(Name { is_fqdn: true, labels: ["ns3", "google", "com"] }), NS(Name { is_fqdn: true, labels: ["ns1", "google", "com"] }), NS(Name { is_fqdn: true, labels: ["ns4", "google", "com"] }), NS(Name { is_fqdn: true, labels: ["ns2", "google", "com"] })] }</pre>
 <p class="calibre2">In this example, all prints are using the debug representation of the structures. A real application will want to format these as required.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     
 
-        <section>
+        
 
-                            <header>
-                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                            
+                    <h1 class="header-title" id="calibre_pb_0">Summary</h1>
                 
             
-            <article>
+            
                 
-<p class="calibre2">This chapter was a short introduction to the basic networking functionality in Rust. We started with given functionality in <kbd class="calibre11">std::net</kbd>, and we wrote a few TCP and UDP servers using those. We then looked at some other utilities in the same namespace. At the end, we went over examples of a number of crates which are aimed at extending the standard library's functionality around networking. Bear in mind that it is always possible to just use the libc crate to write networking code, which is based on POSIX-compatible networking code with access to fine-grained control over sockets and network devices. The problem with this approach is that the code might be unsafe, breaking Rust's guarantee of safety. Another crate called nix aims to provide libc's functionality <span>native Rust so that it preserves all the memory and type safety guarantees that the compiler provides: </span>this might be a useful alternative for someone who needs very fine control over networking.</p>
+<p class="calibre2">This chapter was a short introduction to the basic networking functionality in Rust. We started with given functionality in <kbd class="calibre11">std::net</kbd>, and we wrote a few TCP and UDP servers using those. We then looked at some other utilities in the same namespace. At the end, we went over examples of a number of crates which are aimed at extending the standard library's functionality around networking. Bear in mind that it is always possible to just use the libc crate to write networking code, which is based on POSIX-compatible networking code with access to fine-grained control over sockets and network devices. The problem with this approach is that the code might be unsafe, breaking Rust's guarantee of safety. Another crate called nix aims to provide libc's functionality native Rust so that it preserves all the memory and type safety guarantees that the compiler provides: this might be a useful alternative for someone who needs very fine control over networking.</p>
 <p class="calibre2">In the next chapter, we will look at how to handle data once we receive it in a server or a client using a number of serialization/de-serialization methods in the Rust ecosystem.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </body></html>

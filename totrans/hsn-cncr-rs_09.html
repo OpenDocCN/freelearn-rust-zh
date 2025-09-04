@@ -1,60 +1,51 @@
-<html><head></head><body><div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">FFI and Embedding – Combining Rust and Other Languages</h1>
-                </header>
+<html><head></head><body><div><h1 class="header-title">FFI and Embedding – Combining Rust and Other Languages</h1>
+                
             
-            <article>
+            
                 
 <p>Up until this point in the book, we've discussed Rust more or less in isolation. Rust was intentionally designed to integrate with other programming languages by calling external programming languages through its <strong>Foreign Function Interface</strong> (<strong>FFI</strong>) and by being embedded itself. Many modern programming languages offer FFI, easy embedding, or both. Python, for instance, can very conveniently call out to libraries with C calling conventions and can be embedded with a little forethought. Lua, a high-level and garbage-collected language like Python, has a convenient FFI and can be embedded without much trouble. Erlang has a small handful of FFI interfaces but Erlang is not, itself, easily embedded into user-space environments. Amusingly, it's fairly straightforward to compile Erlang into an RTOS image.</p>
 <p>In this chapter, we'll discuss calling out to foreign code in Rust and embedding Rust into foreign programming languages. We'll start off by extending the corewars evolver program —feruscore—that we covered at the tail end of <a href="d4802512-564b-4037-9407-b6035bd38f31.xhtml">Chapter 8</a>, <em>High-Level Parallelism – Threadpools, Parallel Iterators, and Processes</em>. You are encouraged to read that material before starting this chapter. After we've extended feruscore by embedding a C MARS simulator inside it, we'll move on to calling Rust functions from a C program. We'll demonstrate embedding Lua into a Rust system for convenient scripting and close the chapter by embedding Rust in high-level garbage-collected languages—Python and Erlang.</p>
-<p><span>By the end of this chapter, we will have:</span></p>
+<p>By the end of this chapter, we will have:</p>
 <ul>
-<li><span>Adapted the feruscore project from the last section to incorporate a C simulator</span></li>
-<li><span>Demonstrated the inclusion of Lua code into a Rust project</span></li>
-<li><span>Demonstrated the inclusion of Rust code into a C project</span></li>
-<li><span>Demonstrated the inclusion of Rust code into a Python project</span></li>
-<li><span>Demonstrated the inclusion of Rust code into an Erlang/Elixir project</span></li>
+<li>Adapted the feruscore project from the last section to incorporate a C simulator</li>
+<li>Demonstrated the inclusion of Lua code into a Rust project</li>
+<li>Demonstrated the inclusion of Rust code into a C project</li>
+<li>Demonstrated the inclusion of Rust code into a Python project</li>
+<li>Demonstrated the inclusion of Rust code into an Erlang/Elixir project</li>
 </ul>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Embedding C into Rust – feruscore without processes</h1>
-                </header>
+<div><h1 class="header-title">Embedding C into Rust – feruscore without processes</h1>
+                
             
-            <article>
+            
                 
 <p>When we wrapped up our discussion of feruscore in the previous chapter, we'd constructed a program that could discover corewars warriors through simulated natural selection. This was done by writing evolved warriors out to disk, using Rust's OS process interface to call out to pmars—the de facto standard MARS—and competing them to discover their relative fitness. We used Rayon—Rust's very convenient data parallelism library—to distribute the workload of competitions between available CPUs. Unfortunately, the implementation was pretty slow. Building a tournament selection criteria was maybe more difficult to express than we might have hoped—though I'm sure there a bright-spark of a reader out there who will improve that substantially and wow me. The real pain point was serializing <em>every</em> warrior to disk multiple times, allocating similar structures repeatedly to establish each round, and then eating pmars' allocation and parsing overhead. It's this last step, calling out to an external program to run competitions, is something we'll address in this chapter. We will also address the other two issues because, well, why not go all-in?</p>
-<div class="packt_infobox"><span>Not all of feruscore's source code appears in this chapter. Some of it was discussed in-depth in the previous chapter, some of it—such as benchmarking code—would be a rehash of material already covered in the book. The C code is not printed in its entirety as it's very dense and very long. You can find the full listing in the book's source repository. </span></div>
+<p>Not all of feruscore's source code appears in this chapter. Some of it was discussed in-depth in the previous chapter, some of it—such as benchmarking code—would be a rehash of material already covered in the book. The C code is not printed in its entirety as it's very dense and very long. You can find the full listing in the book's source repository. </p>
 
-
-            </article>
 
             
-        </section>
+
+            
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">The MARS C interface</h1>
-                </header>
+<div><h1 class="header-title">The MARS C interface</h1>
+                
             
-            <article>
+            
                 
 <p>Corewars is a venerable game and there are many implementations of MARS out there. pMARS, like I mentioned, is the defacto standard, implementing the '94 ICWS draft and adding later additions, such as new instructions and a thing called <em>p-space</em>, that we won't go into here. Corewars has never been serious business. Many of the MARS available online today have traded code back and forth over the years, have been written with varying levels of attention to correctness, and sometimes programmed for older machines where multiprocessing was a concern for research labs. Most make no distinction between their internal library interface and executable consumer, like Rust programs do. Some blessed few are designed to be embedded, or, at least, are extractions of older MARS codebases that can be extended. Some blessed few of those don't use static globals in their implementations and can be embedded in a multiprocessing environment, such as feruscore.</p>
 <p>In the grand tradition of MARS implementations, we will take an existing, public domain MARS, whittle it down to a manageable core, and put a new spin on it. Specifically, the feruscore introduced in this chapter embeds exhaust 1.9.2 (<a href="http://corewar.co.uk/pihlaja/exhaust/">http://corewar.co.uk/pihlaja/exhaust/</a>), written by M. Joonas Pihlaja in the early 2000s. Pihlaja seems to have extracted select code from pMARS, especially in and around exhaust's main and parser functions. We aren't after any of that code. What we need is the simulator. This means that we can toss out anything to do with parsing, and any support code needed for exhaust's <kbd>main</kbd> function. The extracted code we require lives in the feruscore project root, in <kbd>c_src/</kbd>. The functions we'll embed are all implemented in <kbd>c_src/sim.c</kbd>. These are from <kbd>c_src/sim.h</kbd>:</p>
@@ -67,22 +58,19 @@ int sim_mw(mars_t* mars, const uint16_t * const war_pos_tab,<br/>           uint
 <p>The <kbd>sim_alloc_bufs</kbd> function is responsible for allocating the internal storage of a blank <kbd>mars_t</kbd>, the structure on which simulation is performed. <kbd>sim_clear_core</kbd> clears <kbd>mars_t</kbd> between rounds, setting core memory to <kbd>DAT</kbd>, and resetting any warrior queues. <kbd>sim_load_warrior</kbd> loads the warrior into core memory, the warrior really just being a pointer to an array of instructions—<kbd>insn_t</kbd>—with the <kbd>len</kbd> passed length. <kbd>sim_mw</kbd> runs the simulation, reading the warrior positions from <kbd>war_pos_tab</kbd>, and writing to <kbd>death_tab</kbd> when a warrior completely dies.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Creating C-structs from Rust</h1>
-                </header>
+<div><h1 class="header-title">Creating C-structs from Rust</h1>
+                
             
-            <article>
+            
                 
 <p>Now, how do we call these functions from Rust? Moreover, how do we create instances of <kbd>mars_t</kbd> or <kbd>insn_t</kbd>? Well, recall back in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml">Chapter 03</a>, <em>The Rust Memory Model – Ownership, References, and Manipulation</em>, that Rust allows control over memory layout in structures. Specifically, all Rust structures are implicitly <kbd>repr(Rust)</kbd>, types aligned to byte boundaries with structure fields being reordered as the compiler sees fit, among other details. We also noted the existence of a <kbd>repr(C)</kbd> for structures, in which Rust would lay out a structure's memory representation in the same manner as C. That knowledge now comes to bear.</p>
 <p>What we will do is this. First, we'll compile our C code as a library and rig it to link into feruscore. That's done by placing a <kbd>build.rs</kbd> at the root of the project and using the cc (<a href="https://crates.io/crates/cc">https://crates.io/crates/cc</a>) crate to produce a static archive, like so:</p>
@@ -215,22 +203,19 @@ struct WarTable {
 <p>We could have maybe got away with just making these private fields in <kbd>Mars</kbd> pointers to void in <kbd>mars_st</kbd>, but that would have reduced type information on the C side of the project and this approach might hamper future porting efforts. With the type explicit on the Rust side of the project, it's much easier to consider rewriting the C functions in Rust.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Calling C functions</h1>
-                </header>
+<div><h1 class="header-title">Calling C functions</h1>
+                
             
-            <article>
+            
                 
 <p>Now that we can create Rust structs with C-bit layout, we can start passing that memory down into C. It's important to understand, this is an inherently unsafe activity. The C code might fiddle with memory in a way that breaks Rust's invariants and the only way we can be sure this isn't true is auditing the C code ahead of time. This is the same with fuzzing, which we'll do too. How do we link with <kbd>libmars.a</kbd>? A small <kbd>extern</kbd> block will do it, in <kbd>src/mars.rs</kbd>:</p>
 <pre>#[link(name = "mars")]
@@ -248,22 +233,19 @@ extern "C" {
 <p>These are similar. C doesn't have the same mutability concept as Rust, though there are const annotations for code that Rust picks up for free. We've enhanced that by making all of Instruction's query functions take <kbd>&amp;self</kbd>. Rule of thumb—unless the C is const-correct, you should probably assume the Rust needs a <kbd>*mut</kbd>. This isn't always true, but it saves a fair deal of headache. Now, on that notion, the careful reader may note that as I ported exhaust's code into feruscore, I adapted it to use <kbd>stdint.h</kbd>. In the unaltered code, <kbd>pos</kbd> has the unsigned int type or <kbd>usize</kbd>. The simulator C code assumes <kbd>pos</kbd> will be at least 32 bits wide, hence the explicit conversation to a 32-bit integer. This wasn't entirely necessary, but it's good form to used fixed-width types as they minimize surprises moving between CPU architectures.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Managing cross-language ownership</h1>
-                </header>
+<div><h1 class="header-title">Managing cross-language ownership</h1>
+                
             
-            <article>
+            
                 
 <p>Rust is now aware of the C functions, and we have our internal structs reworked to use C layout: it is time to link up the C functions that manipulate <kbd>mars_t</kbd> with our <kbd>Mars</kbd>. Because we're sharing ownership of <kbd>Mars</kbd> between the Rust allocator and the C allocator, we've got to be careful to initialize the <kbd>Mars</kbd> struct with null pointers in the fields that C will own, like so:</p>
 <pre>impl MarsBuilder {
@@ -335,22 +317,19 @@ extern "C" {
 }</pre>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Running the simulation</h1>
-                </header>
+<div><h1 class="header-title">Running the simulation</h1>
+                
             
-            <article>
+            
                 
 <p>All that's left to do is run warriors in simulation. In the previous chapter, an <kbd>Individual</kbd> was responsible for managing its own pmars process. Now, <kbd>Mars</kbd> will be responsible for hosting the competitors, which you may have gleaned from the C API. We simply don't have any space in <kbd>Individual</kbd> to store something, and by pushing competition into <kbd>Mars</kbd>, we can avoid allocation churn on temporary <kbd>Mars</kbd> structures.</p>
 <p>The compete function that was formerly bound to <kbd>Individual</kbd> has now been moved to <kbd>Mars</kbd>:</p>
@@ -440,22 +419,19 @@ mod tests {
 <p>Recall that an Imp can't self-kill, only propagate. The Dwarf bombs core memory at regular, increasing offsets. An Imp versus Dwarf competition, then, is a race between Imp finding Dwarf's instructions and Dwarf dropping a <kbd>DAT</kbd> in the path of an Imp.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Fuzzing the simulation</h1>
-                </header>
+<div><h1 class="header-title">Fuzzing the simulation</h1>
+                
             
-            <article>
+            
                 
 <p>Feruscore has been changed in this chapter to include raw memory access in both Rust and through FFI. The responsible thing to do is fuzz <kbd>Mars</kbd> and make sure we're not causing segmentation faults. We'll use AFL, which we discussed back in <a href="8c61da2f-08c8-40be-89d4-d8afa8510850.xhtml" target="_blank">Chapter 2</a>, <em>Sequential Rust Performance and Testing</em>, and again in <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers, and RWLock</em>. The fuzz target is <kbd>src/bin/fuzz_target.rs</kbd>. The trick with fuzzing is ensuring stability. That is, AFL can't really do its work if for some input applied multiple times multiple paths come out. Fuzzing is more efficient in the case of a deterministic system. We were careful to make <kbd>Mars::compete_inner</kbd> deterministic, where <kbd>Mars::compete</kbd> uses randomness to determine warrior positions. Fuzzing, then, will go through <kbd>compete_inner</kbd> only. The preamble for <kbd>fuzz_target</kbd> doesn't contain any new crates:</p>
 <pre>extern crate byteorder;
@@ -620,22 +596,19 @@ struct Config {
 <p><kbd>Stdin</kbd> is captured and a <kbd>Cursor</kbd> built from it, which we pass into <kbd>Config::new</kbd>, as explained earlier. The resulting <kbd>Config</kbd> is used to fuel <kbd>MarsBuilder</kbd>, and the <kbd>Mars</kbd> is then the arena for competition between the two fuzzing <kbd>Individual</kbd> instances that may or may not overlap. Remember, before running AFL, be sure to run <kbd>cargo afl build</kbd>—release and not cargo build —release. Both will work, but the first is significantly faster to discover crashes, as AFL's instrumentation will be inlined in the executable. I've found that even a single instance of <kbd>cargo afl fuzz -i /tmp/in -o /tmp/out target/release/fuzz_target</kbd> will run through AFL cycles at a good clip. There aren't many branches in the code and, so, few paths for AFL to probe.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">The feruscore executable</h1>
-                </header>
+<div><h1 class="header-title">The feruscore executable</h1>
+                
             
-            <article>
+            
                 
 <p>The final thing left to cover is <kbd>src/bin/feruscore.rs</kbd>. The careful reader will have noted that there's been a suspicious lack of rayon in the implementation so far. In fact, rayon is not in use in this version. Here's the full <kbd>Cargo.toml</kbd> for the project:</p>
 <pre>[package]
@@ -827,24 +800,21 @@ static GENERATIONS: AtomicUsize = AtomicUsize::new(0);</pre>
 <p>I'd love to hear about what you come up with.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Embedding Lua into Rust</h1>
-                </header>
-            
-            <article>
+<div><h1 class="header-title">Embedding Lua into Rust</h1>
                 
-<p>Many of the programs we've discussed in this book use a <em>report</em> thread to notify the user of the running behavior of the program. <span><span>E</span></span>ach of these report functions have been coded in Rust, an unchanging part of the executable. What if, however, we wanted end-users to be able to supply their own reporting routine? Or, consider the cernan project (<a href="https://crates.io/crates/cernan">https://crates.io/crates/cernan</a>), discussed previously in this book, which supports a <em>programmable filter</em>, an online data-stream filter that can be programmed by end-users without changing the cernan binary. How do you pull such a trick off?</p>
+            
+            
+                
+<p>Many of the programs we've discussed in this book use a <em>report</em> thread to notify the user of the running behavior of the program. Each of these report functions have been coded in Rust, an unchanging part of the executable. What if, however, we wanted end-users to be able to supply their own reporting routine? Or, consider the cernan project (<a href="https://crates.io/crates/cernan">https://crates.io/crates/cernan</a>), discussed previously in this book, which supports a <em>programmable filter</em>, an online data-stream filter that can be programmed by end-users without changing the cernan binary. How do you pull such a trick off?</p>
 <p>A common answer, not just in Rust but in many compiled languages, is to embed a Lua interpreter (<a href="https://www.lua.org/">https://www.lua.org/</a>) and read user programs in at startup. It's such a common answer, in fact, that there are many Lua embeddings to choose from in the crates ecosystem. We'll use rlua (<a href="https://crates.io/crates/rlua">https://crates.io/crates/rlua</a>) here as it's a safe choice and the project documentation is very good. Other Lua embeddings suit different ambitions. Cernan uses a different, not necessarily safe embedding, for example, because we need to allow end-users to define their own functions.</p>
 <p>In the previous chapter, we wrote a project called <kbd>sniffer</kbd> whose purpose was threefold—collect Ethernet packets on an interface, report about them, and echo the Ethernet packet back. Let's take that program and adapt it so that users can decide how to report with custom scripts. The <kbd>Cargo.toml</kbd> file of the project is a little different, including the rlua dependency and dropping the thread-hungry alternative executable:</p>
 <pre>[package]
@@ -1047,64 +1017,55 @@ Ipv4    34</strong></pre>
 <p>Combining a high-level language into a systems language is often a game of trade-offs between memory management complexity, end-user burden, and initial programming difficulty. rlua does an excellent job of landing on the safer side of these trade-offs. Something like mond, in use in cernan, less so, but with more flexibility in use.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Embedding Rust</h1>
-                </header>
+<div><h1 class="header-title">Embedding Rust</h1>
+                
             
-            <article>
+            
                 
 <p>So far, we've seen how to embed C and Lua into Rust. But, what if you want to combine Rust into other programming languages? Doing so is a very handy technique for improving runtime performance in interpreted languages, making memory-safe extensions where once you might have been using C or C++. If your target high-level language has difficulty with concurrency embedding, Rust is a further win. Python programs suffer in this regard—at least those implemented on CPython or PyPy—because of the Global Interpreter Lock, an internal mutex that locks objects' bytecode. Offloading computation of large blocks of data into a Rust + Rayon extension, for example, can be both straightforward to program and improve computation speed.</p>
 <p>Well, great. How do we make this sort of thing happen? Rust's approach is simple: if you can embed C, you can embed Rust.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Into C</h1>
-                </header>
+<div><h1 class="header-title">Into C</h1>
+                
             
-            <article>
+            
                 
 <p>Let's embed some Rust into C. The quantiles library (<a href="https://crates.io/crates/quantiles">https://crates.io/crates/quantiles</a>)—discussed in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>—implements online summarization algorithms. These algorithms are easy to get wrong, in terms of producing incorrect results, but more often in storing more points than strictly necessary. A good deal of work has gone into quantiles to ensure the algorithms implemented there are near the theoretical minimum storage requirements, and so it makes sense to reuse this library for online summarization in C, rather than redo all that work.</p>
 <p>Specifically, let's expose a <kbd>quantiles::ckms::CKMS&lt;f32&gt;</kbd> to C (<a href="https://docs.rs/quantiles/0.7.1/quantiles/ckms/struct.CKMS.html">https://docs.rs/quantiles/0.7.1/quantiles/ckms/struct.CKMS.html</a>). We have to make the type concrete as C lacks any manner of generics in its types, but that's okay.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">The Rust side</h1>
-                </header>
+<div><h1 class="header-title">The Rust side</h1>
+                
             
-            <article>
+            
                 
 <p>There are new things in the <kbd>Cargo.toml</kbd> file that we need to discuss:</p>
 <pre>[package]
@@ -1159,22 +1120,19 @@ pub extern "C" fn query(ckms: &amp;mut CKMS&lt;f32&gt;, q: f64, <br/>           
 <p>That's it! When you run <kbd>cargo build --release</kbd>, a static library obeying the C ABI will get kicked out into <kbd>target/release</kbd>. We're ready to link it into a C program.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">The C side</h1>
-                </header>
+<div><h1 class="header-title">The C side</h1>
+                
             
-            <article>
+            
                 
 <p>Our C program is <kbd>c_src/main.c</kbd>. We need a few system headers before we can define the <kbd>embed_quantiles</kbd> interface:</p>
 <pre>#include &lt;stdint.h&gt;
@@ -1250,22 +1208,19 @@ cc -std=c11 -Wall -Werror -Wpedantic -O3 c_src/main.c \
 <p>The percentile value will move around some, but it ought to be close to 7,500, as it is here.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Into Python</h1>
-                </header>
+<div><h1 class="header-title">Into Python</h1>
+                
             
-            <article>
+            
                 
 <p>Let's look at embedding Rust into Python. We'll write a function to sum up the trailing zeros in a cytpes array, built by Python. We can't link statically into Python as the interpreter is already compiled and linked, so we'll need to create a dynamic library. The <kbd>Cargo.toml</kbd> project reflects this:</p>
 <pre>[package]
@@ -1308,28 +1263,25 @@ print(lzc.tail_zero_count(ctypes.pointer(arr), length))</pre>
 <p>Coping with opaque struct pointers—as we did in the C example—is well-documented in the ctypes documentation. Rust will not know the difference; it's just kicking out objects conforming to the C ABI.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Into Erlang/Elixir</h1>
-                </header>
+<div><h1 class="header-title">Into Erlang/Elixir</h1>
+                
             
-            <article>
+            
                 
 <p>In this last section of the chapter, we'll investigate embedding Rust into the BEAM, the virtual machine that underpins Erlang and Elixir. The BEAM is a sophisticated work-stealing scheduler system that happens to be programmable. Erlang processes are small C structs that bounce around between scheduler threads and carry enough internal information to allow interpretation for a fixed number of instructions. There's no concept of shared memory in Erlang/Elixir: communication between different concurrent actors in the system <em>must</em> happen via message passing. There are many benefits to this and the VM does a great deal of work to avoid copying when possible. Erlang/Elixir processes receive messages into a message queue, a double-ended threadsafe queue of the kind we've discussed throughout the book.</p>
 <p>Erlang and Elixir are rightly known for their efficiency at handling high-scale IO in a real-time fashion. Erlang was invented at Ericsson to serve as telephony control software, after all. What these languages are not known for is serial performance. Sequential computations in Erlang are relatively slow, it's just that it's so <em>easy</em> to get concurrent computations going that this is sort of made up for. Sort of. Sometimes, you need raw, serial performance.</p>
 <p>Erlang has a few answers for this. A <em>Port</em> opens up an external OS process with a bidirectional byte stream. We saw an approach much like this in the previous chapter with feruscore embedding pmars. A <em>Port Driver</em> is a linked shared object, often written in C. The Port Driver interface has facilities for giving interrupt hints to BEAM's schedulers and has much to recommend it. A Port Driver <em>is</em> a process and must be able to handle the things an Erlang process normally does: servicing its message queue, dealing with special interrupt signals, cooperatively scheduling itself, and so on. These are non-trivial to write. Finally, Erlang supports a Natively Implemented Function (NIF) concept. These are simpler than Port Drivers and are synchronous, being simply callable functions that happen to be written in a language other than Erlang. NIFs are shared libraries and are often implemented in C. Both Port Drivers and NIFs have a serious downside: memory issues will corrupt the BEAM and knock your application offline. Erlang systems tend to be deployed where fault-tolerance is a major factor and segfaulting the VM is a big no-no.</p>
 <p>As a result, there's a good deal of interest in the Erlang/Elixir communities towards Rust. The Rustler project (<a href="https://crates.io/crates/rustler">https://crates.io/crates/rustler</a>) aims to make combining Rust into an Elixir project as NIFs a simple matter. Let's take a look at a brief example project, presented by Sonny Scroggin at Code BEAM 2018 in San Francisco—beamcoin (<a href="https://github.com/blt/beamcoin">https://github.com/blt/beamcoin</a>). We'll discuss the project at SHA <kbd>3f510076990588c51e4feb1df990ce54ff921a06</kbd>.</p>
-<div class="packt_infobox"><span>The beamcoin project is not listed in its entirety. We've mostly dropped the build configuration. You can find the full listing in this book's source repository.</span></div>
+<p>The beamcoin project is not listed in its entirety. We've mostly dropped the build configuration. You can find the full listing in this book's source repository.</p>
 <p>The build system for Elixir—the BEAM language that Rustler targets natively—is called Mix. Its configuration file is <kbd>mix.exs</kbd> at the root of the project:</p>
 <pre>defmodule Beamcoin.Mixfile do
   use Mix.Project
@@ -1533,43 +1485,37 @@ iex(1)&gt;</strong></pre>
 <p>Building NIFs in the BEAM is a complicated topic, one we've hardly touched on here. Sonny Scroggin's talk, included in the <em>Further reading</em> section, covers that nuance in detail. If you're curious about how the BEAM functions, I've included a talk of mine on that subject in the <em>Further reading</em> section as well. Decades of careful effort have gone into the BEAM and it really shows.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Summary</h1>
-                </header>
+<div><h1 class="header-title">Summary</h1>
+                
             
-            <article>
+            
                 
 <p>In this chapter, we discussed embedding languages in Rust and vice versa. Rust is an incredibly useful programming language in its own right, but has been designed with care to interoperate with the existing language ecosystem. Delegating difficult concurrency work in a memory-unsafe environment into Rust is a powerful model. Mozilla's work on Firefox has shown that path to be fruitful. Likewise, there are decades' worth of well-tested libraries niche domains—weather modeling, physics, amusing programming games from the 1980s—that could, theoretically, be rewritten in Rust but are probably better incorporated behind safe interfaces.</p>
 <p>This chapter is the last that aims to teach you a new, broad skill. If you've made it this far in the book, thank you. It's been a real pleasure writing for you. You should, hopefully, now have a solid foundation for doing low-level concurrency in Rust and the confidence to read through most Rust codebases you come across. There's a lot going on in Rust and I hope it seems more familiar now. In the next, and last, chapter of the book, we'll discuss the future of Rust, what language features apropos this book are coming soon, and how they might bring new capabilities to us.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Further reading</h1>
-                </header>
+<div><h1 class="header-title">Further reading</h1>
+                
             
-            <article>
+            
                 
 <ul>
 <li><em>FFI examples written in Rust</em>, available at <a href="https://github.com/alexcrichton/rust-ffi-examples">https://github.com/alexcrichton/rust-ffi-examples</a>. This repository by Alex Crichton is a well-done collection of FFI examples in Rust. The documentation in this book on this topic is quite good, but it never hurts to pour through working code.</li>
@@ -1580,15 +1526,15 @@ iex(1)&gt;</strong></pre>
 <li><em>Linkage</em>, available at <a href="https://doc.rust-lang.org/reference/linkage.html">https://doc.rust-lang.org/reference/linkage.html</a>. This is the Rust Reference chapter on linking. The details here are very specific, but that's often necessary when being explicit about linking. The common reader will more or less use the information we've covered in this chapter but there's always some new domain requiring specific knowledge.</li>
 <li><em>Rust Inside Other Languages</em>, available at <a href="https://doc.rust-lang.org/1.2.0/book/rust-inside-other-languages.html">https://doc.rust-lang.org/1.2.0/book/rust-inside-other-languages.html</a>. This chapter in the Rust Book covers similar ground to this chapter—embedding Rust—but at a faster clip and with different high-level languages. Specifically, The Book covers embedding Rust into both Ruby and NodeJS, which we did not.</li>
 <li><em>FFI in Rust - writing bindings for libcpuid</em>, available at <a href="http://siciarz.net/ffi-rust-writing-bindings-libcpuid/">http://siciarz.net/ffi-rust-writing-bindings-libcpuid/</a>. Zbigniew Siciarz has been writing about Rust and writing in Rust for a good while. You may know him from his <em>24 days of Rust</em> series. In this post, Sicarz documents the process of building a safe wrapper for libcpuid, a library whose job is to poll the OS for information about the user's CPU.</li>
-<li><em><span> </span></em><span><em>Taking Elixir to the Metal with Rust</em>, Sonny Scroggin, available at </span><span class="Object"><a href="https://www.youtube.com/watch?v=lSLTwWqTbKQ" target="_blank">https://www.youtube.com/watch?v=lSLTwWqTbKQ</a></span><span>. In this chapter we demonstrated Beamcoin, a combination of Elixir and Rust in the same project. Integrating NIFs into a BEAM system is a complicated subject. This talk, presented at NDC London 2017, is warmly recommended as an introduction to the subject.</span><span> </span></li>
+<li><em> </em><em>Taking Elixir to the Metal with Rust</em>, Sonny Scroggin, available at <a href="https://www.youtube.com/watch?v=lSLTwWqTbKQ" target="_blank">https://www.youtube.com/watch?v=lSLTwWqTbKQ</a>. In this chapter we demonstrated Beamcoin, a combination of Elixir and Rust in the same project. Integrating NIFs into a BEAM system is a complicated subject. This talk, presented at NDC London 2017, is warmly recommended as an introduction to the subject. </li>
 <li><em>Piecemeal Into Space: Reliability, Safety and Erlang Principles</em>, Brian L. Troutwine, available at <a href="https://www.youtube.com/watch?v=pwoaJvrJE_U">https://www.youtube.com/watch?v=pwoaJvrJE_U</a>. There's a great deal of work that's gone into the BEAM over the decades, earning those languages a key place in fault-tolerant software deployments. Exactly how the BEAM functions is something of a mystery without inspection. In this talk, I cover the BEAM's semantic model and then discuss it's implementation at a high-level.</li>
 </ul>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 

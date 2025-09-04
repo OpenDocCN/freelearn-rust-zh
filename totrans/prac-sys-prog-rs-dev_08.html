@@ -1,10 +1,9 @@
 <html><head></head><body>
-		<div id="_idContainer056">
-			<h1 id="_idParaDest-98"><em class="italic">Chapter 6</em>: <a id="_idTextAnchor101"/>Working with Files and Directories in Rust</h1>
+		<div><h1 id="_idParaDest-98"><em class="italic">Chapter 6</em>: <a id="_idTextAnchor101"/>Working with Files and Directories in Rust</h1>
 			<p>In the previous chapter, we looked at the details of how Rust uses memory, a key system resource.</p>
 			<p>In this chapter, we will look at how Rust interacts with another important class of system resources – <strong class="bold">files</strong> and <strong class="bold">directories</strong>. The Rust Standard Library offers a rich set of abstractions that enable platform-independent file and directory operations.</p>
 			<p>For this chapter, we will review the basics of how files are managed by Unix/Linux, and master the key APIs that the Rust Standard Library provides to deal with <em class="italic">files</em>, <em class="italic">paths</em>, <em class="italic">links</em>, and <em class="italic">directories</em>.</p>
-			<p>Using the Rust Standard Library, we will implement a shell command, <strong class="source-inline">rstat</strong>, that counts the total number of lines of Rust code in a directory (and its subfolders), and provides a few additional source code metrics.</p>
+			<p>Using the Rust Standard Library, we will implement a shell command, <code>rstat</code>, that counts the total number of lines of Rust code in a directory (and its subfolders), and provides a few additional source code metrics.</p>
 			<p>We will cover the topics in the following order:</p>
 			<ul>
 				<li>Understanding Linux system calls for file operations </li>
@@ -14,9 +13,9 @@
 				<li>Writing a shell command in Rust (project)</li>
 			</ul>
 			<h1 id="_idParaDest-99"><a id="_idTextAnchor102"/>Technical requirements</h1>
-			<p>Verify that <strong class="source-inline">rustc</strong>, and <strong class="source-inline">cargo</strong> have been installed correctly with the following command:</p>
-			<p class="source-code">rustc --version </p>
-			<p class="source-code">cargo --version</p>
+			<p>Verify that <code>rustc</code>, and <code>cargo</code> have been installed correctly with the following command:</p>
+			<pre>rustc --version 
+cargo --version</pre>
 			<p>The Git repo for the code in this chapter can be found at <a href="https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter06">https://github.com/PacktPublishing/Practical-System-Programming-for-Rust-Developers/tree/master/Chapter06</a>.</p>
 			<h1 id="_idParaDest-100"><a id="_idTextAnchor103"/>Understanding Linux system calls for file operations</h1>
 			<p>In this section, we <a id="_idIndexMarker425"/>will look at the terminology <a id="_idIndexMarker426"/>and basic mechanisms associated with managing file system resources at the operating system level. We will use Linux/Unix as an example, but similar concepts apply to other operating systems.</p>
@@ -34,361 +33,468 @@
 				<li><strong class="bold">Links</strong>, such as hard links <a id="_idIndexMarker437"/>and symbolic links</li>
 			</ul>
 			<p>In this chapter, we will focus on files, directories, and links. However, the universality of the Unix I/O model means that the same set of system calls used to open, read, write, and close regular files can also be used on any other types of files such as <strong class="bold">device files</strong>. This is achieved in Linux/Unix by standardizing the system calls, which are then implemented by various filesystems and device drivers.</p>
-			<p>Linux/Unix also provides a unified <strong class="bold">namespace</strong> for all its files and directories. Files and directories organized into a hierarchy are <a id="_idIndexMarker438"/>called a <strong class="bold">filesystem</strong>. Many different filesystems can be added to <a id="_idIndexMarker439"/>or removed from <a id="_idIndexMarker440"/>the namespace through <strong class="bold">mounting</strong> and <strong class="bold">unmounting</strong>. For <a id="_idIndexMarker441"/>example, a CD-ROM drive can be mounted at <strong class="source-inline">/mnt/cdrom</strong>, which becomes the <a id="_idIndexMarker442"/>location to access the root of the filesystem. The root directory of a "filesystem" can be accessed at the mount point.</p>
+			<p>Linux/Unix also provides a unified <code>/mnt/cdrom</code>, which becomes the <a id="_idIndexMarker442"/>location to access the root of the filesystem. The root directory of a "filesystem" can be accessed at the mount point.</p>
 			<p>The <strong class="bold">mount namespace</strong> of a process is <a id="_idIndexMarker443"/>the set of all mounted filesystems it sees. A process that makes system calls for file operations operates on the set of files and directories that it sees as a part of its mount namespace.</p>
 			<p>The Unix/Linux system calls (<strong class="bold">Application Programming Interface - API</strong>) model for file operations hinges on four operations: <strong class="bold">open</strong>, <strong class="bold">read</strong>, <strong class="bold">write</strong>, and <strong class="bold">close</strong>, all of which work with the concept of <strong class="bold">file descriptors</strong>. What is a file descriptor?</p>
 			<p>A file descriptor is a <a id="_idIndexMarker444"/>handle to a file. Opening a file returns a file descriptor, and other operations such as reading, writing, and closing use the file descriptor.</p>
 			<p class="callout-heading">More about file descriptors</p>
 			<p class="callout">File operations such as read and write are performed by processes. A process performs these operations by invoking system calls on the <a id="_idIndexMarker445"/>kernel. As soon as a file is opened by a process, the kernel records it in a <em class="italic">file table</em>, where each entry contains details of the open file including the <strong class="bold">file descriptor</strong> (<strong class="bold">fd</strong>) and <strong class="bold">file position</strong>. Each Linux process has a limit on the number of files it can open. </p>
-			<p class="callout">To the kernel, all open files are referred to by file descriptors. When a process opens an existing file or creates a new file, the kernel returns a file descriptor to the process. By default, when a process is started from a shell, three file descriptors are automatically created: <strong class="source-inline">open: 0 – standard input (stdin)</strong>, <strong class="source-inline">1- standard output(stdout)</strong>, and <strong class="source-inline">2-standard error(stderr)</strong>.</p>
+			<p class="callout">To the kernel, all open files are referred to by file descriptors. When a process opens an existing file or creates a new file, the kernel returns a file descriptor to the process. By default, when a process is started from a shell, three file descriptors are automatically created: <code>open: 0 – standard input (stdin)</code>, <code>1- standard output(stdout)</code>, and <code>2-standard error(stderr)</code>.</p>
 			<p class="callout">The kernel maintains a table of all open file descriptors. If the process opens or creates a file, the kernel allocates the next free file descriptor from the pool of free file descriptors. When a file is closed, the file descriptor is released back to the pool and is available for re-allotment. </p>
 			<p>Let's now look at the common <em class="italic">system calls</em> associated with file operations, which the operating system exposes:</p>
 			<ul>
-				<li><strong class="source-inline">open()</strong>: This system call opens an existing file. It can also create a new file if the file does not exist. It accepts a pathname, the mode in which the file is to be opened, and flags. It returns a file descriptor that can be used in subsequent system calls to access the file:<p class="source-code">int <strong class="bold">open</strong>(const char *pathname, int flags, ... /* mode_t   </p><p class="source-code">    mode */);</p><p>There are three <a id="_idIndexMarker446"/>basic modes in which to <a id="_idIndexMarker447"/>open a file – <em class="italic">read only</em>, <em class="italic">write only</em>, and <em class="italic">read-write</em>. In addition, flags are specified as arguments to the <strong class="source-inline">open()</strong> system call. An example of a flag is <strong class="source-inline">O_CREAT</strong>, which tells the system call to create a file if the file does not exist, and returns the file descriptor.</p><p>If there is an error in opening a file, <strong class="source-inline">-1</strong> is returned in place of the file descriptor, and the error number (<strong class="source-inline">errno</strong>) returned specifies the reason for the error. File open calls can fail for a variety of reasons including a <em class="italic">permissions error</em> and the <em class="italic">incorrect path</em> being specified in an argument to a system call.</p></li>
-				<li><strong class="source-inline">read()</strong>: This system call accepts three arguments: a <em class="italic">file descriptor</em>, the <em class="italic">number of bytes</em> to be read, and the <em class="italic">memory address of the buffer</em> into which the data read is to be placed. It returns the number of bytes read. <strong class="source-inline">-1</strong> is returned in the event of an error when reading the file.</li>
-				<li><strong class="source-inline">write()</strong>: This system call is similar to <strong class="source-inline">read()</strong>, in that it also takes three parameters – a <em class="italic">file descriptor</em>, a <em class="italic">buffer pointer</em> from which to read the data, and the <em class="italic">number of bytes</em> to read from the buffer. Note that successful completion of the <strong class="source-inline">write()</strong> system call does not guarantee that the bytes have been written to disk immediately, as the kernel performs buffering of I/O to disk for performance and efficiency reasons.</li>
-				<li><strong class="source-inline">close()</strong>: This system <a id="_idIndexMarker448"/>call accepts a <em class="italic">file descriptor</em> and releases it. If a <strong class="source-inline">close()</strong> call is not <a id="_idIndexMarker449"/>explicitly invoked for a file, all open files are closed when the process terminates. But it is good practice to release file descriptors (when no longer needed) for reuse by the kernel.</li>
-				<li><strong class="source-inline">lseek()</strong>: For each open file, the kernel keeps track of a file offset, which represents the location in the file at which the next read or write operation will happen. The system call <strong class="source-inline">lseek()</strong> allows you to reposition the file offset to any location in the file. The <strong class="source-inline">lseek()</strong> system call accepts three arguments – the file descriptor, an offset, and a reference position. The reference position can take three values – <em class="italic">start of file</em>, <em class="italic">current cursor position</em>, or <em class="italic">end of file</em>. The offset specifies the number of bytes relative to the reference position that the file offset should be pointed to, for the next <strong class="source-inline">read()</strong> or <strong class="source-inline">write()</strong>.</li>
+				<li><code>open()</code>: This system call opens an existing file. It can also create a new file if the file does not exist. It accepts a pathname, the mode in which the file is to be opened, and flags. It returns a file descriptor that can be used in subsequent system calls to access the file:<pre>int <code>open()</code> system call. An example of a flag is <code>O_CREAT</code>, which tells the system call to create a file if the file does not exist, and returns the file descriptor.</p><p>If there is an error in opening a file, <code>-1</code> is returned in place of the file descriptor, and the error number (<code>errno</code>) returned specifies the reason for the error. File open calls can fail for a variety of reasons including a <em class="italic">permissions error</em> and the <em class="italic">incorrect path</em> being specified in an argument to a system call.</p></li>
+				<li><code>read()</code>: This system call accepts three arguments: a <em class="italic">file descriptor</em>, the <em class="italic">number of bytes</em> to be read, and the <em class="italic">memory address of the buffer</em> into which the data read is to be placed. It returns the number of bytes read. <code>-1</code> is returned in the event of an error when reading the file.</li>
+				<li><code>write()</code>: This system call is similar to <code>read()</code>, in that it also takes three parameters – a <em class="italic">file descriptor</em>, a <em class="italic">buffer pointer</em> from which to read the data, and the <em class="italic">number of bytes</em> to read from the buffer. Note that successful completion of the <code>write()</code> system call does not guarantee that the bytes have been written to disk immediately, as the kernel performs buffering of I/O to disk for performance and efficiency reasons.</li>
+				<li><code>close()</code>: This system <a id="_idIndexMarker448"/>call accepts a <em class="italic">file descriptor</em> and releases it. If a <code>close()</code> call is not <a id="_idIndexMarker449"/>explicitly invoked for a file, all open files are closed when the process terminates. But it is good practice to release file descriptors (when no longer needed) for reuse by the kernel.</li>
+				<li><code>lseek()</code>: For each open file, the kernel keeps track of a file offset, which represents the location in the file at which the next read or write operation will happen. The system call <code>lseek()</code> allows you to reposition the file offset to any location in the file. The <code>lseek()</code> system call accepts three arguments – the file descriptor, an offset, and a reference position. The reference position can take three values – <em class="italic">start of file</em>, <em class="italic">current cursor position</em>, or <em class="italic">end of file</em>. The offset specifies the number of bytes relative to the reference position that the file offset should be pointed to, for the next <code>read()</code> or <code>write()</code>.</li>
 			</ul>
-			<p>This concludes the overview of terminologies and key concepts of how operating systems manage files as system resources. We have seen the main system calls (<strong class="source-inline">syscalls</strong>) in Linux for working with files. We will not be directly using these <strong class="source-inline">syscalls</strong> in this book. But we will work with these <strong class="source-inline">syscalls</strong> indirectly, through the Rust Standard Library modules. The Rust Standard Library provides higher-level <em class="italic">wrappers</em> to make it <a id="_idIndexMarker450"/>easier to work with these <strong class="source-inline">syscalls</strong>. These <em class="italic">wrappers</em> also allow <a id="_idIndexMarker451"/>Rust programs to work without necessarily understanding all the differences in <strong class="source-inline">syscalls</strong> across different operating systems. However, gaining basic knowledge of how operating systems manage files gives us a glimpse into what goes on under the hood when we use the Rust Standard Library for file and directory operations.</p>
+			<p>This concludes the overview of terminologies and key concepts of how operating systems manage files as system resources. We have seen the main system calls (<code>syscalls</code>) in Linux for working with files. We will not be directly using these <code>syscalls</code> in this book. But we will work with these <code>syscalls</code> indirectly, through the Rust Standard Library modules. The Rust Standard Library provides higher-level <em class="italic">wrappers</em> to make it <a id="_idIndexMarker450"/>easier to work with these <code>syscalls</code>. These <em class="italic">wrappers</em> also allow <a id="_idIndexMarker451"/>Rust programs to work without necessarily understanding all the differences in <code>syscalls</code> across different operating systems. However, gaining basic knowledge of how operating systems manage files gives us a glimpse into what goes on under the hood when we use the Rust Standard Library for file and directory operations.</p>
 			<p>In the next section, we will cover how to do file I/O in Rust.</p>
 			<h1 id="_idParaDest-101"><a id="_idTextAnchor104"/>Doing file I/O in Rust</h1>
 			<p>In this section, we will look at <a id="_idIndexMarker452"/>the Rust method calls that let us work with files in <a id="_idIndexMarker453"/>Rust programs. The Rust Standard Library spares the programmer from having to work with system calls directly and provides a set of wrapper methods exposing APIs for common file operations.</p>
-			<p>The primary module in the Rust Standard Library for working with files is <strong class="source-inline">std::fs</strong>. The official documentation for <strong class="source-inline">std::fs</strong> can be found here: <a href="https://doc.rust-lang.org/std/fs/index.html">https://doc.rust-lang.org/std/fs/index.html</a>. This documentation provides the set of methods, structs, enums, and traits that collectively provide features for working with files. It helps to study the structure of the <strong class="source-inline">std::fs</strong> module to gain a deeper understanding. However, for those starting out with exploring system programming in Rust, it is more useful to begin with a mental model of what kinds of things a programmer would like to do with files, and map it back to the Rust Standard Library. This is what we will do in this section. The common lifecycle operations for a file are shown in <em class="italic">Figure 6.1</em>.</p>
-			<div>
-				<div id="_idContainer052" class="IMG---Figure">
-					<img src="image/Figure_6.1.jpg" alt="Figure 6.1 – Common file life cycle operations"/>
+			<p>The primary module in the Rust Standard Library for working with files is <code>std::fs</code>. The official documentation for <code>std::fs</code> can be found here: <a href="https://doc.rust-lang.org/std/fs/index.html">https://doc.rust-lang.org/std/fs/index.html</a>. This documentation provides the set of methods, structs, enums, and traits that collectively provide features for working with files. It helps to study the structure of the <code>std::fs</code> module to gain a deeper understanding. However, for those starting out with exploring system programming in Rust, it is more useful to begin with a mental model of what kinds of things a programmer would like to do with files, and map it back to the Rust Standard Library. This is what we will do in this section. The common lifecycle operations for a file are shown in <em class="italic">Figure 6.1</em>.</p>
+			<div><div><img src="img/Figure_6.1.jpg" alt="Figure 6.1 – Common file life cycle operations"/>
 				</div>
 			</div>
 			<p class="figure-caption">Figure 6.1 – Common file life cycle operations</p>
 			<p>The common things <a id="_idIndexMarker454"/>programmers like to do with files include creating a file, opening and closing files, reading and writing files, accessing metadata about files, and setting file permissions. These are shown in <em class="italic">Figure 6.1</em>. Descriptions of how to perform each of these file operations using the Rust Standard Library are provided here:</p>
 			<ul>
-				<li><strong class="bold">Create</strong>: The <em class="italic">create</em> operation simply <a id="_idIndexMarker455"/>creates a new file with the <em class="italic">specified name</em>, at the <em class="italic">specific location</em> in the filesystem. The corresponding function call in the <strong class="source-inline">std::fs</strong> module is <strong class="source-inline">File::create()</strong>, which allows you to create a new file and write to it. Custom permissions for the file to be created can be specified using the <strong class="source-inline">std::fs::OpenOptions</strong> struct. An example of a <em class="italic">create</em> operation using the <strong class="source-inline">std::fs</strong> module is shown in the code snippet here:<p class="source-code">use std::fs::File;</p><p class="source-code">fn main() {</p><p class="source-code">    let file = File::create("./stats.txt");</p><p class="source-code">}</p></li>
-				<li><strong class="bold">Open</strong>: The <em class="italic">open</em> operation <a id="_idIndexMarker456"/>opens an existing file, given the <em class="italic">full path</em> to the file in the filesystem. The function call to be used is <strong class="source-inline">std::fs::File::open()</strong>. This opens a file in <em class="italic">read-only</em> mode by default. The <strong class="source-inline">std::fs::OpenOptions</strong> struct can be used to set <em class="italic">custom permissions</em> to create the file. Two methods to open a file are shown below. The first function returns a <strong class="source-inline">Result</strong> type, which we are just handling using <strong class="source-inline">.expect()</strong>, which panics with a message if the file is not found. The second function uses <strong class="source-inline">OpenOptions</strong> to set additional permissions on the file to be opened. In the example shown, we are opening a file for the <em class="italic">write</em> operation, and also are asking for the file to be created if not present already:<p class="source-code">use std::fs::File;</p><p class="source-code">use std::fs::OpenOptions;</p><p class="source-code">fn main() {</p><p class="source-code">    // Method 1</p><p class="source-code">    let _file1 = File::open("stats1.txt").expect("File </p><p class="source-code">        not found");</p><p class="source-code">    // Method 2</p><p class="source-code">    let _file2 = OpenOptions::new()</p><p class="source-code">        .write(true)</p><p class="source-code">        .create(true)</p><p class="source-code">        .open("stats2.txt");</p><p class="source-code">}</p></li>
-				<li><strong class="bold">Copy</strong>: This is simply a byte-by-byte copy of the contents of one file to another. The <strong class="source-inline">std::fs::copy()</strong> function <a id="_idIndexMarker457"/>can be used to copy the contents of one file to another, overwriting the latter. An example is shown here:<p class="source-code">use std::fs;</p><p class="source-code">fn main() {</p><p class="source-code">    fs::copy("stats1.txt", "stats2.txt").expect("Unable </p><p class="source-code">        to copy");</p><p class="source-code">}</p></li>
-				<li><strong class="bold">Rename</strong>: This is an operation <a id="_idIndexMarker458"/>that renames a specified file to a new name. Errors can occur if the <em class="italic">from file</em> does not exist, or if permissions are insufficient. In Rust, the <strong class="source-inline">std::fs::rename()</strong> function can be used for this purpose. If the <em class="italic">to</em> file exists, it is replaced. One thing to note is that there can be more than one filesystem mounted (at various points) within the <em class="italic">mount namespace</em> of a process, as seen in the previous section. The <strong class="source-inline">rename</strong> method in Rust will work only if both the <em class="italic">from</em> and <em class="italic">to</em> file paths are in the same filesystem. An example of usage of the <strong class="source-inline">rename()</strong> function is shown here:<p class="source-code">use std::fs;</p><p class="source-code">fn main() {</p><p class="source-code">    fs::rename("stats1.txt", "stats3.txt").expect("Unable </p><p class="source-code">        to rename");</p><p class="source-code">}</p></li>
-				<li><strong class="bold">Read</strong>: The <em class="italic">read</em> operation <a id="_idIndexMarker459"/>takes a <em class="italic">filename with its path</em> and reads the contents. In the <strong class="source-inline">std::fs</strong> module, there are two functions available: <strong class="source-inline">fs::read()</strong> and <strong class="source-inline">fs::read_to_string()</strong>. The former reads the contents of a file into a <strong class="source-inline">bytes vector</strong>. It pre-allocates a buffer based on file size (when available). The latter reads the contents of a file directly into a string. Examples are shown here:<p class="source-code">use std::fs;</p><p class="source-code">fn main() {</p><p class="source-code">    let byte_arr = <strong class="bold">fs::read</strong>("stats3.txt").expect("Unable </p><p class="source-code">        to read file into bytes");</p><p class="source-code">    println!(</p><p class="source-code">        "Value read from file into bytes is {}",</p><p class="source-code">        String::from_utf8(byte_arr).unwrap()</p><p class="source-code">    );</p><p class="source-code">    let string1 = fs::<strong class="bold">read_to_string</strong>("stats3.txt").</p><p class="source-code">        expect("Unable to read file into string");</p><p class="source-code">    println!("Value read from file into string is {}", </p><p class="source-code">        string1);</p><p class="source-code">}</p><p>In the code <a id="_idIndexMarker460"/>snippet shown for <strong class="source-inline">fs::read()</strong>, we convert the <strong class="source-inline">byte_arr</strong> into a string for printing purposes, as printing out a byte array is not human-readable.</p></li>
-				<li><strong class="bold">Write</strong>: The <em class="italic">write</em> operation writes the <a id="_idIndexMarker461"/>contents of a buffer into a file. In <strong class="source-inline">std::fs</strong>, the <strong class="source-inline">fs::write()</strong> function accepts a <em class="italic">filename</em> and a <em class="italic">byte slice</em>, and writes the <em class="italic">byte slice</em> as the contents of the file. An example is shown here:<p class="source-code">use std::fs;</p><p class="source-code">fn main() {</p><p class="source-code">    <strong class="bold">fs::write</strong>("stats3.txt", "Rust is exciting,isn't </p><p class="source-code"><strong class="bold">        </strong>it?").expect("Unable to write to file");</p><p class="source-code">}</p></li>
-				<li><strong class="bold">Query</strong>: These operations deal with <a id="_idIndexMarker462"/>obtaining metadata about files. There are several query methods available on files in the <strong class="source-inline">std::fs</strong> module. The functions <strong class="source-inline">is_dir()</strong>, <strong class="source-inline">is_file()</strong>, and <strong class="source-inline">is_symlink()</strong> respectively check whether a file is a <em class="italic">regular file</em>, <em class="italic">directory</em>, or a <em class="italic">symlink</em>.  The <strong class="source-inline">modified()</strong>, <strong class="source-inline">created()</strong>, <strong class="source-inline">accessed()</strong> , <strong class="source-inline">len()</strong>, and <strong class="source-inline">metadata()</strong> functions are used to retrieve file metadata information. The <strong class="source-inline">permissions()</strong> function is used to retrieve a list of permissions on the file.<p>A few examples of the usage of <a id="_idIndexMarker463"/>query operations are shown here:</p><p class="source-code">use std::fs;</p><p class="source-code">fn main() {</p><p class="source-code">    let file_metadata = fs::metadata("stats.txt").</p><p class="source-code">        expect("Unable to get file metadata");</p><p class="source-code">    println!(</p><p class="source-code">        "Len: {}, last accessed: {:?}, modified : {:?}, </p><p class="source-code">        created: {:?}",</p><p class="source-code">        file_metadata.len(),</p><p class="source-code">        file_metadata.accessed(),</p><p class="source-code">        file_metadata.modified(),</p><p class="source-code">        file_metadata.created()</p><p class="source-code">    );</p><p class="source-code">    println!(</p><p class="source-code">        "Is file: {}, Is dir: {}, is Symlink: {}",</p><p class="source-code">        file_metadata.is_file(),</p><p class="source-code">        file_metadata.is_dir(),</p><p class="source-code">        file_metadata.file_type().is_symlink()</p><p class="source-code">    );</p><p class="source-code">  println!("File metadata: {:?}",fs::metadata</p><p class="source-code">      ("stats.txt"));</p><p class="source-code">    println!("Permissions of file are: {:?}", </p><p class="source-code">        file_metadata.permissions());</p><p class="source-code">}</p></li>
-				<li><strong class="bold">Metadata</strong>: Metadata for a file includes details about a file such as <em class="italic">file type</em>, <em class="italic">file permissions</em>, <em class="italic">last accessed time</em>, <em class="italic">created time</em>, and so on. Permissions for a file can be set for a file <a id="_idIndexMarker464"/>using <strong class="source-inline">set_permissions()</strong>. An example is shown here, where, after setting the file permission to read-only, the write operation to the file fails:<p class="source-code">use std::fs;</p><p class="source-code">fn main() {</p><p class="source-code">    let mut permissions = fs::metadata("stats.txt").</p><p class="source-code">        unwrap().permissions();</p><p class="source-code">    permissions.set_readonly(true);</p><p class="source-code">    let _ = fs::set_permissions("stats.txt", </p><p class="source-code">        permissions).expect("Unable to set permission");</p><p class="source-code"> </p><p class="source-code">    fs::write("stats.txt", "Hello- Can you see me?").</p><p class="source-code">        expect("Unable to write to file");</p><p class="source-code">}</p></li>
-				<li><strong class="bold">Close</strong>: In Rust, files are automatically closed when they go out of scope. There is no specific <strong class="source-inline">close()</strong> method in <a id="_idIndexMarker465"/>the Rust Standard Library to close files.</li>
+				<li><code>std::fs</code> module is <code>File::create()</code>, which allows you to create a new file and write to it. Custom permissions for the file to be created can be specified using the <code>std::fs::OpenOptions</code> struct. An example of a <em class="italic">create</em> operation using the <code>std::fs</code> module is shown in the code snippet here:<pre>use std::fs::File;
+fn main() {
+    let file = File::create("./stats.txt");
+}</pre></li>
+				<li><code>std::fs::File::open()</code>. This opens a file in <em class="italic">read-only</em> mode by default. The <code>std::fs::OpenOptions</code> struct can be used to set <em class="italic">custom permissions</em> to create the file. Two methods to open a file are shown below. The first function returns a <code>Result</code> type, which we are just handling using <code>.expect()</code>, which panics with a message if the file is not found. The second function uses <code>OpenOptions</code> to set additional permissions on the file to be opened. In the example shown, we are opening a file for the <em class="italic">write</em> operation, and also are asking for the file to be created if not present already:<pre>use std::fs::File;
+use std::fs::OpenOptions;
+fn main() {
+    // Method 1
+    let _file1 = File::open("stats1.txt").expect("File 
+        not found");
+    // Method 2
+    let _file2 = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open("stats2.txt");
+}</pre></li>
+				<li><code>std::fs::copy()</code> function <a id="_idIndexMarker457"/>can be used to copy the contents of one file to another, overwriting the latter. An example is shown here:<pre>use std::fs;
+fn main() {
+    fs::copy("stats1.txt", "stats2.txt").expect("Unable 
+        to copy");
+}</pre></li>
+				<li><code>std::fs::rename()</code> function can be used for this purpose. If the <em class="italic">to</em> file exists, it is replaced. One thing to note is that there can be more than one filesystem mounted (at various points) within the <em class="italic">mount namespace</em> of a process, as seen in the previous section. The <code>rename</code> method in Rust will work only if both the <em class="italic">from</em> and <em class="italic">to</em> file paths are in the same filesystem. An example of usage of the <code>rename()</code> function is shown here:<pre>use std::fs;
+fn main() {
+    fs::rename("stats1.txt", "stats3.txt").expect("Unable 
+        to rename");
+}</pre></li>
+				<li><code>std::fs</code> module, there are two functions available: <code>fs::read()</code> and <code>fs::read_to_string()</code>. The former reads the contents of a file into a <code>bytes vector</code>. It pre-allocates a buffer based on file size (when available). The latter reads the contents of a file directly into a string. Examples are shown here:<pre>use std::fs;
+fn main() {
+    let byte_arr = <code>fs::read()</code>, we convert the <code>byte_arr</code> into a string for printing purposes, as printing out a byte array is not human-readable.</p></li>
+				<li><code>std::fs</code>, the <code>fs::write()</code> function accepts a <em class="italic">filename</em> and a <em class="italic">byte slice</em>, and writes the <em class="italic">byte slice</em> as the contents of the file. An example is shown here:<pre>use std::fs;
+fn main() {
+    <strong class="bold">fs::write</strong>("stats3.txt", "Rust is exciting,isn't 
+<strong class="bold">        </strong>it?").expect("Unable to write to file");
+}</pre></li>
+				<li><code>std::fs</code> module. The functions <code>is_dir()</code>, <code>is_file()</code>, and <code>is_symlink()</code> respectively check whether a file is a <em class="italic">regular file</em>, <em class="italic">directory</em>, or a <em class="italic">symlink</em>.  The <code>modified()</code>, <code>created()</code>, <code>accessed()</code> , <code>len()</code>, and <code>metadata()</code> functions are used to retrieve file metadata information. The <code>permissions()</code> function is used to retrieve a list of permissions on the file.<p>A few examples of the usage of <a id="_idIndexMarker463"/>query operations are shown here:</p><pre>use std::fs;
+fn main() {
+    let file_metadata = fs::metadata("stats.txt").
+        expect("Unable to get file metadata");
+    println!(
+        "Len: {}, last accessed: {:?}, modified : {:?}, 
+        created: {:?}",
+        file_metadata.len(),
+        file_metadata.accessed(),
+        file_metadata.modified(),
+        file_metadata.created()
+    );
+    println!(
+        "Is file: {}, Is dir: {}, is Symlink: {}",
+        file_metadata.is_file(),
+        file_metadata.is_dir(),
+        file_metadata.file_type().is_symlink()
+    );
+  println!("File metadata: {:?}",fs::metadata
+      ("stats.txt"));
+    println!("Permissions of file are: {:?}", 
+        file_metadata.permissions());
+}</pre></li>
+				<li><code>set_permissions()</code>. An example is shown here, where, after setting the file permission to read-only, the write operation to the file fails:<pre>use std::fs;
+fn main() {
+    let mut permissions = fs::metadata("stats.txt").
+        unwrap().permissions();
+    permissions.set_readonly(true);
+    let _ = fs::set_permissions("stats.txt", 
+        permissions).expect("Unable to set permission");
+ 
+    fs::write("stats.txt", "Hello- Can you see me?").
+        expect("Unable to write to file");
+}</pre></li>
+				<li><code>close()</code> method in <a id="_idIndexMarker465"/>the Rust Standard Library to close files.</li>
 			</ul>
 			<p>In this section, we saw the key function calls from the Rust Standard Library that can be used to perform <em class="italic">file manipulation</em> and <em class="italic">query</em> operations. In the next section, we will take a look at how the Rust Standard Library can be used for <em class="italic">directory</em> and <em class="italic">path</em> operations.</p>
 			<h1 id="_idParaDest-102"><a id="_idTextAnchor105"/>Learning directory and path operations</h1>
 			<p>The kernel in Linux (and other Unix variants) maintains a single directory tree structure visible to a process, which is <a id="_idIndexMarker466"/>hierarchical and contains all files in that namespace. This hierarchical organization contains both individual files, directories, and links (for example, a symbolic link).</p>
 			<p>In the previous section, we looked at <em class="italic">files</em> and file operations in Rust. In this section, we will take a closer look at <em class="italic">directory</em> and <em class="italic">path</em> operations. In the next section, we will cover <em class="italic">links</em>.</p>
-			<p>A <em class="italic">directory</em> is a special <a id="_idIndexMarker467"/>file that contains a list of filenames with references (<strong class="bold">inodes</strong>) to the corresponding files. Directories can point to regular files or other directories. It is this connection between directories that establishes the overall directory hierarchy in a namespace. For example, <strong class="source-inline">/</strong> represents the root directory, and <strong class="source-inline">/home</strong> and <strong class="source-inline">/etc</strong> will link to <strong class="source-inline">/</strong> as the <em class="italic">parent</em> directory. (Note that in some operating systems, such as Microsoft Windows variants, each disk device has its own hierarchy of files, and there is not a single unified namespace.) Each directory contains at least two entries – a <em class="italic">dot entry</em> pointing to itself and a <em class="italic">dot-dot</em> directory, which is a link to its parent directory:</p>
-			<div>
-				<div id="_idContainer053" class="IMG---Figure">
-					<img src="image/Figure_6.2.jpg" alt="Figure 6.2 – Common directory and path operations"/>
+			<p>A <em class="italic">directory</em> is a special <a id="_idIndexMarker467"/>file that contains a list of filenames with references (<code>/</code> represents the root directory, and <code>/home</code> and <code>/etc</code> will link to <code>/</code> as the <em class="italic">parent</em> directory. (Note that in some operating systems, such as Microsoft Windows variants, each disk device has its own hierarchy of files, and there is not a single unified namespace.) Each directory contains at least two entries – a <em class="italic">dot entry</em> pointing to itself and a <em class="italic">dot-dot</em> directory, which is a link to its parent directory:</p>
+			<div><div><img src="img/Figure_6.2.jpg" alt="Figure 6.2 – Common directory and path operations"/>
 				</div>
 			</div>
 			<p class="figure-caption">Figure 6.2 – Common directory and path operations</p>
-			<p>In the Rust Standard Library, the <strong class="source-inline">std::fs</strong> module contains methods to work with directories, and the <strong class="source-inline">std::path</strong> module contains methods to work with <em class="italic">paths</em>.</p>
+			<p>In the Rust Standard Library, the <code>std::fs</code> module contains methods to work with directories, and the <code>std::path</code> module contains methods to work with <em class="italic">paths</em>.</p>
 			<p>Just as in the previous <a id="_idIndexMarker468"/>section, we will look at the common  programming tasks <a id="_idIndexMarker469"/>involving <em class="italic">directory</em> and <em class="italic">path</em> manipulations. These are shown in <em class="italic">Figure 6.2</em> and detailed here:</p>
 			<ol>
-				<li><strong class="bold">Read details of directory entries</strong>: In order to write system programs that deal with files and directories, it is necessary to understand how to read through the structure of a directory, retrieve the directory entries, and get their metadata. This is achieved by using functions in the <strong class="source-inline">std::fs</strong> module. The <strong class="source-inline">std::fs::read_dir()</strong> function can be used to iterate through and retrieve the entries in a directory. From the directory entry thus retrieved, the metadata details of the directory entry can be obtained with the functions <strong class="source-inline">path()</strong>, <strong class="source-inline">metadata()</strong>, <strong class="source-inline">file_name()</strong>, and <strong class="source-inline">file_type()</strong>. Examples of how to do this are shown here:<p class="source-code">use std::fs;</p><p class="source-code">use std::path::Path;</p><p class="source-code">fn main() {</p><p class="source-code">    let dir_entries = fs::read_dir(".").expect("Unable to </p><p class="source-code">        read directory contents");</p><p class="source-code">    // Read directory contents</p><p class="source-code">    for entry in dir_entries {</p><p class="source-code">        //Get details of each directory entry</p><p class="source-code">        let entry = entry.unwrap();</p><p class="source-code">        let entry_path = entry.path();</p><p class="source-code">        let entry_metadata = entry.metadata().unwrap();</p><p class="source-code">        let entry_file_type = entry.file_type().unwrap();</p><p class="source-code">        let entry_file_name = entry.file_name();</p><p class="source-code">        println!(</p><p class="source-code">            "Path is {:?}.\n Metadata is {:?}\n File_type </p><p class="source-code">            is {:?}.\n Entry name is{:?}.\n",</p><p class="source-code">            entry_path, entry_metadata, entry_file_type, </p><p class="source-code">            entry_file_name</p><p class="source-code">        );</p><p class="source-code">    }</p><p class="source-code">    // Get path components</p><p class="source-code">    let new_path = Path::new("/usr/d1/d2/d3/bar.txt");</p><p class="source-code">    println!("Path parent is: {:?}", new_path.parent());</p><p class="source-code">    for component in new_path.components() {</p><p class="source-code">        println!("Path component is: {:?}", component);</p><p class="source-code">    }</p><p class="source-code">}</p><p>Next, we'll look at how to construct directory trees programmatically.</p></li>
-				<li><strong class="bold">Create directory structure programmatically</strong>: If there is a need to create a directory structure <a id="_idIndexMarker470"/>programmatically in the filesystem, it is possible <a id="_idIndexMarker471"/>using the <strong class="source-inline">std::fs</strong> module. The Rust <strong class="source-inline">std::fs:DirBuilder</strong> struct provides methods to recursively construct a directory structure.  An example of creating a directory structure recursively is shown here:<p class="source-code">use std::fs::DirBuilder;</p><p class="source-code">fn main() {</p><p class="source-code">    let dir_structure = "/tmp/dir1/dir2/dir3";</p><p class="source-code">    DirBuilder::new()</p><p class="source-code">        .recursive(true)</p><p class="source-code">        .create(dir_structure)</p><p class="source-code">        .unwrap();</p><p class="source-code">}</p><p>Note that there are two other functions also available to create directories. <strong class="source-inline">create_dir()</strong> and <strong class="source-inline">create_dir_all()</strong> in <strong class="source-inline">std::fs</strong> can be used for this purpose. </p><p>Likewise, the functions <strong class="source-inline">remove_dir()</strong> and <strong class="source-inline">remove_dir_all()</strong> in the <strong class="source-inline">std::fs</strong> module can be used to delete directories.</p><p>Next, we'll look at how to construct path strings dynamically.</p></li>
-				<li><strong class="bold">Construct path strings dynamically</strong>: A pathname is a string consisting of a series of components separated by slashes. Each <a id="_idIndexMarker472"/>component represents a directory name, except <a id="_idIndexMarker473"/>the component following the final slash, which represents the file. For example, in the pathname <strong class="source-inline">/usr/bob/a.txt</strong>, <strong class="source-inline">usr</strong> and <strong class="source-inline">bob</strong> represent directories, while <strong class="source-inline">a.txt</strong> represents a file. The Rust Standard Library provides facilities to construct a path string (representing the full path to a file or a directory) programmatically. This is available in <strong class="source-inline">std::path::PathBuf</strong>. An example of how to construct a path dynamically is shown here: <p class="source-code">use std::path::PathBuf;</p><p class="source-code">fn main() {</p><p class="source-code">    let mut f_path = PathBuf::new();</p><p class="source-code">    f_path.push(r"/tmp");</p><p class="source-code">    f_path.push("packt");</p><p class="source-code">    f_path.push("rust");</p><p class="source-code">    f_path.push("book");</p><p class="source-code">    f_path.set_extension("rs");</p><p class="source-code">    println!("Path constructed is {:?}", f_path);</p><p class="source-code">}</p></li>
+				<li><code>std::fs</code> module. The <code>std::fs::read_dir()</code> function can be used to iterate through and retrieve the entries in a directory. From the directory entry thus retrieved, the metadata details of the directory entry can be obtained with the functions <code>path()</code>, <code>metadata()</code>, <code>file_name()</code>, and <code>file_type()</code>. Examples of how to do this are shown here:<pre>use std::fs;
+use std::path::Path;
+fn main() {
+    let dir_entries = fs::read_dir(".").expect("Unable to 
+        read directory contents");
+    // Read directory contents
+    for entry in dir_entries {
+        //Get details of each directory entry
+        let entry = entry.unwrap();
+        let entry_path = entry.path();
+        let entry_metadata = entry.metadata().unwrap();
+        let entry_file_type = entry.file_type().unwrap();
+        let entry_file_name = entry.file_name();
+        println!(
+            "Path is {:?}.\n Metadata is {:?}\n File_type 
+            is {:?}.\n Entry name is{:?}.\n",
+            entry_path, entry_metadata, entry_file_type, 
+            entry_file_name
+        );
+    }
+    // Get path components
+    let new_path = Path::new("/usr/d1/d2/d3/bar.txt");
+    println!("Path parent is: {:?}", new_path.parent());
+    for component in new_path.components() {
+        println!("Path component is: {:?}", component);
+    }
+}</pre><p>Next, we'll look at how to construct directory trees programmatically.</p></li>
+				<li><code>std::fs</code> module. The Rust <code>std::fs:DirBuilder</code> struct provides methods to recursively construct a directory structure.  An example of creating a directory structure recursively is shown here:<pre>use std::fs::DirBuilder;
+fn main() {
+    let dir_structure = "/tmp/dir1/dir2/dir3";
+    DirBuilder::new()
+        .recursive(true)
+        .create(dir_structure)
+        .unwrap();
+}</pre><p>Note that there are two other functions also available to create directories. <code>create_dir()</code> and <code>create_dir_all()</code> in <code>std::fs</code> can be used for this purpose. </p><p>Likewise, the functions <code>remove_dir()</code> and <code>remove_dir_all()</code> in the <code>std::fs</code> module can be used to delete directories.</p><p>Next, we'll look at how to construct path strings dynamically.</p></li>
+				<li><code>/usr/bob/a.txt</code>, <code>usr</code> and <code>bob</code> represent directories, while <code>a.txt</code> represents a file. The Rust Standard Library provides facilities to construct a path string (representing the full path to a file or a directory) programmatically. This is available in <code>std::path::PathBuf</code>. An example of how to construct a path dynamically is shown here: <pre>use std::path::PathBuf;
+fn main() {
+    let mut f_path = PathBuf::new();
+    f_path.push(r"/tmp");
+    f_path.push("packt");
+    f_path.push("rust");
+    f_path.push("book");
+    f_path.set_extension("rs");
+    println!("Path constructed is {:?}", f_path);
+}</pre></li>
 			</ol>
-			<p>In the code shown, a new variable of type <strong class="source-inline">PathBuf</strong> is constructed, and the various path components are dynamically added to create a fully qualified path.</p>
+			<p>In the code shown, a new variable of type <code>PathBuf</code> is constructed, and the various path components are dynamically added to create a fully qualified path.</p>
 			<p>This concludes this subsection on directory and path operations with the Rust Standard Library.</p>
 			<p>In this section, we looked <a id="_idIndexMarker474"/>at how to use the Rust Standard Library to read <a id="_idIndexMarker475"/>through directory entries, get their metadata, construct a directory structure programmatically, get path components, and build a path string dynamically.</p>
 			<p>In the next section, we will look at how to work with <em class="italic">links</em> and <em class="italic">queries</em>.</p>
 			<h1 id="_idParaDest-103"><a id="_idTextAnchor106"/>Setting hard links, symbolic links, and performing queries</h1>
-			<p>We saw earlier that a <a id="_idIndexMarker476"/>directory is treated in a file system similarly to a <a id="_idIndexMarker477"/>regular file. But it has a different file type, and it contains a list of filenames with <a id="_idIndexMarker478"/>their inodes. <strong class="bold">Inodes</strong> are data <a id="_idIndexMarker479"/>structures that contain metadata about a file such as an inode number (to uniquely identify the file), permission, ownership, and so on. In Unix/Linux, the first column in the output of an <strong class="source-inline">ls –li</strong> command shows the inode number corresponding to a file, as shown here:</p>
-			<div>
-				<div id="_idContainer054" class="IMG---Figure">
-					<img src="image/Figure_6.3.jpg" alt=""/>
+			<p>We saw earlier that a <a id="_idIndexMarker476"/>directory is treated in a file system similarly to a <a id="_idIndexMarker477"/>regular file. But it has a different file type, and it contains a list of filenames with <a id="_idIndexMarker478"/>their inodes. <code>ls –li</code> command shows the inode number corresponding to a file, as shown here:</p>
+			<div><div><img src="img/Figure_6.3.jpg" alt=""/>
 				</div>
 			</div>
 			<p class="figure-caption">Figure 6.3 – Inode numbers visible in the file listing</p>
-			<p>Since a directory contains a listing that maps <em class="italic">filenames</em> with <em class="italic">inode numbers</em>, there can be multiple filenames that map to the same inode number. Such multiple names are called <strong class="bold">hard links</strong>, or simply <strong class="bold">links</strong>. Hard <a id="_idIndexMarker480"/>links in Unix/Linux are created <a id="_idIndexMarker481"/>using the <strong class="source-inline">ln</strong> shell command. Not all non-UNIX filesystems support such hard links.</p>
+			<p>Since a directory contains a listing that maps <em class="italic">filenames</em> with <em class="italic">inode numbers</em>, there can be multiple filenames that map to the same inode number. Such multiple names are called <code>ln</code> shell command. Not all non-UNIX filesystems support such hard links.</p>
 			<p>Within a file system, there can be many <em class="italic">links</em> to the same file. All of them are essentially the same, as they point to the same file. Most files have a <em class="italic">link count</em> of 1 (meaning there is a single directory entry for that file), but a file can have a <em class="italic">link count</em> &gt; 1 ( for example, if there are two links pointing to the same <em class="italic">inode</em> entry, there will be two directory entries for that file, and the <em class="italic">link count</em> will be 2). The kernel maintains this <em class="italic">link count</em>.</p>
-			<p>A <em class="italic">hard link</em> has a limitation in that they can refer only to files within the same file system because inode numbers are unique only within a file system. There is another type of <a id="_idIndexMarker482"/>link called a <strong class="bold">symbolic link</strong> (also called a <strong class="bold">soft link</strong>), which is a special <a id="_idIndexMarker483"/>type of file that contains the name of another file. In Linux/Unix, symbolic links are created using the <strong class="source-inline">ln –s</strong> command. Since a symbolic link refers to a filename instead of an inode number, it can refer to a file in another filesystem. Also, unlike hard links, symbolic links can be created in directories.</p>
+			<p>A <em class="italic">hard link</em> has a limitation in that they can refer only to files within the same file system because inode numbers are unique only within a file system. There is another type of <a id="_idIndexMarker482"/>link called a <code>ln –s</code> command. Since a symbolic link refers to a filename instead of an inode number, it can refer to a file in another filesystem. Also, unlike hard links, symbolic links can be created in directories.</p>
 			<p>In the following points, we will see the methods in the Rust Standard Library that can be used to create and query hard links and symbolic links (symlinks):</p>
 			<ul>
-				<li><strong class="bold">Create a hard link</strong>: The Rust <strong class="source-inline">std::fs</strong> module <a id="_idIndexMarker484"/>has a function, <strong class="source-inline">fs::hard_link</strong>, that can <a id="_idIndexMarker485"/>be used to create a new hard link on the file system. An example is shown here:<p class="source-code">use std::fs;</p><p class="source-code">fn main() -&gt; std::io::Result&lt;()&gt; {</p><p class="source-code">    fs::hard_link("stats.txt", "./statsa.txt")?; // Hard </p><p class="source-code">                          // link stats.txt to statsa.txt</p><p class="source-code">    Ok(())</p><p class="source-code">}</p></li>
-				<li><strong class="bold">Create and query a symlink</strong>: The APIs to <a id="_idIndexMarker486"/>create a <strong class="source-inline">symlink</strong> using <a id="_idIndexMarker487"/>the Rust Standard <a id="_idIndexMarker488"/>Library vary by <a id="_idIndexMarker489"/>platform. On Unix/Linux, the <strong class="source-inline">std::os::unix::fs::symlink</strong> method can be used. On windows, there are two APIs – <strong class="source-inline">os::windows::fs::symlink_file</strong> to create a <em class="italic">symbolic link</em> to a file, or <strong class="source-inline">os::windows::fs::symlink_dir</strong> to create a <strong class="source-inline">symlink</strong> to a directory. An example of creating a <strong class="source-inline">symlink</strong> on Unix-like platforms is shown here:<p class="source-code">use std::fs;</p><p class="source-code">use std::os::unix::fs as fsunix;</p><p class="source-code">fn main() {</p><p class="source-code">    fsunix::symlink("stats.txt", "sym_stats.txt").</p><p class="source-code">        expect("Cannot create symbolic link");</p><p class="source-code">    let sym_path = fs::read_link("sym_stats.txt").</p><p class="source-code">        expect("Cannot read link");</p><p class="source-code">    println!("Link is {:?}", sym_path);</p><p class="source-code">}</p></li>
+				<li><code>std::fs</code> module <a id="_idIndexMarker484"/>has a function, <code>fs::hard_link</code>, that can <a id="_idIndexMarker485"/>be used to create a new hard link on the file system. An example is shown here:<pre>use std::fs;
+fn main() -&gt; std::io::Result&lt;()&gt; {
+    fs::hard_link("stats.txt", "./statsa.txt")?; // Hard 
+                          // link stats.txt to statsa.txt
+    Ok(())
+}</pre></li>
+				<li><code>symlink</code> using <a id="_idIndexMarker487"/>the Rust Standard <a id="_idIndexMarker488"/>Library vary by <a id="_idIndexMarker489"/>platform. On Unix/Linux, the <code>std::os::unix::fs::symlink</code> method can be used. On windows, there are two APIs – <code>os::windows::fs::symlink_file</code> to create a <em class="italic">symbolic link</em> to a file, or <code>os::windows::fs::symlink_dir</code> to create a <code>symlink</code> to a directory. An example of creating a <code>symlink</code> on Unix-like platforms is shown here:<pre>use std::fs;
+use std::os::unix::fs as fsunix;
+fn main() {
+    fsunix::symlink("stats.txt", "sym_stats.txt").
+        expect("Cannot create symbolic link");
+    let sym_path = fs::read_link("sym_stats.txt").
+        expect("Cannot read link");
+    println!("Link is {:?}", sym_path);
+}</pre></li>
 			</ul>
-			<p>The <strong class="source-inline">fs::read_link</strong> function can be used to read a symbolic link as shown in the code.</p>
+			<p>The <code>fs::read_link</code> function can be used to read a symbolic link as shown in the code.</p>
 			<p>With this, we conclude the subsection on working with links in the Rust Standard Library. We have so far seen how to work with files, directories, paths, and links in Rust. In the next section, we will build a small shell command that demonstrates the practical use of the Rust Standard Library for file and directory operations.</p>
 			<h1 id="_idParaDest-104"><a id="_idTextAnchor107"/>Writing a shell command in Rust (project)</h1>
 			<p>In this section, we will <a id="_idIndexMarker490"/>use our knowledge of the Rust Standard Library <a id="_idIndexMarker491"/>on file and directory operations that we learned in previous sections to implement a shell command.</p>
 			<p>What will the shell command do?</p>
 			<p>The shell <a id="_idIndexMarker492"/>command will be called <strong class="bold">rstat</strong>, short for <strong class="bold">Rust source statistics</strong>. Given a directory as an argument, it will generate a <em class="italic">file count</em> of Rust source files, and source code metrics such as the <em class="italic">number of blanks</em>, <em class="italic">comments</em>, and <em class="italic">actual lines of code</em> within the directory structure.</p>
 			<p>Here is what you will type:</p>
-			<p class="source-code"> cargo run --release -- -m src .</p>
+			<pre> cargo run --release -- -m src .</pre>
 			<p>Here is an example of the result you will see from this shell command:</p>
-			<p class="source-code">Summary stats: SrcStats { number_of_files: 7, loc: 187, comments: 8, blanks: 20 }</p>
+			<pre>Summary stats: SrcStats { number_of_files: 7, loc: 187, comments: 8, blanks: 20 }</pre>
 			<p>This section is <a id="_idIndexMarker493"/>structured as four sub-sections. In the first sub-section, we will see <a id="_idIndexMarker494"/>an overview of the code structure and a summary of steps to build this shell command. Then, in three different subsections, we will review the code for the three source files corresponding to error handling, source metric computation, and the main program.</p>
 			<h2 id="_idParaDest-105"><a id="_idTextAnchor108"/>Code overview</h2>
 			<p>In this subsection, we <a id="_idIndexMarker495"/>will look at how the code is structured for the shell command. We will also review a summary of the steps to build the shell command. Let's get started.</p>
 			<p>The code structure is <a id="_idIndexMarker496"/>shown in <em class="italic">Figure 6.4</em>:</p>
-			<div>
-				<div id="_idContainer055" class="IMG---Figure">
-					<img src="image/Figure_6.4.jpg" alt="Figure 6.4 – Shell command code structure"/>
+			<div><div><img src="img/Figure_6.4.jpg" alt="Figure 6.4 – Shell command code structure"/>
 				</div>
 			</div>
 			<p class="figure-caption">Figure 6.4 – Shell command code structure</p>
 			<p>Here is a summary of the steps to build the shell command. The source code snippets are shown later in this section:</p>
 			<ol>
-				<li value="1">Create project: Create a new project with the following command and change directory into the <strong class="source-inline">rstat</strong> directory:<p class="source-code"><strong class="bold">cargo new rstat &amp;&amp; cd rstat</strong></p></li>
-				<li>Create source files: Create three files under the <strong class="source-inline">src</strong> folder – <strong class="source-inline">main.rs</strong>, <strong class="source-inline">srcstats.rs</strong>, and <strong class="source-inline">errors.rs</strong>.</li>
-				<li>Define custom error handling: In <strong class="source-inline">errors.rs</strong>, create a struct, <strong class="source-inline">StatsError</strong>, to represent our custom error type. This will be used to unify error handling in our <a id="_idIndexMarker497"/>project and to send messages back to the user. Implement the following four traits on <strong class="source-inline">struct StatsError</strong> : <strong class="source-inline">fmt::Display, From&lt;&amp;str&gt;</strong>, <strong class="source-inline">From&lt;io::Error&gt;</strong>, and <strong class="source-inline">From&lt;std::num::TryFromIntError&gt;</strong>.</li>
-				<li>Define logic for computing source stats: In <strong class="source-inline">srcstats.rs</strong>, create a struct, <strong class="source-inline">SrcStats</strong>, to define the source metrics to be computed. Define two functions: <strong class="source-inline">get_src_stats_for_file()</strong> (which accepts a filename as an argument and computes the source metrics for that file) and <strong class="source-inline">get_summary_src_stats()</strong> (which takes a directory name as an argument and computes source metrics for all files in that directory root).</li>
-				<li>Write the main() function to accept command-line parameters:<p>In <strong class="source-inline">main.rs</strong>, define a <strong class="source-inline">Opt</strong> struct to define command-line parameters and flags for the shell command. Write the <strong class="source-inline">main()</strong> function, which accepts a source directory name from the command line and invokes the <strong class="source-inline">get_summary_src_stats()</strong> method in the <strong class="source-inline">srcstats</strong> module. Ensure to include <strong class="bold">structopt</strong> in  <strong class="source-inline">Cargo.toml</strong> under dependencies.</p></li>
-				<li>Build the tool with the following command:<p class="source-code"><strong class="bold">cargo build --release</strong></p></li>
-				<li>Run the shell command with the following command:<p class="source-code"> <strong class="bold">cargo run --release -- -m src &lt;src-folder&gt;</strong></p><p>Alternatively, add the <strong class="source-inline">rstat</strong> binary to the path, and set <strong class="source-inline">LD_LIBRARY PATH</strong> to run the shell command like this:</p><p class="source-code"><strong class="bold">target/debug/rstat -m src &lt;src-folder&gt;</strong></p><p>In Unix <a id="_idIndexMarker498"/>environments, <strong class="source-inline">LD_LIBRARY_PATH</strong> can be set as shown here (equivalent commands can be used for Windows):</p><p class="source-code"><strong class="bold">export LD_LIBRARY_PATH=$(rustc --print sysroot)/lib:$LD_LIBRARY_PATH</strong></p></li>
+				<li value="1">Create project: Create a new project with the following command and change directory into the <code>rstat</code> directory:<pre><strong class="bold">cargo new rstat &amp;&amp; cd rstat</strong></pre></li>
+				<li>Create source files: Create three files under the <code>src</code> folder – <code>main.rs</code>, <code>srcstats.rs</code>, and <code>errors.rs</code>.</li>
+				<li>Define custom error handling: In <code>errors.rs</code>, create a struct, <code>StatsError</code>, to represent our custom error type. This will be used to unify error handling in our <a id="_idIndexMarker497"/>project and to send messages back to the user. Implement the following four traits on <code>struct StatsError</code> : <code>fmt::Display, From&lt;&amp;str&gt;</code>, <code>From&lt;io::Error&gt;</code>, and <code>From&lt;std::num::TryFromIntError&gt;</code>.</li>
+				<li>Define logic for computing source stats: In <code>srcstats.rs</code>, create a struct, <code>SrcStats</code>, to define the source metrics to be computed. Define two functions: <code>get_src_stats_for_file()</code> (which accepts a filename as an argument and computes the source metrics for that file) and <code>get_summary_src_stats()</code> (which takes a directory name as an argument and computes source metrics for all files in that directory root).</li>
+				<li>Write the main() function to accept command-line parameters:<p>In <code>main.rs</code>, define a <code>Opt</code> struct to define command-line parameters and flags for the shell command. Write the <code>main()</code> function, which accepts a source directory name from the command line and invokes the <code>get_summary_src_stats()</code> method in the <code>srcstats</code> module. Ensure to include <code>Cargo.toml</code> under dependencies.</p></li>
+				<li>Build the tool with the following command:<pre><strong class="bold">cargo build --release</strong></pre></li>
+				<li>Run the shell command with the following command:<pre> <code>rstat</code> binary to the path, and set <code>LD_LIBRARY PATH</code> to run the shell command like this:</p><pre><code>LD_LIBRARY_PATH</code> can be set as shown here (equivalent commands can be used for Windows):</p><pre><strong class="bold">export LD_LIBRARY_PATH=$(rustc --print sysroot)/lib:$LD_LIBRARY_PATH</strong></pre></li>
 				<li>View the consolidated source stats printed to the terminal and confirm the metrics generated.</li>
 			</ol>
 			<p>Let's now look at the code snippets for the steps listed previously. We will start by defining custom error handling.</p>
 			<h2 id="_idParaDest-106"><a id="_idTextAnchor109"/>Error handling</h2>
-			<p>While executing our shell <a id="_idIndexMarker499"/>command, several things can go wrong. The source folder specified may be invalid. The permissions may be insufficient to view the directory entries. There can be other types of I/O errors such as those listed here: <a href="https://doc.rust-lang.org/std/io/enum.ErrorKind.html">https://doc.rust-lang.org/std/io/enum.ErrorKind.html</a>. In order for us to give a meaningful message back to the user, we will create a custom error type. We will also write conversion methods that will automatically convert different types of I/O errors into our custom error type by implementing various <strong class="source-inline">From</strong> traits. All this code is stored in the <strong class="source-inline">errors.rs</strong> file. Let's review the code snippets from this file in two parts:</p>
+			<p>While executing our shell <a id="_idIndexMarker499"/>command, several things can go wrong. The source folder specified may be invalid. The permissions may be insufficient to view the directory entries. There can be other types of I/O errors such as those listed here: <a href="https://doc.rust-lang.org/std/io/enum.ErrorKind.html">https://doc.rust-lang.org/std/io/enum.ErrorKind.html</a>. In order for us to give a meaningful message back to the user, we will create a custom error type. We will also write conversion methods that will automatically convert different types of I/O errors into our custom error type by implementing various <code>From</code> traits. All this code is stored in the <code>errors.rs</code> file. Let's review the code snippets from this file in two parts:</p>
 			<ul>
-				<li>Part 1 covers the definition of the custom error type and <strong class="source-inline">Display</strong> trait implementation.</li>
-				<li>Part 2 covers the various <strong class="source-inline">From</strong> trait implementations for our custom error type.</li>
+				<li>Part 1 covers the definition of the custom error type and <code>Display</code> trait implementation.</li>
+				<li>Part 2 covers the various <code>From</code> trait implementations for our custom error type.</li>
 			</ul>
-			<p>Part 1 of the <strong class="source-inline">errors.rs</strong> code is shown here:</p>
+			<p>Part 1 of the <code>errors.rs</code> code is shown here:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/errors.rs (part-1)</p>
-			<p class="source-code">use std::fmt;</p>
-			<p class="source-code">use std::io;</p>
-			<p class="source-code"> </p>
-			<p class="source-code">#[derive(Debug)]</p>
-			<p class="source-code">pub struct StatsError {</p>
-			<p class="source-code">    pub message: String,</p>
-			<p class="source-code">}</p>
-			<p class="source-code"> </p>
-			<p class="source-code">impl fmt::Display for StatsError {</p>
-			<p class="source-code">    fn fmt(&amp;self, f: &amp;mut fmt::Formatter) -&gt; Result&lt;(), </p>
-			<p class="source-code">        fmt::Error&gt; {</p>
-			<p class="source-code">        write!(f, "{}", self)</p>
-			<p class="source-code">    }</p>
-			<p class="source-code">}</p>
-			<p>Here the <strong class="source-inline">StatsError</strong> struct is defined with a field <strong class="source-inline">message</strong> that will be used to store the error <a id="_idIndexMarker500"/>message, which will get propagated to the user in case of errors. We have also implemented the <strong class="source-inline">Display</strong> trait to enable the error message to get printed to the console.</p>
-			<p>Let's now see part 2 of the <strong class="source-inline">errors.rs</strong> file. Here, we implement the various <strong class="source-inline">From</strong> trait implementations, as shown here. Code annotations are numbered, and are described after the code listing:</p>
+			<pre>use std::fmt;
+use std::io;
+ 
+#[derive(Debug)]
+pub struct StatsError {
+    pub message: String,
+}
+ 
+impl fmt::Display for StatsError {
+    fn fmt(&amp;self, f: &amp;mut fmt::Formatter) -&gt; Result&lt;(), 
+        fmt::Error&gt; {
+        write!(f, "{}", self)
+    }
+}</pre>
+			<p>Here the <code>StatsError</code> struct is defined with a field <code>message</code> that will be used to store the error <a id="_idIndexMarker500"/>message, which will get propagated to the user in case of errors. We have also implemented the <code>Display</code> trait to enable the error message to get printed to the console.</p>
+			<p>Let's now see part 2 of the <code>errors.rs</code> file. Here, we implement the various <code>From</code> trait implementations, as shown here. Code annotations are numbered, and are described after the code listing:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/errors.rs (part-2)</p>
-			<p class="source-code">impl From&lt;&amp;str&gt; for StatsError {        <strong class="bold">&lt;1&gt;</strong></p>
-			<p class="source-code">    fn from(s: &amp;str) -&gt; Self {</p>
-			<p class="source-code">        StatsError {</p>
-			<p class="source-code">            message: s.to_string(),</p>
-			<p class="source-code">        }</p>
-			<p class="source-code">    }</p>
-			<p class="source-code">}</p>
-			<p class="source-code">impl From&lt;io::Error&gt; for StatsError {    <strong class="bold">&lt;2&gt;</strong></p>
-			<p class="source-code">    fn from(e: io::Error) -&gt; Self {</p>
-			<p class="source-code">        StatsError {</p>
-			<p class="source-code">            message: e.to_string(),</p>
-			<p class="source-code">        }</p>
-			<p class="source-code">    }</p>
-			<p class="source-code">}</p>
-			<p class="source-code">impl From&lt;std::num::TryFromIntError&gt; for StatsError {   <strong class="bold">&lt;3&gt;</strong></p>
-			<p class="source-code">    fn from(_e: std::num::TryFromIntError) -&gt; Self {</p>
-			<p class="source-code">        StatsError {</p>
-			<p class="source-code">            message: "Number conversion error".to_string(),</p>
-			<p class="source-code">        }</p>
-			<p class="source-code">    }</p>
-			<p class="source-code">}</p>
+			<pre>impl From&lt;&amp;str&gt; for StatsError {        <strong class="bold">&lt;1&gt;</strong>
+    fn from(s: &amp;str) -&gt; Self {
+        StatsError {
+            message: s.to_string(),
+        }
+    }
+}
+impl From&lt;io::Error&gt; for StatsError {    <strong class="bold">&lt;2&gt;</strong>
+    fn from(e: io::Error) -&gt; Self {
+        StatsError {
+            message: e.to_string(),
+        }
+    }
+}
+impl From&lt;std::num::TryFromIntError&gt; for StatsError {   <strong class="bold">&lt;3&gt;</strong>
+    fn from(_e: std::num::TryFromIntError) -&gt; Self {
+        StatsError {
+            message: "Number conversion error".to_string(),
+        }
+    }
+}</pre>
 			<p>The source code <a id="_idIndexMarker501"/>annotations (shown with numbers) are detailed here:</p>
 			<ol>
-				<li value="1">Helps to construct a <strong class="source-inline">StatsError</strong> from a string</li>
-				<li>Converts <strong class="source-inline">IO:Error</strong> to <strong class="source-inline">StatsError</strong></li>
-				<li>Used to check for errors while converting <strong class="source-inline">usize</strong> into <strong class="source-inline">u32</strong></li>
+				<li value="1">Helps to construct a <code>StatsError</code> from a string</li>
+				<li>Converts <code>IO:Error</code> to <code>StatsError</code></li>
+				<li>Used to check for errors while converting <code>usize</code> into <code>u32</code></li>
 			</ol>
-			<p>In this section, we reviewed the code for the <strong class="source-inline">errors.js</strong> file. In the next section, we will see the code for the computation of source code metrics.</p>
+			<p>In this section, we reviewed the code for the <code>errors.js</code> file. In the next section, we will see the code for the computation of source code metrics.</p>
 			<h2 id="_idParaDest-107"><a id="_idTextAnchor110"/>Source metric computation</h2>
-			<p>In this section, we will look at <a id="_idIndexMarker502"/>the code for the <strong class="source-inline">srcstats.rs</strong> file. The code snippets for this file are shown in the following order in separate parts:</p>
+			<p>In this section, we will look at <a id="_idIndexMarker502"/>the code for the <code>srcstats.rs</code> file. The code snippets for this file are shown in the following order in separate parts:</p>
 			<ul>
 				<li><em class="italic">Part 1</em>: Module imports</li>
-				<li><em class="italic">Part 2:</em> Definition of the <strong class="source-inline">SrcStats</strong> struct</li>
-				<li><em class="italic">Part 3</em>: Definition of the <strong class="source-inline">get_summary_src_stats()</strong> function</li>
-				<li><em class="italic">Part 4:</em> Definition of the <strong class="source-inline">get_src_stats_for_file()</strong> function</li>
+				<li><em class="italic">Part 2:</em> Definition of the <code>SrcStats</code> struct</li>
+				<li><em class="italic">Part 3</em>: Definition of the <code>get_summary_src_stats()</code> function</li>
+				<li><em class="italic">Part 4:</em> Definition of the <code>get_src_stats_for_file()</code> function</li>
 			</ul>
 			<p>Let's look at <em class="italic">part 1</em>. The module imports are shown here. The descriptions corresponding to code annotation numbers are shown after the code listing:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/srcstats.rs (part-1)</p>
-			<p class="source-code">use std::convert::TryFrom;     <strong class="bold">&lt;1&gt;</strong></p>
-			<p class="source-code">use std::ffi::OsStr;           <strong class="bold">&lt;2&gt;</strong></p>
-			<p class="source-code">use std::fs;                   <strong class="bold">&lt;3&gt;</strong></p>
-			<p class="source-code">use std::fs::DirEntry;         <strong class="bold">&lt;4&gt;</strong></p>
-			<p class="source-code">use std::path::{Path, PathBuf};<strong class="bold">&lt;5&gt;</strong></p>
-			<p class="source-code">use super::errors::StatsError; <strong class="bold">&lt;6&gt;</strong></p>
+			<pre>use std::convert::TryFrom;     <strong class="bold">&lt;1&gt;</strong>
+use std::ffi::OsStr;           <strong class="bold">&lt;2&gt;</strong>
+use std::fs;                   <strong class="bold">&lt;3&gt;</strong>
+use std::fs::DirEntry;         <strong class="bold">&lt;4&gt;</strong>
+use std::path::{Path, PathBuf};<strong class="bold">&lt;5&gt;</strong>
+use super::errors::StatsError; <strong class="bold">&lt;6&gt;</strong></pre>
 			<p>The descriptions for the numbered code annotations are listed here:</p>
 			<ul>
-				<li><strong class="source-inline">TryFrom</strong> is used to capture any errors in converting <strong class="source-inline">usize</strong> to <strong class="source-inline">u32</strong>.</li>
-				<li><strong class="source-inline">OsStr</strong> is used to check for files with the <strong class="source-inline">.rs</strong> extension.</li>
-				<li><strong class="source-inline">std::fs</strong> is the main module in the Rust Standard Library for file and directory operations.</li>
-				<li><strong class="source-inline">DirEntry</strong> is a struct used by Rust Standard Library to denote individual directory entries.</li>
-				<li><strong class="source-inline">Path</strong> and <strong class="source-inline">PathBuf</strong> are used to store path names. <strong class="source-inline">&amp;Path</strong> is similar to <strong class="source-inline">&amp;str</strong> and <strong class="source-inline">PathBuf</strong> is similar to <strong class="source-inline">String</strong>. One is a reference and another is an owned object.</li>
-				<li>Any errors in reading files or computations are converted to the custom error type <strong class="source-inline">StatsError</strong>. This is imported in this line.</li>
+				<li><code>TryFrom</code> is used to capture any errors in converting <code>usize</code> to <code>u32</code>.</li>
+				<li><code>OsStr</code> is used to check for files with the <code>.rs</code> extension.</li>
+				<li><code>std::fs</code> is the main module in the Rust Standard Library for file and directory operations.</li>
+				<li><code>DirEntry</code> is a struct used by Rust Standard Library to denote individual directory entries.</li>
+				<li><code>Path</code> and <code>PathBuf</code> are used to store path names. <code>&amp;Path</code> is similar to <code>&amp;str</code> and <code>PathBuf</code> is similar to <code>String</code>. One is a reference and another is an owned object.</li>
+				<li>Any errors in reading files or computations are converted to the custom error type <code>StatsError</code>. This is imported in this line.</li>
 			</ul>
 			<p>We will now look at <em class="italic">part 2</em>. The definition of the struct to store computed metrics is covered here.</p>
-			<p>The struct <strong class="source-inline">SrcStats</strong> contains the following source metrics, which will be generated by our shell command:</p>
+			<p>The struct <code>SrcStats</code> contains the following source metrics, which will be generated by our shell command:</p>
 			<ul>
 				<li>The number of <a id="_idIndexMarker503"/>Rust source files</li>
 				<li>A count of lines of code (excluding comments and blanks)</li>
 				<li>The number of blank lines</li>
-				<li>The number of comment lines (single-line comments that begin with <strong class="source-inline">//</strong>; note that we are not considering multi-line comments in the scope of this tool)</li>
+				<li>The number of comment lines (single-line comments that begin with <code>//</code>; note that we are not considering multi-line comments in the scope of this tool)</li>
 			</ul>
 			<p>The Rust data structure to hold the computed source file metrics is shown next:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/srcstats.rs (part-2)</p>
-			<p class="source-code">// Struct to hold the stats</p>
-			<p class="source-code">#[derive(Debug)]</p>
-			<p class="source-code">pub struct SrcStats {</p>
-			<p class="source-code">    pub number_of_files: u32,</p>
-			<p class="source-code">    pub loc: u32,</p>
-			<p class="source-code">    pub comments: u32,</p>
-			<p class="source-code">    pub blanks: u32,</p>
-			<p class="source-code">}</p>
+			<pre>// Struct to hold the stats
+#[derive(Debug)]
+pub struct SrcStats {
+    pub number_of_files: u32,
+    pub loc: u32,
+    pub comments: u32,
+    pub blanks: u32,
+}</pre>
 			<p>Let's look at <em class="italic">part 3</em>, which is the main function that computes summary statistics. As this code is a bit long, we will look at this in three parts:</p>
 			<ul>
 				<li>Part 3a of the code snippet shows variable initialization.</li>
 				<li>Part 3b of the code snippet shows the main code that recursively retrieves the Rust source files within a directory.</li>
-				<li>In part 3c, we iterate through the list of Rust files and invoke the <strong class="source-inline">get_src_stats_for_file()</strong> method to compute source metrics for each file. The results are consolidated.</li>
+				<li>In part 3c, we iterate through the list of Rust files and invoke the <code>get_src_stats_for_file()</code> method to compute source metrics for each file. The results are consolidated.</li>
 			</ul>
-			<p>Part 3a of the <a id="_idIndexMarker504"/><strong class="source-inline">get_summary_src_stats()</strong> method is shown here:</p>
+			<p>Part 3a of the <a id="_idIndexMarker504"/><code>get_summary_src_stats()</code> method is shown here:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/srcstats.rs (part 3a)</p>
-			<p class="source-code">pub fn <strong class="source-inline">get_summary_src_stats</strong>(in_dir: &amp;Path) -&gt;   </p>
-			<p class="source-code">    Result&lt;SrcStats, StatsError&gt; {</p>
-			<p class="source-code">    let mut total_loc = 0;</p>
-			<p class="source-code">    let mut total_comments = 0;</p>
-			<p class="source-code">    let mut total_blanks = 0;</p>
-			<p class="source-code">    let mut dir_entries: Vec&lt;PathBuf&gt; = </p>
-			<p class="source-code">        vec![in_dir.to_path_buf()];</p>
-			<p class="source-code">    let mut file_entries: Vec&lt;DirEntry&gt; = vec![];</p>
-			<p class="source-code"> </p>
-			<p class="source-code">    // Recursively iterate over directory entries to get flat </p>
-			<p class="source-code">    // list of .rs files</p>
-			<p>Part 3a shows the initialization of variables representing the various metrics that will be computed by the shell command – <strong class="source-inline">total_loc</strong>, <strong class="source-inline">total_comments</strong>, and <strong class="source-inline">total_blanks</strong>. Two more variables, <strong class="source-inline">dir_entries</strong> and <strong class="source-inline">file_entries</strong>, are initialized as <strong class="source-inline">vector</strong> data types, which will be used for intermediate computations.</p>
-			<p>Part 3b of the <strong class="source-inline">get_summary_src_stats()</strong> method is shown here:</p>
+			<pre>pub fn <code>get_summary_src_stats</code>(in_dir: &amp;Path) -&gt;   
+    Result&lt;SrcStats, StatsError&gt; {
+    let mut total_loc = 0;
+    let mut total_comments = 0;
+    let mut total_blanks = 0;
+    let mut dir_entries: Vec&lt;PathBuf&gt; = 
+        vec![in_dir.to_path_buf()];
+    let mut file_entries: Vec&lt;DirEntry&gt; = vec![];
+ 
+    // Recursively iterate over directory entries to get flat 
+    // list of .rs files</pre>
+			<p>Part 3a shows the initialization of variables representing the various metrics that will be computed by the shell command – <code>total_loc</code>, <code>total_comments</code>, and <code>total_blanks</code>. Two more variables, <code>dir_entries</code> and <code>file_entries</code>, are initialized as <code>vector</code> data types, which will be used for intermediate computations.</p>
+			<p>Part 3b of the <code>get_summary_src_stats()</code> method is shown here:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/srcstats.rs (part-3b)</p>
-			<p class="source-code">    while let Some(entry) = dir_entries.pop() {</p>
-			<p class="source-code">        for inner_entry in fs::read_dir(&amp;entry)? {</p>
-			<p class="source-code">            if let Ok(entry) = inner_entry {</p>
-			<p class="source-code">                if entry.path().is_dir() {</p>
-			<p class="source-code">                    dir_entries.push(entry.path());</p>
-			<p class="source-code">                } else {</p>
-			<p class="source-code">                    if entry.path().extension() == </p>
-			<p class="source-code">                    Some(OsStr::new("rs")) {</p>
-			<p class="source-code">                        file_entries.push(entry);</p>
-			<p class="source-code">                    }</p>
-			<p class="source-code">                }</p>
-			<p class="source-code">            }</p>
-			<p class="source-code">        }</p>
-			<p class="source-code">    }</p>
-			<p>In part 3b of the code, we <a id="_idIndexMarker505"/>are iterating through the entries within the specified folder and segregating the entries of the type <em class="italic">directory</em> from the entries of the type <em class="italic">file</em>, and storing them in separate <strong class="source-inline">vector</strong> variables.</p>
-			<p>Part 3c of the <strong class="source-inline">get_summary_src_stats()</strong> method is shown here:</p>
+			<pre>    while let Some(entry) = dir_entries.pop() {
+        for inner_entry in fs::read_dir(&amp;entry)? {
+            if let Ok(entry) = inner_entry {
+                if entry.path().is_dir() {
+                    dir_entries.push(entry.path());
+                } else {
+                    if entry.path().extension() == 
+                    Some(OsStr::new("rs")) {
+                        file_entries.push(entry);
+                    }
+                }
+            }
+        }
+    }</pre>
+			<p>In part 3b of the code, we <a id="_idIndexMarker505"/>are iterating through the entries within the specified folder and segregating the entries of the type <em class="italic">directory</em> from the entries of the type <em class="italic">file</em>, and storing them in separate <code>vector</code> variables.</p>
+			<p>Part 3c of the <code>get_summary_src_stats()</code> method is shown here:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/srcstats.rs (part 3c)</p>
-			<p class="source-code">    let file_count = file_entries.len();</p>
-			<p class="source-code">    // Compute the stats</p>
-			<p class="source-code">    for entry in file_entries {</p>
-			<p class="source-code">        let stat = get_src_stats_for_file(&amp;entry.path())?;</p>
-			<p class="source-code">        total_loc += stat.loc;</p>
-			<p class="source-code">        total_blanks += stat.blanks;</p>
-			<p class="source-code">        total_comments += stat.comments;</p>
-			<p class="source-code">    }</p>
-			<p class="source-code"> </p>
-			<p class="source-code">    Ok(SrcStats {</p>
-			<p class="source-code">        number_of_files: u32::try_from(file_count)?,</p>
-			<p class="source-code">        loc: total_loc,</p>
-			<p class="source-code">        comments: total_comments,</p>
-			<p class="source-code">        blanks: total_blanks,</p>
-			<p class="source-code">    })</p>
-			<p class="source-code">}</p>
+			<pre>    let file_count = file_entries.len();
+    // Compute the stats
+    for entry in file_entries {
+        let stat = get_src_stats_for_file(&amp;entry.path())?;
+        total_loc += stat.loc;
+        total_blanks += stat.blanks;
+        total_comments += stat.comments;
+    }
+ 
+    Ok(SrcStats {
+        number_of_files: u32::try_from(file_count)?,
+        loc: total_loc,
+        comments: total_comments,
+        blanks: total_blanks,
+    })
+}</pre>
 			<p>We will now look at <em class="italic">part 4</em>, which is the code to compute source metrics for an individual Rust source file:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/srcstats.rs (part-4)</p>
-			<p class="source-code">pub fn get_src_stats_for_file(file_name: &amp;Path) -&gt;  </p>
-			<p class="source-code">    Result&lt;SrcStats, StatsError&gt; {</p>
-			<p class="source-code">    let file_contents = fs::read_to_string(file_name)?;</p>
-			<p class="source-code">    let mut loc = 0;</p>
-			<p class="source-code">    let mut blanks = 0;</p>
-			<p class="source-code">    let mut comments = 0;</p>
-			<p class="source-code">    for line in file_contents.lines() {</p>
-			<p class="source-code">        if line.len() == 0 {</p>
-			<p class="source-code">            blanks += 1;</p>
-			<p class="source-code">        } else if line.trim_start().starts_with("//") {</p>
-			<p class="source-code">            comments += 1;</p>
-			<p class="source-code">        } else {</p>
-			<p class="source-code">            loc += 1;</p>
-			<p class="source-code">        }</p>
-			<p class="source-code">    }</p>
-			<p class="source-code">    let source_stats = SrcStats {</p>
-			<p class="source-code">        number_of_files: u32::try_from(file_contents.lines()</p>
-			<p class="source-code">            .count())?,</p>
-			<p class="source-code">        loc: loc,</p>
-			<p class="source-code">        comments: comments,</p>
-			<p class="source-code">        blanks: blanks,</p>
-			<p class="source-code">    };</p>
-			<p class="source-code">    Ok(source_stats)</p>
-			<p class="source-code">}</p>
-			<p>In part 4, the code for <a id="_idIndexMarker506"/>the <strong class="source-inline">get_src_stats_for_file()</strong> function is shown. This function reads the source file line by line and determines whether the line corresponds to a regular line of code, or blanks, or comments. Based on this classification, the respective counters are incremented. The final result is returned as the <strong class="source-inline">SrcStats</strong> struct from the function.</p>
-			<p>This concludes the code listing for the <strong class="source-inline">srcstats</strong> module. In this subsection, we reviewed the code for computing source code metrics. In the next section, we will review the code for the last part of the code listing, which is the <strong class="source-inline">main()</strong> function.</p>
+			<pre>pub fn get_src_stats_for_file(file_name: &amp;Path) -&gt;  
+    Result&lt;SrcStats, StatsError&gt; {
+    let file_contents = fs::read_to_string(file_name)?;
+    let mut loc = 0;
+    let mut blanks = 0;
+    let mut comments = 0;
+    for line in file_contents.lines() {
+        if line.len() == 0 {
+            blanks += 1;
+        } else if line.trim_start().starts_with("//") {
+            comments += 1;
+        } else {
+            loc += 1;
+        }
+    }
+    let source_stats = SrcStats {
+        number_of_files: u32::try_from(file_contents.lines()
+            .count())?,
+        loc: loc,
+        comments: comments,
+        blanks: blanks,
+    };
+    Ok(source_stats)
+}</pre>
+			<p>In part 4, the code for <a id="_idIndexMarker506"/>the <code>get_src_stats_for_file()</code> function is shown. This function reads the source file line by line and determines whether the line corresponds to a regular line of code, or blanks, or comments. Based on this classification, the respective counters are incremented. The final result is returned as the <code>SrcStats</code> struct from the function.</p>
+			<p>This concludes the code listing for the <code>srcstats</code> module. In this subsection, we reviewed the code for computing source code metrics. In the next section, we will review the code for the last part of the code listing, which is the <code>main()</code> function.</p>
 			<h2 id="_idParaDest-108"><a id="_idTextAnchor111"/>The main() function</h2>
-			<p>In this subsection, we <a id="_idIndexMarker507"/>will now look at the final part of the code, which is the <strong class="source-inline">main()</strong> function that represents the entry point into the binary. It performs four tasks:</p>
+			<p>In this subsection, we <a id="_idIndexMarker507"/>will now look at the final part of the code, which is the <code>main()</code> function that represents the entry point into the binary. It performs four tasks:</p>
 			<ol>
 				<li value="1">Accepts user inputs from the command line.</li>
 				<li>Invokes the appropriate method to compute the source code metrics.</li>
 				<li>Displays the result to the user.</li>
 				<li>In the event of errors, a suitable error message is displayed to the user.</li>
 			</ol>
-			<p>The code listing for the <strong class="source-inline">main()</strong> function is shown in two parts:</p>
+			<p>The code listing for the <code>main()</code> function is shown in two parts:</p>
 			<ul>
 				<li>Part 1 shows the structure of the command-line interface for the shell command.</li>
 				<li>Part 2 shows the code to invoke calls for the computation of source metrics and to display the results to the user.</li>
 			</ul>
-			<p><em class="italic">Part 1</em> of <strong class="source-inline">main.rs</strong> is shown here. We will use the <strong class="source-inline">structopt</strong> crate to define the structure of the command line inputs to be accepted from the user.</p>
-			<p>Add the following to the <strong class="source-inline">Cargo.toml</strong> file:</p>
-			<p class="source-code">[dependencies]</p>
-			<p class="source-code">structopt = "0.3.16"</p>
+			<p><em class="italic">Part 1</em> of <code>main.rs</code> is shown here. We will use the <code>structopt</code> crate to define the structure of the command line inputs to be accepted from the user.</p>
+			<p>Add the following to the <code>Cargo.toml</code> file:</p>
+			<pre>[dependencies]
+structopt = "0.3.16"</pre>
 			<p>The code listing for <em class="italic">part 1</em> is shown here:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/main.rs (part-1)</p>
-			<p class="source-code">use std::path::PathBuf;</p>
-			<p class="source-code">use structopt::StructOpt;</p>
-			<p class="source-code">mod srcstats;</p>
-			<p class="source-code">use srcstats::get_summary_src_stats;</p>
-			<p class="source-code">mod errors;</p>
-			<p class="source-code">use errors::StatsError;</p>
-			<p class="source-code"> </p>
-			<p class="source-code">#[derive(Debug, StructOpt)]</p>
-			<p class="source-code">#[structopt(</p>
-			<p class="source-code">    name = "rstat",</p>
-			<p class="source-code">    about = "This is a tool to generate statistics on Rust </p>
-			<p class="source-code">        projects"</p>
-			<p class="source-code">)]</p>
-			<p class="source-code">struct Opt {</p>
-			<p class="source-code">    #[structopt(name = "source directory", </p>
-			<p class="source-code">        parse(from_os_str))]</p>
-			<p class="source-code">    in_dir: PathBuf,</p>
-			<p class="source-code">    #[structopt(name = "mode", short)]</p>
-			<p class="source-code">    mode: String,</p>
-			<p class="source-code">}</p>
-			<p>In part 1 of the code <a id="_idIndexMarker508"/>shown, a data structure, <strong class="source-inline">Opt</strong>, is defined, which contains two fields – <strong class="source-inline">in_dir</strong>, representing the path to the input folder (for which source metrics are to be computed), and a field, <strong class="source-inline">mode</strong>. The value for <strong class="source-inline">mode</strong> in our example is <strong class="source-inline">src</strong>, which indicates that we want to compute source code metrics. In the future, additional modes can be added (such as the <strong class="source-inline">object</strong> mode to compute object file metrics such as the size of the executable and library object files).</p>
-			<p>In <em class="italic">part 2</em> of this code, we read the source folder from user's command-line argument, and invoke the <strong class="source-inline">get_summary_src_stats()</strong> method from the <strong class="source-inline">srcstats</strong> module, which we reviewed in the previous subsection. The metrics returned by this method are then shown to user in the terminal. <em class="italic">Part 2</em> of the code listing is shown here:</p>
+			<pre>use std::path::PathBuf;
+use structopt::StructOpt;
+mod srcstats;
+use srcstats::get_summary_src_stats;
+mod errors;
+use errors::StatsError;
+ 
+#[derive(Debug, StructOpt)]
+#[structopt(
+    name = "rstat",
+    about = "This is a tool to generate statistics on Rust 
+        projects"
+)]
+struct Opt {
+    #[structopt(name = "source directory", 
+        parse(from_os_str))]
+    in_dir: PathBuf,
+    #[structopt(name = "mode", short)]
+    mode: String,
+}</pre>
+			<p>In part 1 of the code <a id="_idIndexMarker508"/>shown, a data structure, <code>Opt</code>, is defined, which contains two fields – <code>in_dir</code>, representing the path to the input folder (for which source metrics are to be computed), and a field, <code>mode</code>. The value for <code>mode</code> in our example is <code>src</code>, which indicates that we want to compute source code metrics. In the future, additional modes can be added (such as the <code>object</code> mode to compute object file metrics such as the size of the executable and library object files).</p>
+			<p>In <em class="italic">part 2</em> of this code, we read the source folder from user's command-line argument, and invoke the <code>get_summary_src_stats()</code> method from the <code>srcstats</code> module, which we reviewed in the previous subsection. The metrics returned by this method are then shown to user in the terminal. <em class="italic">Part 2</em> of the code listing is shown here:</p>
 			<p class="SC---Link" lang="en-US" xml:lang="en-US">src/main.rs</p>
-			<p>The <strong class="source-inline">main</strong> function code is as follows:</p>
-			<p class="source-code">fn main() -&gt; Result&lt;(), StatsError&gt; {</p>
-			<p class="source-code">    let opt = Opt::from_args();</p>
-			<p class="source-code">    let mode = &amp;opt.mode[..];</p>
-			<p class="source-code">    match mode {</p>
-			<p class="source-code">        "src" =&gt; {</p>
-			<p class="source-code">            let stats = get_summary_src_stats(&amp;opt.in_dir)?;</p>
-			<p class="source-code">            println!("Summary stats: {:?}", stats);</p>
-			<p class="source-code">        }</p>
-			<p class="source-code">        _ =&gt; println!("Sorry, no stats"),</p>
-			<p class="source-code">    }</p>
-			<p class="source-code">    Ok(())</p>
-			<p class="source-code">}</p>
-			<p>Part 2 shows the <strong class="source-inline">main()</strong> function, which is <a id="_idIndexMarker509"/>the entry point into our shell command. The function accepts and parses command-line parameters, and invokes the <strong class="source-inline">get_summary_src_stats()</strong> function, passing the <em class="italic">source folder</em> specified by the user as a function parameter. The results, containing consolidated source code metrics, are printed to the console.</p>
+			<p>The <code>main</code> function code is as follows:</p>
+			<pre>fn main() -&gt; Result&lt;(), StatsError&gt; {
+    let opt = Opt::from_args();
+    let mode = &amp;opt.mode[..];
+    match mode {
+        "src" =&gt; {
+            let stats = get_summary_src_stats(&amp;opt.in_dir)?;
+            println!("Summary stats: {:?}", stats);
+        }
+        _ =&gt; println!("Sorry, no stats"),
+    }
+    Ok(())
+}</pre>
+			<p>Part 2 shows the <code>main()</code> function, which is <a id="_idIndexMarker509"/>the entry point into our shell command. The function accepts and parses command-line parameters, and invokes the <code>get_summary_src_stats()</code> function, passing the <em class="italic">source folder</em> specified by the user as a function parameter. The results, containing consolidated source code metrics, are printed to the console.</p>
 			<p>Build and run the tool with the following commands:</p>
-			<p class="source-code">cargo run --release -- -m src &lt;src-folder&gt;</p>
-			<p><strong class="source-inline">&lt;source-folder&gt;</strong> is the location of the Rust project or source files and <strong class="source-inline">-m</strong> is the command-line flag to be specified. It will be <strong class="source-inline">src</strong>, to indicate that we want source code metrics.</p>
+			<pre>cargo run --release -- -m src &lt;src-folder&gt;</pre>
+			<p><code>&lt;source-folder&gt;</code> is the location of the Rust project or source files and <code>-m</code> is the command-line flag to be specified. It will be <code>src</code>, to indicate that we want source code metrics.</p>
 			<p>If you want to run the stats for the current project, you can do so with the following:</p>
-			<p class="source-code">cargo run --release -- -m src .</p>
-			<p>Note the dot (<strong class="source-inline">.</strong>) in the command, which indicates we want to run the command for the current project folder.</p>
+			<pre>cargo run --release -- -m src .</pre>
+			<p>Note the dot (<code>.</code>) in the command, which indicates we want to run the command for the current project folder.</p>
 			<p>You will see the <a id="_idIndexMarker510"/>source code metrics displayed on the terminal.</p>
-			<p>As an exercise, you can extend this shell command to generate metrics on the binary files generated for a Rust project. To invoke this option, allow the user to specify the <strong class="source-inline">–m</strong> flag as <strong class="source-inline">bin</strong>.</p>
+			<p>As an exercise, you can extend this shell command to generate metrics on the binary files generated for a Rust project. To invoke this option, allow the user to specify the <code>–m</code> flag as <code>bin</code>.</p>
 			<p>This concludes the section on developing a shell command, which demonstrated file and directory operations in Rust.</p>
 			<h1 id="_idParaDest-109"><a id="_idTextAnchor112"/>Summary</h1>
-			<p>In this chapter, we reviewed the basics of file management at the operating system level, and the main system calls to work with files. We then learned how to use the Rust Standard Library to open and close a file, read and write to a file, query file metadata, and work with links. After file operations, we learned how to do directory and path operations in Rust. In the third section, we saw how to create hard links and soft (symbolic) links using Rust, and how to query <strong class="source-inline">symlinks</strong>.</p>
+			<p>In this chapter, we reviewed the basics of file management at the operating system level, and the main system calls to work with files. We then learned how to use the Rust Standard Library to open and close a file, read and write to a file, query file metadata, and work with links. After file operations, we learned how to do directory and path operations in Rust. In the third section, we saw how to create hard links and soft (symbolic) links using Rust, and how to query <code>symlinks</code>.</p>
 			<p>We then developed a shell command that computed source code metrics for Rust source files within a directory tree. This project illustrated how to perform various file and directory operations in Rust using a practical example, and reinforced the concepts of the Rust Standard Library for file I/O operations.</p>
 			<p>Continuing with the topic of I/O, in the next chapter, we will learn the basics of terminal I/O and the features Rust provides to work with pseudo terminals.</p>
 		</div>

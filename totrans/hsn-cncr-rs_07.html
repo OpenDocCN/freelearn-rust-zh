@@ -1,13 +1,10 @@
-<html><head></head><body><div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Atomics – Safely Reclaiming Memory</h1>
-                </header>
+<html><head></head><body><div><h1 class="header-title">Atomics – Safely Reclaiming Memory</h1>
+                
             
-            <article>
+            
                 
 <p>In the previous chapter, we discussed the atomic primitives available to the Rust programmer, implementing higher-level synchronization primitives and some data structures built entirely of atomics. A key challenge with atomic-only programming, compared to using higher-level synchronization primitives, is memory reclamation. It is only safe to free memory once. When we build concurrent algorithms only from atomic primitives, it's very challenging to do something only once and keep performance up. That is, safely reclaiming memory requires some form of synchronization. But, as the total number of concurrent actors rise, the cost of synchronization dwarfs the latency or throughput benefits of atomic programming.</p>
-<p>In this chapter, we will discuss three techniques to resolve the memory reclamation issue of atomic programming—r<span>eference counting, h</span><span>azard pointers, and e</span><span>poch-based reclamation. </span><span>These methods will be familiar to you from previous chapters, but here we will do a deep-dive on them, investigating their trade-offs. We will introduce two new libraries, <kbd>conc</kbd> and crossbeam, which implement hazard pointers and epoch-based reclamation, respectively. By the close of this chapter, you should have a good handle on the three approaches presented and be in a good place to start laying down production-quality code.</span></p>
+<p>In this chapter, we will discuss three techniques to resolve the memory reclamation issue of atomic programming—reference counting, hazard pointers, and epoch-based reclamation. These methods will be familiar to you from previous chapters, but here we will do a deep-dive on them, investigating their trade-offs. We will introduce two new libraries, <kbd>conc</kbd> and crossbeam, which implement hazard pointers and epoch-based reclamation, respectively. By the close of this chapter, you should have a good handle on the three approaches presented and be in a good place to start laying down production-quality code.</p>
 <p>By the end of this chapter, we will have:</p>
 <ul>
 <li>Discussed reference counting and its associated tradeoffs</li>
@@ -19,72 +16,63 @@
 </ul>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Technical requirements</h1>
-                </header>
+<div><h1 class="header-title">Technical requirements</h1>
+                
             
-            <article>
+            
                 
 <p>This chapter requires a working Rust installation. The details of verifying your installation are covered in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust</em>. No additional software tools are required.<br/>
 <br/>
 You can find the source code for this book's projects on GitHub: <a href="https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust">https://github.com/PacktPublishing/Hands-On-Concurrency-with-Rust</a>. The source code for this chapter is under <kbd>Chapter07</kbd>.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Approaches to memory reclamation</h1>
-                </header>
+<div><h1 class="header-title">Approaches to memory reclamation</h1>
+                
             
-            <article>
+            
                 
 <p>In the discussion that follows, the three techniques are laid out roughly in order of their speed, slowest to fastest, as well as their difficulty, easiest to hardest. You should not be discouraged—you are now at one of the forefronts of the software engineering world. Welcome. Go boldly.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Reference counting</h1>
-                </header>
-            
-            <article>
+<div><h1 class="header-title">Reference counting</h1>
                 
-<p>Reference-counting memory reclamation associates a piece of protected data with an atomic counter. Every thread reading or writing to that protected data increases the counter on acquisition and decreases the counter on de-acquisition. The thread to decrease the counter and find it as zero is the last to hold the data and may either mark the data as available for reclamation or deallocate it immediately. This should, hopefully, sound familiar. The Rust standard library ships with <kbd>std::sync::Arc</kbd>—discussed in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send<span> </span>–<span> </span>the Foundation of Rust Concurrency</em>, and <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank"><span>Chapter 5</span></a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>, especially—to fulfill this exact need. While we discussed the usage of <kbd>Arc</kbd>, we did not discuss its internals previously, owing to our need to reach <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics<span> </span>–<span> </span>the Primitives of Synchronization</em>, before we had the necessary background. Let's dig into <kbd>Arc</kbd> now.</p>
+            
+            
+                
+<p>Reference-counting memory reclamation associates a piece of protected data with an atomic counter. Every thread reading or writing to that protected data increases the counter on acquisition and decreases the counter on de-acquisition. The thread to decrease the counter and find it as zero is the last to hold the data and may either mark the data as available for reclamation or deallocate it immediately. This should, hopefully, sound familiar. The Rust standard library ships with <kbd>std::sync::Arc</kbd>—discussed in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>, and <a href="e2de1ba7-c291-494e-82da-37fee7323c1d.xhtml" target="_blank">Chapter 5</a>, <em>Locks – Mutex, Condvar, Barriers and RWLock</em>, especially—to fulfill this exact need. While we discussed the usage of <kbd>Arc</kbd>, we did not discuss its internals previously, owing to our need to reach <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics – the Primitives of Synchronization</em>, before we had the necessary background. Let's dig into <kbd>Arc</kbd> now.</p>
 <p>The Rust compiler's code for <kbd>Arc</kbd> is <kbd>src/liballoc/arc.rs</kbd>. The structure definition is compact enough:</p>
 <pre style="padding-left: 30px">pub struct Arc&lt;T: ?Sized&gt; {
     ptr: Shared&lt;ArcInner&lt;T&gt;&gt;,
     phantom: PhantomData&lt;T&gt;,
 }</pre>
-<p>We encountered <kbd>Shared&lt;T&gt;</kbd> in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a><span>, </span> <span><em>The Rust Memory Model – Ownership, References and Manipulation</em></span>, with it being a pointer with the same characteristics as <kbd>*mut X</kbd> except that it is non-null. There are two functions for creating a new <kbd>Shared&lt;T&gt;</kbd>, which are <kbd>const unsafe fn new_unchecked(ptr: *mut X) -&gt; Self</kbd> and <kbd>fn new(ptr: *mut X) -&gt; Option&lt;Self&gt;</kbd>. In the first variant, the caller is responsible for ensuring that the pointer is non-null, in the second, the nulled nature of the pointer is checked. Please refer back to <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>,  <span><em>The Rust Memory Model – Ownership, References and Manipulation</em></span><span class="cdp-chapters-widget-post-title">,</span> <span class="underline"><em>Rc</em></span> section for a deep-dive. We know, then, that <kbd>ptr</kbd> in <kbd>Arc&lt;T&gt;</kbd> is non-null and, owing to the phantom data field, that the store of <kbd>T</kbd> is not held in <kbd>Arc&lt;T&gt;</kbd>. That'd be in <kbd>ArcInner&lt;T&gt;</kbd>:</p>
+<p>We encountered <kbd>Shared&lt;T&gt;</kbd> in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>,  <em>The Rust Memory Model – Ownership, References and Manipulation</em>, with it being a pointer with the same characteristics as <kbd>*mut X</kbd> except that it is non-null. There are two functions for creating a new <kbd>Shared&lt;T&gt;</kbd>, which are <kbd>const unsafe fn new_unchecked(ptr: *mut X) -&gt; Self</kbd> and <kbd>fn new(ptr: *mut X) -&gt; Option&lt;Self&gt;</kbd>. In the first variant, the caller is responsible for ensuring that the pointer is non-null, in the second, the nulled nature of the pointer is checked. Please refer back to <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>,  <em>The Rust Memory Model – Ownership, References and Manipulation</em>, <em>Rc</em> section for a deep-dive. We know, then, that <kbd>ptr</kbd> in <kbd>Arc&lt;T&gt;</kbd> is non-null and, owing to the phantom data field, that the store of <kbd>T</kbd> is not held in <kbd>Arc&lt;T&gt;</kbd>. That'd be in <kbd>ArcInner&lt;T&gt;</kbd>:</p>
 <pre style="padding-left: 30px">struct ArcInner&lt;T: ?Sized&gt; {
     strong: atomic::AtomicUsize,
 
@@ -175,22 +163,19 @@ drop Arc</pre>
 <p>The compare and exchange operation on weak ensures that there is only one weak reference outstanding—implying uniqueness—and does so on success with <kbd>Acquire</kbd> ordering. This ordering will force the subsequent check of the strong references to occur after the check of weak references in the code order and above the release store to the same. This exact technique will be familiar from our discussion on mutual exclusion in the previous chapter.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Tradeoffs</h1>
-                </header>
+<div><h1 class="header-title">Tradeoffs</h1>
+                
             
-            <article>
+            
                 
 <p>Reference counting has much to recommend it as an approach for atomic memory reclamation. The programming model of reference counting is straightforward to understand and memory is reclaimed as soon as it's possible to be safely reclaimed. Programming reference-counted implementations without the use of <kbd>Arc&lt;T&gt;</kbd> remains difficult, owing to the lack of double-word compare and swap in Rust. Consider a Treiber stack in which the reference counter is internal to stack nodes. The head of the stack might be snapshotted, then freed by some other thread, and the subsequent read to the reference counter will be forced through an invalid pointer.</p>
 <p>The following reference-counted Treiber stack is flawed:</p>
@@ -277,45 +262,39 @@ impl&lt;T&gt; Stack&lt;T&gt; {
 <p>Ultimately, where reference counting struggles is contention, as the number of threads operating on the same reference-counted data increase., those acquire/release pairs don't come cheaply. Reference counting is a good model when you expect the number of threads to be relatively low or where absolute performance is not a key consideration. Otherwise, you'll need to investigate the following methods, which have tradeoffs of their own.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Hazard pointers</h1>
-                </header>
+<div><h1 class="header-title">Hazard pointers</h1>
+                
             
-            <article>
+            
                 
 <p>We touched on hazard pointers as a method for safe memory reclamation in the previous chapter. We'll now examine the concept in-depth and in the context of a more or less ready-to-use implementation via the Redox project (<a href="https://crates.io/crates/conc">https://crates.io/crates/conc</a>). We'll be inspecting <kbd>conc</kbd> as a part of its parent project, tfs (<a href="https://github.com/redox-os/tfs">https://github.com/redox-os/tfs</a>), at SHA <kbd>3e7dcdb0c586d0d8bb3f25bfd948d2f418a4ab10</kbd>. Incidentally, if you're unfamiliar with this, Redox is a Rust microkernel-based operating system. The allocator, coreutils, and netutils are all encouraged reading.</p>
-<div class="packt_infobox"><span>The conc crate is not listed in its entirety. You can find the full listing in this book's source repository. </span></div>
+<p>The conc crate is not listed in its entirety. You can find the full listing in this book's source repository. </p>
 <p>Hazard pointers were introduced by Maged Michael—of Michael and Scott Queue fame—in his 2004 book, <em>Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects</em>. A <em>hazard</em>, in this context, is any pointer that is subject to races or ABA issues in the rendezvous of multiple treads participating in some shared data structure. In the previous section's Treiber stack, the hazard is the head pointer inside of the Stack struct, and in the Michael and Scott queue, it is the head and tail pointers. A hazard pointer associates these hazards with <em>single-writer multireader shared pointers</em>, owned by a single writer thread and read by any other threads participating in the data structure.</p>
 <p>Every participating thread maintains a reference to its own hazard pointers and all other participating threads in addition to private, thread-local lists for the coordination of deallocation. The algorithm description in section 3 of Michael's paper is done at a high level and is difficult to follow with an eye towards producing a concrete implementation. Rather than repeat that here, we will instead examine a specific implementation, <kbd>conc</kbd>. The reader is encouraged to read Michael's paper ahead of the discussion of <kbd>conc</kbd>, but this is not mandatory.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">A hazard-pointer Treiber stack</h1>
-                </header>
+<div><h1 class="header-title">A hazard-pointer Treiber stack</h1>
+                
             
-            <article>
+            
                 
 <p>The introduction of the Treiber stack in the previous section on reference counting was not an idle introduction. We'll examine hazard pointers and epoch-based reclamation here, through the lens of an effectively reclaimed Treiber stack. It so happens that <kbd>conc</kbd> ships with a Treiber stack, in <kbd>tfs/conc/src/sync/treiber.rs</kbd>. The preamble is mostly familiar:</p>
 <pre style="padding-left: 30px">use std::sync::atomic::{self, AtomicPtr};
@@ -365,7 +344,7 @@ use {Guard, add_garbage_box};</pre>
     /// Number of guards the current thread is creating.
     static CURRENT_CREATING: Cell&lt;usize&gt; = Cell::new(0);
 }</pre>
-<p>We've seen <kbd>Cell</kbd> in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a><span>, </span> <span><em>The Rust Memory Model – Ownership, References and Manipulation</em></span>, but <kbd>thread_local!</kbd> is new. This macro wraps one or more static values into <kbd>std::thread::LocalKey</kbd>, Rust's take on thread-local stores. The exact implementation varies from platform to platform but the basic idea holds: the value will act as a static global but will be confined to a single thread. In this way, we can program as if the value were global but without having to manage coordination between threads. Once <kbd>CURRENT_CREATING</kbd> is incremented:</p>
+<p>We've seen <kbd>Cell</kbd> in <a href="605ce307-29ed-4b5a-961e-8d327467b84f.xhtml" target="_blank">Chapter 3</a>,  <em>The Rust Memory Model – Ownership, References and Manipulation</em>, but <kbd>thread_local!</kbd> is new. This macro wraps one or more static values into <kbd>std::thread::LocalKey</kbd>, Rust's take on thread-local stores. The exact implementation varies from platform to platform but the basic idea holds: the value will act as a static global but will be confined to a single thread. In this way, we can program as if the value were global but without having to manage coordination between threads. Once <kbd>CURRENT_CREATING</kbd> is incremented:</p>
 <pre>        // Get a hazard in blocked state.
         let hazard = local::get_hazard();</pre>
 <p>The <kbd>local::get_hazard</kbd> function is defined in <kbd>tfs/conc/src/local.rs</kbd>:</p>
@@ -602,42 +581,36 @@ struct State {
 <p>Note that when the old node is removed from the stack, <kbd>add_garbage_box</kbd> is called on it, adding the node to be garbage-collected at a later date. We know, further, from inspection, that this later date might well be exactly the moment of invocation, depending on luck.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">The hazard of Nightly</h1>
-                </header>
+<div><h1 class="header-title">The hazard of Nightly</h1>
+                
             
-            <article>
+            
                 
 <p>Unfortunately, conc relies on an unstable feature of the Rust compiler and will not compile with a recent <kbd>rustc</kbd>. The last update to <kbd>conc</kbd>, and to TFS, its parent project, was in August of 2017. We'll have to travel back in time for a nightly <kbd>rustc</kbd> from that period. If you followed the instructions laid out in <a href="5f3aec9d-fd53-48ff-9ba8-43ce13e91cff.xhtml" target="_blank">Chapter 1</a>, <em>Preliminaries – Machine Architecture and Getting Started with Rust</em>, and are using <kbd>rustup</kbd>, that's a simple <kbd>rustup</kbd> default nightly-2017-08-17 away. Don't forget to switch back to a more modern Rust when you're done playing with conc.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Exercizing the hazard-pointer Treiber stack</h1>
-                </header>
+<div><h1 class="header-title">Exercizing the hazard-pointer Treiber stack</h1>
+                
             
-            <article>
+            
                 
 <p>Let's put the conc, Treiber stack through the wringer to get an idea of the performance of this approach. Key areas of interest for us will be:</p>
 <ul>
@@ -708,7 +681,7 @@ fn main() {
         jh.join().unwrap();
     }
 }</pre>
-<p>We have a number of worker threads equal to the total number of CPUs in the target machine, each doing one push and then an immediate pop on the stack. A <kbd>COUNT</kbd> is kept and the main thread swaps that value for <kbd>0</kbd> every second or so, tossing the value into a quantile estimate structure—discussed in more detail in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send<span> </span>–<span> </span>the Foundation of Rust Concurrency</em>—and printing out a summary of the recorded cycles per second, scaled to the number of CPUs. The worker threads the cycle up through to <kbd>MAX_I</kbd>, which is arbitrarily set to the smallish value of <kbd>2**26</kbd>. When the worker is finished cycling, it decreases <kbd>WORKERS</kbd> and exits. Once <kbd>WORKERS</kbd> hits zero, the main loop also exits.</p>
+<p>We have a number of worker threads equal to the total number of CPUs in the target machine, each doing one push and then an immediate pop on the stack. A <kbd>COUNT</kbd> is kept and the main thread swaps that value for <kbd>0</kbd> every second or so, tossing the value into a quantile estimate structure—discussed in more detail in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>—and printing out a summary of the recorded cycles per second, scaled to the number of CPUs. The worker threads the cycle up through to <kbd>MAX_I</kbd>, which is arbitrarily set to the smallish value of <kbd>2**26</kbd>. When the worker is finished cycling, it decreases <kbd>WORKERS</kbd> and exits. Once <kbd>WORKERS</kbd> hits zero, the main loop also exits.</p>
 <p>On my x86 machine, it takes approximately 58 seconds for this program to exit, with this output:</p>
 <pre><strong>CYCLES PER SECOND(0):
   25th: 0
@@ -738,8 +711,8 @@ CYCLES PER SECOND(57):
   50th: 1141656
   75th: 1143792
   90th: 1144324
-  max:  1145284</strong></pre>
-<pre><strong>CYCLES PER SECOND(58):
+  max:  1145284</strong>
+<strong>CYCLES PER SECOND(58):
   25th: 1139097
   50th: 1141809
   75th: 1143792
@@ -768,8 +741,8 @@ CYCLES PER SECOND(57):
   50th: 0
   75th: 0
   90th: 0
-  max:  0</strong></pre>
-<pre><strong>CYCLES PER SECOND(1):
+  max:  0</strong>
+<strong>CYCLES PER SECOND(1):
   25th: 0
   50th: 0
   75th: 150477
@@ -812,65 +785,56 @@ CYCLES PER SECOND(463):
 <p>Before moving on, do remember to execute the rustup default stable.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Tradeoffs</h1>
-                </header>
+<div><h1 class="header-title">Tradeoffs</h1>
+                
             
-            <article>
+            
                 
 <p>Assuming that conc was brought up to speed with modern Rust, where would you want to apply it? Well, let's compare it to reference counting. In a reference-counting data structure, every read and modification requires manipulating atomic values, implying some level of synchronization between threads with an impact on performance. A similar situation exists with hazard pointers, though to a lesser degree. As we've seen, the hazard requires synchronization, but reading anything apart from the hazard, through it, is going to be at machine speed. That's a significant improvement over reference counting. Furthermore, we know that the hazard pointer approach does accumulate garbage—and the implementation of conc is done via an especially neat trick—but this garbage is bounded in size, no matter the frequency of updates to the hazardous structure. The cost of garbage collection is placed on one thread, incurring potentially high latency spikes for some operations while benefiting from bulk-operation calls to the deallocator. This is distinct from reference counting approaches where every thread is responsible for deallocating dead memory as soon as it is dead, keeping operation cost overheads similar but higher than baseline, and incurred on each operation without the benefit of bulk accumulation of deallocations. The hazard pointer approach struggles as the number of threads increase: recall that the number of hazards needed grows linearly with the number of threads, but also consider that an increase in thread count increases the traversal cost of any structure. Furthermore, while many structures have easily identifiable hazards, this is not universally true. Where do you put the hazard pointers for a b-tree?</p>
 <p>In summary—hazard pointers are an excellent choice when you have relatively few hazardous memory references to make and need bounded garbage, no matter the load on your structure. Hazard-based memory reclamation does not have the raw speed of epoch-based reclamation, but bounded memory use in all cases is hard to pass up.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Epoch-based reclamation</h1>
-                </header>
+<div><h1 class="header-title">Epoch-based reclamation</h1>
+                
             
-            <article>
+            
                 
 <p>We touched on epoch-based memory reclamation in the last chapter. We'll now examine the concept in depth and in the context of a ready-to-use implementation via the crossbeam project (<a href="https://github.com/crossbeam-rs">https://github.com/crossbeam-rs</a>). Some of the developers of conc overlap with crossbeam, but there's been more work done to crossbeam in the pursuit of a general-purpose framework for low-level atomic programming in Rust. The developers note that they plan to support other memory management schemes, for example hazard pointers (HP) and quiescent state-based reclamation (QSBR). The crate is re-exported as the epoch module. Future editions of this book may well only cover crossbeam and simply discuss the various memory reclamation techniques embedded in it. The particular crate we'll be discussing in this section is crossbeam-epoch, at SHA <kbd>3179e799f384816a0a9f2a3da82a147850e14d38</kbd>. This coincides with the 0.4.1 release of the project.</p>
-<div class="packt_infobox"><span>The </span><span>crossbeam crates under discussion here are </span><span>not listed in their entirety. You can find the full listings in this book's source repository. </span></div>
+<p>The crossbeam crates under discussion here are not listed in their entirety. You can find the full listings in this book's source repository. </p>
 <p>Epoch-based memory reclamation was introduced by Keir Fraser in his 2004 PhD thesis, <em>Practical lock-freedom</em>. Fraser's work builds on previous limbo list approaches, whereby garbage is placed in a global list and reclaimed through periodic scanning when it can be demonstrated that the garbage is no longer referenced. The exact mechanism varies somewhat by author, but limbo lists have some serious correctness and performance downsides. Fraser's improvement is to separate limbo lists into three epochs, a current epoch, a middle, and an epoch from which garbage may be collected. Every participating thread is responsible for observing the current epoch on start, adds its garbage to the current epoch, and attempts to increase the epoch count when its operations complete. The last thread to complete is the one that succeeds in increasing the epoch and is responsible for performing garbage collection on the final epoch. Three total epochs are needed as threads move from epochs independently from one another: a thread at epoch n may still hold a reference from n-1, but not n-2, and so only n-2 is safe to reclaim. Fraser's thesis is quite long—being, well, being that it is sufficient work to acquire a PhD—but Hart et al's 2007 paper, <em>Performance of Memory Reclamation for Lockless Synchronization</em>, is warmly recommended to the reader pressed for time.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">An epoch-based Treiber stack</h1>
-                </header>
+<div><h1 class="header-title">An epoch-based Treiber stack</h1>
+                
             
-            <article>
+            
                 
 <p>We inspected reference counting and hazard-pointer-based Treiber stacks earlier in this chapter and will follow this approach in this section as well. Fortunately, crossbeam also ships with a Treiber stack implementation, in the crossbeam-rs/crossbeam project, which we'll examine at SHA <kbd>89bd6857cd701bff54f7a8bf47ccaa38d5022bfb</kbd>, which is the source for <kbd>crossbeam::sync::TreiberStack</kbd> is in <kbd>src/sync/treiber_stack.rs</kbd>. The preamble is almost immediately interesting:</p>
 <pre style="padding-left: 30px">use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -912,7 +876,7 @@ struct Node&lt;T&gt; {
             }
         }
     }</pre>
-<p>Except, what is <kbd>epoch::pin()</kbd>? This function <kbd>pins</kbd> the current thread, returning a <kbd>crossbeam_epoch::Guard</kbd>. Much like previous guards we've seen throughout the book, crossbeam_epoch's <kbd>Guard</kbd> protects a resource. In this case, the guard protects the pinned nature of the thread. Once the guard drops, the thread is no longer pinned. Okay, great, so what does it mean for a thread to be pinned? Recall that epoch-based reclamation works by a thread entering an epoch, doing some stuff with memory, and then potentially increasing the epoch after finishing up fiddling with memory. This process is observed in crossbeam by pinning. <kbd>Guard</kbd> in hand—implying a safe epoch has been entered—the thread is able to take a heap allocation and get a stack reference to it. Just any old heap allocation and stack reference would be unsafe, however. There's no magic here. That's where <kbd>Atomic</kbd> and <kbd>Owned</kbd> come in. They're analogs to <kbd>AtomicPtr</kbd> and <kbd>Box</kbd> from the standard library, except that the operations done on them require a reference to <kbd>crossbeam_epoch::Guard</kbd>. We saw this technique in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send<span> </span>–<span> </span>the Foundation of Rust Concurrency</em>, when discussing hopper, using the type-system to ensure that potentially thread-unsafe operations are done safely by requiring the caller to pass in a guard of some sort. Programmer error can creep in by using <kbd>AtomicPtr</kbd>, <kbd>Box</kbd>, or any non-epoch unprotected memory accesses, but these will tend to stand out.</p>
+<p>Except, what is <kbd>epoch::pin()</kbd>? This function <kbd>pins</kbd> the current thread, returning a <kbd>crossbeam_epoch::Guard</kbd>. Much like previous guards we've seen throughout the book, crossbeam_epoch's <kbd>Guard</kbd> protects a resource. In this case, the guard protects the pinned nature of the thread. Once the guard drops, the thread is no longer pinned. Okay, great, so what does it mean for a thread to be pinned? Recall that epoch-based reclamation works by a thread entering an epoch, doing some stuff with memory, and then potentially increasing the epoch after finishing up fiddling with memory. This process is observed in crossbeam by pinning. <kbd>Guard</kbd> in hand—implying a safe epoch has been entered—the thread is able to take a heap allocation and get a stack reference to it. Just any old heap allocation and stack reference would be unsafe, however. There's no magic here. That's where <kbd>Atomic</kbd> and <kbd>Owned</kbd> come in. They're analogs to <kbd>AtomicPtr</kbd> and <kbd>Box</kbd> from the standard library, except that the operations done on them require a reference to <kbd>crossbeam_epoch::Guard</kbd>. We saw this technique in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>, when discussing hopper, using the type-system to ensure that potentially thread-unsafe operations are done safely by requiring the caller to pass in a guard of some sort. Programmer error can creep in by using <kbd>AtomicPtr</kbd>, <kbd>Box</kbd>, or any non-epoch unprotected memory accesses, but these will tend to stand out.</p>
 <p>Let's look at popping an element off the stack, where we know marking memory as safe to delete will have to happen:</p>
 <pre>    pub fn try_pop(&amp;self) -&gt; Option&lt;T&gt; {
         let guard = epoch::pin();
@@ -941,22 +905,19 @@ struct Node&lt;T&gt; {
 <p><kbd>head_shared</kbd> is moved into a closure, converted, and that closure is then passed into the as-yet unexamined defer function of <kbd>Guard</kbd>. But, head is dereferenced and the data from it is read out and returned. Absent some special trick, that's dangerous. We need to know more.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">crossbeam_epoch::Atomic</h1>
-                </header>
+<div><h1 class="header-title">crossbeam_epoch::Atomic</h1>
+                
             
-            <article>
+            
                 
 <p>Let's dig in with the holder of our data, <kbd>Atomic</kbd>. This structure is from the crossbeam_epoch library and its implementation is in <kbd>src/atomic.rs</kbd>:</p>
 <pre style="padding-left: 30px">pub struct Atomic&lt;T&gt; {
@@ -1067,22 +1028,19 @@ impl CompareAndSetOrdering for Ordering {
 }</pre>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">crossbeam_epoch::Guard::defer</h1>
-                </header>
+<div><h1 class="header-title">crossbeam_epoch::Guard::defer</h1>
+                
             
-            <article>
+            
                 
 <p>Now, again, how is the following in <kbd>TreiberStack::try_pop</kbd> a safe operation?</p>
 <pre style="padding-left: 30px">guard.defer(move || head_shared.into_owned());
@@ -1258,22 +1216,19 @@ const MAX_OBJECTS: usize = 4;</pre>
 <p>When does garbage get collected from <kbd>Global</kbd>? The answer is in a function we've not yet examined, <kbd>Local::pin</kbd>.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">crossbeam_epoch::Local::pin</h1>
-                </header>
+<div><h1 class="header-title">crossbeam_epoch::Local::pin</h1>
+                
             
-            <article>
+            
                 
 <p>Recall that <kbd>crossbeam_epoch::pin</kbd> calls <kbd>Handle::pin</kbd>, which in turn calls <kbd>pin</kbd> on its <kbd>Local</kbd>. What happens during the execution of <kbd>Local::pin</kbd>? A lot:</p>
 <pre>    pub fn pin(&amp;self) -&gt; Guard {
@@ -1320,22 +1275,19 @@ const MAX_OBJECTS: usize = 4;</pre>
 <p>Phew!</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Exercising the epoch-based Treiber stack</h1>
-                </header>
+<div><h1 class="header-title">Exercising the epoch-based Treiber stack</h1>
+                
             
-            <article>
+            
                 
 <p>Let's put the crossbeam-epoch Treiber stack through the wringer to get an idea of the performance of this approach. Key areas of interest for us will be:</p>
 <ul>
@@ -1405,7 +1357,7 @@ fn main() {
         jh.join().unwrap();
     }
 }</pre>
-<p>We have a number of worker threads equal to the total number of CPUs in the target machine, each doing one push and then an immediate pop on the stack. A <kbd>COUNT</kbd> is kept and the main thread swaps that value for 0 every second or so, tossing the value into a quantile estimate structure—discussed in more detail in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send<span> </span>–<span> </span>the Foundation of Rust Concurrency</em>—and printing out a summary of the recorded cycles per second, scaled to the number of CPUs. The worker threads cycle up through to <kbd>MAX_I</kbd>, which is arbitrarily set to the smallish value of <kbd>2**26</kbd>. When the worker is finished cycling, it decreases <kbd>WORKERS</kbd> and exits. Once <kbd>WORKERS</kbd> hits zero, the main loop also exits.</p>
+<p>We have a number of worker threads equal to the total number of CPUs in the target machine, each doing one push and then an immediate pop on the stack. A <kbd>COUNT</kbd> is kept and the main thread swaps that value for 0 every second or so, tossing the value into a quantile estimate structure—discussed in more detail in <a href="5a332d94-37e4-4748-8920-1679b07e2880.xhtml" target="_blank">Chapter 4</a>, <em>Sync and Send – the Foundation of Rust Concurrency</em>—and printing out a summary of the recorded cycles per second, scaled to the number of CPUs. The worker threads cycle up through to <kbd>MAX_I</kbd>, which is arbitrarily set to the smallish value of <kbd>2**26</kbd>. When the worker is finished cycling, it decreases <kbd>WORKERS</kbd> and exits. Once <kbd>WORKERS</kbd> hits zero, the main loop also exits.</p>
 <p>On my x86 machine, it takes approximately 38 seconds for this program to exit, with this output:</p>
 <pre><strong>CYCLES PER SECOND(0):
   25th: 0
@@ -1501,80 +1453,71 @@ CYCLES PER SECOND(72):
 <p>Again, drastically fewer instructions are executed compared to the hazard-pointer implementation on the same processor architecture. In passing, it's worth noting that the memory use of both the x86 and ARM versions' <kbd>epoch_stack</kbd> were lower than the hazard pointer stack implementations, though neither were memory hogs, consuming only a few kilobytes each. Had one of our epoch threads slept for a long while—say, a second or so—before leaving its epoch, memory use would have grown during execution. The reader is encouraged to wreak havoc on their own system.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Tradeoffs</h1>
-                </header>
+<div><h1 class="header-title">Tradeoffs</h1>
+                
             
-            <article>
+            
                 
 <p>Of the three approaches outlined in this chapter, crossbeam-epoch is the fastest, both in terms of our measurements and from discussions in the literature. The faster technique, quiescent-state-based memory reclamation, is not discussed in this chapter as it's an awkward fit for user-space programs and there is no readily-available implementation in Rust. Furthermore, the authors of the library have put years of work into the implementation: it is well-documented and runs on modern Rust across multiple CPU architectures.</p>
 <p>Traditional issues with the approach—namely, threads introducing long delays to pinned critical sections, resulting in long-lived epochs and garbage buildup—are addressed in the API by the abiltiy of <kbd>Guard </kbd>to be arbitrarily repinned. The transition of standard-library <kbd>AtomicPtr</kbd> data structures to crossbeam is a project, to be sure, but an approachable one. As we've seen, crossbeam-epoch does introduce some overhead, both in terms of cache padding and thread synchronization. This overhead is minimal and should be expected to improve with time.</p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Summary</h1>
-                </header>
+<div><h1 class="header-title">Summary</h1>
+                
             
-            <article>
+            
                 
 <p>In this chapter, we discussed three memory reclamation techniques: reference counting, hazard pointers, and epoch-based reclamation. Each, in turn, is faster than the last, though there are tradeoffs with each approach. Reference counting incurs the most overhead and has to be incorporated carefully into your data structure, unless Arc fits your needs, which it may well. Hazard pointers require the identification of hazards, memory accesses that result in memory that cannot be reclaimed without some type of coordination. This approach incurs overhead on each access to the hazard, which is costly if traversal of a hazardous structure must be done. Finally, epoch-based reclamation incurs overhead at thread-pinning, which denotes the start of an epoch and may require the newly pinned thread to participate in garage collection. Additional overhead is not incurred on memory accesses post-pin, a big win if you're doing traversal or can otherwise include many memory operations in a pinned section.</p>
 <p>The crossbeam library is exceptionally well done. Unless you have an atomic data structure specifically designed to not require allocations or to cope with allocations on a relaxed memory system without recourse to garbage collection, you are warmly encouraged to consider crossbeam as part and parcel with doing atomic programming in Rust, as of this writing.</p>
 <p>In the next chapter, we will leave the realm of atomic programming and discuss higher-level approaches to parallel programming, using thread pooling and data parallel iterators. </p>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
 
   
-<div id="sbo-rt-content"><section>
-
-                            <header>
-                    <h1 class="header-title">Further reading</h1>
-                </header>
+<div><h1 class="header-title">Further reading</h1>
+                
             
-            <article>
+            
                 
 <ul>
 <li><em>Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects</em>, Maged Michael. This paper introduces the hazard-pointer reclamation technique discussed in this chapter. The paper specifically discusses the newly invented technique in comparison to reference counting and demonstrates the construction of a safe Michael and Scott queue using the hazard pointer technique.</li>
 <li><em>Practical Lock-Freedom</em>, Keir Fraser. This is Keir Fraser's PhD thesis and is quite long, being concerned with the introduction of abstractions to ease the writing of lock-free structures—one of which is epoch-based reclamation—and the introduction of lock-free search structures, skip-lists, binary search trees, and red-black trees. Warmly recommended.</li>
-<li><em>Performance of Memory Reclamation for Lockless Synchronization</em>, Thomas Hart et al. This paper provides an overview of four techniques, all of which were discussed in passing in <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics –<span> </span>the Primitives of Synchronization</em>, of this book, and three of which were discussed in-depth in this chapter. Further, the paper introduces an optimization to epoch-based reclamation, which has influenced crossbeam, if your author is not mistaken. The paper is an excellent overview of the algorithms and provides comparative measurements of the algorithms' performance in a well-defined manner.</li>
+<li><em>Performance of Memory Reclamation for Lockless Synchronization</em>, Thomas Hart et al. This paper provides an overview of four techniques, all of which were discussed in passing in <a href="d42acb0b-a05e-4068-894f-81365d147bf4.xhtml" target="_blank">Chapter 6</a>, <em>Atomics – the Primitives of Synchronization</em>, of this book, and three of which were discussed in-depth in this chapter. Further, the paper introduces an optimization to epoch-based reclamation, which has influenced crossbeam, if your author is not mistaken. The paper is an excellent overview of the algorithms and provides comparative measurements of the algorithms' performance in a well-defined manner.</li>
 <li><em>RFCs for changes to Crossbeam</em>, available at <a href="https://github.com/crossbeam-rs/rfcs">https://github.com/crossbeam-rs/rfcs</a>. This Github repository is the primary discussion point for large-scale changes to the crossbeam library and is an especially important read for its discussions. For instance, RFC 2017-07-23-relaxed-memory lays out the changes necessary to crossbeam to operate on relaxed-memory systems, a topic rarely discussed in the literature.</li>
 <li><em>CDSCHECKER: Checking Concurrent Data Structures Written with C/C++ Atomics</em>, Brian Norris and Brian Demsky. This paper introduces a tool for checking the behavior of concurrent data structures according to the C++11/LLVM memory model. Given how utterly confounding relaxed-memory ordering can be, this tool is extremely useful when doing C++ work. I am unaware of a Rust analog but hope this will be seen as an opportunity for some bright spark reading this. Good luck, you.</li>
 <li><em>A Promising Semantics for Relaxed-Memory Concurrency</em>, Jeehoon Kang et al. Reasoning about the memory model proposed in C++/LLVM is very difficult. Which, despite how many people have thought about it in-depth over the years, there's still active research into formalizing this model to validate the correct function of optimizers and algorithms. Do read this paper in conjunction with <kbd>CDSCHECKER</kbd> by Norris and Demsky.</li>
 </ul>
 
 
-            </article>
+            
 
             
-        </section>
+        
     </div>
 
 
