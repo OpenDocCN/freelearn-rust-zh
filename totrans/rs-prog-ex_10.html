@@ -1,0 +1,2001 @@
+<html><head></head><body>
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Implementing Asynchronous File Transfer</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">In the previous chapter, we started to write an asynchronous FTP server using <span><kbd class="calibre14">tokio</kbd></span>. Now, we'll start using the second channel used in the FTP protocol: the data channel. We'll cover the following topics:</p>
+<ul class="calibre10">
+<li class="calibre11">Unit tests</li>
+<li class="calibre11">Integration tests</li>
+<li class="calibre11">Backtraces</li>
+<li class="calibre11">Documentation</li>
+<li class="calibre11">Documentation tests</li>
+<li class="calibre11">Fuzzing tests</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Listing files</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We'll start this chapter by implementing the command to list files. This will allow us to actually see the files in an FTP client, and we'll be able to tests some commands from the previous chapter by navigating in the directories. So, let's add a case in the <span><kbd class="calibre14">Client::handle_cmd()</kbd></span> method:</p>
+<pre class="calibre22">#[async]
+fn handle_cmd(mut self, cmd: Command) -&gt; Result&lt;Self&gt; {
+    match cmd {
+        Command::List(path) =&gt; self = await!(self.list(path))?,
+        // …
+    }
+}</pre>
+<p class="calibre3">This simply calls the <span><kbd class="calibre14">list()</kbd></span> method, which begins as follows:</p>
+<pre class="calibre22">use std::fs::read_dir;
+
+#[async]
+fn list(mut self, path: Option&lt;PathBuf&gt;) -&gt; Result&lt;Self&gt; {
+    if self.data_writer.is_some() {
+        let path = self.cwd.join(path.unwrap_or_default());
+        let directory = PathBuf::from(&amp;path);
+        let (new_self, res) = self.complete_path(directory);
+        self = new_self;
+        if let Ok(path) = res {
+            self = await!<br class="calibre6"/>            (self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
+                                                "Starting to list directory...")))?;</pre>
+<p class="calibre3">We first check that the data channel is opened and, if this is the case, we check that the provided optional path is valid. If it is, we send a response that indicates to the client that we're about to send it the data. The next part of the method is as follows:</p>
+<pre class="calibre23">            let mut out = vec![];
+            if path.is_dir() {
+                if let Ok(dir) = read_dir(path) {
+                    for entry in dir {
+                        if let Ok(entry) = entry {
+                            add_file_info(entry.path(), &amp;mut out);
+                        }
+                    }
+                } else {
+                    self = await!<br class="calibre6"/>                    (self.send(Answer::new(ResultCode::InvalidParameterOrArgument,
+                                                        "No such file or <br class="calibre6"/>                                                         directory")))?;
+                    return Ok(self);
+                }
+            } else {
+                add_file_info(path, &amp;mut out);
+            }</pre>
+<p class="calibre3">We first create a variable, <span><kbd class="calibre14">out</kbd></span>, that will contain the data to send to the client. If the specified path is a directory, we use the <span><kbd class="calibre14">read_dir()</kbd></span> function from the standard library. We then iterate over all files in the directory to gather the info about every file. If we were unable to open the directory, we send an error back to the client. If the path is not a directory, for example, if it is a file, we only get the info for this single file. Here's the end of the method:</p>
+<pre class="calibre22">            self = await!(self.send_data(out))?;
+            println!("-&gt; and done!");
+        } else {
+            self = await!<br class="calibre6"/>         (self.send(Answer::new(ResultCode::InvalidParameterOrArgument,
+                                                "No such file or directory")))?;
+        }
+    } else {
+        self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened <br class="calibre6"/>         data connection")))?;
+    }
+    if self.data_writer.is_some() {
+        self.close_data_connection();
+        self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, <br class="calibre6"/>                      "Transfer done")))?;
+    }
+    Ok(self)
+}</pre>
+<p class="calibre3">We then send the data in the right channel using the <span><kbd class="calibre14">send_data()</kbd></span> method that we'll see later. If there was another error, we send the appropriate response to the client. If we successfully sent the data, we close the connection and indicate this action to the client. This code used a few new methods, so let's implement them.</p>
+<p class="calibre3">First, here's the method that sends data in the data channel:</p>
+<pre class="calibre22">#[async]
+fn send_data(mut self, data: Vec&lt;u8&gt;) -&gt; Result&lt;Self&gt; {
+    if let Some(writer) = self.data_writer {
+        self.data_writer = Some(await!(writer.send(data))?);
+    }
+    Ok(self)
+}</pre>
+<p class="calibre3">It is very similar to the <span><kbd class="calibre14">send()</kbd></span> method, but this one only sends the data if the data socket is opened. Another method that is needed is the one that closes the connection:</p>
+<pre class="calibre22">fn close_data_connection(&amp;mut self) {
+    self.data_reader = None;
+    self.data_writer = None;
+}</pre>
+<p class="calibre3">We need to implement the method to gather the info about a file. Here is how it starts:</p>
+<pre class="calibre22">const MONTHS: [&amp;'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+fn add_file_info(path: PathBuf, out: &amp;mut Vec&lt;u8&gt;) {
+    let extra = if path.is_dir() { "/" } else { "" };
+    let is_dir = if path.is_dir() { "d" } else { "-" };
+
+    let meta = match ::std::fs::metadata(&amp;path) {
+        Ok(meta) =&gt; meta,
+        _ =&gt; return,
+    };
+    let (time, file_size) = get_file_info(&amp;meta);
+    let path = match path.to_str() {
+        Some(path) =&gt; match path.split("/").last() {
+            Some(path) =&gt; path,
+            _ =&gt; return,
+        },
+        _ =&gt; return,
+    };
+    let rights = if meta.permissions().readonly() {
+        "r--r--r--"
+    } else {
+        "rw-rw-rw-"
+    };</pre>
+<p class="calibre3">The parameter <span><kbd class="calibre14">out</kbd></span> is a mutable reference, because we'll append the info in this variable. Then, we gather the different required info and permissions of the file. Here's the rest of the function:</p>
+<pre class="calibre22">    let file_str = format!("{is_dir}{rights} {links} {owner} {group} {size} {month}  <br class="calibre6"/>    {day} {hour}:{min} {path}{extra}\r\n",
+                           is_dir=is_dir,
+                           rights=rights,
+                           links=1, // number of links
+                           owner="anonymous", // owner name
+                           group="anonymous", // group name
+                           size=file_size,
+                           month=MONTHS[time.tm_mon as usize],
+                           day=time.tm_mday,
+                           hour=time.tm_hour,
+                           min=time.tm_min,
+                           path=path,
+                           extra=extra);
+    out.extend(file_str.as_bytes());
+    println!("==&gt; {:?}", &amp;file_str);
+}</pre>
+<p class="calibre3">It formats the info and appends it to the variable <span><kbd class="calibre14">out</kbd></span>.</p>
+<p class="calibre3">This function uses another one:</p>
+<pre class="calibre22">extern crate time;
+
+use std::fs::Metadata;
+
+#[cfg(windows)]
+fn get_file_info(meta: &amp;Metadata) -&gt; (time::Tm, u64) {
+    use std::os::windows::prelude::*;
+    (time::at(time::Timespec::new(meta.last_write_time())), meta.file_size())
+}
+
+#[cfg(not(windows))]
+fn get_file_info(meta: &amp;Metadata) -&gt; (time::Tm, u64) {
+    use std::os::unix::prelude::*;
+    (time::at(time::Timespec::new(meta.mtime(), 0)), meta.size())
+}</pre>
+<p class="calibre3">Here, we have two versions of <span><kbd class="calibre14">get_file_info()</kbd></span>: one for Windows and the other for all non-Windows operating systems. Since we use a new crate, we need to add this line in <span><kbd class="calibre14">Cargo.toml</kbd></span>:</p>
+<pre class="calibre22">time = "0.1.38"</pre>
+<p class="calibre3">We can now test, in the FTP client, that the files are indeed listed (on the right):</p>
+<div class="mce-root1"><img src="../images/00046.jpeg" class="calibre71"/></div>
+<div class="mce-root1"><em class="calibre21"><em class="calibre21">Figure 10.1</em></em></div>
+<p class="calibre3">If we double-click on a directory, for instance, <span>src</span>, the FTP client will update its content:</p>
+<div class="mce-root1"><img src="../images/00047.jpeg" class="calibre72"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 10.2</em></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Downloading a file</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">A very useful feature of an FTP server is the ability to download files. So, it's time to add the command to do so.</p>
+<p class="calibre3">First of all, we add the case in the <span><kbd class="calibre14">handle_cmd()</kbd></span> method:</p>
+<pre class="calibre22">#[async]
+fn handle_cmd(mut self, cmd: Command) -&gt; Result&lt;Self&gt; {
+    match cmd {
+        Command::Retr(file) =&gt; self = await!(self.retr(file))?,
+        // …
+    }
+}</pre>
+<p class="calibre3">Here is the start of the <span><kbd class="calibre14">retr()</kbd></span> function:</p>
+<pre class="calibre22">use std::fs::File;
+use std::io::Read;
+
+use error::Error;
+
+#[async]
+fn retr(mut self, path: PathBuf) -&gt; Result&lt;Self&gt; {
+    if self.data_writer.is_some() {
+        let path = self.cwd.join(path);
+        let (new_self, res) = self.complete_path(path.clone());
+        self = new_self;
+        if let Ok(path) = res {
+            if path.is_file() {
+                self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
+                let mut file = File::open(path)?;
+                let mut out = vec![];
+                file.read_to_end(&amp;mut out)?;
+                self = await!(self.send_data(out))?;
+                println!("-&gt; file transfer done!");</pre>
+<p class="calibre3">Again, we check that the data channel is opened and we check the path. If it is a file, we open it, read its content, and send it to the client. Otherwise, we send the appropriate error:</p>
+<pre class="calibre23">            } else {
+                self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
+                              &amp;format!("\"{}\" doesn't exist",<br class="calibre6"/>                              path.to_str().ok_or_else(|| Error::Msg("No <br class="calibre6"/>                              path".to_string()))?))))?;
+            }
+        } else {
+            self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
+                          &amp;format!("\"{}\" doesn't exist",<br class="calibre6"/>                          path.to_str().ok_or_else(|| Error::Msg("No  <br class="calibre6"/>                          path".to_string()))?))))?;
+        }
+    } else {
+        self = await!</pre>
+<pre class="calibre23">(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened  <br class="calibre6"/>         data connection")))?;
+    }</pre>
+<p class="calibre3">Here, we use this pattern:</p>
+<pre class="calibre22">.ok_or_else(|| Error::Msg("No path".to_string()))?</pre>
+<p class="calibre3">This converts the <span><kbd class="calibre14">Option</kbd></span> into a <span><kbd class="calibre14">Result</kbd></span>, and returns the error if there is one.</p>
+<p class="calibre3">And finally, w<span>e close the data socket if we successfully sent the file</span>:</p>
+<pre class="calibre22">    if self.data_writer.is_some() {
+        self.close_data_connection();
+        self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, <br class="calibre6"/>         "Transfer done")))?;
+    }
+    Ok(self)
+}</pre>
+<p class="calibre3">Let's download a file in FileZilla to check that it works:</p>
+<div class="mce-root1"><img src="../images/00048.jpeg" class="calibre73"/></div>
+<div class="mce-root1"><em class="calibre21"><em class="calibre21">Figure 10.3</em></em></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Uploading files</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Now, let's do the opposite command: <span><kbd class="calibre14">STOR</kbd></span> to upload a file on the server.</p>
+<p class="calibre3">As always, we'll add a case in the <span><kbd class="calibre14">handle_cmd()</kbd></span> method:</p>
+<pre class="calibre22">#[async]
+fn handle_cmd(mut self, cmd: Command) -&gt; Result&lt;Self&gt; {
+    match cmd {
+        Command::Stor(file) =&gt; self = await!(self.stor(file))?,
+        // …
+    }
+}</pre>
+<p class="calibre3">Here is the start of the corresponding method:</p>
+<pre class="calibre22">use std::io::Write;
+
+#[async]
+fn stor(mut self, path: PathBuf) -&gt; Result&lt;Self&gt; {
+    if self.data_reader.is_some() {
+        if invalid_path(&amp;path) {
+            let error: io::Error = io::ErrorKind::PermissionDenied.into();
+            return Err(error.into());
+        }
+        let path = self.cwd.join(path);
+        self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, <br class="calibre6"/>         "Starting to send file...")))?;</pre>
+<p class="calibre3">Once again, we check that the data channel is opened. Then, we use a new function to check that the path is valid, by which we mean it does not contain <span><kbd class="calibre14">..</kbd></span>. In the other cases, we used another method, <span><kbd class="calibre14">canonicalize()</kbd></span>, and checked that the path was under the server root, but we cannot do so here since there exists no file to upload yet. Here's the end of the method:</p>
+<pre class="calibre23">        let (data, new_self) = await!(self.receive_data())?;
+        self = new_self;
+        let mut file = File::create(path)?;
+        file.write_all(&amp;data)?;
+        println!("-&gt; file transfer done!");
+        self.close_data_connection();
+        self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, <br class="calibre6"/>        "Transfer done")))?;
+    } else {
+        self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, <br class="calibre6"/>         "No opened data connection")))?;
+    }
+    Ok(self)
+}</pre>
+<p class="calibre3">Here, we call <span><kbd class="calibre14">receive_data()</kbd></span>, which is a <span><kbd class="calibre14">Future</kbd></span> that will resolve to the data received from the client. Then, we write this content in a new file. Finally, we close the connection and send the response to indicate that the transfer is done.</p>
+<p class="calibre3">Here's the method to read the data from the data socket:</p>
+<pre class="calibre22">#[async]
+fn receive_data(mut self) -&gt; Result&lt;(Vec&lt;u8&gt;, Self)&gt; {
+    let mut file_data = vec![];
+    if self.data_reader.is_none() {
+        return Ok((vec![], self));
+    }
+    let reader = self.data_reader.take().ok_or_else(|| Error::Msg("No data <br class="calibre6"/>     reader".to_string()))?;
+    #[async]
+    for data in reader {
+        file_data.extend(&amp;data);
+    }
+    Ok((file_data, self))
+}</pre>
+<p class="calibre3">Here, we take the <span><kbd class="calibre14">data_reader</kbd></span> attribute, which means it will be <span><kbd class="calibre14">None</kbd></span> after this statement. And we iterate, using an <span><kbd class="calibre14">async for</kbd></span> loop, over the reader stream. At every iteration, we add the data to the vector that is returned at the end.</p>
+<p class="calibre3">This is the method to check if the path is valid:</p>
+<pre class="calibre22">use std::path::Component;
+
+fn invalid_path(path: &amp;Path) -&gt; bool {
+    for component in path.components() {
+        if let Component::ParentDir = component {
+            return true;
+        }
+    }
+    false
+}</pre>
+<p class="calibre3">Let's check that the upload does indeed work:</p>
+<div class="mce-root1"><img src="../images/00049.jpeg" class="calibre74"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 10.4</em></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Going further!</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Adding a bit of configuration would be nice, don't you think? Adding user authentication would be nice as well. Let's start with the configuration!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Configuration</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">First, let's create a new file in <span><kbd class="calibre14">src/</kbd></span> called <span><kbd class="calibre14">config.rs</kbd></span>. To make things easier, we'll use the TOML format for our configuration file. Luckily for us, there is a crate for handling TOML files in Rust, called <span><kbd class="calibre14">toml</kbd></span>. In addition to this one, we'll use <span><kbd class="calibre14">serde</kbd></span> to handle serialization and deserialization (very useful!).</p>
+<p class="calibre3">Ok, let's start by adding the dependencies into our <span><kbd class="calibre14">Cargo.toml</kbd></span> file:</p>
+<pre class="calibre22">toml = "0.4"
+serde = "1.0"
+serde_derive = "1.0"</pre>
+<p class="calibre3">Good, now let's write our <span><kbd class="calibre14">Config</kbd></span> struct:</p>
+<pre class="calibre22">pub struct Config {
+    // fields...
+}</pre>
+<p class="calibre3">So what should we put in there? The port and address the server should listen on to start, maybe?</p>
+<pre class="calibre22">pub struct Config {
+    pub server_port: Option&lt;u16&gt;,
+    pub server_addr: Option&lt;String&gt;,
+}</pre>
+<p class="calibre3">Done. We also talked about handling authentication. Why not adding it as well? We'll need a new <kbd class="calibre14">struct</kbd> for users. Let's call it <span><kbd class="calibre14">User</kbd></span> (yay for originality!):</p>
+<pre class="calibre22">pub struct User {
+    pub name: String,
+    pub password: String,
+}</pre>
+<p class="calibre3">Now let's add the users into the <span><kbd class="calibre14">Config</kbd></span> struct:</p>
+<pre class="calibre22">pub struct Config {
+    pub server_port: Option&lt;u16&gt;,
+    pub server_addr: Option&lt;String&gt;,
+    pub users: Vec&lt;User&gt;,
+    pub admin: Option&lt;User&gt;,
+}</pre>
+<p class="calibre3">To make these two <kbd class="calibre14">struct</kbd> work with <span><kbd class="calibre14">serde</kbd></span>, we'll have to add the following tags:</p>
+<pre class="calibre22">#[derive(Deserialize, Serialize)]</pre>
+<p class="calibre3">And because we'll need to clone <span><kbd class="calibre14">Config</kbd></span>, we'll add <span><kbd class="calibre14">Debug</kbd></span> into the tags, which gives us:</p>
+<pre class="calibre22">#[derive(Clone, Deserialize, Serialize)]
+pub struct Config {
+    pub server_port: Option&lt;u16&gt;,
+    pub server_addr: Option&lt;String&gt;,
+    pub admin: Option&lt;User&gt;,
+    pub users: Vec&lt;User&gt;,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct User {
+    pub name: String,
+    pub password: String,
+}</pre>
+<p class="calibre3">Ok, we're now ready to implement the reading:</p>
+<pre class="calibre22">use std::fs::File;
+use std::path::Path;
+use std::io::{Read, Write};
+
+use toml;
+
+fn get_content&lt;P: AsRef&lt;Path&gt;&gt;(file_path: &amp;P) -&gt; Option&lt;String&gt; {
+    let mut file = File::open(file_path).ok()?;
+    let mut content = String::new();
+    file.read_to_string(&amp;mut content).ok()?;
+    Some(content)
+}
+
+impl Config {
+    pub fn new&lt;P: AsRef&lt;Path&gt;&gt;(file_path: P) -&gt; Option&lt;Config&gt; {
+        if let Some(content) = get_content(&amp;file_path) {
+            toml::from_str(&amp;content).ok()
+        } else {
+            println!("No config file found so creating a new one in <br class="calibre6"/>                     {}",file_path.as_ref().display());
+            // In case we didn't find the config file, <br class="calibre6"/>                we just build a new one.
+            let config = Config {
+                server_port: Some(DEFAULT_PORT),
+                server_addr: Some("127.0.0.1".to_owned()),
+                admin: None,
+                users: vec![User {
+                    name: "anonymous".to_owned(),
+                    password: "".to_owned(),
+                }],
+            };
+            let content = toml::to_string(&amp;config).expect("serialization failed");
+            let mut file = File::create(file_path.as_ref()).expect("couldn't create <br class="calibre6"/>             file...");
+            writeln!(file, "{}", content).expect("couldn't fulfill config file...");
+            Some(config)
+        }
+    }
+}</pre>
+<p class="calibre3">Let's go through the <span><kbd class="calibre14">Config::new</kbd></span> method's code:</p>
+<pre class="calibre22">if let Some(content) = get_content(&amp;file_path) {
+    toml::from_str(&amp;content).ok()
+}</pre>
+<p class="calibre3">Thanks to <span><kbd class="calibre14">serde</kbd></span>, we can directly load the configuration file from a <span><kbd class="calibre14">&amp;str</kbd></span> and it'll return our <span><kbd class="calibre14">Config</kbd></span> struct fully set. Amazing, right?</p>
+<p class="calibre3">For information, the <span><kbd class="calibre14">get_content</kbd></span> function is just a <kbd class="calibre14">utility</kbd> function that allows the return of the content of a file, if this file exists.</p>
+<p class="calibre3">Also, don't forget to add the <span><kbd class="calibre14">DEFAULT_PORT</kbd></span> constant:</p>
+<pre class="calibre22">pub const DEFAULT_PORT: u16 = 1234;</pre>
+<p class="calibre3">In case the file doesn't exist, we can create a new one with some default values:</p>
+<pre class="calibre22">else {
+    println!("No config file found so creating a new one in {}",
+             file_path.as_ref().display());
+    // In case we didn't find the config file, we just build a new one.
+    let config = Config {
+        server_port: Some(DEFAULT_PORT),
+        server_addr: Some("127.0.0.1".to_owned()),
+        admin: None,
+        users: vec![User {
+            name: "anonymous".to_owned(),
+            password: "".to_owned(),
+        }],
+    };
+    let content = toml::to_string(&amp;config).expect("serialization failed");
+    let mut file = File::create(file_path.as_ref()).expect("couldn't create <br class="calibre6"/>    file...");
+    writeln!(file, "{}", content).expect("couldn't fulfill config file...");
+    Some(config)
+}</pre>
+<p class="calibre3">Now you might wonder, how will we actually be able to generate TOML from our <span><kbd class="calibre14">Config</kbd></span> struct using this code? With <span><kbd class="calibre14">serde</kbd></span>'s magic once again!</p>
+<p class="calibre3">With this, our <span><kbd class="calibre14">config</kbd></span> file is now complete. Let get back to the <span><kbd class="calibre14">main.rs</kbd></span> one. First, we'll need to define a new constant:</p>
+<pre class="calibre22">const CONFIG_FILE: &amp;'static str = "config.toml";</pre>
+<p class="calibre3">Then, we'll need to update quite a few methods/functions. Let's start with the <span><kbd class="calibre14">main</kbd></span> function. Add this line at the beginning:</p>
+<pre class="calibre22">let config = Config::new(CONFIG_FILE).expect("Error while loading config...");</pre>
+<p class="calibre3">Now pass the <span><kbd class="calibre14">config</kbd></span> variable to the <span><kbd class="calibre14">server</kbd></span> function:</p>
+<pre class="calibre22">if let Err(error) = core.run(server(handle, server_root, config)) {</pre>
+<p class="calibre3">Next, let's update the <span><kbd class="calibre14">server</kbd></span> function:</p>
+<pre class="calibre22">#[async]
+fn server(handle: Handle, server_root: PathBuf, config: Config) -&gt; io::Result&lt;()&gt; {
+    let port = config.server_port.unwrap_or(DEFAULT_PORT);
+    let addr = SocketAddr::new(IpAddr::V4(config.server_addr.as_ref()
+                                                .unwrap_or(&amp;"127.0.0.1".to_owned())
+                                                .parse()
+                                                .expect("Invalid IpV4 address...")),
+                                                 port);
+    let listener = TcpListener::bind(&amp;addr, &amp;handle)?;
+
+    println!("Waiting clients on port {}...", port);
+    #[async]
+    for (stream, addr) in listener.incoming() {
+        let address = format!("[address : {}]", addr);
+        println!("New client: {}", address);
+        handle.spawn(handle_client(stream, handle.clone(), server_root.clone()));
+        handle.spawn(handle_client(stream, handle.clone(), server_root.clone(),  <br class="calibre6"/>        config.clone()));
+        println!("Waiting another client...");
+    }
+    Ok(())
+}</pre>
+<p class="calibre3">Now, the server is started with the value from the <span><kbd class="calibre14">Config</kbd></span> struct. However, we still need the user list for each client in order to handle the authentication. To do so, we need to give a <span><kbd class="calibre14">Config</kbd></span> instance to each <span><kbd class="calibre14">Client</kbd></span>. In here, to make things simpler, we'll just <span><kbd class="calibre14">clone</kbd></span>.</p>
+<p class="calibre3">Time to update the <span><kbd class="calibre14">handle_client</kbd></span> function now:</p>
+<pre class="calibre22">#[async]
+fn handle_client(stream: TcpStream, handle: Handle, server_root: PathBuf,
+                 config: Config) -&gt; result::Result&lt;(), ()&gt; {
+    await!(client(stream, handle, server_root, config))
+        .map_err(|error| println!("Error handling client: {}", error))
+}</pre>
+<p class="calibre3">Let's update the <span><kbd class="calibre14">client</kbd></span> function now:</p>
+<pre class="calibre22">#[async]
+fn client(stream: TcpStream, handle: Handle, server_root: PathBuf, config: Config) -&gt; Result&lt;()&gt; {
+    let (writer, reader) = stream.framed(FtpCodec).split();
+    let writer = await!(writer.send(Answer::new(ResultCode::ServiceReadyForNewUser,
+                                    "Welcome to this FTP server!")))?;
+    let mut client = Client::new(handle, writer, server_root, config);
+    #[async]
+    for cmd in reader {
+        client = await!(client.handle_cmd(cmd))?;
+    }
+    println!("Client closed");
+    Ok(())
+}</pre>
+<p class="calibre3">The final step is updating the <span><kbd class="calibre14">Client</kbd></span> struct:</p>
+<pre class="calibre22">struct Client {
+    cwd: PathBuf,
+    data_port: Option&lt;u16&gt;,
+    data_reader: Option&lt;DataReader&gt;,
+    data_writer: Option&lt;DataWriter&gt;,
+    handle: Handle,
+    name: Option&lt;String&gt;,
+    server_root: PathBuf,
+    transfer_type: TransferType,
+    writer: Writer,
+    is_admin: bool,
+    config: Config,
+    waiting_password: bool,
+}</pre>
+<p class="calibre3">The brand new <span><kbd class="calibre14">config</kbd></span> field seems logical, however what about <span><kbd class="calibre14">is_admin</kbd></span> and <span><kbd class="calibre14">waiting_password</kbd></span>? The first one will be used to be able to list/download/overwrite the <span><kbd class="calibre14">config.toml</kbd></span> file, whereas the second one will be used when the <span><kbd class="calibre14">USER</kbd></span> command has been used and the server is now expecting the user's password.</p>
+<p class="calibre3">Let's add another method to our <span><kbd class="calibre14">Client</kbd></span> struct:</p>
+<pre class="calibre22">fn is_logged(&amp;self) -&gt; bool {
+    self.name.is_some() &amp;&amp; !self.waiting_password
+}</pre>
+<p class="calibre3">Don't forget to update the <span><kbd class="calibre14">Config::new</kbd></span> method:</p>
+<pre class="calibre22">fn new(handle: Handle, writer: Writer, server_root: PathBuf, config: Config) -&gt; Client {
+    Client {
+        cwd: PathBuf::from("/"),
+        data_port: None,
+        data_reader: None,
+        data_writer: None,
+        handle,
+        name: None,
+        server_root,
+        transfer_type: TransferType::Ascii,
+        writer,
+        is_admin: false,
+        config,
+        waiting_password: false,
+    }
+}</pre>
+<p class="calibre3">Ok, now here comes the huge update! But first, don't forget to add the <span><kbd class="calibre14">Pass</kbd></span> command:</p>
+<pre class="calibre22">pub enum Command {
+    // variants...
+    Pass(String),
+    // variants...
+}</pre>
+<p class="calibre3">Now the <span><kbd class="calibre14">Command::new</kbd></span> match:</p>
+<pre class="calibre22">b"PASS" =&gt; Command::Pass(data.and_then(|bytes| String::from_utf8(bytes.to_vec()).map_err(Into::into))?),</pre>
+<p class="calibre3">Don't forget to also update the <span><kbd class="calibre14">AsRef</kbd></span> implementation!</p>
+<p class="calibre3">Good, we're ready for the last (and very big) step. Let's head to the <span><kbd class="calibre14">Client::handle_cmd</kbd></span> method:</p>
+<pre class="calibre22">use config::{DEFAULT_PORT, Config};
+use std::path::Path;
+
+fn prefix_slash(path: &amp;mut PathBuf) {
+    if !path.is_absolute() {
+        *path = Path::new("/").join(&amp;path);
+    }
+}
+
+#[async]
+fn handle_cmd(mut self, cmd: Command) -&gt; Result&lt;Self&gt; {
+    println!("Received command: {:?}", cmd);
+    if self.is_logged() {
+        match cmd {
+            Command::Cwd(directory) =&gt; return Ok(await!(self.cwd(directory))?),
+            Command::List(path) =&gt; return Ok(await!(self.list(path))?),
+            Command::Pasv =&gt; return Ok(await!(self.pasv())?),
+            Command::Port(port) =&gt; {
+                self.data_port = Some(port);
+                return Ok(await!(self.send(Answer::new(ResultCode::Ok,
+                          &amp;format!("Data port is now {}", <br class="calibre6"/>                           port))))?);
+            }
+            Command::Pwd =&gt; {
+                let msg = format!("{}", self.cwd.to_str().unwrap_or("")); // small   <br class="calibre6"/>                 trick
+                if !msg.is_empty() {
+                    let message = format!("\"{}\" ", msg);
+<br class="calibre6"/>                    return Ok(await!<br class="calibre6"/>                    (self.send(Answer::new(ResultCode::PATHNAMECreated,
+                      &amp;message)))?);
+                } else {
+                    return Ok(await!(self.send(Answer::new(ResultCode::FileNotFound,
+                              "No such file or directory")))?);
+                }
+            }
+            Command::Retr(file) =&gt; return Ok(await!(self.retr(file))?),
+            Command::Stor(file) =&gt; return Ok(await!(self.stor(file))?),
+            Command::CdUp =&gt; {
+                if let Some(path) = self.cwd.parent().map(Path::to_path_buf) {
+                    self.cwd = path;
+                    prefix_slash(&amp;mut self.cwd);
+                }
+                return Ok(await!(self.send(Answer::new(ResultCode::Ok, "Done")))?);
+            }
+            Command::Mkd(path) =&gt; return Ok(await!(self.mkd(path))?),
+            Command::Rmd(path) =&gt; return Ok(await!(self.rmd(path))?),
+            _ =&gt; (),
+        }
+    } else if self.name.is_some() &amp;&amp; self.waiting_password {
+        if let Command::Pass(content) = cmd {
+            let mut ok = false;
+            if self.is_admin {
+                ok = content == self.config.admin.as_ref().unwrap().password;
+            } else {
+                for user in &amp;self.config.users {
+                    if Some(&amp;user.name) == self.name.as_ref() {
+                        if user.password == content {
+                            ok = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if ok {
+                self.waiting_password = false;
+                let name = self.name.clone().unwrap_or(String::new());
+                self = await!(
+                    self.send(Answer::new(ResultCode::UserLoggedIn,
+                                          &amp;format!("Welcome {}", name))))?;
+            } else {
+                self = await!(self.send(Answer::new(ResultCode::NotLoggedIn,
+                               "Invalid password")))?;
+            }
+            return Ok(self);
+        }
+    }
+    match cmd {
+        Command::Auth =&gt;
+            self = await!(self.send(Answer::new(ResultCode::CommandNotImplemented,
+                          "Not implemented")))?,
+        Command::Quit =&gt; self = await!(self.quit())?,
+        Command::Syst =&gt; {
+            self = await!(self.send(Answer::new(ResultCode::Ok, "I won't tell!")))?;
+        }
+        Command::Type(typ) =&gt; {
+            self.transfer_type = typ;
+            self = await!(self.send(Answer::new(ResultCode::Ok,
+                           "Transfer type changed successfully")))?;
+        }
+        Command::User(content) =&gt; {
+            if content.is_empty() {
+                self = await!<br class="calibre6"/>               (self.send(Answer::new(ResultCode::InvalidParameterOrArgument,
+                                       "Invalid username")))?;
+            } else {
+                let mut name = None;
+                let mut pass_required = true;
+
+                self.is_admin = false;
+                if let Some(ref admin) = self.config.admin {
+                    if admin.name == content {
+                        name = Some(content.clone());
+                        pass_required = admin.password.is_empty() == false;
+                        self.is_admin = true;
+                    }
+                }
+                // In case the user isn't the admin.
+                if name.is_none() {
+                    for user in &amp;self.config.users {
+                        if user.name == content {
+                            name = Some(content.clone());
+                            pass_required = user.password.is_empty() == false;
+                            break;
+                        }
+                    }
+                }
+                // In case this is an unknown user.
+                if name.is_none() {
+                    self = await!(self.send(Answer::new(ResultCode::NotLoggedIn,
+                                     "Unknown user...")))?;
+                } else {
+                    self.name = name.clone();
+                    if pass_required {
+                        self.waiting_password = true;
+                        self = await!(
+                            <br class="calibre6"/>                       self.send(Answer::new(ResultCode::UserNameOkayNeedPassword,
+                                      &amp;format!("Login OK, password needed for {}",
+                                               name.unwrap()))))?;
+                    } else {
+                        self.waiting_password = false;
+                        self = await! <br class="calibre6"/>                         (self.send(Answer::new(ResultCode::UserLoggedIn,
+                              &amp;format!("Welcome {}!", content))))?;
+                    }
+                }
+            }
+        }
+        Command::NoOp =&gt; self = await!(self.send(Answer::new(ResultCode::Ok,
+                                                             "Doing nothing")))?,
+        Command::Unknown(s) =&gt;
+            self = await!(self.send(Answer::new(ResultCode::UnknownCommand,
+                           &amp;format!("\"{}\": Not implemented", s))))?,
+        _ =&gt; {
+            // It means that the user tried to send a command while they weren't  <br class="calibre6"/>             logged yet.
+            self = await!(self.send(Answer::new(ResultCode::NotLoggedIn,
+                           "Please log first")))?;
+        }
+    }
+    Ok(self)
+}</pre>
+<p class="calibre3">I told you it was huge! The main points in here are just the flow rework. The following commands only work when you're logged in:</p>
+<ul class="calibre10">
+<li class="calibre11"><kbd class="calibre14">Cwd</kbd></li>
+<li class="calibre11"><kbd class="calibre14">List</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Pasv</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Port</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Pwd</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Retr</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Stor</kbd></li>
+<li class="calibre11"><kbd class="calibre14">CdUp</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Mkd</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Rmd</kbd></li>
+</ul>
+<p class="calibre3">This command only works when you're not <em class="calibre21">yet</em> logged in and the server is waiting for the password:</p>
+<ul class="calibre10">
+<li class="calibre11"><kbd class="calibre14">Pass</kbd></li>
+</ul>
+<p class="calibre3">The rest of the commands work in any case. We're almost done in here. Remember when I talked about the security? You wouldn't want anyone to have access to the configuration file with the list of all users, I suppose.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Securing the config.toml access</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">This time, not much to do! We just need to add a check when a user wants to list, download, or overwrite the file. Which means that the three following commands have to be updated:</p>
+<ul class="calibre10">
+<li class="calibre11"><kbd class="calibre14">List</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Retr</kbd></li>
+<li class="calibre11"><kbd class="calibre14">Stor</kbd></li>
+</ul>
+<p class="calibre3">Let's start with <span><kbd class="calibre14">List</kbd></span>. Before the first <span><kbd class="calibre14">add_file_info</kbd></span> function call, just wrap the <span><kbd class="calibre14">add_file_info</kbd></span> function call around this block:</p>
+<pre class="calibre22">if self.is_admin || entry.path() != self.server_root.join(CONFIG_FILE) {</pre>
+<p class="calibre3">Before the second one, add the following:</p>
+<pre class="calibre22">if self.is_admin || path != self.server_root.join(CONFIG_FILE)</pre>
+<p class="calibre3">Now let's update the <span><kbd class="calibre14">retr</kbd></span> function. Take the following condition:</p>
+<pre class="calibre22">if path.is_file() {</pre>
+<p class="calibre3">Replace it with this:</p>
+<pre class="calibre22">if path.is_file() &amp;&amp; (self.is_admin || path != self.server_root.join(CONFIG_FILE)) {</pre>
+<p class="calibre3">Finally, let's update the <span><kbd class="calibre14">stor</kbd></span> function. Take the following condition:</p>
+<pre class="calibre22">if invalid_path(&amp;path) {</pre>
+<p class="calibre3">Replace it with this:</p>
+<pre class="calibre22">if invalid_path(&amp;path) || (!self.is_admin &amp;&amp; path == self.server_root.join(CONFIG_FILE)) {</pre>
+<p class="calibre3">And we're done! You now have a configurable server that you can easily extend, following your needs.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Unit tests</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">A good software needs tests to ensure that it works in most cases. So, we will add tests to our FTP server by starting to write unit tests for the FTP <kbd class="calibre14">codec</kbd>.</p>
+<p class="calibre3">Unit tests verify only a unit of the program, which may be a function. They are different from the integration tests, which we will see later, that test the software as a whole.</p>
+<p class="calibre3">Let's go in the <span><kbd class="calibre14">codec</kbd></span> module and add a new inner module to it:</p>
+<pre class="calibre22">#[cfg(test)]
+mod tests {
+}</pre>
+<p class="calibre3">We are again using the <span><kbd class="calibre14">#[cfg]</kbd></span> attribute; this time, it only compiles the following module when running the tests. This is to avoid adding useless code in the final binary.</p>
+<p class="calibre3">In this new module, we will add a few import statements that we will need later when writing the tests:</p>
+<pre class="calibre22">#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ftp::ResultCode;
+    use super::{Answer, BytesMut, Command, Decoder, Encoder, FtpCodec};
+}</pre>
+<p class="calibre3">As you can see, we use <span><kbd class="calibre14">super</kbd></span> to access some types from the parent module (<span><kbd class="calibre14">codec</kbd></span>): this is very frequent for unit tests because we usually test the code from the same file.</p>
+<p class="calibre3">Let's now add a <kbd class="calibre14">test</kbd> function:</p>
+<pre class="calibre22">#[cfg(test)]
+mod tests {
+    // …
+
+    #[test]
+    fn test_encoder() {
+    }
+}</pre>
+<p class="calibre3">In the <span><kbd class="calibre14">test_encoder()</kbd></span> function, we will write the code that will test that the <span><kbd class="calibre14">FtpCodec</kbd></span>, <span><kbd class="calibre14">Encoder</kbd></span> implementation works as intended.</p>
+<p class="calibre3">We will first check that an <span><kbd class="calibre14">Answer</kbd></span> with a message produces the right output:</p>
+<pre class="calibre22">#[cfg(test)]
+mod tests {
+    // …
+
+    #[test]
+    fn test_encoder() {
+        let mut codec = FtpCodec;
+        let message = "bad sequence of commands";
+        let answer = Answer::new(ResultCode::BadSequenceOfCommands, message);
+        let mut buf = BytesMut::new();
+        let result = codec.encode(answer, &amp;mut buf);
+        assert!(result.is_ok());
+        assert_eq!(buf, format!("503 {}\r\n", message));
+    }
+}</pre>
+<p class="calibre3">Here, we start by creating the objects needed to call <span><kbd class="calibre14">Encode::encode</kbd></span>, for example, a <kbd class="calibre14">codec</kbd> and a buffer. Then, we call <span><kbd class="calibre14">codec.encode()</kbd></span>, since it is the method we actually want to test. After that, we check if the result is <span><kbd class="calibre14">Ok</kbd></span> and we check that the buffer was filled accordingly. To do so, we use some macros:</p>
+<ul class="calibre10">
+<li class="calibre11"><span><kbd class="calibre14">assert!</kbd></span>: This checks if the value is <span><kbd class="calibre14">true</kbd></span>. If it is <span><kbd class="calibre14">false</kbd></span>, it will panic and make the test fail.</li>
+<li class="calibre11"><span><kbd class="calibre14">assert_eq!</kbd></span>: This checks that both values are equal.</li>
+</ul>
+<p class="calibre3">This a quite simple and effective test, but it does not test every path of the function. So, let's add more lines in this function to test the other possible path:</p>
+<pre class="calibre22">#[cfg(test)]
+mod tests {
+    // …
+
+    #[test]
+    fn test_encoder() {
+        // …
+        let answer = Answer::new(ResultCode::CantOpenDataConnection, "");
+        let mut buf = BytesMut::new();
+        let result = codec.encode(answer, &amp;mut buf);
+        assert!(result.is_ok(), "Result is ok");
+        assert_eq!(buf, format!("425\r\n"), "Buffer contains 425");
+    }
+}</pre>
+<p class="calibre3">Here, we test with an empty message. The rest is basically the same: we create the necessary objects and use the assert macros. But this time, we added a new parameter to the assert macros; this is an optional message to show when the test fails.</p>
+<p class="calibre3">If we run the test with <span><kbd class="calibre14">cargo test</kbd></span>, we get the following result:</p>
+<pre class="calibre23"><strong class="calibre5">   Compiling ftp-server v0.0.1 (file:///path/to/FTP-server-rs)
+    Finished dev [unoptimized + debuginfo] target(s) in 1.29 secs
+     Running target/debug/deps/ftp_server-452667ddc2d724e8
+
+running 1 test
+test codec::tests::test_encoder ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</strong></pre>
+<p class="calibre3">This shows the test that was run and that it passed.</p>
+<p class="calibre3">Let's write a <kbd class="calibre14">test</kbd> function that fails:</p>
+<pre class="calibre23">    #[test]
+    fn test_dummy() {
+        assert!(false, "Always fail");
+    }</pre>
+<p class="calibre3">When we run <span><kbd class="calibre14">cargo test</kbd></span>, we see the following:</p>
+<pre class="calibre23"><strong class="calibre5">    Finished dev [unoptimized + debuginfo] target(s) in 1.30 secs
+     Running target/debug/deps/ftp_server-452667ddc2d724e8
+
+running 2 tests
+test codec::tests::test_encoder ... ok
+test codec::tests::test_dummy ... FAILED
+
+failures:
+
+---- codec::tests::test_dummy stdout ----
+    thread 'codec::tests::test_dummy' panicked at 'Always fail', src/codec.rs:102:8
+note: Run with `RUST_BACKTRACE=1` for a backtrace.
+
+
+failures:
+    codec::tests::test_dummy</strong></pre>
+<pre class="calibre23"><strong class="calibre5">test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+
+error: test failed, to rerun pass '--bin ftp-server'</strong></pre>
+<p class="calibre3">We can see that the message we specified (<span><kbd class="calibre14">Always fail</kbd></span>) is shown. We also see that <kbd class="calibre14">1</kbd> test failed.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Backtraces</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">As mentioned in the output, we can set the environment variable <span><kbd class="calibre14">RUST_BACKTRACE</kbd></span> to <span><kbd class="calibre14">1</kbd></span> in order to get more information about where the test failed. Let's do so:</p>
+<pre class="calibre22">export RUST_BACKTRACE=1</pre>
+<pre class="calibre23"><strong class="calibre5">    Finished dev [unoptimized + debuginfo] target(s) in 0.0 secs
+     Running target/debug/deps/ftp_server-452667ddc2d724e8
+
+running 2 tests
+test codec::tests::test_encoder ... ok
+test codec::tests::test_dummy ... FAILED
+
+failures:
+
+---- codec::tests::test_dummy stdout ----
+    thread 'codec::tests::test_dummy' panicked at 'Always fail', src/codec.rs:102:8
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+stack backtrace:
+   0: std::sys::imp::backtrace::tracing::imp::unwind_backtrace
+             at /checkout/src/libstd/sys/unix/backtrace/tracing/gcc_s.rs:49
+   1: std::sys_common::backtrace::_print
+             at /checkout/src/libstd/sys_common/backtrace.rs:68
+   2: std::panicking::default_hook::{{closure}}
+             at /checkout/src/libstd/sys_common/backtrace.rs:57
+             at /checkout/src/libstd/panicking.rs:381
+   3: std::panicking::default_hook
+             at /checkout/src/libstd/panicking.rs:391
+   4: std::panicking::rust_panic_with_hook
+             at /checkout/src/libstd/panicking.rs:577
+   5: std::panicking::begin_panic
+             at /checkout/src/libstd/panicking.rs:538
+   6: ftp_server::codec::tests::test_dummy
+             at src/codec.rs:102
+   7: &lt;F as test::FnBox&lt;T&gt;&gt;::call_box
+             at /checkout/src/libtest/lib.rs:1491
+             at /checkout/src/libcore/ops/function.rs:223
+             at /checkout/src/libtest/lib.rs:142
+   8: __rust_maybe_catch_panic
+             at /checkout/src/libpanic_unwind/lib.rs:99
+
+
+failures:
+    codec::tests::test_dummy<br class="calibre6"/></strong><strong class="calibre5">
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+
+error: test failed, to rerun pass '--bin ftp-server'</strong></pre>
+<p class="calibre3">The important part here is the following:</p>
+<pre class="calibre23"><strong class="calibre5">6: ftp_server::codec::tests::test_dummy
+             at src/codec.rs:102</strong></pre>
+<p class="calibre3">This shows the file, function, and line where the code panicked.</p>
+<p class="calibre3">This variable is useful even outside of testing code: when debugging a problem with a code that panics, we can use this variable as well.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Testing failures</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Sometimes, we want to test that a function will panic. To do so, we can simply add the <span><kbd class="calibre14">#[should_panic]</kbd></span> attribute at the top of the <kbd class="calibre14">test</kbd> function:</p>
+<pre class="calibre23">    #[should_panic]
+    #[test]
+    fn test_dummy() {
+        assert!(false, "Always fail");
+    }</pre>
+<p class="calibre3">When doing so, the <kbd class="calibre14">test</kbd> now passes:</p>
+<pre class="calibre23"><strong class="calibre5">    Finished dev [unoptimized + debuginfo] target(s) in 1.30 secs
+     Running target/debug/deps/ftp_server-452667ddc2d724e8
+
+running 2 tests
+test codec::tests::test_dummy ... ok
+test codec::tests::test_encoder ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Ignoring tests</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Sometimes, we have tests that take a lot of time, or we want to avoid running a specific test all the time. To avoid running a test by default, we can add the <span><kbd class="calibre14">#[ignore]</kbd></span> attribute above the function:</p>
+<pre class="calibre23">    #[ignore]
+    #[test]
+    fn test_dummy() {
+        assert!(false, "Always fail");
+    }</pre>
+<p class="calibre3">When we run the <kbd class="calibre14">test</kbd>, we'll see that the <kbd class="calibre14">test</kbd> function was not running:</p>
+<pre class="calibre23"><strong class="calibre5">    Finished dev [unoptimized + debuginfo] target(s) in 0.0 secs
+     Running target/debug/deps/ftp_server-452667ddc2d724e8
+
+running 2 tests
+test codec::tests::test_dummy ... ignored
+test codec::tests::test_encoder ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out</strong></pre>
+<p class="calibre3">As you can see, the <span><kbd class="calibre14">test_dummy()</kbd></span> test function was ignored. To run it, we need to specify a command-line argument to the program running the tests (not to <kbd class="calibre14">cargo</kbd> itself):</p>
+<pre class="calibre23"><strong class="calibre5">cargo test -- --ignored</strong></pre>
+<div class="packt_infobox">
+<p class="calibre24"><strong class="calibre75">Note:</strong> We specified <span class="packt_screen"><kbd class="calibre25">--</kbd></span> before <span class="packt_screen"><kbd class="calibre25">--ignored</kbd></span> to send the latter to the program running the tests (which is not <kbd class="calibre25">cargo</kbd>).</p>
+</div>
+<p class="calibre3">With that argument, we see that the test indeed runs:</p>
+<pre class="calibre23"><strong class="calibre5">    Finished dev [unoptimized + debuginfo] target(s) in 0.0 secs
+     Running target/debug/deps/ftp_server-452667ddc2d724e8
+
+running 1 test
+test codec::tests::test_dummy ... FAILED
+
+failures:
+
+---- codec::tests::test_dummy stdout ----
+    thread 'codec::tests::test_dummy' panicked at 'Always fail', src/codec.rs:102:8
+note: Run with `RUST_BACKTRACE=1` for a backtrace.
+
+
+failures:
+    codec::tests::test_dummy
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out
+
+error: test failed, to rerun pass '--bin ftp-server'</strong></pre>
+<p class="calibre3">To end this section, let's write a unit test for the decoder:</p>
+<pre class="calibre22">#[cfg(test)]
+mod tests {
+    // …
+
+    #[test]
+    fn test_decoder() {
+        let mut codec = FtpCodec;
+        let mut buf = BytesMut::new();
+        buf.extend(b"PWD");
+        let result = codec.decode(&amp;mut buf);
+        assert!(result.is_ok());
+        let command = result.unwrap();
+        assert!(command.is_none());</pre>
+<p class="calibre3">Here, we test that <span><kbd class="calibre14">None</kbd></span> is returned in the case when more input is needed:</p>
+<pre class="calibre23">        buf.extend(b"\r\n");
+        let result = codec.decode(&amp;mut buf);
+        assert!(result.is_ok());
+        let command = result.unwrap();
+        assert_eq!(command, Some(Command::Pwd));</pre>
+<p class="calibre3">And here, we add the missing output to check that the command was parsed correctly:</p>
+<pre class="calibre23">        let mut buf = BytesMut::new();
+        buf.extend(b"LIST /tmp\r\n");
+        let result = codec.decode(&amp;mut buf);
+        assert!(result.is_ok());
+        let command = result.unwrap();
+        assert_eq!(command, Some(Command::List(Some(PathBuf::from("/tmp")))));
+    }
+}</pre>
+<p class="calibre3">Finally, we test that parsing a command with an argument works. If we run <span><kbd class="calibre14">cargo test</kbd></span> again, we get the following output:</p>
+<pre class="calibre23"><strong class="calibre5">    Finished dev [unoptimized + debuginfo] target(s) in 1.70 secs
+     Running target/debug/deps/ftp_server-452667ddc2d724e8
+
+running 2 tests
+test codec::tests::test_encoder ... ok
+test codec::tests::test_decoder ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Integration tests</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">In the previous section, we checked that a part of our code works: now, we will check that the program as a whole works, by writing integration tests. These tests reside in the <span><kbd class="calibre14">tests/</kbd></span> directory, so we start by creating it:</p>
+<pre class="calibre23"><strong class="calibre5">mkdir tests</strong></pre>
+<p class="calibre3">In this directory, we can create a new file, <span><kbd class="calibre14">tests/server.rs</kbd></span>, in which we'll put the following content:</p>
+<pre class="calibre22">extern crate ftp;
+
+use std::process::Command;
+use std::thread;
+use std::time::Duration;
+
+use ftp::FtpStream;</pre>
+<p class="calibre3">We import the <span><kbd class="calibre14">ftp</kbd></span> crate which is an FTP client; it will be useful to test our FTP server. We need to add it in <span><kbd class="calibre14">Cargo.toml</kbd></span> as well:</p>
+<pre class="calibre22">[dev-dependencies]
+ftp = "^2.2.1"</pre>
+<p class="calibre3">Here we see a new section, <span><kbd class="calibre14">dev-dependencies</kbd></span>: it contains the dependencies that are needed outside the main crate itself, like in the integration tests. By putting the dependency here and not in <span><kbd class="calibre14">[dependencies]</kbd></span>, it won't be available in the main crate, which is what we want.</p>
+<p class="calibre3">Let's go back to the file <span><kbd class="calibre14">tests/server.rs</kbd></span> and add a <kbd class="calibre14">test</kbd> function:</p>
+<pre class="calibre22">#[test]
+fn test_pwd() {
+    let child =
+        Command::new("./target/debug/ftp-server")
+            .spawn().unwrap();
+    let mut controller = ProcessController::new(child);
+
+    thread::sleep(Duration::from_millis(100));
+    assert!(controller.is_running(), "Server was aborted");
+
+    let mut ftp = FtpStream::connect("127.0.0.1:1234").unwrap();
+
+    ftp.quit().unwrap();
+}</pre>
+<p class="calibre3">Here, we don't need to put the code in an inner <span><kbd class="calibre14">tests</kbd></span> module because the integration tests are compiled separately. Since our crate is a binary, we need to run it with the <span><kbd class="calibre14">Command</kbd></span> object. We give the child process to a <span><kbd class="calibre14">ProcessController</kbd></span> that we will create later.</p>
+<div class="packt_infobox">
+<p class="calibre24"><span class="packt_screen">Note</span>: If our crate was a library, we would add an <span class="packt_screen"><kbd class="calibre25">extern crate</kbd></span> for it, and we would be able to call functions from it directly.</p>
+</div>
+<p class="calibre3">We then call <span><kbd class="calibre14">thread::sleep()</kbd></span> to give some time for our server to start. After that, we use the <span><kbd class="calibre14">ftp</kbd></span> crate to connect to our server, and then we quit.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Teardown</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">In the Rust test framework, there's no <span><kbd class="calibre14">setup()</kbd></span> and <span><kbd class="calibre14">teardown()</kbd></span> functions like there are in the test frameworks of many other languages. And here, we need to run some code when the test is done: we need to kill our FTP server. So, we need some kind of <span><kbd class="calibre14">teardown</kbd></span> function. We cannot simply say <span><kbd class="calibre14">child.kill()</kbd></span> at the end of the function because, if the test panics before that, the FTP server will continue running after the test ends. To make sure the cleanup code is always called, no matter how the function ended, we'll have to use the <span><kbd class="calibre14">RAII</kbd></span> pattern that we discovered in <a target="_blank" href="part0143.html#48C0E0-13a27bdc411a4c2eaad1cc3a71f7fca7" class="calibre13">Chapter 6</a><em class="calibre21">, Implementing the Engine of the Music Player</em>.</p>
+<p class="calibre3">Let's write a simple <span><kbd class="calibre14">teardown</kbd></span> structure:</p>
+<pre class="calibre22">struct ProcessController {
+    child: Child,
+}</pre>
+<p class="calibre3">The structure contains the child process that will be killed in the destructor. So, if the test panics, this destructor will be called. It will also be called if the function ends normally.</p>
+<p class="calibre3">We'll also create a constructor and the <kbd class="calibre14">utility</kbd> method that we used in the <kbd class="calibre14">test</kbd> function:</p>
+<pre class="calibre22">impl ProcessController {
+    fn new(child: Child) -&gt; Self {
+        ProcessController {
+            child,
+        }
+    }
+
+    fn is_running(&amp;mut self) -&gt; bool {
+        let status = self.child.try_wait().unwrap();
+        status.is_none()
+    }
+}</pre>
+<p class="calibre3">The function <span><kbd class="calibre14">is_running()</kbd></span> is used to ensure that the FTP server we launched is actually running; if another instance of the application is already running, our instance will not run. That's why we used an assert in the test function.</p>
+<p class="calibre3">Finally, we need to create a destructor:</p>
+<pre class="calibre22">impl Drop for ProcessController {
+    fn drop(&amp;mut self) {
+        let _ = self.child.kill();
+    }
+}</pre>
+<p class="calibre3">We're now ready to write the <kbd class="calibre14">test</kbd> function:</p>
+<pre class="calibre22">#[test]
+fn test_pwd() {
+    // …
+
+    let mut ftp = FtpStream::connect("127.0.0.1:1234").unwrap();
+
+    let pwd = ftp.pwd().unwrap();
+    assert_eq!("/", pwd);
+
+    ftp.login("ferris", "").unwrap();
+
+    ftp.cwd("src").unwrap();
+    let pwd = ftp.pwd().unwrap();
+    assert_eq!("/src", pwd);
+
+    let _ = ftp.cdup();
+    let pwd = ftp.pwd().unwrap();
+    assert_eq!("/", pwd);
+
+    ftp.quit().unwrap();
+}</pre>
+<p class="calibre3">In this function, we issue some FTP commands and make sure the server state is correct by calling the <span><kbd class="calibre14">assert_eq!()</kbd></span> macro. When we run <span><kbd class="calibre14">cargo test</kbd></span>, we see the following output:</p>
+<pre class="calibre23"><strong class="calibre5">    Finished dev [unoptimized + debuginfo] target(s) in 0.0 secs
+     Running target/debug/deps/ftp_server-47386d9089111729
+
+running 2 tests
+test codec::tests::test_decoder ... ok
+test codec::tests::test_encoder ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+     Running target/debug/deps/server-1b5cda64792f5f82
+
+running 1 test
+Waiting clients on port 1234...
+New client: [address : 127.0.0.1:43280]
+Waiting another client...
+Received command: Pwd
+Received command: User("ferris")
+Received command: Cwd("src")
+Received command: Pwd
+Received command: CdUp
+Received command: Pwd
+Received command: Quit
+test test_pwd ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</strong></pre>
+<p class="calibre3">A new section is added for our integration test.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Print output to stdout</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Let's see what happens when we add a call to <span><kbd class="calibre14">println!()</kbd></span> in our test (for debug purposes, for instance):</p>
+<pre class="calibre22">#[test]
+fn test_pwd() {
+    println!("Running FTP server");
+
+    // …
+}</pre>
+<p class="calibre3">It will not be printed to the terminal. In order to see it, we need to pass another parameter to the test runner. Let's run <span><kbd class="calibre14">cargo test</kbd></span> this way to see the output to <span><kbd class="calibre14">stdout</kbd></span>:</p>
+<pre class="calibre23"><strong class="calibre5">cargo run -- --nocapture</strong></pre>
+<p class="calibre3">This time, we see the following output:</p>
+<pre class="calibre23"><strong class="calibre5">…
+
+     Running target/debug/deps/server-1b5cda64792f5f82
+
+running 1 test
+Running FTP server
+Waiting clients on port 1234...
+New client: [address : 127.0.0.1:43304]
+Waiting another client...
+Received command: Pwd
+Received command: User("ferris")
+Received command: Cwd("src")
+Received command: Pwd
+Received command: CdUp
+Received command: Pwd
+Received command: Quit
+test test_pwd ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Documentation</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Another very important aspect of a software is documentation. It is useful to describe how to use a project, giving some examples and detailing the complete public API: let's see how we can document a crate in Rust.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Documenting a crate</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Documentation is written in comments, but these doc-comments start with a special symbol. We use the token <span><kbd class="calibre14">///</kbd></span> to document the item following the comment, and <span><kbd class="calibre14">//!</kbd></span> to document the item from within this item. Let's start by seeing an example of the latter.</p>
+<p class="calibre3">At the top of our crate's root (specifically, in the file <span><kbd class="calibre14">main.rs</kbd></span>), we'll add the following comment:</p>
+<pre class="calibre22">//! An FTP server, written using tokio and futures-await.</pre>
+<p class="calibre3">Here, we use the <span><kbd class="calibre14">//!</kbd></span> form because we cannot write a comment before a crate; we can only write a comment from within the crate.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Documenting a module</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Documenting a module is very similar: we add a comment of the form <span><kbd class="calibre14">//!</kbd></span> at the top of a module's file. Let's add the following doc-comment in <span><kbd class="calibre14">codec.rs</kbd></span>:</p>
+<pre class="calibre22">//! FTP codecs to encode and decode FTP commands and raw bytes.</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Headers</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">The doc-comments are written in Markdown, so let's look at some Markdown formatting syntax. We can write headers by starting a line with a <span><kbd class="calibre14">#</kbd></span>. The more <span><kbd class="calibre14">#</kbd></span>'s, the smaller the title.</p>
+<p class="calibre3">For example:</p>
+<pre class="calibre22">/// Some introduction text.
+///
+/// # Big Title
+///
+/// ## Less big title
+///
+/// ### Even less big title.
+///
+/// #### Small title
+///
+/// ...</pre>
+<p class="calibre3">I think you get it at this point!</p>
+<p class="calibre3">Here is a list of common headers:</p>
+<ul class="calibre10">
+<li class="calibre11">Examples</li>
+<li class="calibre11">Panics</li>
+<li class="calibre11">Failure</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Code blocks</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">The code we write in doc-comments must be inserted between two pairs of <span><kbd class="calibre14">```</kbd></span>. Usually, the code blocks are written under an <span><kbd class="calibre14">Examples</kbd></span> header. Let's see an example using all of these syntactic elements for a function that convert bytes to uppercase:</p>
+<pre class="calibre22">/// Convert a sequence of bytes to uppercase.
+///
+/// # Examples
+///
+/// ```
+/// let mut data = b"test";
+/// to_uppercase(&amp;mut data);
+/// ```
+fn to_uppercase(data: &amp;mut [u8]) {
+    for byte in data {
+        if *byte &gt;= 'a' as u8 &amp;&amp; *byte &lt;= 'z' as u8 {
+            *byte -= 32;
+        }
+    }
+}</pre>
+<p class="calibre3">Here, we start with a short description of the function. Then, we show a code example.</p>
+<p class="calibre3">It's recommended to add comments in the code if needed, to help users understand it more easily, so don't hesitate to add some!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Documenting an enumeration (or any type with public fields)</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">When we want to document an enumeration, we want not only to document the type, but also each variant. To do so, we can simply add a doc-comment before each variant. The same applies for a structure, for its fields.</p>
+<p class="calibre3">Let's see an example for the <span><kbd class="calibre14">Command</kbd></span> type:</p>
+<pre class="calibre22">/// An FTP command parsed by the parser.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Command {
+    Auth,
+    /// Change the working directory to the one specified as an argument.
+    Cwd(PathBuf),
+    /// Get a list of files.
+    List(Option&lt;PathBuf&gt;),
+    /// Create a new directory.
+    Mkd(PathBuf),
+    /// No operation.
+    NoOp,
+    /// Specify the port to use for the data channel.
+    Port(u16),
+    /// Enter passive mode.
+    Pasv,
+    /// Print current directory.
+    Pwd,
+    /// Terminate the connection.
+    Quit,
+    /// Retrieve a file.
+    Retr(PathBuf),
+    /// Remove a directory.
+    Rmd(PathBuf),
+    /// Store a file on the server.
+    Stor(PathBuf),
+    Syst,
+    /// Specify the transfert type.
+    Type(TransferType),
+    /// Go to the parent directory.
+    CdUp,
+    Unknown(String),
+    User(String),
+}</pre>
+<p class="calibre3">We see that the <span><kbd class="calibre14">enum</kbd></span> itself has a doc-comment and most of the variants also have documentation.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Generating the documentation</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We can easily generate the documentation by running the following command:</p>
+<pre class="calibre23"><strong class="calibre5">cargo doc</strong></pre>
+<p class="calibre3">This will generate the documentation in the directory <span><kbd class="calibre14">target/doc/ftp_server</kbd></span>. Here is how it looks:</p>
+<div class="mce-root1"><img src="../images/00050.jpeg" class="calibre76"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 10.5</em></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Warning about public items without documentation</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">When writing a library, it is very easy to forget to write the documentation about every item. But, we can use the help of the tools at our disposal. By adding the <span><kbd class="calibre14">#[warn(missing_docs)]</kbd></span> attribute in our crate's root, the compiler will warn us when public items do not have a doc-comment. In such a case, it will print something like this:</p>
+<pre class="calibre23"><strong class="calibre5">warning: missing documentation for crate
+   --&gt; src/main.rs:9:1
+    |
+9   | / #![feature(proc_macro, conservative_impl_trait, generators)]
+10  | | #![warn(missing_docs)]
+11  | |
+12  | | extern crate bytes;
+...   |
+528 | |     }
+529 | | }
+    | |_^
+    |
+note: lint level defined here
+   --&gt; src/main.rs:10:9
+    |
+10  | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Hiding items from the documentation</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Sometimes, we intentionally do not want to have a public item show up in the documentation. In this case, we can use the <span><kbd class="calibre14">#[doc(hidden)]</kbd></span> attribute:</p>
+<pre class="calibre22">#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TransferType {
+    Ascii,
+    Image,
+    Unknown,
+}</pre>
+<p class="calibre3">For instance, this can be useful for something that is used by a macro of the crate but is not intended to be used directly by the user.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Documentation tests</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Writing documentation is a great thing. Showing code in your documentation is even better. However, how can you be sure that the code you're showing is still up to date? That it won't break when users copy/paste it to test it out? Here comes another wonderful feature from Rust: <span><kbd class="calibre14">doc tests</kbd></span>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Tags</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">First, any code blocks in documentation comments will be tested by default if they don't have <span><kbd class="calibre14">ignore</kbd></span> or any non-recognized tag. So, for example:</p>
+<pre class="calibre22">/// ```ignore
+/// let x = 12;
+/// x += 1;
+/// ```</pre>
+<p class="calibre3">This block code won't be tested (luckily, because it wouldn't compile!). A few other examples:</p>
+<pre class="calibre22">/// # Some text
+///
+/// ```text
+/// this is just some text
+/// but it's rendered inside a code block
+/// nice, right?
+/// ```
+///
+/// # Why not C?
+///
+/// ```c-language
+/// int strlen(const char *s) {
+///     char *c = s;
+///
+///     for (; *c; ++c);
+///     return c - s;
+/// }
+/// ```
+///
+/// # Or an unknown language?
+///
+/// ```whatever
+/// 010010000110100100100001
+/// ```</pre>
+<p class="calibre3">A few other instructions might come in handy for you. Let's start with <span><kbd class="calibre14">ignore</kbd></span>!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">ignore</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Just like this flag name states, <span><kbd class="calibre14">ignore</kbd></span> makes the block code ignored. As simple as that. It'll still get the Rust syntax color once rendered in the documentation. For example:</p>
+<pre class="calibre22">/// ```ignore
+/// let x = 0;
+/// ```</pre>
+<p class="calibre3">However, once rendered, it'll have a graphical notification about the fact that this block code isn't tested:</p>
+<div class="mce-root1"><img src="../images/00051.jpeg" class="calibre77"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 10.6</em></div>
+<p class="calibre3">And when you hover over the <img src="../images/00052.jpeg" class="calibre78"/> sign:</p>
+<div class="mce-root1"><img src="../images/00053.jpeg" class="calibre79"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 10.7</em></div>
+<p class="calibre3">Now let's continue with <span><kbd class="calibre14">compile_fail</kbd></span>!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">compile_fail</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">The <span><kbd class="calibre14">compile_fail</kbd></span> flag ensures that the given code blocks don't compile. As simple as that. It's mostly used when you're showing bad code and demonstrating why it is bad. For example:</p>
+<pre class="calibre22">/// ```compile_fail
+/// let x = 0;
+/// x += 2; // Damn! `x` isn't mutable so you cannot update it...
+/// ```</pre>
+<p class="calibre3">Then you just write a small explanation about what went wrong and show a working example. It's very common in tutorials, to help users understand why it's wrong and how to fix it.</p>
+<p class="calibre3">In addition to this, please note that there will be a graphical indication that this block is supposed to fail at compilation:</p>
+<div class="mce-root1"><img src="../images/00054.jpeg" class="calibre80"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 10.8</em></div>
+<p class="calibre3">And when you hover over the <img src="../images/00055.jpeg" class="calibre81"/> sign:</p>
+<div class="mce-root1"><img src="../images/00056.jpeg" class="calibre82"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 10.9</em></div>
+<p class="calibre3">Let's continue with <span><kbd class="calibre14">no_run</kbd></span>!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">no_run</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">The <span><kbd class="calibre14">no_run</kbd></span> flag tells <span><kbd class="calibre14">rustdoc</kbd></span> to only check if the code block compiles (and therefore, not to run it). It's mostly used in cases involving external resources (such as files). For example:</p>
+<pre class="calibre22">/// ```no_run
+/// use std::fs::File;
+///
+/// let mut f = File::open("some-file.txt").expect("file not found...");
+/// ```</pre>
+<p class="calibre3">If you run this test, it's very likely (but not certain, since there is a possibility that some funny user decided to suddenly add a <span><kbd class="calibre14">some-file.txt</kbd></span> file) to fail at execution. However, the code is perfectly fine so it'd be a shame to just <span><kbd class="calibre14">ignore</kbd></span> it, right?</p>
+<p class="calibre3">Now, let's see what to do if you <em class="calibre21">want</em> the test to fail:</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">should_panic</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">The <span><kbd class="calibre14">should_panic</kbd></span> flag ensures that your block code panics at execution. If it doesn't, then the test fails. Let's take the previous code block:</p>
+<pre class="calibre22">/// ```should_panic
+/// use std::fs::File;
+///
+/// let mut f = File::open("some-file.txt").expect("file not found...");
+/// ```</pre>
+<p class="calibre3">Once again, the test should succeed (unless, again, you have a funny user who added the file). Quite useful if you want to show some <em class="calibre21">bad</em> behavior.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Combining flags?</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">It's actually possible to combine flags, although it's not really useful. For example:</p>
+<pre class="calibre22">/// ```rust,ignore
+/// let x = 0;
+/// ```</pre>
+<p class="calibre3">You could just have written this as follows:</p>
+<pre class="calibre22">/// ```ignore
+/// let x = 0;
+/// ```</pre>
+<p class="calibre3">For now, it's not really useful, but who knows what will happen in the future? At least now you know!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">About the doc blocks themselves</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">I suppose you noticed that we never added a function or anything. So how does it actually work?</p>
+<p class="calibre3">Well first, it checks if the <span><kbd class="calibre14">main</kbd></span> function is defined. If not, it'll wrap the code into one. Observe the following code:</p>
+<pre class="calibre22">/// ```
+/// let x = 0;
+/// ```</pre>
+<p class="calibre3">When you write the preceding code, it gets transformed into this:</p>
+<pre class="calibre22">/// ```
+/// fn main() {
+///     let x = 0;
+/// }
+/// ```</pre>
+<p class="calibre3">Also, you can use all the public items defined in your crate in your code blocks. No need to import the crate with an <span><kbd class="calibre14">extern crate</kbd></span> (however, you still have to import the item!).</p>
+<p class="calibre3">One last (very) important point remains to be talked about: hiding code blocks lines.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Hiding code blocks lines</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">If you want to use <span><kbd class="calibre14">?</kbd></span>, you'll have to do it inside a function returning an <span><kbd class="calibre14">Option</kbd></span> or a <span><kbd class="calibre14">Result</kbd></span>. But still, inside a function. However, you don't necessarily want to show those lines to the user in order to focus on what you're trying to explain.</p>
+<p class="calibre3">To put it simply, you just need to add a <span><kbd class="calibre14">#</kbd></span> at the beginning of the line. As simple as that. As always, let's show it with a small example:</p>
+<pre class="calibre22">/// ```
+/// # fn foo() -&gt; std::io::Result&lt;()&gt; {
+/// let mut file = File::open("some-file.txt")?;
+/// write!(file, "Hello world!")?;
+/// # Ok(())
+/// # }
+/// ```</pre>
+<p class="calibre3">The user will only see the following:</p>
+<pre class="calibre22">let mut file = File::open("some-file.txt")?;
+write!(file, "Hello world!")?;</pre>
+<p class="calibre3">However, if they click on the <span>Run</span> button, they'll see the following:</p>
+<pre class="calibre22">fn main() {
+use std::fs::File;
+use std::io::prelude::*;
+
+fn foo() -&gt; std::io::Result&lt;()&gt; {
+let mut file = File::open("some-file.txt")?;
+write!(file, "Hello world!")?;
+Ok(())
+}
+}</pre>
+<p class="calibre3">(Don't forget that the <span><kbd class="calibre14">main</kbd></span> function is added as well!).</p>
+<p class="calibre3">That's it for the doc tests. With all this knowledge, you should be able to write a nice API documentation which will always be up to date and tested (hopefully)!</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Fuzzing tests</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">There is another type of test that is very useful but is not integrated into the Rust standard library: fuzzing tests.</p>
+<p class="calibre3">A fuzzing test will test a function's automatically generated input with the sole purpose of crashing this function or making it behave incorrectly. Fuzzing tests can be used to complement tests that are written manually because they can generate way more input than we can possibly write by hand. We will use <span><kbd class="calibre14">cargo-fuzz</kbd></span> to test our command parser.</p>
+<p class="calibre3">First, we need to install it:</p>
+<pre class="calibre23"><strong class="calibre5">cargo install cargo-fuzz</strong></pre>
+<p class="calibre3">Next, we will use the new <span><kbd class="calibre14">cargo fuzz</kbd></span> command to create a new fuzz test crate in our FTP server crate:</p>
+<pre class="calibre23"><strong class="calibre5">cargo fuzz init</strong></pre>
+<p class="calibre3">This generated a few files. The most important of them and the one we will modify, is <span><kbd class="calibre14">fuzz/fuzz_targets/fuzz_target_1.rs</kbd></span>. Let's replace its content with the following:</p>
+<pre class="calibre22">#![no_main]
+#[macro_use] extern crate libfuzzer_sys;
+
+mod error {
+    include!("../../src/error.rs");
+}
+
+include!("../../src/cmd.rs");
+
+fuzz_target!(|data: &amp;[u8]| {
+    let _ = Command::new(data.to_vec());
+});</pre>
+<p class="calibre3">Since our crate is a binary instead of a library, we cannot directly import functions from it. So, we use this little trick to get access to the functions we want:</p>
+<pre class="calibre22">mod error {
+    include!("../../src/error.rs");
+}
+
+include!("../../src/cmd.rs");</pre>
+<p class="calibre3">The <span><kbd class="calibre14">mod error</kbd></span> is needed because our <span><kbd class="calibre14">cmd</kbd></span> module depends on it. With that sorted, we include the <span><kbd class="calibre14">cmd</kbd></span> module with a macro. This macro will expand to the content of the file, similarly to the <span><kbd class="calibre14">#include</kbd></span> preprocessor directive in <kbd class="calibre14">C</kbd>. Finally, we have our <kbd class="calibre14">test</kbd> function:</p>
+<pre class="calibre22">fuzz_target!(|data: &amp;[u8]| {
+    let _ = Command::new(data.to_vec());
+});</pre>
+<p class="calibre3">Here, we just create a new command from the random input we receive. We ignore the result since there's no way we can possibly check if it is right, except by listing all possibilities (which would make a great unit test). So, if there's a bug in our command parser that causes a panic, the fuzzer could find it.</p>
+<p class="calibre3">To run the fuzzer, issue the following command:</p>
+<pre class="calibre23"><strong class="calibre5">cargo fuzz run fuzz_target_1</strong></pre>
+<p class="calibre3">Here's the output:</p>
+<pre class="calibre23"><strong class="calibre5">       Fresh arbitrary v0.1.0
+       Fresh cc v1.0.3
+       Fresh libfuzzer-sys v0.1.0 (https://github.com/rust-fuzz/libfuzzer-sys.git#737524f7)
+   Compiling ftp-server-fuzz v0.0.1 (file:///path/to/FTP-server-rs/fuzz)
+     Running `rustc --crate-name fuzz_target_1 fuzz/fuzz_targets/fuzz_target_1.rs --crate-type bin --emit=dep-info,link -C debuginfo=2 -C metadata=7eb012a2948092cc -C extra-filename=-7eb012a2948092cc --out-dir /path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/deps --target x86_64-unknown-linux-gnu -L dependency=/path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/deps -L dependency=/path/to/FTP-server-rs/fuzz/target/debug/deps --extern libfuzzer_sys=/path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/deps/liblibfuzzer_sys-44f07aaa9fd00b00.rlib --cfg fuzzing -Cpasses=sancov -Cllvm-args=-sanitizer-coverage-level=3 -Zsanitizer=address -Cpanic=abort -L native=/path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/build/libfuzzer-sys-b260d147c5e0139d/out`
+    Finished dev [unoptimized + debuginfo] target(s) in 1.57 secs
+       Fresh arbitrary v0.1.0
+       Fresh cc v1.0.3
+       Fresh libfuzzer-sys v0.1.0 (https://github.com/rust-fuzz/libfuzzer-sys.git#737524f7)
+       Fresh ftp-server-fuzz v0.0.1 (file:///path/to/FTP-server-rs/fuzz)
+    Finished dev [unoptimized + debuginfo] target(s) in 0.0 secs
+     Running `fuzz/target/x86_64-unknown-linux-gnu/debug/fuzz_target_1 -artifact_prefix=/path/to/FTP-server-rs/fuzz/artifacts/fuzz_target_1/ /path/to/FTP-server-rs/fuzz/corpus/fuzz_target_1`
+INFO: Seed: 1369551667
+INFO: Loaded 0 modules (0 guards): 
+Loading corpus dir: /path/to/FTP-server-rs/fuzz/corpus/fuzz_target_1
+INFO: -max_len is not provided, using 64
+INFO: A corpus is not provided, starting from an empty corpus
+#0  READ units: 1
+#1  INITED cov: 389 corp: 1/1b exec/s: 0 rss: 23Mb
+#4  NEW    cov: 393 corp: 2/4b exec/s: 0 rss: 23Mb L: 3 MS: 3 ShuffleBytes-InsertByte-InsertByte-
+#5  NEW    cov: 412 corp: 3/62b exec/s: 0 rss: 23Mb L: 58 MS: 4 ShuffleBytes-InsertByte-InsertByte-InsertRepeatedBytes-
+#7  NEW    cov: 415 corp: 4/121b exec/s: 0 rss: 23Mb L: 59 MS: 1 InsertByte-
+#21 NEW    cov: 416 corp: 5/181b exec/s: 0 rss: 23Mb L: 60 MS: 5 ChangeBit-InsertByte-ChangeBinInt-ChangeByte-InsertByte-
+#707    NEW    cov: 446 corp: 6/241b exec/s: 0 rss: 23Mb L: 60 MS: 1 ChangeBit-
+#710    NEW    cov: 447 corp: 7/295b exec/s: 0 rss: 23Mb L: 54 MS: 4 ChangeBit-InsertByte-EraseBytes-InsertByte-
+#767    NEW    cov: 448 corp: 8/357b exec/s: 0 rss: 23Mb L: 62 MS: 1 CMP- DE: "\x01\x00"-
+#780    NEW    cov: 449 corp: 9/421b exec/s: 0 rss: 23Mb L: 64 MS: 4 CopyPart-InsertByte-ChangeByte-CrossOver-
+#852    NEW    cov: 450 corp: 10/439b exec/s: 0 rss: 23Mb L: 18 MS: 1 CrossOver-
+#1072   NEW    cov: 452 corp: 11/483b exec/s: 0 rss: 23Mb L: 44 MS: 1 InsertRepeatedBytes-
+#85826  NEW    cov: 454 corp: 12/487b exec/s: 85826 rss: 41Mb L: 4 MS: 5 ChangeBit-InsertByte-InsertByte-EraseBytes-CMP- DE: "NOOP"-
+#92732  NEW    cov: 456 corp: 13/491b exec/s: 92732 rss: 43Mb L: 4 MS: 1 CMP- DE: "PASV"-
+#101858 NEW    cov: 477 corp: 14/495b exec/s: 50929 rss: 46Mb L: 4 MS: 2 ChangeByte-CMP- DE: "STOR"-
+#105338 NEW    cov: 497 corp: 15/499b exec/s: 52669 rss: 47Mb L: 4 MS: 2 ShuffleBytes-CMP- DE: "LIST"-
+#108617 NEW    cov: 499 corp: 16/503b exec/s: 54308 rss: 48Mb L: 4 MS: 1 CMP- DE: "AUTH"-
+#108867 NEW    cov: 501 corp: 17/507b exec/s: 54433 rss: 48Mb L: 4 MS: 1 CMP- DE: "QUIT"-
+#115442 NEW    cov: 503 corp: 18/511b exec/s: 57721 rss: 50Mb L: 4 MS: 1 CMP- DE: "SYST"-
+#115533 NEW    cov: 505 corp: 19/515b exec/s: 57766 rss: 50Mb L: 4 MS: 2 ChangeBinInt-CMP- DE: "CDUP"-
+#123001 NEW    cov: 513 corp: 20/518b exec/s: 61500 rss: 52Mb L: 3 MS: 5 PersAutoDict-EraseBytes-ChangeByte-ChangeBinInt-CMP- DE: "\x01\x00"-"RMD"-
+#127270 NEW    cov: 515 corp: 21/521b exec/s: 63635 rss: 54Mb L: 3 MS: 4 EraseBytes-ChangeByte-InsertByte-CMP- DE: "PWD"-
+#131072 pulse  cov: 515 corp: 21/521b exec/s: 65536 rss: 55Mb
+#148469 NEW    cov: 527 corp: 22/525b exec/s: 49489 rss: 59Mb L: 4 MS: 3 ChangeBit-ChangeBit-CMP- DE: "USER"-
+#151237 NEW    cov: 528 corp: 23/529b exec/s: 50412 rss: 60Mb L: 4 MS: 1 CMP- DE: "TYPE"-
+#169842 NEW    cov: 536 corp: 24/532b exec/s: 56614 rss: 65Mb L: 3 MS: 1 ChangeByte-
+#262144 pulse  cov: 536 corp: 24/532b exec/s: 52428 rss: 90Mb
+#274258 NEW    cov: 544 corp: 25/535b exec/s: 54851 rss: 94Mb L: 3 MS: 2 ChangeBit-CMP- DE: "MKD"-
+#355992 NEW    cov: 566 corp: 26/539b exec/s: 50856 rss: 116Mb L: 4 MS: 1 InsertByte-
+#356837 NEW    cov: 575 corp: 27/558b exec/s: 50976 rss: 116Mb L: 19 MS: 1 InsertRepeatedBytes-
+#361667 NEW    cov: 586 corp: 28/562b exec/s: 51666 rss: 117Mb L: 4 MS: 1 PersAutoDict- DE: "MKD"-
+thread '&lt;unnamed&gt;' panicked at 'index out of bounds: the len is 0 but the index is 0', fuzz/fuzz_targets/../../src/cmd.rs:85:46
+note: Run with `RUST_BACKTRACE=1` for a backtrace.
+==10969== ERROR: libFuzzer: deadly signal
+    #0 0x55e90764cf73  (/path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/fuzz_target_1+0x110f73)
+    #1 0x55e9076aa701  (/path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/fuzz_target_1+0x16e701)
+    #2 0x55e9076aa64b  (/path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/fuzz_target_1+0x16e64b)
+    #3 0x55e907683059  (/path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/fuzz_target_1+0x147059)
+    #4 0x7f4bda433d9f  (/usr/lib/libpthread.so.0+0x11d9f)
+    #5 0x7f4bd9e8789f  (/usr/lib/libc.so.6+0x3489f)
+    #6 0x7f4bd9e88f08  (/usr/lib/libc.so.6+0x35f08)
+    #7 0x55e9076c2b18  (/path/to/FTP-server-rs/fuzz/target/x86_64-unknown-linux-gnu/debug/fuzz_target_1+0x186b18)
+
+NOTE: libFuzzer has rudimentary signal handlers.
+      Combine libFuzzer with AddressSanitizer or similar for better crash reports.
+SUMMARY: libFuzzer: deadly signal
+MS: 2 CopyPart-InsertByte-; base unit: 6e9816a8e9d0388eecdb52866188c04e75e4b1b3
+0x54,0x59,0x50,0x45,0x20,
+TYPE 
+artifact_prefix='/path/to/FTP-server-rs/fuzz/artifacts/fuzz_target_1/'; Test unit written to /path/to/FTP-server-rs/fuzz/artifacts/fuzz_target_1/crash-601e8dbb61bd6c7d63cff0bd3f749f7cb53922bc
+Base64: VFlQRSA=
+==10969==LeakSanitizer has encountered a fatal error.
+==10969==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1
+==10969==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)
+MS: 2 CopyPart-InsertByte-; base unit: 6e9816a8e9d0388eecdb52866188c04e75e4b1b3
+0x54,0x59,0x50,0x45,0x20,
+TYPE 
+artifact_prefix='/path/to/FTP-server-rs/fuzz/artifacts/fuzz_target_1/'; Test unit written to /path/to/FTP-server-rs/fuzz/artifacts/fuzz_target_1/crash-601e8dbb61bd6c7d63cff0bd3f749f7cb53922bc
+Base64: VFlQRSA=</strong></pre>
+<p class="calibre3">There's actually a bug in our parser! We can see where, thanks to this line:</p>
+<pre class="calibre23"><strong class="calibre5">thread '&lt;unnamed&gt;' panicked at 'index out of bounds: the len is 0 but the index is 0', fuzz/fuzz_targets/../../src/cmd.rs:85:46</strong></pre>
+<p class="calibre3">The corresponding line in the source code is:</p>
+<pre class="calibre22">match TransferType::from(data?[0]) {</pre>
+<p class="calibre3">And indeed, if the data is empty, this will panic. Let's fix that:</p>
+<pre class="calibre22">impl Command {
+    pub fn new(input: Vec&lt;u8&gt;) -&gt; Result&lt;Self&gt; {
+        // …
+        let command =
+            match command.as_slice() {
+                // …
+                b"TYPE" =&gt; {
+                    let error = Err("command not implemented for that <br class="calibre6"/>                     parameter".into());
+                    let data = data?;
+                    if data.is_empty() {
+                        return error;
+                    }
+                    match TransferType::from(data[0]) {
+                        TransferType::Unknown =&gt; return error,
+                        typ =&gt; {
+                            Command::Type(typ)
+                        },
+                    }
+                },
+                // …
+            };
+        Ok(command)
+    }
+}</pre>
+<p class="calibre3">The fix is simple: we check if the data is empty, in which case we return an error.</p>
+<p class="calibre3">Let's try the fuzzer to see if it can find another bug. Here's the output:</p>
+<pre class="calibre23"><strong class="calibre5">INFO: Seed: 81554194
+INFO: Loaded 0 modules (0 guards): 
+Loading corpus dir: /home/bouanto/Ordinateur/Programmation/Rust/Projets/FTP-server-rs/fuzz/corpus/fuzz_target_1
+INFO: -max_len is not provided, using 64
+#0  READ units: 27
+#27 INITED cov: 595 corp: 23/330b exec/s: 0 rss: 28Mb
+#21494  NEW    cov: 602 corp: 24/349b exec/s: 0 rss: 28Mb L: 19 MS: 2 ShuffleBytes-CMP- DE: "STOR"-
+#21504  NEW    cov: 606 corp: 25/354b exec/s: 0 rss: 28Mb L: 5 MS: 2 InsertByte-PersAutoDict- DE: "STOR"-
+#24893  NEW    cov: 616 corp: 26/359b exec/s: 0 rss: 29Mb L: 5 MS: 1 CMP- DE: "TYPE"-
+#25619  NEW    cov: 620 corp: 27/365b exec/s: 0 rss: 29Mb L: 6 MS: 2 PersAutoDict-InsertByte- DE: "TYPE"-
+#25620  NEW    cov: 621 corp: 28/379b exec/s: 0 rss: 29Mb L: 14 MS: 3 PersAutoDict-InsertByte-CMP- DE: "TYPE"-"\x00\x00\x00\x00\x00\x00\x00\x00"-
+#32193  NEW    cov: 628 corp: 29/398b exec/s: 0 rss: 31Mb L: 19 MS: 1 CMP- DE: "CWD"-
+#34108  NEW    cov: 662 corp: 30/417b exec/s: 0 rss: 31Mb L: 19 MS: 1 CMP- DE: "USER"-
+#35745  NEW    cov: 666 corp: 31/421b exec/s: 0 rss: 31Mb L: 4 MS: 3 ShuffleBytes-EraseBytes-PersAutoDict- DE: "CWD"-
+#36518  NEW    cov: 673 corp: 32/426b exec/s: 0 rss: 32Mb L: 5 MS: 1 PersAutoDict- DE: "USER"-
+#36634  NEW    cov: 685 corp: 33/433b exec/s: 0 rss: 32Mb L: 7 MS: 2 CMP-CMP- DE: "\xff\xff"-"RETR"-
+#37172  NEW    cov: 688 corp: 34/437b exec/s: 0 rss: 32Mb L: 4 MS: 5 EraseBytes-ChangeBinInt-InsertByte-ChangeBit-CMP- DE: "RETR"-
+#39248  NEW    cov: 692 corp: 35/442b exec/s: 0 rss: 32Mb L: 5 MS: 1 PersAutoDict- DE: "RETR"-
+#65735  NEW    cov: 699 corp: 36/492b exec/s: 65735 rss: 39Mb L: 50 MS: 3 InsertRepeatedBytes-ChangeBit-CMP- DE: "LIST"-
+#69797  NEW    cov: 703 corp: 37/497b exec/s: 69797 rss: 40Mb L: 5 MS: 5 ChangeByte-CopyPart-CopyPart-EraseBytes-PersAutoDict- DE: "LIST"-
+#131072 pulse  cov: 703 corp: 37/497b exec/s: 65536 rss: 55Mb
+#217284 NEW    cov: 707 corp: 38/511b exec/s: 54321 rss: 75Mb L: 14 MS: 2 CMP-ShuffleBytes- DE: "LIST"-
+#219879 NEW    cov: 708 corp: 39/525b exec/s: 54969 rss: 76Mb L: 14 MS: 2 ChangeByte-ChangeBit-
+#262144 pulse  cov: 708 corp: 39/525b exec/s: 52428 rss: 86Mb
+#524288 pulse  cov: 708 corp: 39/525b exec/s: 52428 rss: 148Mb
+#1048576    pulse  cov: 708 corp: 39/525b exec/s: 52428 rss: 273Mb
+#2097152    pulse  cov: 708 corp: 39/525b exec/s: 51150 rss: 522Mb
+#4194304    pulse  cov: 708 corp: 39/525b exec/s: 50533 rss: 569Mb
+#8388608    pulse  cov: 708 corp: 39/525b exec/s: 50533 rss: 569Mb
+#12628080   NEW    cov: 835 corp: 40/530b exec/s: 50311 rss: 570Mb L: 5 MS: 3 ChangeBit-ChangeBinInt-ShuffleBytes-
+#12628883   NEW    cov: 859 corp: 41/540b exec/s: 50314 rss: 570Mb L: 10 MS: 1 CopyPart-
+#12628893   NEW    cov: 867 corp: 42/604b exec/s: 50314 rss: 570Mb L: 64 MS: 1 CrossOver-
+#12643279   NEW    cov: 868 corp: 43/608b exec/s: 50371 rss: 570Mb L: 4 MS: 2 EraseBytes-EraseBytes-
+#12670956   NEW    cov: 871 corp: 44/652b exec/s: 50281 rss: 570Mb L: 44 MS: 4 EraseBytes-InsertByte-ChangeBinInt-ChangeBinInt-
+#12671130   NEW    cov: 872 corp: 45/697b exec/s: 50282 rss: 570Mb L: 45 MS: 3 ChangeBit-CMP-InsertByte- DE: "\xff\xff\xff\xff"-
+#12671140   NEW    cov: 873 corp: 46/750b exec/s: 50282 rss: 570Mb L: 53 MS: 3 ChangeBinInt-CMP-CopyPart- DE: "\x00\x00\x00\x00\x00\x00\x00\x00"-
+#12671906   NEW    cov: 874 corp: 47/803b exec/s: 50285 rss: 570Mb L: 53 MS: 4 ChangeBit-ChangeByte-PersAutoDict-ShuffleBytes- DE: "CWD"-
+#12687428   NEW    cov: 875 corp: 48/856b exec/s: 50346 rss: 574Mb L: 53 MS: 1 ShuffleBytes-
+#12699014   NEW    cov: 945 corp: 49/862b exec/s: 50392 rss: 574Mb L: 6 MS: 2 InsertByte-ChangeBit-
+#13319888   NEW    cov: 946 corp: 50/869b exec/s: 50074 rss: 579Mb L: 7 MS: 1 InsertByte-
+#13424473   NEW    cov: 1015 corp: 51/878b exec/s: 50091 rss: 580Mb L: 9 MS: 1 CopyPart-
+#13432333   NEW    cov: 1018 corp: 52/888b exec/s: 50120 rss: 580Mb L: 10 MS: 1 CopyPart-
+#13651748   NEW    cov: 1019 corp: 53/901b exec/s: 50006 rss: 582Mb L: 13 MS: 1 CopyPart-
+#13652268   NEW    cov: 1020 corp: 54/920b exec/s: 50008 rss: 582Mb L: 19 MS: 1 CopyPart-
+#13652535   NEW    cov: 1025 corp: 55/978b exec/s: 50009 rss: 582Mb L: 58 MS: 3 InsertRepeatedBytes-ChangeBit-InsertByte-
+#13662779   NEW    cov: 1028 corp: 56/997b exec/s: 50046 rss: 582Mb L: 19 MS: 2 ChangeBit-ShuffleBytes-
+#16777216   pulse  cov: 1028 corp: 56/997b exec/s: 48913 rss: 589Mb
+#33554432   pulse  cov: 1028 corp: 56/997b exec/s: 46154 rss: 589Mb
+#67108864   pulse  cov: 1028 corp: 56/997b exec/s: 45343 rss: 589Mb
+#134217728  pulse  cov: 1028 corp: 56/997b exec/s: 44325 rss: 589Mb
+#268435456  pulse  cov: 1028 corp: 56/997b exec/s: 43819 rss: 589Mb
+^C==16792== libFuzzer: run interrupted; exiting</strong></pre>
+<p class="calibre3">So, we ran the fuzzer for a very long time and it didn't find a panic, so we ended it with <em class="calibre21">Ctrl</em> + <em class="calibre21">C</em>. We cannot be certain that there's no bug left, but we are more confident thanks to all these tests.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">In this chapter, we finalized our FTP server. Then, we learned how to do different types of tests. We saw how we can test a single function or type by writing unit tests. We learned how to test a program as a whole by writing integration tests. We also learned about documentation and fuzzing tests to make sure our examples are up to date and to find even more bugs in our application.</p>
+<p class="calibre3">In the next and ultimate chapter, we will learn about Rust's good practice and common idioms.</p>
+<p class="calibre3"/>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

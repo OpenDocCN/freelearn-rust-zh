@@ -1,0 +1,1729 @@
+<html><head></head><body>
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Implementing the Engine of the Music Player</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">In the previous chapter, we implemented the user interface of the music player, but it is unable to play any music. We'll tackle that challenge in this chapter. We'll create the engine of the music player so that it can play MP3 files. To do this, we'll need to use threads so that playing a song does not freeze the interface, so it will be a good opportunity to learn about concurrency in Rust.</p>
+<p class="calibre3">We will cover the following topics in this chapter:</p>
+<ul class="calibre10">
+<li class="calibre11">MP3 decoder</li>
+<li class="calibre11">Threads</li>
+<li class="calibre11">Mutex and Mutex guards</li>
+<li class="calibre11">Send/Sync traits</li>
+<li class="calibre11">RAII</li>
+<li class="calibre11">Thread safety</li>
+<li class="calibre11">Interior mutability</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Installing the dependencies</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">For this chapter, we'll need two libraries: <kbd class="calibre14">pulseaudio</kbd> and <kbd class="calibre14">libmad</kbd>.</p>
+<p class="calibre3">The former will be used to play the music, while the latter is for decoding MP3 files.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Installing dependencies on Linux</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">On Linux, these dependencies can be installed through the package manager of your distribution.</p>
+<p class="calibre3">On Ubuntu (or other Debian derivatives):</p>
+<pre class="calibre23"><strong class="calibre5">sudo apt-get install libmad0-dev libpulse-dev</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Installing dependencies on Mac</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">On OSX, the required dependencies can be installed through the system package manager, as follows:</p>
+<pre class="calibre23"><strong class="calibre5">brew install libmad pulseaudio</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Installing dependencies on Windows</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">On Windows, run the following command in a MSYS2 shell:</p>
+<pre class="calibre23"><strong class="calibre5"><span>p</span><span>acman</span> -S mingw-w64-libmad</strong></pre>
+<p class="calibre3">Think, click the link to download the zip file from this page: <a href="https://www.freedesktop.org/wiki/Software/PulseAudio/Ports/Windows/Support/" class="calibre13">https://www.freedesktop.org/wiki/Software/PulseAudio/Ports/Windows/Support/</a> (When the book was written, the link for the current version was <a href="http://bosmans.ch/pulseaudio/pulseaudio-1.1.zip" class="calibre13">http://bosmans.ch/pulseaudio/pulseaudio-1.1.zip</a>). Then, follow the same instructions as the ones from <a href="part0063.html#1S2JE0-13a27bdc411a4c2eaad1cc3a71f7fca7" class="calibre13">Chapter 2</a>, <em class="calibre21">Starting with SDL</em>, to use the library from Rust.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Decoding MP3 files</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We'll start this chapter by learning how to decode an MP3 file to a format suitable to be played by the operating system using the <span><kbd class="calibre14">simplemad</kbd></span> crate, a binding for <span><kbd class="calibre14">libmad</kbd></span>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Adding dependencies</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Let's add the following to <span><kbd class="calibre14">Cargo.toml</kbd></span>:</p>
+<pre class="calibre22">crossbeam = "^0.3.0"
+pulse-simple = "^1.0.0"
+simplemad = "^0.8.1"</pre>
+<p class="calibre3">We also added the <span><kbd class="calibre14">pulse-simple</kbd></span> and <span><kbd class="calibre14">crossbeam</kbd></span> crates because we'll need them later. The former will be used to play the songs with <span><kbd class="calibre14">pulseaudio</kbd></span> and the latter will be used to implement the event loop of the music player engine.</p>
+<p class="calibre3">We also need to add the following statements in <span><kbd class="calibre14">main.rs</kbd></span>:</p>
+<pre class="calibre22"><span>extern</span> <span>crate</span> crossbeam;
+<span>extern</span> <span>crate</span> pulse_simple;
+<span>extern</span> <span>crate</span> simplemad;
+
+<span>mod</span> mp3;</pre>
+<p class="calibre3">In addition to the <span><kbd class="calibre14">extern crate</kbd></span> statements, we have a <span><kbd class="calibre14">mod</kbd></span> statement since we'll create a new module for the MP3 decoder.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Implementing an MP3 decoder</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We're now ready to create this new module. Create a new <span><kbd class="calibre14">mp3.rs</kbd></span> file with the following content:</p>
+<pre class="calibre22"><span>use</span> std::io::<span>{</span>Read, Seek, SeekFrom<span>}</span>;
+<span>use</span> std::time::Duration;
+
+<span>use</span> simplemad;</pre>
+<p class="calibre3">We start this module with some import statements as usual. The important one is <span><kbd class="calibre14">simplemad</kbd></span>, which will be used to decode the frames of an MP3 file:</p>
+<pre class="calibre22"><span>pub</span> <span>struct</span> Mp3Decoder&lt;R&gt; <span>where</span> R: Read <span>{</span>
+    reader: simplemad::Decoder&lt;R&gt;,
+    current_frame: simplemad::Frame,
+    current_frame_channel: <span>usize</span>,
+    current_frame_sample_pos: <span>usize</span>,
+    current_time: <span>u64</span>,
+<span>}</span></pre>
+<p class="calibre3">We saw in <a href="part0020.html#J2B80-13a27bdc411a4c2eaad1cc3a71f7fca7" class="calibre13">Chapter 1</a>, <em class="calibre21">Basics of Rust</em>, that we can add trait bounds to generic parameters in a function. We can also add them to the generic parameters of a type. Here we see an alternative syntax using a <span><kbd class="calibre14">where</kbd></span> clause. The previous structure declaration is the same as the following:</p>
+<pre class="calibre22"><span>pub</span> <span>struct</span> Mp3Decoder&lt;R: Read&gt; <span>{</span>
+    <span>// …</span>
+<span>}</span></pre>
+<p class="calibre3">The <span><kbd class="calibre14">where</kbd></span> clause is useful when we have a lot a generic parameters.</p>
+<p class="calibre3">This structure contains information about the current frame and time as well as the decoder itself, which comes from the <span><kbd class="calibre14">simplemad</kbd></span> crate. This <span><kbd class="calibre14">Decoder</kbd></span> also requires a generic parameter that implements the <span><kbd class="calibre14">Read</kbd></span> trait, so we just use our own <span><kbd class="calibre14">R</kbd></span> parameter since we specified that it must implement this trait.</p>
+<p class="calibre3">Before we move on to the constructor of this type, we'll implement a couple of <kbd class="calibre14">utility</kbd> functions. Let's start with a function that converts <span><kbd class="calibre14">Duration</kbd></span> to a number of milliseconds (this function will go in the <span><kbd class="calibre14">main.rs</kbd></span> file since we'll use it in another module):</p>
+<pre class="calibre22"><span>fn</span> to_millis(duration: Duration) -&gt; <span>u64</span> <span>{</span>
+    duration.as_secs() * <span>1000</span> + duration.subsec_nanos() <span>as</span> <span>u64</span> / <span>1_000_000</span>
+<span>}</span></pre>
+<p class="calibre3">Here, we simply multiply the number of seconds by <kbd class="calibre14">1,000</kbd> and divide the number of nanoseconds by <kbd class="calibre14">1,000,000</kbd>. This function requires you to add an import statement for <span><kbd class="calibre14">Duration</kbd></span>:</p>
+<pre class="calibre22"><span>use</span> std::time::Duration;</pre>
+<p class="calibre3">Next, we'll write a function to check whether a stream of data is an MP3 file:</p>
+<pre class="calibre22"><span>fn</span> is_mp3&lt;R&gt;(<span>mut</span> data: R) -&gt; <span>bool</span> <span>where</span> R: Read + Seek <span>{</span>
+    <span>let</span> stream_pos = data.seek(SeekFrom::Current(<span>0</span>)).unwrap();
+    <span>let</span> is_mp3 = simplemad::Decoder::decode(data.by_ref()).is_ok();
+    data.seek(SeekFrom::Start(stream_pos)).unwrap();
+    is_mp<span>3</span>
+<span>}</span></pre>
+<p class="calibre3">To do so, we try to decode the stream and if the result is <span><kbd class="calibre14">Ok</kbd></span>, then the data is an MP3 file. We then go back to the beginning of the file before returning whether it is an MP3 file or not.</p>
+<p class="calibre3">The next function we'll need is one to decode the next frame of an MP3 file:</p>
+<pre class="calibre22"><span>fn</span> next_frame&lt;R: Read&gt;(decoder: &amp;<span>mut</span> simplemad::Decoder&lt;R&gt;) -&gt; simplemad::Frame <span>{</span>
+    decoder.filter_map(|f| f.ok()).next()
+        .unwrap_or_else(|| <span>{</span>
+            simplemad::Frame <span>{</span>
+                bit_rate: <span>0</span>,
+                layer: <span>Default</span>::default(),
+                mode: <span>Default</span>::default(),
+                sample_rate: <span>44100</span>,
+                samples: <span>vec!</span><span>[</span><span>Vec</span>::new()<span>]</span>,
+                position: Duration::from_secs(<span>0</span>),
+                duration: Duration::from_secs(<span>0</span>),
+            <span>}</span>
+        <span>}</span>)
+<span>}</span></pre>
+<p class="calibre3">Here, we simply get the next frame from the decoder and flatten the <span><kbd class="calibre14">Option&lt;Result&lt;Frame&gt;&gt;</kbd></span> to <span><kbd class="calibre14">Option&lt;Frame&gt;</kbd></span> by calling <span><kbd class="calibre14">and_then(Result::ok)</kbd></span>. If there's no frame, we return a default frame.</p>
+<p class="calibre3">Now, let's implement the constructor of our MP3 decoder:</p>
+<pre class="calibre22"><span>impl</span>&lt;R&gt; Mp3Decoder&lt;R&gt; <span>where</span> R: Read + Seek <span>{</span>
+    <span>pub</span> <span>fn</span> new(<span>mut</span> data: R) -&gt; <span>Result</span>&lt;Mp3Decoder&lt;R&gt;, R&gt; <span>{</span>
+        <span>if</span> !is_mp3(data.by_ref()) <span>{</span>
+            <span>return</span> <span>Err</span>(data);
+        <span>}</span>
+
+        <span>let</span> <span>mut</span> reader = simplemad::Decoder::decode(data).unwrap();
+
+        <span>let</span> current_frame = next_frame(&amp;<span>mut</span> reader);
+        <span>let</span> current_time = to_millis(current_frame.duration);
+
+        <span>Ok</span>(Mp3Decoder <span>{</span>
+            reader,
+            current_frame,
+            current_frame_channel: <span>0</span>,
+            current_frame_sample_pos: <span>0</span>,
+            current_time,
+        <span>}</span>)
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">You need to add an import statement at the top of this file to be able to use the <span><kbd class="calibre14">to_millis</kbd></span> function, which is in the <kbd class="calibre14">main</kbd> module:</p>
+<pre class="calibre22">use to_millis;</pre>
+<p class="calibre3">Since the <span><kbd class="calibre14">use</kbd></span> statements are relative to the root of the crate, we only need to write the function name because this function is at the crate's root.</p>
+<p class="calibre3">The constructor first checks whether the stream contains MP3 data, if not, we return an error. Otherwise, we create a <span><kbd class="calibre14">Decoder</kbd></span> from the <span><kbd class="calibre14">simplemad</kbd></span> crate. Then, we read the first frame and get its time in milliseconds.</p>
+<p class="calibre3">Next, we write two methods to get the current time and the rate of the MP3 file:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> current_time(&amp;<span>self</span>) -&gt; <span>u64</span> <span>{</span>
+        <span>self</span>.current_time
+    <span>}</span>
+
+    <span>pub</span> <span>fn</span> samples_rate(&amp;<span>self</span>) -&gt; <span>u32</span> <span>{</span>
+        <span>self</span>.current_frame.sample_rate
+    <span>}</span></pre>
+<p class="calibre3">These methods are to be added in the <span><kbd class="calibre14">impl Mp3Decoder</kbd></span> block. The last method to be added to this structure is a method to compute the duration of a song:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> compute_duration(<span>mut</span> data: R) -&gt; <span>Option</span>&lt;Duration&gt; <span>{</span>
+        <span>if</span> !is_mp3(data.by_ref()) <span>{</span>
+            <span>return</span> <span>None</span>;
+        <span>}</span>
+
+        <span>let</span> decoder = simplemad::Decoder::decode_headers(data).unwrap();
+        <span>Some</span>(decoder.filter_map(|frame| <span>{</span>
+            <span>match</span> frame <span>{</span>
+                <span>Ok</span>(frame) =&gt; <span>Some</span>(frame.duration),
+                <span>Err</span>(_) =&gt; <span>None</span>,
+            <span>}</span>
+        <span>}</span>)
+            .sum())
+    <span>}</span></pre>
+<p class="calibre3">Here we create an associated function: it first checks whether it is MP3 data. Here, instead of using <span><kbd class="calibre14">Decoder::decode()</kbd></span>, we use <span><kbd class="calibre14">Decoder::decode_headers()</kbd></span> because we only need the frame duration and it is faster to only decode the headers. The <span><kbd class="calibre14">decoder</kbd></span> is an iterator and we call <span><kbd class="calibre14">filter_map()</kbd></span> on it. As you saw in <a target="_blank" href="part0063.html#1S2JE0-13a27bdc411a4c2eaad1cc3a71f7fca7" class="calibre13">Chapter 2</a>, <em class="calibre21">Starting with SDL</em>, <span><kbd class="calibre14">filter_map()</kbd></span> transforms and filters the elements of an iterator. Transforming a value is done by returning <span><kbd class="calibre14">Some(new_value)</kbd></span>, while filtering out a value is done by returning <span><kbd class="calibre14">None</kbd></span>. After that, we call <span><kbd class="calibre14">sum()</kbd></span> on the resulting iterator to get the sum of all the durations.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Getting the frame samples</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">The only remaining feature needed for our MP3 decoder is to be able to iterate over the samples. We'll first write a function to get the next sample:</p>
+<pre class="calibre22"><span>fn</span> next_sample&lt;R: Read&gt;(decoder: &amp;<span>mut</span> Mp3Decoder&lt;R&gt;) -&gt; <span>Option</span>&lt;<span>i16</span>&gt; <span>{</span>
+    <span>if</span> decoder.current_frame.samples<span>[</span><span>0</span><span>]</span>.len() == <span>0</span> <span>{</span>
+        <span>return</span> <span>None</span>;
+    <span>}</span>
+
+    <span>// getting the sample and converting it from fixed step to i16</span>
+    <span>let</span> sample = decoder.current_frame.samples<span>[</span>decoder.current_frame_channel<span>] <br class="calibre6"/>    [</span>decoder.current_frame_sample_pos<span>]</span>;
+    <span>let</span> sample = sample.to_i32() + (<span>1</span> &lt;&lt; (<span>28</span> - <span>16</span>));
+    <span>let</span> sample = <span>if</span> sample &gt;= <span>0x10000000</span> <span>{</span> <span>0x10000000</span> - <span>1</span> <span>}</span> <span>else</span> <span>if</span> sample &lt;=  <br class="calibre6"/>    -<span>0x10000000</span> <span>{</span> -<span>0x10000000</span> <span>}</span> <span>else</span> <span>{</span> sample <span>}</span>;
+    <span>let</span> sample = sample &gt;&gt; (<span>28</span> + <span>1</span> - <span>16</span>);
+    <span>let</span> sample = sample <span>as</span> <span>i16</span>;
+
+    decoder.current_frame_channel += <span>1</span>;
+
+    <span>if</span> decoder.current_frame_channel &lt; decoder.current_frame.samples.len() <span>{</span>
+        <span>return</span> <span>Some</span>(sample);
+    <span>}</span>
+
+    decoder.current_frame_channel = <span>0</span>;
+    decoder.current_frame_sample_pos += <span>1</span>;
+
+    <span>if</span> decoder.current_frame_sample_pos &lt; decoder.current_frame.samples<span>[</span><span>0</span><span>]</span>.len() <span>{</span>
+        <span>return</span> <span>Some</span>(sample);
+    <span>}</span>
+
+    decoder.current_frame = next_frame(&amp;<span>mut</span> decoder.reader);
+    decoder.current_frame_channel = <span>0</span>;
+    decoder.current_frame_sample_pos = <span>0</span>;
+    decoder.current_time += to_millis(decoder.current_frame.duration);
+
+    <span>return</span> <span>Some</span>(sample);
+<span>}</span></pre>
+<p class="calibre3">This function is doing some bit shifting to get the sample and then fetch the next frame. We're now ready to implement an iterator that will use this function:</p>
+<pre class="calibre22"><span>impl</span>&lt;R&gt; <span>Iterator</span> <span>for</span> Mp3Decoder&lt;R&gt; <span>where</span> R: Read <span>{</span>
+    <span>type</span> Item = <span>i16</span>;
+
+    <span>fn</span> next(&amp;<span>mut</span> <span>self</span>) -&gt; <span>Option</span>&lt;<span>i16</span>&gt; <span>{</span>
+        next_sample(<span>self</span>)
+    <span>}</span>
+
+    <span>fn</span> size_hint(&amp;<span>self</span>) -&gt; (<span>usize</span>, <span>Option</span>&lt;<span>usize</span>&gt;) <span>{</span>
+        (<span>self</span>.current_frame.samples<span>[</span><span>0</span><span>]</span>.len(), <span>None</span>)
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">As you can see, we can implement our own iterator by implementing the <span><kbd class="calibre14">Iterator</kbd></span> trait. The only required method is <span><kbd class="calibre14">next()</kbd></span>. By implementing this simple method, we get a whole bunch of features because this trait has a lot of default methods. The <span><kbd class="calibre14">type Item</kbd></span> is also required. We implement the <span><kbd class="calibre14">size_hint()</kbd></span> method, even though it is an optional one.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Playing music</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">With the MP3 decoder done, we're now ready to play some music. We'll create a new module, called player, which we will add at the top of <kbd class="calibre14">main.rs</kbd>:</p>
+<pre class="calibre22"><span>mod</span> player;</pre>
+<p class="calibre3">We'll start this module by creating a new <span><kbd class="calibre14">player.rs</kbd></span> file with the following import statements:</p>
+<pre class="calibre22"><span>use</span> std::fs::File;
+<span>use</span> std::io::BufReader;
+<span>use</span> std::path::<span>{</span>Path, PathBuf<span>}</span>;
+<span>use</span> std::sync::<span>{</span>Arc, Condvar, Mutex<span>}</span>;
+<span>use</span> std::thread;
+
+<span>use</span> crossbeam::sync::SegQueue;
+<span>use</span> pulse_simple::Playback;
+
+<span>use</span> mp3::Mp3Decoder;
+<span>use</span> <span>self</span>::Action::*;</pre>
+<p class="calibre3">We'll also create some constants:</p>
+<pre class="calibre22"><span>const</span> BUFFER_SIZE: <span>usize</span> = <span>1000</span>;
+<span>const</span> DEFAULT_RATE: <span>u32</span> = <span>44100</span><a class="calibre67">;</a></pre>
+<p class="calibre3">The buffer size is the number of samples we'll decode and play to avoid having slowdowns when playing the song and also to avoid using 100% of the CPU by constantly reading and decoding the data at the same time as playing. The default rate will be used when we cannot find one in the MP3 file.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Event loop</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">To simplify the development of our playing engine, we'll use the concept of an event loop. Some actions will be sent to the thread playing the music through this event loop. For instance, we will be able to emit a <span><kbd class="calibre14">Load("file.mp3")</kbd></span> event, the thread will decode this MP3 file, and start playing it. Another example of an event is <span><kbd class="calibre14">Stop</kbd></span>, which will stop playing and unload the data.</p>
+<p class="calibre3">Let's create an enumeration for the possible actions:</p>
+<pre class="calibre22"><span>enum</span> Action <span>{</span>
+    Load(PathBuf),
+    Stop,
+<span>}</span></pre>
+<p class="calibre3">We're now ready to create the structure of the event loop:</p>
+<pre class="calibre22"><span>#[</span>derive<span>(</span><span>Clone</span><span>)]</span>
+<span>struct</span> EventLoop <span>{</span>
+    queue: Arc&lt;SegQueue&lt;Action&gt;&gt;,
+    playing: Arc&lt;Mutex&lt;<span>bool</span>&gt;&gt;,
+<span>}</span></pre>
+<p class="calibre3">There's a lot of unknown stuff in this structure, so let's break it down.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Atomic reference counting</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">First of all, we use the <span><kbd class="calibre14">Arc</kbd></span> type. It is similar to the <span><kbd class="calibre14">Rc</kbd></span> type that we used in the previous chapter, in that it is a type providing reference counting. The difference between these two types is that <span><kbd class="calibre14">Arc</kbd></span> uses atomic operations to increment its counter. By being atomic, it is safe to be used by multiple threads while <span><kbd class="calibre14">Rc</kbd></span> cannot be safely used across threads (and the compiler prevents us from trying to do so). The standard library provides these two types so that you can choose the cost you want to pay. If you don't need to share a reference-counted value with multiple threads, choose <span><kbd class="calibre14">Rc</kbd></span> as it is more efficient than <span><kbd class="calibre14">Arc</kbd></span>. If you try to send an <span><kbd class="calibre14">Rc</kbd></span> to another thread, the compiler will trigger an error:</p>
+<pre class="calibre23"><strong class="calibre5">error[E0277]: the trait bound `std::rc::Rc&lt;i32&gt;: std::marker::Send` is not satisfied in `[closure@src/main.rs:6:19: 8:6 rc:std::rc::Rc&lt;i32&gt;]`
+ --&gt; src/main.rs:6:5
+  |
+6 |     thread::spawn(move || {
+  |     ^^^^^^^^^^^^^ `std::rc::Rc&lt;i32&gt;` cannot be sent between threads safely
+  |
+  = help: within `[closure@src/main.rs:6:19: 8:6 rc:std::rc::Rc&lt;i32&gt;]`, the trait `std::marker::Send` is not implemented for `std::rc::Rc&lt;i32&gt;`
+  = note: required because it appears within the type `[closure@src/main.rs:6:19: 8:6 rc:std::rc::Rc&lt;i32&gt;]`
+  = note: required by `std::thread::spawn`</strong></pre>
+<p class="calibre3">In this case, you'll need to switch to an <span><kbd class="calibre14">Arc</kbd></span>. This error will make more sense when we see what the <span><kbd class="calibre14">Send</kbd></span> trait is.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Mutual exclusion</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">In the <span><kbd class="calibre14">playing</kbd></span> field, the <span><kbd class="calibre14">Arc</kbd></span> contains a <span><kbd class="calibre14">Mutex</kbd></span>. A mutex provides mutual exclusion, meaning that it allows us to lock its inner value (in this case, a <span><kbd class="calibre14">bool</kbd></span>) preventing other threads from manipulating the same value at the same time. It prevents data races, which is a cause of undefined behavior, by preventing concurrent reads and writes on a value.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Send trait</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">But how can the compiler prevent us from doing data races? This is thanks to the <span><kbd class="calibre14">Send</kbd></span> and <span><kbd class="calibre14">Sync</kbd></span> marker traits. A type that implements the <span><kbd class="calibre14">Send</kbd></span> trait is safe to be sent to another thread. As you may have guessed, <span><kbd class="calibre14">Rc</kbd></span> does not implement <span><kbd class="calibre14">Send</kbd></span>. Since it does not use atomic operations to increment its counter, if two threads were to increment it at the same time, that would be a data race.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Sync trait</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Let's discuss the second of these marker traits: <span><kbd class="calibre14">Sync</kbd></span>. A type that implements the <span><kbd class="calibre14">Sync</kbd></span> trait is safe to be shared with multiple threads. An example of a <span><kbd class="calibre14">Sync</kbd></span> type is <span><kbd class="calibre14">Mutex</kbd></span>. It is safe because the only way to get a value from <span><kbd class="calibre14">Mutex</kbd></span> is to lock it, which is mutually exclusive (another thread cannot access the same value at the same time).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Lock-free data structures</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">The only remaining type to explain is <span><kbd class="calibre14">SegQueue</kbd></span>, from the <span><kbd class="calibre14">crossbeam</kbd></span> crate. This type is a lock-free queue, meaning that it can be used concurrently by multiple threads without a lock. The implementation of lock-free data structures is beyond the scope of this book, but it suffices to say that it uses atomic operations behind the scenes so that we don't need to use a <span><kbd class="calibre14">Mutex</kbd></span> to mutate this value in mutable threads at the same time. We still need to wrap this queue in an <span><kbd class="calibre14">Arc</kbd></span> to be able to share it with multiple threads.</p>
+<p class="calibre3">We're using a lock-free data structure because we'll be constantly checking whether there's a new element in this queue while possibly adding new elements to this queue from another thread. If we were to use <span><kbd class="calibre14">Mutex&lt;VecDeque&lt;Action&gt;&gt;</kbd></span>, it would be less efficient because calling <span><kbd class="calibre14">lock()</kbd></span> on <span><kbd class="calibre14">Mutex</kbd></span> waits if the lock is held by another thread.</p>
+<p class="calibre3">Let's get back to our event loop. Let's add a constructor for <span><kbd class="calibre14">EventLoop</kbd></span>:</p>
+<pre class="calibre22"><span>impl</span> EventLoop <span>{</span>
+    <span>fn</span> new() -&gt; <span>Self</span> <span>{</span>
+        EventLoop <span>{</span>
+            queue: Arc::new(SegQueue::new()),
+            playing: Arc::new(Mutex::new(<span>false</span>)),
+        <span>}</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">This constructor simply creates the queue and the Boolean wrapped in a <span><kbd class="calibre14">Mutex</kbd></span>.</p>
+<p class="calibre3">Before we use it, we'll create a <span><kbd class="calibre14">State</kbd></span> structure that will contain various data shared between the GUI thread and the music player thread, put this code in the <kbd class="calibre14">main</kbd> module:</p>
+<pre class="calibre22"><span>struct</span> State <span>{</span>
+    stopped: <span>bool</span>,
+<span>}</span></pre>
+<p class="calibre3">Also, add a <span><kbd class="calibre14">state</kbd></span> field in the <span><kbd class="calibre14">App</kbd></span> structure:</p>
+<pre class="calibre22"><span>struct</span> App <span>{</span>
+    adjustment: Adjustment,
+    cover: Image,
+    playlist: Rc&lt;Playlist&gt;,
+    state: Arc&lt;Mutex&lt;State&gt;&gt;,
+    toolbar: MusicToolbar,
+    window: Window,
+<span>}</span></pre>
+<p class="calibre3">This requires a new import statement:</p>
+<pre class="calibre22"><span>use</span> std::sync::<span>{</span>Arc, Mutex<span>}</span>;</pre>
+<p class="calibre3">Since this value will be shared with another thread, we need to wrap it in <span><kbd class="calibre14">Arc&lt;Mutex&gt;</kbd></span>. Then, in the constructor, create this value and assign it to this new field, while also sending it to the <span><kbd class="calibre14">Playlist</kbd></span> constructor:</p>
+<pre class="calibre22">impl App {
+    fn new() -&gt; Self {
+        // …
+
+        let state = Arc::new(Mutex::new(State {
+            stopped: true,
+        }));
+
+        let playlist = Rc::new(Playlist::new(state.clone()));
+
+        // …
+
+        let app = App {
+            adjustment,
+            cover,
+            playlist,
+            state,
+            toolbar,
+            window,
+        };
+
+        // …
+    }
+}</pre>
+<p class="calibre3">Let's update the <span><kbd class="calibre14">Playlist</kbd></span> constructor:</p>
+<pre class="calibre22"><span>impl</span> Playlist <span>{</span>
+    <span>pub</span>(<span>crate</span>) <span>fn</span> new(state: Arc&lt;Mutex&lt;State&gt;&gt;) -&gt; <span>Self</span> <span>{</span>
+        <span>let</span> model = ListStore::new(&amp;<span>[</span>
+            Pixbuf::static_type(),
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Pixbuf::static_type(),
+        <span>]</span>);
+        <span>let</span> treeview = TreeView::new_with_model(&amp;model);
+        treeview.set_hexpand(<span>true</span>);
+        treeview.set_vexpand(<span>true</span>);
+
+        <span>Self</span>::create_columns(&amp;treeview);
+
+        Playlist <span>{</span>
+            model,
+            player: Player::new(state.clone()),
+            treeview,
+        <span>}</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">The structure requires a new field, so let's add it:</p>
+<pre class="calibre22"><span>pub</span> <span>struct</span> Playlist <span>{</span>
+    model: ListStore,
+    player: Player,
+    treeview: TreeView,
+<span>}</span></pre>
+<p class="calibre3">This also needs new import statements:</p>
+<pre class="calibre22"><span>use</span> std::sync::<span>{</span>Arc, Mutex<span>}</span>;
+
+<span>use</span> State;
+<span>use</span> player::Player;</pre>
+<p class="calibre3">We use the <span><kbd class="calibre14">pub(crate)</kbd></span> syntax to silent an error. Since we're using a private type (<span><kbd class="calibre14">State</kbd></span>) in a public method, the compiler throws an error. This syntax means that the function is public to the other modules of the crate, but other crates cannot access it. Here, we only send the <span><kbd class="calibre14">state</kbd></span> to the <span><kbd class="calibre14">Player</kbd></span> constructor, which we will implement right away.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Playing music</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We'll create a new <span><kbd class="calibre14">Player</kbd></span> structure to wrap the event loop. The player will be usable from the main thread to control the music. Here's the structure itself:</p>
+<pre class="calibre22"><span>pub</span> <span>struct</span> Player <span>{</span>
+    app_state: Arc&lt;Mutex&lt;<span>super</span>::State&gt;&gt;,
+    event_loop: EventLoop,
+<span>}</span></pre>
+<p class="calibre3">And here's the start of its constructor:</p>
+<pre class="calibre22"><span>impl</span> Player <span>{</span>
+    <span>pub</span>(<span>crate</span>) <span>fn</span> new(app_state: Arc&lt;Mutex&lt;<span>super</span>::State&gt;&gt;) -&gt; <span>Self</span> <span>{</span>
+        <span>let</span> event_loop = EventLoop::new();
+
+        <span>{</span>
+            <span>let</span> app_state = app_state.clone();
+            <span>let</span> event_loop = event_loop.clone();
+            thread::spawn(<span>move</span> || <span>{</span>
+                <span>// …</span>
+            <span>}</span>);
+        <span>}</span>
+
+        Player <span>{</span>
+            app_state,
+            event_loop,
+        <span>}</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">We start by creating a new event loop. Then, we start a new thread. We used a new scope to avoid having to rename the variables that will be sent to the thread because these variables are used in the initialization of the structure at the end of the constructor. Again, we need to use a <span><kbd class="calibre14">move</kbd></span> closure because we're sending a copy of the event loop and the application state to the thread.</p>
+<p class="calibre3">Let's see the first part of the thread's closure:</p>
+<pre class="calibre22">thread::spawn(move || {
+    let mut buffer = [[0; 2]; BUFFER_SIZE];
+    let mut playback = Playback::new("MP3", "MP3 Playback", None,<br class="calibre6"/>    DEFAULT_RATE);
+    let mut source = None;
+    loop {
+        if let Some(action) = event_loop.queue.try_pop() {
+            match action {
+                Load(path) =&gt; {
+                    let file = File::open(path).unwrap();
+                    source = Some(Mp3Decoder::new(BufReader::new(file)).unwrap());
+                    let rate = source.as_ref().map(|source| <br class="calibre6"/>                     source.samples_rate()).unwrap_or(DEFAULT_RATE);
+                    playback = Playback::new("MP3", "MP3 Playback", <br class="calibre6"/>                     None, rate);
+                    app_state.lock().unwrap().stopped = false;
+                },
+                Stop =&gt; {},
+            }
+        }
+        // …
+    }
+});</pre>
+<p class="calibre3">We start by creating a buffer to contain the samples to be played. Then we'll create a <span><kbd class="calibre14">Playback</kbd></span>, which is an object that will allow us to play music on the hardware. We'll also create a <span><kbd class="calibre14">source</kbd></span> variable that will contain an <span><kbd class="calibre14">Mp3Decoder</kbd></span>. We then start an infinite loop and try to get the first element in the queue: if there's an element in the queue, <span><kbd class="calibre14">Some(action)</kbd></span> is returned. That's why we used <span><kbd class="calibre14">if let</kbd></span> to pattern match against the result of this method call. We then match against the action to see which action it is: if it is a <span><kbd class="calibre14">Load</kbd></span> action, we open the file with the specified path and create an <span><kbd class="calibre14">Mp3Decoder</kbd></span> with a buffered reader of this file. We then try to get the sample rate of the song and create a new <span><kbd class="calibre14">Playback</kbd></span> with this rate. We'll handle the <span><kbd class="calibre14">Stop</kbd></span> action later.</p>
+<p class="calibre3">Finally, we see our first use of <span><kbd class="calibre14">Mutex</kbd></span>:</p>
+<pre class="calibre22">app_state.lock().unwrap().stopped = <span>false</span>;</pre>
+<p class="calibre3">Let's rewrite it in another way to see what's going on:</p>
+<pre class="calibre22"><span>let</span> <span>mut</span> guard = app_state.lock().unwrap();
+guard.stopped = <span>false</span>;</pre>
+<p class="calibre3">We first call <span><kbd class="calibre14">lock()</kbd></span>, which returns a <span><kbd class="calibre14">Result&lt;MutexGuard&lt;T&gt;, PoisonError&lt;MutexGuard&lt;T&gt;&gt;&gt;</kbd></span>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Mutex guard</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">A mutex guard is a scoped lock: this means that the mutex will be automatically unlocked when going out of scope. It is a nice way to ensure that users will use a <span><kbd class="calibre14">Mutex</kbd></span> and won't forget to unlock it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">RAII</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">But how does it work behind the scene? Rust uses the idiom of <strong class="calibre5">Resource Acquisition Is Initialization</strong>(<strong class="calibre5">RAII)</strong> for short. With this idiom, a resource is allocated in the constructor and released in its destructor. In Rust, destructors are implemented by the <span><kbd class="calibre14">Drop</kbd></span> trait. So, to get back to mutex guards, the mutex is unlocked when the destructor of <span><kbd class="calibre14">MutexGuard</kbd></span> is called, so, as in the previous example, when the <span><kbd class="calibre14">guard</kbd></span> variable goes out of scope.</p>
+<p class="calibre3">Let's get back to our infinite loop:</p>
+<pre class="calibre22">loop {
+    if let Some(action) = event_loop.queue.try_pop() {
+        // …
+    } else if *event_loop.playing.lock().unwrap() {
+        let mut written = false;
+        if let Some(ref mut source) = source {
+            let size = iter_to_buffer(source, &amp;mut buffer);
+            if size &gt; 0 {
+                playback.write(&amp;buffer[..size]);
+                written = true;
+            }
+        }
+
+        if !written {
+            app_state.lock().unwrap().stopped = true;
+            *event_loop.playing.lock().unwrap() = false;
+            source = None;
+        }
+    }
+}</pre>
+<p class="calibre3">Here, we check whether the playing value is true (again using the <span><kbd class="calibre14">lock().unwrap()</kbd></span> trick). We must use a <span><kbd class="calibre14">*</kbd></span> to access the value of a <span><kbd class="calibre14">MutexGuard</kbd></span> because it implements <span><kbd class="calibre14">Deref</kbd></span>. That means we don't have direct access to the underlying value. But since it implements the <span><kbd class="calibre14">Deref</kbd></span> trait, we can access it by dereferencing the guard (with a <span><kbd class="calibre14">*</kbd></span>). We didn't need this trick before because we accessed a field and Rust automatically dereferences fields.</p>
+<p class="calibre3">We then create a <span><kbd class="calibre14">written</kbd></span> variable that will be <span><kbd class="calibre14">true</kbd></span> if the player was able to play a sample. If it was unable to play one, this means the song came to an end. In this case, we set the <span><kbd class="calibre14">stopped</kbd></span> value to <span><kbd class="calibre14">true</kbd></span> and <span><kbd class="calibre14">playing</kbd></span> to <span><kbd class="calibre14">false</kbd></span>.</p>
+<p class="calibre3">To play the samples, we call <span><kbd class="calibre14">iter_to_buffer</kbd></span>, which will take the value from the decoder (which is an <span><kbd class="calibre14">Iterator</kbd></span>) and write them to the buffer. Afterward, it will write the buffer to the <span><kbd class="calibre14">playback</kbd></span> in order to play the samples on your sound card.</p>
+<p class="calibre3">Let's look at this <span><kbd class="calibre14">iter_to_buffer</kbd></span> function:</p>
+<pre class="calibre22"><span>fn</span> iter_to_buffer&lt;I: <span>Iterator</span>&lt;Item=<span>i16</span>&gt;&gt;(iter: &amp;<span>mut</span> I, buffer: &amp;<span>mut</span> <span>[[</span><span>i16</span>; <span>2</span><span>]</span>; BUFFER_SIZE<span>]</span>) -&gt; <span>usize</span> <span>{</span>
+    <span>let</span> <span>mut</span> iter = iter.take(BUFFER_SIZE);
+    <span>let</span> <span>mut</span> index = <span>0</span>;
+    <span>while</span> <span>let</span> <span>Some</span>(sample1) = iter.next() <span>{</span>
+        <span>if</span> <span>let</span> <span>Some</span>(sample2) = iter.next() <span>{</span>
+            buffer<span>[</span>index<span>][</span><span>0</span><span>]</span> = sample1;
+            buffer<span>[</span>index<span>][</span><span>1</span><span>]</span> = sample2;
+        <span>}</span>
+        index += <span>1</span>;
+    <span>}</span>
+    index
+<span>}</span></pre>
+<p class="calibre3">We start by taking <span><kbd class="calibre14">BUFFER_SIZE</kbd></span> elements from the iterator and add them to the buffer two at a time (for two channels). We then return the number of elements written to the buffer.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Using the music player</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We're now ready to use our music engine. Let's add a couple of new methods to <span><kbd class="calibre14">Playlist</kbd></span>.</p>
+<p class="calibre3">Let's start with a method to get the path of the selection:</p>
+<pre class="calibre23">    <span>fn</span> selected_path(&amp;<span>self</span>) -&gt; <span>Option</span>&lt;<span>String</span>&gt; <span>{</span>
+        <span>let</span> selection = <span>self</span>.treeview.get_selection();
+        <span>if</span> <span>let</span> <span>Some</span>((_, iter)) = selection.get_selected() <span>{</span>
+            <span>let</span> value = <span>self</span>.model.get_value(&amp;iter, PATH_COLUMN <span>as</span> <span>i32</span>);
+            <span>return</span> value.get::&lt;<span>String</span>&gt;();
+        <span>}</span>
+        <span>None</span>
+    <span>}</span></pre>
+<p class="calibre3">We start by getting the selection, then we get the iterator for the selection. From the iterator, we can get the value at the specified column to get the path. We can now add a method to load the selected song:</p>
+<pre class="sourcecode">    <span>pub</span> <span>fn</span> play(&amp;<span>self</span>) -&gt; <span>bool</span> <span>{</span>
+        <span>if</span> <span>let</span> <span>Some</span>(path) = <span>self</span>.selected_path() <span>{</span>
+            <span>self</span>.player.load(&amp;path);
+            <span>true</span>
+        <span>}</span> <span>else</span> <span>{</span>
+            <span>false</span>
+        <span>}</span>
+    <span>}</span></pre>
+<p class="calibre3">If there's a selected song, we load it into the music engine. We return true if a song was loaded.</p>
+<p class="calibre3">We'll now use this method in the event handler of the play button:</p>
+<pre class="calibre22"><span>impl</span> App <span>{</span>
+    <span>pub</span> <span>fn</span> connect_toolbar_events(&amp;<span>self</span>) <span>{</span>
+        <span>// …</span>
+
+        <span>let</span> playlist = <span>self</span>.playlist.clone();
+        <span>let</span> play_image = <span>self</span>.toolbar.play_image.clone();
+        <span>let</span> cover = <span>self</span>.cover.clone();
+        <span>let</span> state = <span>self</span>.state.clone();
+        <span>self</span>.toolbar.play_button.connect_clicked(<span>move</span> |_| <span>{</span>
+            <span>if</span> state.lock().unwrap().stopped <span>{</span>
+                <span>if</span> playlist.play() <span>{</span>
+                    set_image_icon(&amp;play_image, PAUSE_ICON);
+                    set_cover(&amp;cover, &amp;playlist);
+                <span>}</span>
+            <span>}</span> <span>else</span> <span>{</span>
+                set_image_icon(&amp;play_image, PLAY_ICON);
+            <span>}</span>
+        <span>}</span>);
+
+        <span>// …</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">We create a copy of the <span><kbd class="calibre14">playlist</kbd></span> variable because it is moved into the closure. In the latter, we then call the <span><kbd class="calibre14">play()</kbd></span> method we created just before. We only change the image of the button and show the cover if a song starts to play.</p>
+<p class="calibre3">You can now try the music player: open an MP3 file, click play, and you should hear the song. Let's continue to develop the software since many features are missing.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Pausing and resuming the song</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We'll start by adding a field indicating whether the player is in pause or not. This field will be changed by methods such as <span><kbd class="calibre14">play</kbd></span> or <span><kbd class="calibre14">resume</kbd></span>. However, remember that our <span><kbd class="calibre14">Playlist</kbd></span> is wrapped in an <span><kbd class="calibre14">Rc</kbd></span>, so that we can use it in different places, namely in the event handlers. Also, remember that Rust forbids mutation when there are mutable references to a value. How can we update this field while still using a reference-counted pointer? One way is to use interior mutability.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Interior mutability</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Interior mutability is a concept granting mutable an inner value of a type with an immutable reference. Is this safe to do? Yes, totally, because we need to respect certain constraints. One way to have interior mutability is to wrap our <span><kbd class="calibre14">Cell</kbd></span> type. The constraint of this type is that if we want to get the value from the <span><kbd class="calibre14">Cell</kbd></span> from an immutable reference, the wrapped type must implement the <span><kbd class="calibre14">Copy</kbd></span> trait. We'll see the other commonly-used type for interior mutability later in this chapter. For now, let's add our field to the <span><kbd class="calibre14">Player</kbd></span> type:</p>
+<pre class="calibre22"><span>use</span> std::cell::Cell;
+
+<span>pub</span> <span>struct</span> Player <span>{</span>
+    app_state: Arc&lt;Mutex&lt;<span>super</span>::State&gt;&gt;,
+    event_loop: EventLoop,
+    paused: Cell&lt;<span>bool</span>&gt;,
+<span>}</span></pre>
+<p class="calibre3">Let's update the construction of the structure:</p>
+<pre class="calibre22"><span>impl</span> Player <span>{</span>
+    <span>pub</span>(<span>crate</span>) <span>fn</span> new(app_state: Arc&lt;Mutex&lt;<span>super</span>::State&gt;&gt;) -&gt; <span>Self</span> <span>{</span>
+        <span>// …</span>
+
+        Player <span>{</span>
+            app_state,
+            event_loop,
+            paused: Cell::new(<span>false</span>),
+        <span>}</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">We can now add a method to check whether the music is paused or not:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> is_paused(&amp;<span>self</span>) -&gt; <span>bool</span> <span>{</span>
+        <span>self</span>.paused.get()
+    <span>}</span></pre>
+<p class="calibre3">Here, we need to call <span><kbd class="calibre14">Cell::get()</kbd></span> to get a copy of the inner value. We can now add methods to play and resume the song:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> pause(&amp;<span>self</span>) <span>{</span>
+        <span>self</span>.paused.set(<span>true</span>);
+        <span>self</span>.app_state.lock().unwrap().stopped = <span>true</span>;
+        <span>self</span>.set_playing(<span>false</span>);
+    <span>}</span>
+
+    <span>pub</span> <span>fn</span> resume(&amp;<span>self</span>) <span>{</span>
+        <span>self</span>.paused.set(<span>false</span>);
+        <span>self</span>.app_state.lock().unwrap().stopped = <span>false</span>;
+        <span>self</span>.set_playing(<span>true</span>);
+    <span>}</span></pre>
+<p class="calibre3">Here we see that we need to call <span><kbd class="calibre14">Cell::set()</kbd></span> to update the value of the <span><kbd class="calibre14">Cell</kbd></span>. We can do that even though we only have an immutable reference and, once again, it is completely safe to do so. Then, we update the <span><kbd class="calibre14">stopped</kbd></span> field of the application state because the click handler for the play button will use it to decide whether we want to play or resume the music. We also call <span><kbd class="calibre14">set_playing()</kbd></span> to indicate to the player thread whether it needs to continue playing the song or not. This method is defined as such:</p>
+<pre class="calibre23">    <span>fn</span> set_playing(&amp;<span>self</span>, playing: <span>bool</span>) <span>{</span>
+        *<span>self</span>.event_loop.playing.lock().unwrap() = playing;
+        <span>let</span> (<span>ref</span> lock, <span>ref</span> condition_variable) = *<span>self</span>.event_loop.condition_variable;
+        <span>let</span> <span>mut</span> started = lock.lock().unwrap();
+        *started = playing;
+        <span>if</span> playing <span>{</span>
+            condition_variable.notify_one();
+        <span>}</span>
+    <span>}</span></pre>
+<p class="calibre3">It sets the <kbd class="calibre14">playing</kbd> variable and then notifies the player thread to wake it up if <span><kbd class="calibre14">playing</kbd></span> is <span><kbd class="calibre14">true</kbd></span>.</p>
+<p class="calibre3">We'll now add a <span><kbd class="calibre14">pause()</kbd></span> method to our <span><kbd class="calibre14">Playlist</kbd></span> type that will call the <span><kbd class="calibre14">pause()</kbd></span> method we've just created when the user clicks pause:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> pause(&amp;<span>self</span>) <span>{</span>
+        <span>self</span>.player.pause();
+    <span>}</span></pre>
+<p class="calibre3">To use it, we'll update the click handler of the play button:</p>
+<pre class="calibre22">self.toolbar.play_button.connect_clicked(move |_| {
+    if state.lock().unwrap().stopped {
+        if playlist.play() {
+            set_image_icon(&amp;play_image, PAUSE_ICON);
+            set_cover(&amp;cover, &amp;playlist);
+        }
+    } else {
+        <strong class="calibre5">playlist.pause();</strong>
+        set_image_icon(&amp;play_image, PLAY_ICON);
+    }
+});</pre>
+<p class="calibre3">We added the call to pause in the <span><kbd class="calibre14">else</kbd></span> block.</p>
+<p class="calibre3">We now want to update the <span><kbd class="calibre14">play()</kbd></span> method. Now that we can pause the song, there are two new cases to consider for this method:</p>
+<ul class="calibre10">
+<li class="calibre11">If the song is playing, we want to pause it.</li>
+<li class="calibre11">If the song is paused, we either want to resume the song if the same one is selected or start a new song if another one is selected.</li>
+</ul>
+<p class="calibre3">That's why we need a new field in our <span><kbd class="calibre14">Playlist</kbd></span> structure:</p>
+<pre class="calibre22"><span>pub</span> <span>struct</span> Playlist <span>{</span>
+    current_song: RefCell&lt;<span>Option</span>&lt;<span>String</span>&gt;&gt;,
+    model: ListStore,
+    player: Player,
+    treeview: TreeView,
+<span>}</span></pre>
+<p class="calibre3">We added a field that will contain the path of the currently playing song. Here we wrap the <span><kbd class="calibre14">Option&lt;String&gt;</kbd></span> into a <span><kbd class="calibre14">RefCell</kbd></span>, which is another way to have interior mutability. We cannot use a <span><kbd class="calibre14">Cell</kbd></span> because the <span><kbd class="calibre14">String</kbd></span> type does not implement the <span><kbd class="calibre14">Copy</kbd></span> trait. So, what is the difference between <span><kbd class="calibre14">Cell</kbd></span> and <span><kbd class="calibre14">RefCell</kbd></span>? The <span><kbd class="calibre14">RefCell</kbd></span> type will check the borrowing rules at runtime: if two borrows happen at the same time, it will panic. We have to be careful when using <span><kbd class="calibre14">RefCell</kbd></span>: it is better to have compile-time borrowing checks if possible. But when using <span><kbd class="calibre14">gtk-rs</kbd></span>, we sometimes need to share a mutable state with the event handler and the best way to do that is to use <span><kbd class="calibre14">RefCell</kbd></span>.</p>
+<p class="calibre3">In the next chapter, we'll learn how to use a library that abstracts the state management so that you won't need to use <span><kbd class="calibre14">RefCell</kbd></span> and you won't get any <span><kbd class="calibre14">panic</kbd></span> at runtime. This requires a new import statement:</p>
+<pre class="calibre22"><span>use</span> std::cell::RefCell;</pre>
+<p class="calibre3">We need to update the constructor to initialize this value:</p>
+<pre class="calibre22"><span>impl</span> Playlist <span>{</span>
+    <span>pub</span>(<span>crate</span>) <span>fn</span> new(state: Arc&lt;Mutex&lt;State&gt;&gt;) -&gt; <span>Self</span> <span>{</span>
+        <span>// …</span>
+
+        Playlist <span>{</span>
+            current_song: RefCell::new(<span>None</span>),
+            model,
+            player: Player::new(state.clone()),
+            treeview,
+        <span>}</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">There's one more method to add in <span><kbd class="calibre14">Playlist</kbd></span> before we move on to update the <span><kbd class="calibre14">play()</kbd></span> method:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> path(&amp;<span>self</span>) -&gt; <span>Option</span>&lt;<span>String</span>&gt; <span>{</span>
+        <span>self</span>.current_song.borrow().clone()
+    <span>}</span></pre>
+<p class="calibre3">This method returns a copy of the current song path. Since the field is a <span><kbd class="calibre14">RefCell</kbd></span>, we need to call <span><kbd class="calibre14">borrow()</kbd></span> in order to get access to the inner value. This method returns the equivalent of an immutable reference. We'll soon see how to have a mutable reference. As with <span><kbd class="calibre14">Mutex</kbd></span>, the borrow is lexical and the borrow will end at the end of the function. We're now ready to update the <span><kbd class="calibre14">play()</kbd></span> method:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> play(&amp;<span>self</span>) -&gt; <span>bool</span> <span>{</span>
+        <span>if</span> <span>let</span> <span>Some</span>(path) = <span>self</span>.selected_path() <span>{</span>
+            <span>if</span> <span>self</span>.player.is_paused() &amp;&amp; <span>Some</span>(&amp;path) == <br class="calibre6"/><span>             self</span>.path().as_ref() <span>{</span>
+                <span>self</span>.player.resume();
+            <span>}</span> <span>else</span> <span>{</span>
+                <span>self</span>.player.load(&amp;path);
+                *<span>self</span>.current_song.borrow_mut() = <span>Some</span>(path.into());
+            <span>}</span>
+            <span>true</span>
+        <span>}</span> <span>else</span> <span>{</span>
+            <span>false</span>
+        <span>}</span>
+    <span>}</span></pre>
+<p class="calibre3">We call <span><kbd class="calibre14">resume()</kbd></span> if the song was paused and if the selected path is the same as the currently playing song path. If this condition is <kbd class="calibre14">false</kbd>, we load the specified path and save this path in our field. To do so, we call <span><kbd class="calibre14">borrow_mut()</kbd></span> to get a mutable reference. Once again, we need to prefix the expression with <span><kbd class="calibre14">*</kbd></span> so that <span><kbd class="calibre14">DerefMut::deref_mut()</kbd></span> gets called. Run the project and you'll see that you can pause and resume the song.</p>
+<p class="calibre3">Let's now add a way to stop the song. We'll start by adding a method to the <span><kbd class="calibre14">Player</kbd></span>, as usual:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> stop(&amp;<span>self</span>) <span>{</span>
+        <span>self</span>.paused.set(<span>false</span>);
+        <span>self</span>.app_state.lock().unwrap().stopped = <span>true</span>;
+        <span>self</span>.emit(Stop);
+        <span>self</span>.set_playing(<span>false</span>);
+    <span>}</span></pre>
+<p class="calibre3">We first set the <span><kbd class="calibre14">paused</kbd></span> field to <kbd class="calibre14">false</kbd> so that the playlist won't try to resume the song the next time the play button is clicked. We then set the <span><kbd class="calibre14">stopped</kbd></span> field to <span><kbd class="calibre14">true</kbd></span>, this will cause the next click of this button to play the song instead of trying to pause it. We then emit the <span><kbd class="calibre14">Stop</kbd></span> action to the event loop and indicate to the engine thread that it should not play music anymore.</p>
+<p class="calibre3">The <kbd class="calibre14">emit</kbd> method is very simple:</p>
+<pre class="calibre22"><span>fn</span> emit(&amp;<span>self</span>, action: Action) <span>{</span>
+    <span>self</span>.event_loop.queue.push(action);
+<span>}</span></pre>
+<p class="calibre3">It simply pushes the <kbd class="calibre14">action</kbd> in the queue of the event loop.</p>
+<p class="calibre3">Let's now handle this <kbd class="calibre14">Stop</kbd> event:</p>
+<pre class="calibre22">Stop =&gt; {
+    source = None;
+},</pre>
+<p class="calibre3">We only reset the source to <span><kbd class="calibre14">None</kbd></span> because we won't need it anymore.</p>
+<p class="calibre3">Then, we're ready to add a <span><kbd class="calibre14">stop()</kbd></span> method to the <span><kbd class="calibre14">Playlist</kbd></span>:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> stop(&amp;<span>self</span>) <span>{</span>
+        *<span>self</span>.current_song.borrow_mut() = <span>None</span>;
+        <span>self</span>.player.stop();
+    <span>}</span></pre>
+<p class="calibre3">We first reset the <span><kbd class="calibre14">current_song</kbd></span> field to <span><kbd class="calibre14">None</kbd></span> in such a way that the next call to <span><kbd class="calibre14">play()</kbd></span> won't attempt to resume the song. We then call the <span><kbd class="calibre14">stop()</kbd></span> method we created earlier.</p>
+<p class="calibre3">We're now ready to use this new method by creating a new event handler for the stop button, add this code to the <kbd class="calibre14">connect_toolbar_events()</kbd> method:</p>
+<pre class="calibre23">    <span>let</span> playlist = <span>self</span>.playlist.clone();
+    <span>let</span> play_image = <span>self</span>.toolbar.play_image.clone();
+    <span>let</span> cover = <span>self</span>.cover.clone();
+    <span>self</span>.toolbar.stop_button.connect_clicked(<span>move</span> |_| <span>{</span>
+        playlist.stop();
+        cover.hide();
+        set_image_icon(&amp;play_image, PLAY_ICON);
+    <span>}</span>);</pre>
+<p class="calibre3">So, when we click stop, we call the <span><kbd class="calibre14">Playlist::stop()</kbd></span> method in order to stop playing the music. We also hide the cover and set back the play button to show the play icon. You can now try again in the music player to see this new feature in action.</p>
+<p class="calibre3">Now let's add the actions for the two remaining buttons: previous and next.</p>
+<p class="calibre3">We first need to create a new method in the <span><kbd class="calibre14">Playlist</kbd></span>:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> next(&amp;<span>self</span>) -&gt; <span>bool</span> <span>{</span>
+        <span>let</span> selection = <span>self</span>.treeview.get_selection();
+        <span>let</span> next_iter =
+            <span>if</span> <span>let</span> <span>Some</span>((_, iter)) = selection.get_selected() <span>{</span>
+                <span>if</span> !<span>self</span>.model.iter_next(&amp;iter) <span>{</span>
+                    <span>return</span> <span>false</span>;
+                <span>}</span>
+                <span>Some</span>(iter)
+            <span>}</span>
+            <span>else</span> <span>{</span>
+                <span>self</span>.model.get_iter_first()
+            <span>}</span>;
+        <span>if</span> <span>let</span> <span>Some</span>(<span>ref</span> iter) = next_iter <span>{</span>
+            selection.select_iter(iter);
+            <span>self</span>.play();
+        <span>}</span>
+        next_iter.is_some()
+    <span>}</span></pre>
+<p class="calibre3">We start by getting the selection. Then we check whether an item is selected: in this case, we try to get the item after the selection. Otherwise, we get the first item on the list. Then, if we were able to get an item, we select it and start playing the song. We return whether we changed the selection or not.</p>
+<p class="calibre3">The <span><kbd class="calibre14">previous()</kbd></span> method is similar:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> previous(&amp;<span>self</span>) -&gt; <span>bool</span> <span>{</span>
+        <span>let</span> selection = <span>self</span>.treeview.get_selection();
+        <span>let</span> previous_iter =
+            <span>if</span> <span>let</span> <span>Some</span>((_, iter)) = selection.get_selected() <span>{</span>
+                <span>if</span> !<span>self</span>.model.iter_previous(&amp;iter) <span>{</span>
+                    <span>return</span> <span>false</span>;
+                <span>}</span>
+                <span>Some</span>(iter)
+            <span>}</span>
+            <span>else</span> <span>{</span>
+                <span>self</span>.model.iter_nth_child(<span>None</span>, max(<span>0</span>, <br class="calibre6"/><span>                 self</span>.model.iter_n_children(<span>None</span>) <br class="calibre6"/>                - <span>1</span>))
+            <span>}</span>;
+        <span>if</span> <span>let</span> <span>Some</span>(<span>ref</span> iter) = previous_iter <span>{</span>
+            selection.select_iter(iter);
+            <span>self</span>.play();
+        <span>}</span>
+        previous_iter.is_some()
+    <span>}</span></pre>
+<p class="calibre3">However, there's no <span><kbd class="calibre14">get_iter_last()</kbd></span> method, so we get the last element with <span><kbd class="calibre14">iter_nth_child()</kbd></span>.</p>
+<p class="calibre3">This requires a new import statement to be added at the top of the file:</p>
+<pre class="calibre22"><span>use</span> std::cmp::max;</pre>
+<p class="calibre3">With these new methods, we're ready to handle the click events for the buttons. Let's start with the next button:</p>
+<pre class="calibre22"><span>let</span> playlist = <span>self</span>.playlist.clone();
+<span>let</span> play_image = <span>self</span>.toolbar.play_image.clone();
+<span>let</span> cover = <span>self</span>.cover.clone();
+<span>self</span>.toolbar.next_button.connect_clicked(<span>move</span> |_| <span>{</span>
+    <span>if</span> playlist.next() <span>{</span>
+        set_image_icon(&amp;play_image, PAUSE_ICON);
+        set_cover(&amp;cover, &amp;playlist);
+    <span>}</span>
+<span>}</span>);</pre>
+<p class="calibre3">We simply call the <span><kbd class="calibre14">next()</kbd></span> method we just created and if a new song was selected, we update the icon of the play button and show the new cover. The previous button handler is exactly the same except that we call <span><kbd class="calibre14">previous()</kbd></span> instead:</p>
+<pre class="calibre22"><span>let</span> playlist = <span>self</span>.playlist.clone();
+<span>let</span> play_image = <span>self</span>.toolbar.play_image.clone();
+<span>let</span> cover = <span>self</span>.cover.clone();
+<span>self</span>.toolbar.previous_button.connect_clicked(<span>move</span> |_| <span>{</span>
+    <span>if</span> playlist.previous() <span>{</span>
+        set_image_icon(&amp;play_image, PAUSE_ICON);
+        set_cover(&amp;cover, &amp;playlist);
+    <span>}</span>
+<span>}</span>);</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Showing the progression of the song</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">It would be nice to see the cursor moving when the song plays. Let's tackle this challenge right now.</p>
+<p class="calibre3">We'll start by adding a method to our <span><kbd class="calibre14">Player</kbd></span> to get the duration of a song:</p>
+<pre class="calibre22"><span>use</span> std::time::Duration;
+
+    <span>pub</span> <span>fn</span> compute_duration&lt;P: AsRef&lt;Path&gt;&gt;(path: P) -&gt; <br class="calibre6"/><span>     Option</span>&lt;Duration&gt; <span>{</span>
+        <span>let</span> file = File::open(path).unwrap();
+        Mp3Decoder::compute_duration(BufReader::new(file))
+    <span>}</span></pre>
+<p class="calibre3">We simply call the <span><kbd class="calibre14">compute_duration()</kbd></span> method we created earlier. Next, we'll modify the <span><kbd class="calibre14">Playlist</kbd></span> to call this function. But before we do so, we'll modify the <span><kbd class="calibre14">State</kbd></span> type from the <kbd class="calibre14">main</kbd> module to include additional information:</p>
+<pre class="calibre22"><span>use</span> std::collections::HashMap;
+
+<span>struct</span> State <span>{</span>
+    current_time: <span>u64</span>,
+    durations: HashMap&lt;<span>String</span>, <span>u64</span>&gt;,
+    stopped: <span>bool</span>,
+<span>}</span></pre>
+<p class="calibre3">We added a <span><kbd class="calibre14">current_time</kbd></span> field, which will contain how much time elapsed since the song started playing. We also store the duration of the songs in a <span><kbd class="calibre14">HashMap</kbd></span> so that we only compute it once for each path. We now need to update the initialization of the <span><kbd class="calibre14">State</kbd></span> in the <span><kbd class="calibre14">App</kbd></span> constructor:</p>
+<pre class="calibre22"><span>let</span> current_time = <span>0</span>;
+<span>let</span> durations = HashMap::new();
+<span>let</span> state = Arc::new(Mutex::new(State <span>{</span>
+    current_time,
+    durations,
+    stopped: <span>true</span>,
+<span>}</span>))<a class="calibre67">;</a></pre>
+<p class="calibre3">Let's go back to the <span><kbd class="calibre14">Playlist</kbd></span>. It will now contain the <span><kbd class="calibre14">State</kbd></span> in its structure:</p>
+<pre class="calibre22"><span>pub</span> <span>struct</span> Playlist <span>{</span>
+    current_song: RefCell&lt;<span>Option</span>&lt;<span>String</span>&gt;&gt;,
+    model: ListStore,
+    player: Player,
+    state: Arc&lt;Mutex&lt;State&gt;&gt;,
+    treeview: TreeView,
+<span>}</span></pre>
+<p class="calibre3">This should be reflected in its constructor:</p>
+<pre class="calibre22">Playlist <span>{</span>
+    current_song: RefCell::new(<span>None</span>),
+    model,
+    player: Player::new(state.clone()),
+    state,
+    treeview,
+<span>}</span></pre>
+<p class="calibre3">Here, the <span><kbd class="calibre14">state</kbd></span> field was added. We'll now add a method that will compute the duration in another thread:</p>
+<pre class="calibre22"><span>use</span> std::thread;
+<span>use</span> to_millis;
+
+    <span>fn</span> compute_duration(&amp;<span>self</span>, path: &amp;Path) <span>{</span>
+        <span>let</span> state = <span>self</span>.state.clone();
+        <span>let</span> path = path.to_string_lossy().to_string();
+        thread::spawn(<span>move</span> || <span>{</span>
+            <span>if</span> <span>let</span> <span>Some</span>(duration) = Player::compute_duration(&amp;path)<br class="calibre6"/>            <span>{</span>
+                <span>let</span> <span>mut</span> state = state.lock().unwrap();
+                state.durations.insert(path, to_millis(duration));
+            <span>}</span>
+        <span>}</span>);
+    <span>}</span></pre>
+<p class="calibre3">In the thread's closure, we compute the duration and when it's done, we lock the state to insert the duration in the <span><kbd class="calibre14">HashMap</kbd></span>. We compute the duration in another thread because it can take time and we don't want to block the user interface during this computation. We now call this method in <span><kbd class="calibre14">Playlist::add()</kbd></span>:</p>
+<pre class="sourcecode">    <span>pub</span> <span>fn</span> add(&amp;<span>self</span>, path: &amp;Path) <span>{</span>
+        <span>self</span>.compute_duration(path);
+
+        <span>// …</span>
+    <span>}</span></pre>
+<p class="calibre3">We'll update the <span><kbd class="calibre14">Adjustment</kbd></span> so that its upper value is <span><kbd class="calibre14">0.0</kbd></span> in the beginning:</p>
+<pre class="calibre22">let adjustment = Adjustment::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);</pre>
+<p class="calibre3">This is to avoid seeing the cursor moving too quickly when the duration is not yet computed.</p>
+<p class="calibre3">Finally, we'll add the code to update the UI in the <span><kbd class="calibre14">App::connect_events()</kbd></span> method:</p>
+<pre class="calibre22"><span>use</span> gtk::<span>{</span>AdjustmentExt, Continue<span>}</span>;
+<span>use</span> toolbar::<span>{</span>set_image_icon, PAUSE_ICON, PLAY_ICON<span>}</span>;
+
+    <span>fn</span> connect_events(&amp;<span>self</span>) <span>{</span>
+        <span>let</span> playlist = <span>self</span>.playlist.clone();
+        <span>let</span> adjustment = <span>self</span>.adjustment.clone();
+        <span>let</span> state = <span>self</span>.state.clone();
+        <span>let</span> play_image = <span>self</span>.toolbar.play_image.clone();
+        gtk::timeout_add(<span>100</span>, <span>move</span> || <span>{</span>
+            <span>let</span> state = state.lock().unwrap();
+            <span>if</span> <span>let</span> <span>Some</span>(path) = playlist.path() <span>{</span>
+                <span>if</span> <span>let</span> <span>Some</span>(&amp;duration) = state.durations.get(&amp;path) <br class="calibre6"/><span>                {</span>
+                    adjustment.set_upper(duration <span>as</span> <span>f64</span>);
+                <span>}</span>
+            <span>}</span>
+            <span>if</span> state.stopped <span>{</span>
+                set_image_icon(&amp;play_image, PLAY_ICON);
+            <span>}</span> <span>else</span> <span>{</span>
+                set_image_icon(&amp;play_image, PAUSE_ICON);
+            <span>}</span>
+            adjustment.set_value(state.current_time <span>as</span> <span>f64</span>);
+            Continue(<span>true</span>)
+        <span>}</span>);
+    <span>}</span></pre>
+<p class="calibre3">The <span><kbd class="calibre14">gtk::timeout_add()</kbd></span> method will be run every 100 milliseconds as long as its closure returns <span><kbd class="calibre14">Continue(false)</kbd></span>. This closure starts by checking whether the duration is in the <span><kbd class="calibre14">HashMap</kbd></span>, and sets the upper value of the cursor as this duration. If the value is not in the <span><kbd class="calibre14">HashMap</kbd></span>, it means it wasn't computed yet. After that, we check whether the <span><kbd class="calibre14">stopped</kbd></span> field is true, that means the song ended and the engine thread is no longer playing it. In this case, we want to show the play icon. If the song is still playing, we show the pause icon. Finally, we set the current value of the cursor from the <span><kbd class="calibre14">current_time</kbd></span> field.</p>
+<p class="calibre3">The cursor will now move automatically as the song plays. Here's how the player looks now:</p>
+<div class="mce-root1"><img src="../images/00038.jpeg" class="calibre36"/><br class="calibre6"/>
+<em class="calibre21">Figure 6.1</em></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Improving CPU usage</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">One issue you may have noticed is that when no song is playing, the software will use 100% of the CPU. This is because of the infinite loop in the music engine thread. It will do nothing except loop when the song is paused or when there's no song to play. Let's now fix this issue.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Condition variable</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">What we want to do is to make the thread sleep when it has nothing to do. We also want to be able to wake the thread up from the main thread. This is exactly what condition variables are for. So, let's add one to our engine. We'll start by adding a <span><kbd class="calibre14">condition_variable</kbd></span> field to the <span><kbd class="calibre14">EventLoop</kbd></span>:</p>
+<pre class="calibre22">struct EventLoop {
+    condition_variable: Arc&lt;(Mutex&lt;bool&gt;, Condvar)&gt;,
+    queue: Arc&lt;SegQueue&lt;Action&gt;&gt;,
+    playing: Arc&lt;Mutex&lt;bool&gt;&gt;,
+}</pre>
+<p class="calibre3">A condition variable is usually used together with a Boolean value (wrapped in a <span><kbd class="calibre14">Mutex</kbd></span>). We need to rewrite the constructor of <span><kbd class="calibre14">EventLoop</kbd></span> to initialize this new field:</p>
+<pre class="calibre22"><span>impl</span> EventLoop <span>{</span>
+    <span>fn</span> new() -&gt; <span>Self</span> <span>{</span>
+        EventLoop <span>{</span>
+            condition_variable: Arc::new((Mutex::new(<span>false</span>), Condvar::new())),
+            queue: Arc::new(SegQueue::new()),
+            playing: Arc::new(Mutex::new(<span>false</span>)),
+        <span>}</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">Next, we need to block the thread when it has nothing to do. Here's the start of the new code of the thread in <span><kbd class="calibre14">Player::new()</kbd></span>:</p>
+<pre class="calibre22"><span>{</span>
+    <span>let</span> app_state = app_state.clone();
+    <span>let</span> event_loop = event_loop.clone();
+    <span>let</span> condition_variable = event_loop.condition_variable.clone();
+    thread::spawn(<span>move</span> || <span>{</span>
+        <span>let</span> block = || <span>{</span>
+            <span>let</span> (<span>ref</span> lock, <span>ref</span> condition_variable) = <br class="calibre6"/>             *condition_variable;
+            <span>let</span> <span>mut</span> started = lock.lock().unwrap();
+            *started = <span>false</span>;
+            <span>while</span> !*started <span>{</span>
+                started =<br class="calibre6"/>                 condition_variable.wait(started).unwrap();
+            <span>}</span>
+        <span>}</span>;</pre>
+<p class="calibre3">We create a copy of the condition variable and we move this copy into the thread. Then, in the beginning of the closure, we lock the Boolean value associated with the condition variable to set it to <span><kbd class="calibre14">false</kbd></span>. Afterward, we loop: while this value is <kbd class="calibre14">false</kbd>, we block the current thread. We created a closure instead of a normal function because normal functions cannot capture values. The following code is the same as before:</p>
+<pre class="calibre23">        <span>let</span> <span>mut</span> buffer = <span>[[</span><span>0</span>; <span>2</span><span>]</span>; BUFFER_SIZE<span>]</span>;
+        <span>let</span> <span>mut</span> playback = Playback::new(<span>"MP3"</span>, <span>"MP3 Playback"</span>, <span>None</span>, <br class="calibre6"/>         DEFAULT_RATE);
+        <span>let</span> <span>mut</span> source = <span>None</span>;
+        <span>loop</span> <span>{</span>
+            <span>if</span> <span>let</span> <span>Some</span>(action) = event_loop.queue.try_pop() <span>{</span>
+                <span>match</span> action <span>{</span>
+                    Load(path) =&gt; <span>{</span>
+                        <span>let</span> file = File::open(path).unwrap();
+                        source = <br class="calibre6"/><span>                         Some</span>(Mp3Decoder::new(BufReader::new(file)).unwrap());
+                        <span>let</span> rate = source.as_ref().map(|source| <br class="calibre6"/>                         source.samples_rate()).unwrap_or(DEFAULT_RATE);
+                        playback = Playback::new(<span>"MP3"</span>, <span>"MP3 Playback"</span>, <br class="calibre6"/><span>                         None</span>, rate);
+                        app_state.lock().unwrap().stopped = <span>false</span>;
+                    <span>}</span>,
+                    Stop =&gt; <span>{</span>
+                        source = <span>None</span>;
+                    <span>}</span>,
+                <span>}</span>
+            <span>}</span> <span>else</span> <span>if</span> *event_loop.playing.lock().unwrap() <span>{</span>
+                <span>let</span> <span>mut</span> written = <span>false</span>;
+                <span>if</span> <span>let</span> <span>Some</span>(<span>ref</span> <span>mut</span> source) = source <span>{</span>
+                    <span>let</span> size = iter_to_buffer(source, &amp;<span>mut</span> buffer);
+                    <span>if</span> size &gt; <span>0</span> <span>{</span>
+                        app_state.lock().unwrap().current_time = <br class="calibre6"/>                         source.current_time();
+                        playback.write(&amp;buffer<span>[</span>..size<span>]</span>);
+                        written = <span>true</span>;
+                    <span>}</span>
+                <span>}</span></pre>
+<p class="calibre3">But the rest of the closure is a bit different:</p>
+<pre class="calibre22">                <span>if</span> !written <span>{</span>
+                    app_state.lock().unwrap().stopped = <span>true</span>;
+                    *event_loop.playing.lock().unwrap() = <span>false</span>;
+                    source = <span>None</span>;
+                    block();
+                <span>}</span>
+            <span>}</span> <span>else</span> <span>{</span>
+                block();
+            <span>}</span>
+        <span>}</span>
+    <span>}</span>);
+<span>}</span></pre>
+<p class="calibre3">If the player was unable to play song (that is, the song came into an end), we call the closure to block the thread. We also block the thread if the player is paused. With the condition variable, the software stopped using 100% CPU.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Showing the song's current time</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Currently, we only display the progression of the song. The user has no way to know the duration and for how many seconds the song has been playing. Let's fix that by adding labels that will show the current time and the duration.</p>
+<p class="calibre3">We'll need two new import statements in the <kbd class="calibre14">main</kbd> module:</p>
+<pre class="calibre22"><span>use</span> gtk::<span>{</span>Label, LabelExt<span>}</span>;</pre>
+<p class="calibre3">We'll also add two <kbd class="calibre14">label</kbd> in our <span><kbd class="calibre14">App</kbd></span> structure:</p>
+<pre class="calibre22"><span>struct</span> App <span>{</span>
+    adjustment: Adjustment,
+    cover: Image,
+    current_time_label: Label,
+    duration_label: Label,
+    playlist: Rc&lt;Playlist&gt;,
+    state: Arc&lt;Mutex&lt;State&gt;&gt;,
+    toolbar: MusicToolbar,
+    window: Window,
+<span>}</span></pre>
+<p class="calibre3">One <kbd class="calibre14">label</kbd> for the current time and the other for the duration. Since we want to show the different <kbd class="calibre14">label</kbd> on the right of the cursor, we'll create a horizontal box, this code should be added in <kbd class="calibre14">App::new()</kbd>:</p>
+<pre class="calibre22"><span>let</span> hbox = gtk::<span>Box</span>::new(Horizontal, <span>10</span>);
+vbox.add(&amp;hbox);
+
+<span>let</span> adjustment = Adjustment::new(<span>0.0</span>, <span>0.0</span>, <span>10.0</span>, <span>0.0</span>, <span>0.0</span>, <span>0.0</span>);
+<span>let</span> scale = Scale::new(Horizontal, &amp;adjustment);
+scale.set_draw_value(<span>false</span>);
+scale.set_hexpand(<span>true</span>);
+hbox.add(&amp;scale);</pre>
+<p class="calibre3">The <span><kbd class="calibre14">Scale</kbd></span> widget is now added to <span><kbd class="calibre14">hbox</kbd></span> instead of <span><kbd class="calibre14">vbox</kbd></span>. And we call <span><kbd class="calibre14">set_hexpand()</kbd></span> so that the widget takes as much horizontal space as possible.</p>
+<p class="calibre3">We're now ready to create our <kbd class="calibre14">label</kbd>'s:</p>
+<pre class="calibre22"><span>let</span> current_time_label = Label::new(<span>None</span>);
+hbox.add(&amp;current_time_label);
+
+<span>let</span> slash_label = Label::new(<span>"/"</span>);
+hbox.add(&amp;slash_label);
+
+<span>let</span> duration_label = Label::new(<span>None</span>);
+duration_label.set_margin_right(<span>10</span>);
+hbox.add(&amp;duration_label);</pre>
+<p class="calibre3">We create three <kbd class="calibre14">label</kbd>; the third one being a separator. We set a right margin to the last <kbd class="calibre14">label</kbd> so that it is not too close to the border of the window. Further, in the <span><kbd class="calibre14">App</kbd></span> constructor, we need to update the initialization of the structure:</p>
+<pre class="calibre22"><span>let</span> app = App <span>{</span>
+    adjustment,
+    cover,
+    current_time_label,
+    duration_label,
+    playlist,
+    state,
+    toolbar,
+    window,
+<span>}</span><a class="calibre67">;</a></pre>
+<p class="calibre3">We added the two <kbd class="calibre14">label</kbd>.</p>
+<p class="calibre3">We'll create a function to convert a number of milliseconds to a <span><kbd class="calibre14">String</kbd></span> of the <span><kbd class="calibre14">minute:second</kbd></span> format:</p>
+<pre class="calibre22"><span>fn</span> millis_to_minutes(millis: <span>u64</span>) -&gt; <span>String</span> <span>{</span>
+    <span>let</span> <span>mut</span> seconds = millis / <span>1_000</span>;
+    <span>let</span> minutes = seconds / <span>60</span>;
+    seconds %= <span>60</span>;
+    <span>format!</span>(<span>"{}:{:02}"</span>, minutes, seconds)
+<span>}</span></pre>
+<p class="calibre3">In this function, we first convert the milliseconds to seconds by dividing by one thousand. We then get the number of minutes by dividing the seconds by <kbd class="calibre14">60</kbd>. Afterward, we compute the number of seconds that are not included in the minutes with the modulo operation. Finally, we format the minutes and seconds as a <span><kbd class="calibre14">String</kbd></span>. As you can see, we used a special <span><kbd class="calibre14">{:02}</kbd></span> formatter. The <span><kbd class="calibre14">2</kbd></span> means that we want to print the number as two characters, even if the number is less than 0. The <span><kbd class="calibre14">0</kbd></span> after the colon indicates that we want to prepend <span><kbd class="calibre14">0</kbd></span> instead of spaces.</p>
+<p class="calibre3">With this new function, we can rewrite the timer to update (in the method <span><kbd class="calibre14">App::connect_events()</kbd></span>) the <kbd class="calibre14">label</kbd>'s:</p>
+<pre class="calibre22"><span>let</span> current_time_label = <span>self</span>.current_time_label.clone();
+<span>let</span> duration_label = <span>self</span>.duration_label.clone();
+<span>let</span> playlist = <span>self</span>.playlist.clone();
+<span>let</span> adjustment = <span>self</span>.adjustment.clone();
+<span>let</span> state = <span>self</span>.state.clone();
+<span>let</span> play_image = <span>self</span>.toolbar.play_image.clone();
+gtk::timeout_add(<span>100</span>, <span>move</span> || <span>{</span>
+    <span>let</span> state = state.lock().unwrap();
+    <span>if</span> <span>let</span> <span>Some</span>(path) = playlist.path() <span>{</span>
+        <span>if</span> <span>let</span> <span>Some</span>(&amp;duration) = state.durations.get(&amp;path) <span>{</span>
+            adjustment.set_upper(duration <span>as</span> <span>f64</span>);
+            duration_label.set_text(&amp;millis_to_minutes(duration));
+        <span>}</span>
+    <span>}</span>
+    <span>if</span> state.stopped <span>{</span>
+        set_image_icon(&amp;play_image, PLAY_ICON);
+    <span>}</span> <span>else</span> <span>{</span>
+        set_image_icon(&amp;play_image, PAUSE_ICON);
+        current_time_label.set_text(&amp;millis_to_minutes(state.current_time));
+    <span>}</span>
+    adjustment.set_value(state.current_time <span>as</span> <span>f64</span>);
+    Continue(<span>true</span>)
+<span>}</span>);</pre>
+<p class="calibre3">Here are the changes from the previous version. When we get the duration, we update the duration <kbd class="calibre14">label</kbd>. And when the song is not stopped (that is, when it is playing), we update the current time <kbd class="calibre14">label</kbd>.</p>
+<p class="calibre3">We need to change the stop button handler so that it resets the text of these <kbd class="calibre14">label</kbd>'s.</p>
+<p class="calibre3">Finally, we can update the handler:</p>
+<pre class="calibre22">let current_time_label = self.current_time_label.clone();
+let duration_label = self.duration_label.clone();
+let playlist = self.playlist.clone();
+let play_image = self.toolbar.play_image.clone();
+let cover = self.cover.clone();
+self.toolbar.stop_button.connect_clicked(move |_| {
+    current_time_label.set_text("");
+    duration_label.set_text("");
+    playlist.stop();
+    cover.hide();
+    set_image_icon(&amp;play_image, PLAY_ICON);
+});</pre>
+<p class="calibre3">We clone the widgets to move them into the closure and set the text of the <kbd class="calibre14">label</kbd>'s to the empty string.</p>
+<p class="calibre3">Here's the result you should see when running the application:</p>
+<div class="mce-root1"><img src="../images/00039.jpeg" class="calibre68"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 6.2</em></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Loading and saving the playlist</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We have the ability to create a playlist in our music player, but we cannot save a playlist to a file in order to be able to load one later. Let's add this feature to our project.</p>
+<p class="calibre3">We'll save the playlist in the <span><kbd class="calibre14">m3u</kbd></span> file format and to handle this format, we'll use the <span><kbd class="calibre14">m3u</kbd></span> crate. So let's add it to our <span><kbd class="calibre14">Cargo.toml</kbd></span> file:</p>
+<pre class="calibre22">m3u = "^1.0.0"</pre>
+<p class="calibre3">Add this line to the <kbd class="calibre14">main</kbd> module:</p>
+<pre class="calibre22"><span>extern</span> <span>crate</span> m3u;</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Saving a playlist</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We'll start by adding a button to save the playlist. First, we add a field in the <span><kbd class="calibre14">MusicToolbar</kbd></span> structure for the button:</p>
+<pre class="calibre22"><span>pub</span> <span>struct</span> MusicToolbar <span>{</span>
+    open_button: ToolButton,
+    next_button: ToolButton,
+    play_button: ToolButton,
+    <span>pub</span> play_image: Image,
+    previous_button: ToolButton,
+    quit_button: ToolButton,
+    remove_button: ToolButton,
+    save_button: ToolButton,
+    stop_button: ToolButton,
+    toolbar: Toolbar,
+<span>}</span></pre>
+<p class="calibre3">And in the constructor, we'll create this button:</p>
+<pre class="calibre22"><span>impl</span> MusicToolbar <span>{</span>
+    <span>pub</span> <span>fn</span> new() -&gt; <span>Self</span> <span>{</span>
+        <span>let</span> toolbar = Toolbar::new();
+
+        <span>let</span> (open_button, _) = new_tool_button(<span>"document-open"</span>);
+        toolbar.add(&amp;open_button);
+
+        <span>let</span> (save_button, _) = new_tool_button(<span>"document-save"</span>);
+        toolbar.add(&amp;save_button);
+
+        toolbar.add(&amp;SeparatorToolItem::new());
+
+        <span>// …</span>
+
+        <span>let</span> toolbar = MusicToolbar <span>{</span>
+            open_button,
+            next_button,
+            play_button,
+            play_image,
+            previous_button,
+            quit_button,
+            remove_button,
+            save_button,
+            stop_button,
+            toolbar
+        <span>}</span>;
+
+        toolbar
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">Next, we'll add a <span><kbd class="calibre14">save</kbd></span> method in the <span><kbd class="calibre14">Playlist</kbd></span> structure:</p>
+<pre class="calibre22"><span>use</span> std::fs::File;
+
+<span>use</span> m3u;
+
+    <span>pub</span> <span>fn</span> save(&amp;<span>self</span>, path: &amp;Path) <span>{</span>
+        <span>let</span> <span>mut</span> file = File::create(path).unwrap();
+        <span>let</span> <span>mut</span> writer = m3u::Writer::new(&amp;<span>mut</span> file);
+
+        <span>let</span> <span>mut</span> write_iter = |iter: &amp;TreeIter| <span>{</span>
+            <span>let</span> value = <span>self</span>.model.get_value(&amp;iter, PATH_COLUMN <span>as<br class="calibre6"/></span>              <span>i32</span>);
+            <span>let</span> path = value.get::&lt;<span>String</span>&gt;().unwrap();
+            writer.write_entry(&amp;m3u::path_entry(path)).unwrap();
+        <span>}</span>;
+
+        <span>if</span> <span>let</span> <span>Some</span>(iter) = <span>self</span>.model.get_iter_first() <span>{</span>
+            write_iter(&amp;iter);
+            <span>while</span> <span>self</span>.model.iter_next(&amp;iter) <span>{</span>
+                write_iter(&amp;iter);
+            <span>}</span>
+        <span>}</span>
+    <span>}</span></pre>
+<p class="calibre3">Here, we first create a <span><kbd class="calibre14">m3u::Writer</kbd></span> with a <span><kbd class="calibre14">File</kbd></span> that we've created. This writer will be used to write the entry to the file. We create a closure that gets the path from an iterator of our <span><kbd class="calibre14">TreeView</kbd></span> and writes this path to the file. We chose to create a closure to avoid repeating the code, as we'll need this code twice. After that, we get the first iterator and write its contents before looping until there's no more row in the view.</p>
+<p class="calibre3">We're now ready to call this code. First, we'll create a function in the module toolbar to show a save file dialog. It is similar to the <span><kbd class="calibre14">show_open_dialog()</kbd></span> function we wrote in the previous chapter:</p>
+<pre class="calibre22"><span>fn</span> show_save_dialog(parent: &amp;ApplicationWindow) -&gt; <span>Option</span>&lt;PathBuf&gt; <span>{</span>
+    <span>let</span> <span>mut</span> file = <span>None</span>;
+    <span>let</span> dialog = FileChooserDialog::new(<span>Some</span>(<span>"Choose a destination <br class="calibre6"/>     M3U playlist  <br class="calibre6"/>    file"</span>), <span>Some</span>(parent), FileChooserAct    ion::Save);
+    <span>let</span> filter = FileFilter::new();
+    filter.add_mime_type(<span>"audio/x-mpegurl"</span>);
+    filter.set_name(<span>"M3U playlist file"</span>);
+    dialog.set_do_overwrite_confirmation(<span>true</span>);
+    dialog.add_filter(&amp;filter);
+    dialog.add_button(<span>"Cancel"</span>, RESPONSE_CANCEL);
+    dialog.add_button(<span>"Save"</span>, RESPONSE_ACCEPT);
+    <span>let</span> result = dialog.run();
+    <span>if</span> result == RESPONSE_ACCEPT <span>{</span>
+        file = dialog.get_filename();
+    <span>}</span>
+    dialog.destroy();
+    file
+<span>}</span></pre>
+<p class="calibre3">Here, we use the <span><kbd class="calibre14">FileChooserAction::Save</kbd></span> type instead of <span><kbd class="calibre14">FileChooserAction::Open</kbd></span>. We use a different filter and mime type. We also call <span><kbd class="calibre14">set_do_overwrite_confirmation()</kbd></span> which is very important. It will ask for a confirmation if the user asks to overwrite a file. The rest of the function is exactly the same as the one to open a file, except that the <kbd class="calibre14">label</kbd> of the button is now <span><kbd class="calibre14">Save</kbd></span>.</p>
+<p class="calibre3">We can now use this function in the event handler of the save button:</p>
+<pre class="calibre22"><span>let</span> parent = <span>self</span>.window.clone();
+<span>let</span> playlist = <span>self</span>.playlist.clone();
+<span>self</span>.toolbar.save_button.connect_clicked(<span>move</span> |_| <span>{</span>
+    <span>let</span> file = show_save_dialog(&amp;parent);
+    <span>if</span> <span>let</span> <span>Some</span>(file) = file <span>{</span>
+        playlist.save(&amp;file);
+    <span>}</span>
+<span>}</span>);</pre>
+<p class="calibre3">We simply call the function <span><kbd class="calibre14">show_save_dialog()</kbd></span> and give the resulting file to the <span><kbd class="calibre14">Playlist::save()</kbd></span> method. You can now try to save a playlist in the application:</p>
+<div class="mce-root1"><img src="../images/00040.jpeg" class="calibre36"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 6.3</em></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Loading a playlist</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">We can save playlists, but still cannot load them. Let's start by adding a <span><kbd class="calibre14">load()</kbd></span> method to <span><kbd class="calibre14">Playlist</kbd></span>:</p>
+<pre class="calibre23">    <span>pub</span> <span>fn</span> load(&amp;<span>self</span>, path: &amp;Path) <span>{</span>
+        <span>let</span> <span>mut</span> reader = m3u::Reader::open(path).unwrap();
+        <span>for</span> entry <span>in</span> reader.entries() <span>{</span>
+            <span>if</span> <span>let</span> <span>Ok</span>(m3u::Entry::Path(path)) = entry <span>{</span>
+                <span>self</span>.add(&amp;path);
+            <span>}</span>
+        <span>}</span>
+    <span>}</span></pre>
+<p class="calibre3">Here, we create a <span><kbd class="calibre14">m3u::Reader</kbd></span> with the specified path. We loop over the entry and if we were able to retrieve a <span><kbd class="calibre14">m3u::Entry::Path</kbd></span>, we add it to the playlist widget.</p>
+<p class="calibre3">We'll now modify the open dialog to allow selecting <kbd class="calibre14">M3U</kbd> files:</p>
+<pre class="calibre22"><span>fn</span> show_open_dialog(parent: &amp;ApplicationWindow) -&gt; <span>Option</span>&lt;PathBuf&gt; <span>{</span>
+    <span>let</span> <span>mut</span> file = <span>None</span>;
+    <span>let</span> dialog = FileChooserDialog::new(<span>Some</span>(<span>"Select an MP3 audio file"</span>), <br class="calibre6"/><span>    Some</span>(parent), FileChooserAction::Open);
+
+    <span>let</span> mp3_filter = FileFilter::new();
+    mp3_filter.add_mime_type(<span>"audio/mp3"</span>);
+    mp3_filter.set_name(<span>"MP3 audio file"</span>);
+    dialog.add_filter(&amp;mp3_filter);
+
+    <span>let</span> m3u_filter = FileFilter::new();
+    m3u_filter.add_mime_type(<span>"audio/x-mpegurl"</span>);
+    m3u_filter.set_name(<span>"M3U playlist file"</span>);
+    dialog.add_filter(&amp;m3u_filter);
+
+    dialog.add_button(<span>"Cancel"</span>, RESPONSE_CANCEL);
+    dialog.add_button(<span>"Accept"</span>, RESPONSE_ACCEPT);
+    <span>let</span> result = dialog.run();
+    <span>if</span> result == RESPONSE_ACCEPT <span>{</span>
+        file = dialog.get_filename();
+    <span>}</span>
+    dialog.destroy();
+    file
+<span>}</span></pre>
+<p class="calibre3">We'll now change the open button event handler to select which action to do depending on the file type:</p>
+<pre class="sourcecode"><span>impl</span> App <span>{</span>
+    <span>pub</span> <span>fn</span> connect_toolbar_events(&amp;<span>self</span>) <span>{</span>
+        <span>let</span> parent = <span>self</span>.window.clone();
+        <span>let</span> playlist = <span>self</span>.playlist.clone();
+        <span>self</span>.toolbar.open_button.connect_clicked(<span>move</span> |_| <span>{</span>
+            <span>let</span> file = show_open_dialog(&amp;parent);
+            <span>if</span> <span>let</span> <span>Some</span>(file) = file <span>{</span>
+                <span>if</span> <span>let</span> <span>Some</span>(ext) = file.extension() <span>{</span>
+                    <span>match</span> ext.to_str().unwrap() <span>{</span>
+                        <span>"mp3"</span> =&gt; playlist.add(&amp;file),
+                        <span>"m3u"</span> =&gt; playlist.load(&amp;file),
+                        extension =&gt; <span>{</span>
+                            <span>let</span> dialog = <br class="calibre6"/>                             MessageDialog::new(<span>Some</span>(&amp;parent),  <br class="calibre6"/>                             DialogFlags::empty(), MessageType::Error,
+                                ButtonsType::<span>Ok</span>, &amp;<span>format!</span>(<span>"Cannot open <br class="calibre6"/>                                 file with <br class="calibre6"/>                                 extension .{}"</span>, extension));
+                            dialog.run();
+                            dialog.destroy();
+                        <span>}</span>,
+                    <span>}</span>
+                <span>}</span>
+            <span>}</span>
+        <span>}</span>);
+
+        <span>// …</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">This requires a couple of new import statements:</p>
+<pre class="calibre22"><span>use</span> gtk::<span>{</span>
+    ButtonsType,
+    DialogFlags,
+    MessageDialog,
+    MessageType,
+<span>}</span>;</pre>
+<p class="calibre3">This new event handler now checks the file extension, if it is <span><kbd class="calibre14">mp3</kbd></span>, it will call the <span><kbd class="calibre14">Playlist::add()</kbd></span> method as we were doing earlier. If it is <span><kbd class="calibre14">m3u</kbd></span>, we call our new <span><kbd class="calibre14">Playlist::load()</kbd></span> method. Otherwise, we show an error message to the user:</p>
+<div class="mce-root1"><img src="../images/00041.jpeg" class="calibre69"/></div>
+<div class="mce-root1"><em class="calibre21">Figure 6.4</em></div>
+<p class="calibre3">You can now try to load a playlist in our music player, don't forget to change the filter in order to see M3U files in the dialog.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Using gstreamer for playback</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">Implementing an engine to play music was a good exercise to learn about threading. However, for a real program, you could simply use <kbd class="calibre14">gstreamer</kbd> for the music playback. So, let's see how to use this library in our music player.</p>
+<p class="calibre3">Remove the following dependencies in your <span><kbd class="calibre14">Cargo.toml</kbd></span>:</p>
+<pre class="calibre22">crossbeam = "^0.3.0"
+pulse-simple = "^1.0.0"
+simplemad = "^0.8.1"</pre>
+<p class="calibre3">And remove their corresponding <span><kbd class="calibre14">extern crate</kbd></span> statements. We can also remove the <span><kbd class="calibre14">mp3</kbd></span> and <span><kbd class="calibre14">player</kbd></span> modules as we'll use <span><kbd class="calibre14">gstreamer</kbd></span> instead. Now, we can add our dependencies for <span><kbd class="calibre14">gstreamer</kbd></span>:</p>
+<pre class="calibre22">gstreamer = "^0.9.1"
+gstreamer-player = "^0.9.0"</pre>
+<p class="calibre3">And add their corresponding <span><kbd class="calibre14">extern crate</kbd></span> statements:</p>
+<pre class="calibre22"><span>extern</span> <span>crate</span> gstreamer <span>as</span> gst;
+<span>extern</span> <span>crate</span> gstreamer_player <span>as</span> gst_player;</pre>
+<p class="calibre3">At the beginning of the <span><kbd class="calibre14">main</kbd></span> function, we need to initialize <span><kbd class="calibre14">gstreamer</kbd></span>:</p>
+<pre class="calibre22">gst::init().expect(<span>"gstreamer initialization failed"</span>);</pre>
+<p class="calibre3">We no longer need our <span><kbd class="calibre14">State</kbd></span> structure, so we remove it and the <span><kbd class="calibre14">state</kbd></span> field in the <span><kbd class="calibre14">App</kbd></span> structure. And now, we can update our <span><kbd class="calibre14">playlist</kbd></span> module. First, let's add a few <span><kbd class="calibre14">use</kbd></span> statements:</p>
+<pre class="calibre22"><span>use</span> gst::<span>{</span>ClockTime, ElementExt<span>}</span>;
+<span>use</span> gst_player;
+<span>use</span> gtk::Cast;</pre>
+<p class="calibre3">We remove the <span><kbd class="calibre14">state</kbd></span> field and update the <span><kbd class="calibre14">player</kbd></span> one in the <span><kbd class="calibre14">Playlist</kbd></span> structure:</p>
+<pre class="calibre22"><span>pub</span> <span>struct</span> Playlist <span>{</span>
+    current_song: RefCell&lt;<span>Option</span>&lt;<span>String</span>&gt;&gt;,
+    model: ListStore,
+    player: gst_player::Player,
+    treeview: TreeView,
+<span>}</span></pre>
+<p class="calibre3">The <span><kbd class="calibre14">Playlist</kbd></span> constructor does not need the <span><kbd class="calibre14">state</kbd></span> anymore:</p>
+<pre class="calibre22"><span>impl</span> Playlist <span>{</span>
+    <span>pub</span>(<span>crate</span>) <span>fn</span> new() -&gt; <span>Self</span> <span>{</span>
+        <span>let</span> model = ListStore::new(&amp;<span>[</span>
+            Pixbuf::static_type(),
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Type::<span>String</span>,
+            Pixbuf::static_type(),
+        <span>]</span>);
+        <span>let</span> treeview = TreeView::new_with_model(&amp;model);
+        treeview.set_hexpand(<span>true</span>);
+        treeview.set_vexpand(<span>true</span>);
+
+        <span>Self</span>::create_columns(&amp;treeview);
+
+        <span>let</span> dispatcher = gst_player::PlayerGMainContextSignalDispatcher::new(<span>None</span>);
+        <span>let</span> player = gst_player::Player::new(<span>None</span>,<br class="calibre6"/>        <span>Some</span>(&amp;dispatcher.upcast:: <br class="calibre6"/>        &lt;gst_player::PlayerSignalDispatcher&gt;<br class="calibre6"/>        ()));
+
+        Playlist <span>{</span>
+            current_song: RefCell::new(<span>None</span>),
+            model,
+            player,
+            treeview,
+        <span>}</span>
+    <span>}</span>
+<span>}</span></pre>
+<p class="calibre3">Here, we create the <span><kbd class="calibre14">Player</kbd></span> from the <span><kbd class="calibre14">gstreamer</kbd></span> crate. We need to remove the <span><kbd class="calibre14">compute_duration()</kbd></span> method and all its uses because we'll use <span><kbd class="calibre14">gstreamer</kbd></span> to get the song's duration:</p>
+<pre class="sourcecode">    <span>pub</span> <span>fn</span> get_duration(&amp;<span>self</span>) -&gt; ClockTime <span>{</span>
+        <span>self</span>.player.get_duration()
+    <span>}</span>
+
+    <span>pub</span> <span>fn</span> get_current_time(&amp;<span>self</span>) -&gt; ClockTime <span>{</span>
+        <span>self</span>.player.get_position()
+    <span>}</span>
+
+    <span>pub</span> <span>fn</span> is_playing(&amp;<span>self</span>) -&gt; <span>bool</span> <span>{</span>
+        <span>self</span>.player.get_pipeline()
+            .map(|element| element.get_state(gst::CLOCK_TIME_NONE).<span>1</span> == <br class="calibre6"/>             gst::State::Playing)
+            .unwrap_or(<span>false</span>)
+    <span>}</span></pre>
+<p class="calibre3">Here, we create a few methods that will be useful to show the time and when the song is playing. Finally, we can update the <span><kbd class="calibre14">play()</kbd></span> method to use <span><kbd class="calibre14">gstreamer</kbd></span> instead:</p>
+<pre class="sourcecode">    <span>pub</span> <span>fn</span> play(&amp;<span>self</span>) -&gt; <span>bool</span> <span>{</span>
+        <span>if</span> <span>self</span>.selected_path() == <span>self</span>.player.get_uri() <span>{</span>
+            <span>self</span>.player.play();
+            <span>return</span> <span>false</span>;
+        <span>}</span>
+        <span>if</span> <span>let</span> <span>Some</span>(path) = <span>self</span>.selected_path() <span>{</span>
+            <span>let</span> uri = <span>format!</span>(<span>"file://{}"</span>, path);
+            <span>self</span>.player.set_uri(&amp;uri);
+            <span>self</span>.player.play();
+            <span>true</span>
+        <span>}</span> <span>else</span> <span>{</span>
+            <span>false</span>
+        <span>}</span>
+    <span>}</span></pre>
+<p class="calibre3">Let's go back to the <span><kbd class="calibre14">main</kbd></span> module to update the creation of the playlist:</p>
+<pre class="calibre22"><span>let</span> playlist = Rc::new(Playlist::new());</pre>
+<p class="calibre3">One more thing to update is the code to show the current time:</p>
+<pre class="calibre22">gtk::timeout_add(<span>100</span>, <span>move</span> || <span>{</span>
+    <span>let</span> duration = playlist.get_duration();
+    adjustment.set_upper(duration.nanoseconds().unwrap_or(<span>0</span>) <span>as<br class="calibre6"/></span>    <span>f64</span>);
+    duration_label.set_text(&amp;<span>format!</span>(<span>"{:.0}"</span>, duration));
+
+    <span>let</span> current_time = playlist.get_current_time();
+    <span>if</span> !playlist.is_playing() <span>{</span>
+        set_image_icon(&amp;play_image, PLAY_ICON);
+    <span>}</span> <span>else</span> <span>{</span>
+        set_image_icon(&amp;play_image, PAUSE_ICON);
+        current_time_label.set_text(&amp;<span>format!</span>(<span>"{:.0}"</span>, <br class="calibre6"/>         current_time));
+    <span>}</span>
+    adjustment.set_value(current_time.nanoseconds().unwrap_or(<span>0</span>) <span>as</span> <span>f64</span>);
+    Continue(<span>true</span>)
+<span>}</span>);</pre>
+<p class="calibre3">We now use the methods we created a bit earlier and some from <span><kbd class="calibre14">gstreamer</kbd></span>.</p>
+<p class="calibre3">Finally, we update the <span><kbd class="calibre14">toolbar</kbd></span> module. First, the <span><kbd class="calibre14">play_button</kbd></span> event handler:</p>
+<pre class="calibre22"><span>self</span>.toolbar.play_button.connect_clicked(<span>move</span> |_| <span>{</span>
+    <span>if</span> !playlist.is_playing() <span>{</span>
+        <span>if</span> playlist.play() <span>{</span>
+            set_image_icon(&amp;play_image, PAUSE_ICON);
+            set_cover(&amp;cover, &amp;playlist);
+        <span>}</span>
+    <span>}</span> <span>else</span> <span>{</span>
+        playlist.pause();
+        set_image_icon(&amp;play_image, PLAY_ICON);
+    <span>}</span>
+<span>}</span>);</pre>
+<p class="calibre3">We now use the <span><kbd class="calibre14">is_playing()</kbd></span> method instead of the <span><kbd class="calibre14">state</kbd></span>. Let's also remove the <span><kbd class="calibre14">FileFilter</kbd></span> from the <span><kbd class="calibre14">show_open_dialog()</kbd></span> function because <span><kbd class="calibre14">gstreamer</kbd></span> supports more formats than just <span><kbd class="calibre14">MP3</kbd></span>. And to be able to open them, we need to update the <span><kbd class="calibre14">open_button</kbd></span> event handler:</p>
+<pre class="calibre22"><span>self</span>.toolbar.open_button.connect_clicked(<span>move</span> |_| <span>{</span>
+    <span>let</span> file = show_open_dialog(&amp;parent);
+    <span>if</span> <span>let</span> <span>Some</span>(file) = file <span>{</span>
+        <span>if</span> <span>let</span> <span>Some</span>(ext) = file.extension() <span>{</span>
+            <span>match</span> ext.to_str().unwrap() <span>{</span>
+                <span>"mp3"</span> | <span>"ogg"</span> =&gt; playlist.add(&amp;file),
+                <span>"m3u"</span> =&gt; playlist.load(&amp;file),
+                extension =&gt; <span>{</span>
+                    <span>let</span> dialog = MessageDialog::new(<span>Some</span>(&amp;parent), <br class="calibre6"/>                     DialogFlags::empty(), MessageType::Error,
+                      ButtonsType::<span>Ok</span>, &amp;<span>format!</span>(<span>"Cannot open file <br class="calibre6"/>                       with extension . {}"</span>, extension));
+                    dialog.run();
+                    dialog.destroy();
+                <span>}</span>,
+            <span>}</span>
+        <span>}</span>
+    <span>}</span>
+<span>}</span>);</pre>
+<p class="calibre3">Here, we only added the <span><kbd class="calibre14">ogg</kbd></span> format, but you can also add other formats.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section class="calibre1">
+
+                            <header class="calibre1">
+                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                
+            
+            <article class="calibre1">
+                
+<p class="calibre3">This chapter started by showing you how to decode MP3 data with the <span><kbd class="calibre14">simplemad</kbd></span> crate. You then learned how to write a music engine, this showed you how to use threads and different threading objects such as <span><kbd class="calibre14">Mutex</kbd></span>, lock-free data structures, and condition variables. You also learned how Rust can ensure thread safety. You also saw how to mutable the fields of a value when you have an immutable reference with interior mutability. During the whole chapter, we added the missing features to the music player such as play, pause, previous, and next song.</p>
+<p class="calibre3">In the next chapter, we'll improve the modularity of the music player by rewriting it with the <span><kbd class="calibre14">relm</kbd></span> crate.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

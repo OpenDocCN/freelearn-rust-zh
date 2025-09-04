@@ -1,0 +1,221 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Benchmarking</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">We have learned how to profile our application and how to find and fix the main bottlenecks, but there is another step in this process: checking whether our changes have improved the performance.</p>
+<p>In this chapter, you will learn how to benchmark your application so that you can measure your improvements. This can meet two objectives: firstly, to check whether a new version of your application runs faster than an older version, and secondly, if you are creating a new application to solve a problem an existing application already solves, to compare the efficiency of your creation to the existing application.</p>
+<p>In this context, you will learn about the following topics in this chapter:</p>
+<ul>
+<li>Selecting what to benchmark</li>
+<li>Benchmarking in nightly Rust</li>
+<li>Benchmarking in stable Rust</li>
+<li>Continuous integration for benchmarks</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Selecting what to benchmark</h1>
+                </header>
+            
+            <article>
+                
+<p>Knowing whether your program improves efficiency for each change is a great idea, but you might be wondering how to measure that improvement or regression properly. This is actually one of the bigger deals of benchmarking since, if done properly, it will clearly show your improvements or regressions but, if done poorly, you might think your code is improving while it's even regressing.</p>
+<p>Depending on the program you want to benchmark, there are different parts of its execution you should be interested in benchmarking. For example, a program that processes some information and then ends (an analyzer, a CSV converter, a configuration parser...), would benefit from a whole-program benchmark. This means it might be interesting to have some test input data and see how much time it takes to process it. It should be more than one set, so that you can see how the performance changes with the input data.</p>
+<p>A program that has an interface and requires some user interaction, though, is difficult to benchmark this way. The best thing is to take the most relevant pieces of code and benchmark them. In the previous chapter, we learned how to find the most relevant pieces of code in our software. With profiling techniques, we can understand which functions and code pieces impact the execution of our application the most, so we can decide to benchmark those.</p>
+<p>Usually, you will want to mostly have fine-grained benchmarks. This way, you will be able to detect a change in one of the small pieces of code that affect the overall performance of the application. If you have broader benchmarks, you might know that the overall performance of one part of the application has regressed, but it will be difficult to tell what in the code has made that happen.</p>
+<p>In any case, as we will see later, having continuous integration for benchmarks is a good idea, creating alerts if a particular commit regresses the performance. It's also important for all benchmarks to run in as similar as possible environments. This means that the computer they are running on should not change from one run to the next, and it should be running only the benchmarks, so that the results are as real as possible.</p>
+<p>Another issue is that, as we saw in the previous chapter, the first time we run something in a computer, things go slower. Caches have to be populated, branch prediction needs to be activated, and so on. This is why you should run benchmarks multiple times, and we will see how Rust will do this for us. There is also the option to warm caches up for some seconds and then start benchmarking, and there are libraries that do this for us.</p>
+<p>So, for the rest of the chapter, you should take all this into account. Create small micro-benchmarks, select the most relevant sections of your code to benchmark, and run them in a known non-changing environment.</p>
+<p>Also, note that creating benchmarks does not mean that you should not write unit tests, as I have seen more than once. Benchmarks will only tell you how fast your code runs, but you will not know whether it does it properly. Unit testing is out of the scope of this book, but you should test your software thoroughly before even thinking about benchmarking it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Benchmarking in nightly Rust</h1>
+                </header>
+            
+            <article>
+                
+<p>If you search online for information on how to benchmark in Rust, you will probably see a bunch of guides on how to do it in nightly Rust, but not many on how to do it in stable Rust. This is because the built-in Rust benchmarks are only available on the nightly channel. Let's start by explaining how the built-in benchmarks work, so that we can then find out how to do it in stable Rust.</p>
+<p>First of all, let's see how to create benchmarks for a library. Imagine the following small library (code in <kbd>lib.rs</kbd>):</p>
+<pre style="padding-left: 60px">//! This library gives a function to calculate Fibonacci numbers.<br/><br/>/// Gives the Fibonacci sequence number for the given index.<br/>pub fn fibonacci(n: u32) -&gt; u32 {<br/>    if n == 0 || n == 1 {<br/>        n<br/>    } else {<br/>        fibonacci(n - 1) + fibonacci(n - 2)<br/>    }<br/>}<br/><br/>/// Tests module.<br/>#[cfg(test)]<br/>mod tests {<br/>    use super::*;<br/><br/>    /// Tests that the code gives the correct results.<br/>    #[test]<br/>    fn it_fibonacci() {<br/>        assert_eq!(fibonacci(0), 0);<br/>        assert_eq!(fibonacci(1), 1);<br/>        assert_eq!(fibonacci(2), 1);<br/>        assert_eq!(fibonacci(10), 55);<br/>        assert_eq!(fibonacci(20), 6_765);<br/>    }<br/>}</pre>
+<p>As you can see, I added some unit tests so that we can be sure that any modifications we make to the code will still be tested, and checked that the results were correct. That way, if our benchmarks find out that something improves the code, the resulting code will be (more or less) guaranteed to work.</p>
+<p>The <kbd>fibonacci()</kbd> function that I created is the simplest recursive function. It is really easy to read and to understand what is going on. The Fibonacci sequence, as you can see in the code, is a sequence that starts with <kbd>0</kbd> and <kbd>1</kbd>, and then each number is the sum of the previous two.</p>
+<p>As we will see later, recursive functions are easier to develop, but their performance is worse than iterative functions. In this case, for each calculation, it will need to calculate the two previous numbers, and for them, the two before, and so on. It will not store any intermediate state. This means that, from one calculation to the next, the last numbers are lost.</p>
+<p>Also, this will push the stack to the limits. For each computation, two functions have to be executed and their stack filled, and, in each of them, they have to recursively create new stacks when they call themselves again, so the stack usage grows exponentially. Furthermore, this computation could be done in parallel since, as we discard previous calculations, we do not need to do them sequentially.</p>
+<p>In any case, let's check how this performs. For this, we'll add the following code to the <kbd>lib.rs</kbd> file:</p>
+<pre style="padding-left: 60px">/// Benchmarks module<br/>#[cfg(test)]<br/>mod benches {<br/>    extern crate test;<br/>    use super::*;<br/>    use self::test::Bencher;<br/><br/>    /// Benchmark the 0th sequence number.<br/>    #[bench]<br/>    fn bench_fibonacci_0(b: &amp;mut Bencher) {<br/>        b.iter(|| (0..1).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>    }<br/><br/>    /// Benchmark the 1st sequence number.<br/>    #[bench]<br/>    fn bench_fibonacci_1(b: &amp;mut Bencher) {<br/>        b.iter(|| (0..2).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>    }<br/><br/>    /// Benchmark the 2nd sequence number.<br/>    #[bench]<br/>    fn bench_fibonacci_2(b: &amp;mut Bencher) {<br/>        b.iter(|| (0..3).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>    }<br/><br/>    /// Benchmark the 10th sequence number.<br/>    #[bench]<br/>    fn bench_fibonacci_10(b: &amp;mut Bencher) {<br/>        b.iter(|| (0..11).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>    }<br/><br/>    /// Benchmark the 20th sequence number.<br/>    #[bench]<br/>    fn bench_fibonacci_20(b: &amp;mut Bencher) {<br/>        b.iter(|| (0..21).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>    }<br/>}</pre>
+<p>You will need to add <kbd>#![feature(test)]</kbd> to the top of the <kbd>lib.rs</kbd> file (after the first comment).</p>
+<p>Let's first understand why we created these benchmarks. We are testing how long it takes for the program to generate the numbers with index <kbd>0</kbd>, <kbd>1</kbd>, <kbd>2</kbd>, <kbd>10</kbd>, and <kbd>20</kbd> of the Fibonacci sequence. But, the issue is that if we directly provide those numbers to the function, the compiler will actually run the recursive function itself, and directly only compile the resulting number (yes, <strong>Low Level Virtual Machine</strong> (<strong>LLVM</strong>) does this). So, all benchmarks will tell us that it took 0 nanoseconds to calculate, which is not particularly great.</p>
+<p>So, for each number we add an iterator that will yield all numbers from <kbd>0</kbd> to the given number (remember that ranges are non-inclusive from the right), calculate all results, and generate a vector with them. This will make LLVM unable to precalculate all the results.</p>
+<p>Then, as we discussed earlier, each benchmark should run multiple times so that we can calculate a median value. Rust makes this easy by giving us the <kbd>test</kbd> crate and the <kbd>Bencher</kbd> type. The <kbd>Bencher</kbd> is an iterator that will run the closure we pass to it <span>multiple times</span>.</p>
+<p>As you can see, the map function receives a pointer to the <kbd>fibonacci()</kbd> function that will transform the given <kbd>u32</kbd> to its Fibonacci sequence number. To run this, it's as simple as running <kbd>cargo bench</kbd>. And, the result is:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/e3c13942-6d78-4be7-8d9b-c34bab3d54ea.png" style="width:38.00em;height:9.33em;"/></div>
+<p>So, this is interesting. I selected those numbers (<kbd>0</kbd>, <kbd>1</kbd>, <kbd>2</kbd>, <kbd>10</kbd> and <kbd>20</kbd>) to show something. For the <kbd>0</kbd> and the <kbd>1</kbd> numbers the result is straightforward, it will just return the given number. From the second number onward, it needs to perform some calculations. For example, for the number <kbd>2</kbd>, it's just adding the previous two, so there is almost no overhead. For the number <kbd>10</kbd> though, it has to add the ninth and the eighth, and for each of them, the <span>eighth </span>and the seventh, and the <span>seventh</span><span> </span>and the sixth respectively. You can see how this soon <span>gets </span>out of hand. Also, remember that we discard the previous results for each call.</p>
+<p>So, as you can see in the results, it gets really exponential for each new number. Take into account that these results are on my laptop computer, and yours will certainly be different, but the proportions between one another should stay similar. Can we do better? Of course we can. This is usually one of the best learning experiences to see the differences between recursive and iterative approaches.</p>
+<p>So, let's develop an iterative <kbd>fibonacci()</kbd> function:</p>
+<pre style="padding-left: 60px">pub fn fibonacci(n: u32) -&gt; u32 {<br/>    if n == 0 || n == 1 {<br/>        n<br/>    } else {<br/>        let mut previous = 1;<br/>        let mut current = 1;<br/>        for _ in 2..n {<br/>            let new_current = previous + current;<br/>            previous = current;<br/>            current = new_current;<br/>        }<br/>        current<br/>    }<br/>}</pre>
+<p>In this code, for the first two numbers, we simply return the proper one, as before. For the rest, we start with the sequence status for the number 2 (0, 1, 1), and then iterate up to number <kbd>n</kbd> (remember that the range is not inclusive on the right). This means that for the number <kbd>2</kbd>, we already have the result, and for the rest, it will simply add the two numbers again and again until it gets the result.</p>
+<p>In this algorithm, we always remember the previous two numbers, so we do not lose information from one call to the next. We also do not use too much stack (we only need three variables for the number 2 onward and we do not call any function). So it will require less allocation (if any), and it should be much faster.</p>
+<p>Also, if we give it a much bigger number, it should scale linearly, since it will calculate each previous number only once, instead of many times. So, how much faster is it?</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/ac3ca992-b4a6-406d-8db7-2fee4df1b72a.png" style="width:38.42em;height:9.92em;"/></div>
+<p>Wow! The results have really changed! We now see that, at least until the 10th number, the processing time is constant and, after that, it will only go up a little bit (it will multiply by less than 10 for calculating 10 more numbers). If you run <kbd>cargo test</kbd>, you will still see that the test passes successfully. Also, note that the results are much more predictable, and the deviation from test to test is much lower.</p>
+<p>But, there is something odd in this case. As before, 0 and 1 run without doing any calculation, and that's why it takes so much less time. We could maybe understand that for the number 2, it will not do any calculations either (even though it will need to compare it to see if it has to run the loop). But, what happens with number 10?</p>
+<p>In this case, it should have run the iteration seven times to calculate the final value, so it should definitely <span>take</span><span> </span><span>more time than not running the iteration even once. Well, an interesting thing about the LLVM compiler (the compiler Rust uses behind the scenes) is that it is pretty good at optimizing iterative loops. This means that, even if it could not do the precalculation for the recursive loop, it can do it for the iterative loop. At least seven times.</span></p>
+<p>How many iterations can LLVM calculate at compile time? Well, it depends on the loop, but I've seen it do more than 10. And, sometimes, it will unroll those loops so that if it knows it will be called 10 times, it will write the same code 10 times, one after the other, so that the compiler does not need to branch.</p>
+<p>Does this defeat the purpose of the benchmark? Well, partly, since we no longer know how much difference it makes for the number 10, but for that, we have the number 20. Nevertheless, it tells us a great story: if you can create an iterative loop to avoid a recursive function, do it. You will not only create a faster algorithm, but the compiler will even know how to optimize it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Benchmarking in stable Rust</h1>
+                </header>
+            
+            <article>
+                
+<p>Until now, we have seen how to benchmark our code using the nightly release channel. This is because Rust requires the <kbd>test</kbd> nightly feature for benchmarks to run. It's where the <kbd>test</kbd> crate and the <kbd>Bencher</kbd> types can be found. If you still want to be able to use the stable compiler for everything except benchmarks, you can put all your benchmarks in the <kbd>benches</kbd> directory. The stable compiler will ignore them for normal builds, but the nightly compiler will be able to run them.</p>
+<p>But, if you really want to use the stable compiler to run benchmarks, you can use the <kbd>bencher</kbd> crate. You can find it in <kbd>crates.io</kbd>, and using it is really similar to using the built-in nightly benchmarks, since this crate is just a stable port of the benchmarking library.</p>
+<p>To use it, you will need to first change the <kbd>Cargo.toml</kbd> file to make sure it looks like the following after the package metadata and dependencies:</p>
+<pre style="padding-left: 60px">[lib]<br/>name = "test_bench"<br/>path = "src/lib.rs"<br/>bench = false<br/><br/>[[bench]]<br/>name = "example"<br/>harness = false<br/><br/>[dev-dependencies]<br/>bencher = "0.1.4"</pre>
+<p>Here, we create a benchmark with an example name, and specify not to create a harness around it. Then, create the <kbd>benches/example.rs</kbd> file with the following content:</p>
+<pre style="padding-left: 60px">//! Benchmarks<br/><br/>#[macro_use]<br/>extern crate bencher;<br/>extern crate test_bench;<br/>use test_bench::*;<br/>use self::bencher::Bencher;<br/><br/>/// Benchmark the 0th sequence number.<br/>fn bench_fibonacci_0(b: &amp;mut Bencher) {<br/>    b.iter(|| (0..1).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>}<br/><br/>/// Benchmark the 1st sequence number.<br/>fn bench_fibonacci_1(b: &amp;mut Bencher) {<br/>    b.iter(|| (0..2).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>}<br/><br/>/// Benchmark the 2nd sequence number.<br/>fn bench_fibonacci_2(b: &amp;mut Bencher) {<br/>    b.iter(|| (0..3).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>}<br/><br/>/// Benchmark the 10th sequence number.<br/>fn bench_fibonacci_10(b: &amp;mut Bencher) {<br/>    b.iter(|| (0..11).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>}<br/><br/>/// Benchmark the 20th sequence number.<br/>fn bench_fibonacci_20(b: &amp;mut Bencher) {<br/>    b.iter(|| (0..21).map(fibonacci).collect::&lt;Vec&lt;u32&gt;&gt;())<br/>}<br/><br/>benchmark_group!(<br/>    benches,<br/>    bench_fibonacci_0,<br/>    bench_fibonacci_1,<br/>    bench_fibonacci_2,<br/>    bench_fibonacci_10,<br/>    bench_fibonacci_20<br/>);<br/>benchmark_main!(benches);</pre>
+<p>And, finally, remove the benchmark module. This will create a benchmark for each of the previous functions. The main difference is that you need to import the crate you are benchmarking, you do not add the <kbd>#[bench]</kbd> attribute to each function, and you use two macros to make the benchmark run. The <kbd>benchmark_group!</kbd> macro will create a group of benchmarks with the first argument for the macro as its name and with the given functions. The <kbd>benchmark_main!</kbd> macro will create a <kbd>main()</kbd> function that will run all the benchmarks.</p>
+<p>Let's look at the results:</p>
+<div class="mce-root CDPAlignCenter CDPAlign"><img src="assets/1057263e-2aec-4539-91a4-4884bcc7b0c5.png" style="width:28.75em;height:8.25em;"/></div>
+<p>As you can see, this approach does not give us beautiful colors and it adds some extra overhead to the native method, but the results are still equivalent. In this case, we can see that the 10th number will actually not be calculated at compile time. This is because, on stable Rust, using an external crate, the compiler is not able to compute everything at compile time. Still, it gives us really good information about how different each option's performance is.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Continuous integration for benchmarks</h1>
+                </header>
+            
+            <article>
+                
+<p>Once we know how to benchmark (and I will use the nightly way from now on), we can set up our continuous integration environment so that we can get alerts when a performance regression occurs. There are multiple ways of achieving something like this, but I will be using the Travis-CI infrastructure, some Bash, and a Rust library to do it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Travis-CI integration</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's first start by thanking the great work of Lloyd Chan and Sunjay Varma, who were the first to suggest this approach. You can find the code we will be using in Sunjay's blog (<a href="http://sunjay.ca/2017/04/27/rust-benchmark-comparison-travis">http://sunjay.ca/2017/04/27/rust-benchmark-comparison-travis</a>). Nevertheless, it makes sense to check it, understand it, and see how it works.</p>
+<p>The idea is simple: on Travis-CI builds, you can build against multiple Rust channels. When a pull request is received when building against the nightly channel, let's run all the benchmarks and then compare them to benchmarks we will run on the pull request target branch. Finally, output the comparison results in Travis-CI's build logs.</p>
+<p>Let's start by configuring our Travis-CI build script. For that, we will need a <kbd>.travis.yml</kbd> file similar to the following one in our repository:</p>
+<pre style="padding-left: 60px">language: rust<br/>dist: trusty # Use a little more updated system<br/>os:<br/>  - linux # Build for Linux<br/>  - osx # Build also for MacOS X<br/><br/># Run builds for all the supported trains<br/>rust:<br/>  - nightly<br/>  - beta<br/>  - stable<br/>  - 1.16.0 # Minimum supported version<br/><br/># Load travis-cargo<br/>before_script:<br/>  - export PATH=$PATH:~/.cargo/bin<br/><br/># The main build<br/>script:<br/>  - cargo build<br/>  - cargo package<br/>  - cargo test<br/><br/>after_success:<br/>  # Benchmarks<br/>  - ./travis-after-success.sh</pre>
+<p>Let's see what this code does. First of all, if you never used Travis-CI for your continuous integration, you should know that the <kbd>.travis.yml</kbd> YAML file contains the build configuration. In this case, we tell Travis-CI that we want to build a Rust project (so that it sets up the compiler by itself) and we tell it that we want to build against nightly, beta, and stable release channels. I usually like to add the minimum supported Rust version, mostly to know when it breaks, so that we can advertise the minimum Rust compiler version in our documentation.</p>
+<p>We then export the <kbd>cargo</kbd> binary path so that we can add <kbd>cargo</kbd> binaries by installing them in the build. This will be needed for the benchmark comparison script. Then, we tell Travis-CI to build the library/binary crate, we tell it to package it to check that a valid package will be generated, and we finally run all the unit tests. So far, nothing too different from a normal Travis-CI Rust build.</p>
+<p>Things change once we get to the <kbd>after-success</kbd> section. We call a shell script that we haven't defined yet. This script will contain the logic of the benchmark comparison.</p>
+<p>Before writing all the code, let's first learn about a library that will make things much easier for us. I'm talking about the <kbd>cargo-benchcmp</kbd>, <kbd>cargo</kbd> binary. This executable can read outputs from Rust benchmarks and compare them. To install it, you only need to run <kbd>cargo install cargo-benchcmp</kbd>. It also has some great command-line arguments that can help us get the output we want.</p>
+<p>To get the results of a benchmark in a file, it's as simple as doing <kbd>cargo bench &gt; file</kbd>. In this case, we will have two benchmarks, the <em>control</em> benchmark, a benchmark that we decide will be the reference; and a <em>variable</em> benchmark, the one we want to compare. Usually, a pull request will have the target branch as a control benchmark and the pull request branch as a variable benchmark.</p>
+<p>Using the executable is as easy as running <kbd>cargo benchcmp control variable</kbd>. This will show a great output with a side-by-side comparison. You can ask the tool to filter the output a bit, since you probably don't want to see tens of benchmarks with really similar values, and you are probably interested in big improvements or regressions.</p>
+<p>To see the improvements, add the <kbd>--improvements</kbd> flag to the command line and, to see the regressions, add the <kbd>--regressions</kbd> flag. You can also set up a threshold as a percentage, and benchmarks that change below that threshold won't show, to avoid non-changing benchmarks. For that, use the <kbd>--threshold {th}</kbd> syntax, where <kbd>{th}</kbd> is a number higher than 0 representing the percentage change that should be taken into account.</p>
+<p>Now we understand this, let's see the code that will be in the <kbd>travis-after-success.sh</kbd> file:</p>
+<pre style="padding-left: 60px">#!/usr/bin/env bash<br/><br/>set -e<br/>set -x<br/><br/>if [ "${TRAVIS_PULL_REQUEST_BRANCH:-$TRAVIS_BRANCH}" != "master" ] &amp;&amp; [ "$TRAVIS_RUST_VERSION" == "nightly" ]; then<br/>    REMOTE_URL="$(git config --get remote.origin.url)"<br/><br/>    # Clone the repository fresh...<br/>    cd ${TRAVIS_BUILD_DIR}/..<br/>    git clone ${REMOTE_URL} "${TRAVIS_REPO_SLUG}-bench"<br/>    cd "${TRAVIS_REPO_SLUG}-bench"<br/><br/>    # Bench the pull request base or master<br/>    if [ -n "$TRAVIS_PULL_REQUEST_BRANCH" ]; then<br/>      git checkout -f "$TRAVIS_BRANCH"<br/>    else # this is a push build<br/>      git checkout -f master<br/>    fi<br/>    cargo bench --verbose | tee previous-benchmark<br/>    # Bench the current commit that was pushed<br/>    git checkout -f "${TRAVIS_PULL_REQUEST_BRANCH:-$TRAVIS_BRANCH}"<br/>    cargo bench --verbose | tee current-benchmark<br/><br/>    cargo install --force cargo-benchcmp<br/>    cargo benchcmp previous-benchmark current-benchmark<br/>   fi</pre>
+<p>Let's see what this script is doing. The <kbd>set -e</kbd> and <kbd>set -x</kbd> commands will simply improve how the commands are shown in Travis-CI build logs. Then, only for nightly, it will clone the repository in a new location. If it's a pull request, it will clone the base branch; if not, it will clone the master branch. Then, it will run benchmarks in both places and compare them using <kbd>cargo-benchcmp</kbd>. This will show the results in the build logs.</p>
+<p>This script can, of course, be modified to suit any needs and, for example, use a different branch to the master branch as a default branch, or filter the output of the comparison, as we saw earlier.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Benchmark statistics with Criterion</h1>
+                </header>
+            
+            <article>
+                
+<p>If we want to know more about benchmark comparison, there is no better library than <strong>Criterion</strong>. It will generate statistics that you can use to compare benchmarks from multiple commits, and not only that, it will also enable you to show plots if you have <kbd>gnuplot</kbd> installed. It requires Rust nightly to run.</p>
+<p>Let's see how to use it. First, you will need to add Criterion as a dependency in your <kbd>Cargo.toml</kbd> file and create a benchmarks file:</p>
+<pre style="padding-left: 60px">[<span class="pl-en">dev-dependencies</span>]
+<span class="pl-smi">criterion</span> = <span class="pl-s"><span class="pl-pds">"</span>0.1.1<span class="pl-pds">"</span></span>
+
+[[<span class="pl-en">bench</span>]]
+<span class="pl-smi">name</span> = <span class="pl-s"><span class="pl-pds">"</span>example<span class="pl-pds">"</span></span>
+<span class="pl-smi">harness</span> = <span class="pl-c1">false</span></pre>
+<p>Then, you will need to create a benchmark. I will be using the Fibonacci function that we saw earlier to demonstrate the behavior. The way to declare the benchmarks is almost exactly the same as the Rust stable <kbd>bencher</kbd> crate. Let's write the following code in the <kbd>benches/example.rs</kbd> file:</p>
+<pre style="padding-left: 60px">//! Example benchmark.<br/><br/>#[macro_use]<br/>extern crate criterion;<br/>extern crate test_bench;<br/><br/>use criterion::Criterion;<br/>use test_bench::fibonacci;<br/><br/>fn criterion_benchmark(c: &amp;mut Criterion) {<br/>    Criterion::default().bench_function("fib 20", |b| b.iter(|| fibonacci(20)));<br/>}<br/><br/>criterion_group!(benches, criterion_benchmark);<br/>criterion_main!(benches);</pre>
+<p>If we now run <kbd>cargo bench</kbd>, we will see a similar output to this one (with the recursive version):</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/d3507a8c-049d-4d23-8f9c-1dc4b7338e87.png" style="width:32.83em;height:20.08em;"/></div>
+<p>As you can see, we get tons of information here. First, we see that Criterion warms the processor for three seconds so that it can load the caches and set up branch prediction. Then, it gets 100 measurements of the function, and it shows us valuable information about the sample.</p>
+<p>We can see how much time it takes to run an iteration (about 42 microseconds), the mean and the median of the sample, the number of outliers (significantly different samples), and a slope with its <kbd>R²</kbd> function. Until now, it only gives some extra information regarding the benchmark. If you check the current directory, you will see that it created a <kbd>.criterion</kbd> folder, which stores previous benchmarks. You can even check the JSON data.</p>
+<p>Let's run the benchmark again, by replacing the recursive function with the iterative function:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/a2cc5c46-37d8-44f8-8e76-44cbd749be84.png" style="width:28.75em;height:27.00em;"/></div>
+<p>Wow! Lots more data! Criterion compared this new benchmark with the previous one and saw that there is strong evidence to reject that this improvement is just a statistical anomaly. The benchmarks have improved by 99.96%!</p>
+<p>As you can see, Criterion gives us a better informative approach than the built-in benchmarks for statistical analysis. Running this tool once in a while will show us how the performance of our application changes.</p>
+<p>The library allows for function comparison, graph creation, and more. It can be configured for each benchmark, so you will be able to fine-tune your results according to your needs. I recommend you check the official documentation of the project for further insights (<a href="https://crates.io/crates/criterion">https://crates.io/crates/criterion</a>).</p>
+<p>To include this in your Travis-CI builds, it's as simple as modifying the previous shell script. Just call <kbd>cargo bench</kbd> instead of <kbd>cargo benchcmp</kbd> and make sure that you move the <kbd>.criterion</kbd> folder to where you run the benchmarks (since it downloads two repositories).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, you learned how to benchmark your Rust application. You saw the different options and found out what was best for your particular needs. You also learned about some libraries that will help you compare the results of the benchmarks and even how to use them in your continuous integration environment.</p>
+<p>For the next chapter, you will enter the world of metaprogramming by learning about Rust's macro system and the macros built in to the standard library.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>
