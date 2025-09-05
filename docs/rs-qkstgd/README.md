@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# Rust 快速启动指南
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/e9a843f2bd92e621911511b3b285f94a`](https://annas-archive.org/md5/e9a843f2bd92e621911511b3b285f94a)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 
