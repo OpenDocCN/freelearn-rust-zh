@@ -1,0 +1,1132 @@
+# 类型、泛型和特性
+
+Rust 的类型系统是语言的一个显著特点。在本章中，我们将详细介绍语言的一些显著方面，如特性、泛型和如何使用它们来编写表达性代码。我们还将探索一些有助于编写惯用 Rust 库的标准库特性。期待本章中有许多有趣的内容！
+
+我们将涵盖以下主题：
+
++   类型系统和它们的重要性
+
++   泛型编程
+
++   使用特性增强类型
+
++   探索标准库特性
+
++   组合特性和泛型以编写表达性代码
+
+# 类型系统和它们的重要性
+
+“发送时要保守，接受时要宽容。” —— 约翰·波斯尔
+
+为什么我们需要在语言中使用类型？这是一个很好的问题，可以作为理解编程语言中类型系统的动机。作为程序员，我们知道为计算机编写的程序在最低级别上以 0 和 1 的组合形式表示为二进制。事实上，最早的计算机必须手动用机器码编程。最终，程序员意识到这非常容易出错、繁琐且耗时。对于人类来说，在二进制级别操作和推理这些实体并不实用。后来，在 20 世纪 50 年代，编程社区提出了机器码助记符，这变成了我们今天所知道的汇编语言。在此之后，编程语言开始出现，它们编译成汇编代码，允许程序员编写人类可读且易于计算机编译成机器码的代码。然而，我们人类所使用的语言可能相当含糊，因此需要制定一套规则和约束来传达在用类似人类语言编写的计算机程序中可能和不可能的内容，即语义。这引出了类型和类型系统的概念。
+
+类型是一组可能值的命名集合。例如，`u8`是一个只能包含从 0 到 255 的正值的类型。类型为我们提供了一种方式来弥合底层表示和我们对这些实体创建的心理模型之间的差距。除此之外，类型还为我们提供了一种表达意图、行为和约束的方式。它们定义了我们可以用类型做什么，不能做什么。例如，将字符串类型的值添加到数字类型的值是未定义的。从类型出发，语言设计者构建了类型系统，这是一组规则，它规定了在编程语言中不同类型如何相互交互。它们作为推理程序的工具，并有助于确保我们的程序按规范正确运行。类型系统根据其表达能力进行分类，这仅仅意味着你可以用类型系统表达你的逻辑，以及程序中的不变性。例如，Haskell 这种高级语言有一个非常表达性的类型系统，而 C 这种低级语言为我们提供了非常少的基于类型的抽象。Rust 试图在这两个极端之间划一条细线。
+
+Rust 的类型系统在很大程度上受到了函数式语言如 Ocaml 和 Haskell 的启发，它们有诸如枚举和结构体这样的 ADT（抽象数据类型），特质（类似于 Haskell 的类型类），以及错误处理类型（`Option`和`Result`）。这个类型系统被描述为一个强类型系统，这仅仅意味着它在编译时执行更多的类型检查，而不是在运行时抛出它们。此外，类型系统是静态的，这意味着例如绑定到整数值的变量不能在之后改变为指向字符串。这些特性使得程序健壮，很少在运行时破坏不变性，但代价是编写程序需要程序员进行一些规划和思考。Rust 试图在设计程序时在你的盘子里放更多的规划，这可能会让一些寻求快速原型化的程序员感到沮丧。然而，从长期维护软件系统的角度来看，这是一件好事。
+
+把这些放在一边，让我们先来探索 Rust 的类型系统是如何使代码重用成为可能的。
+
+# 泛型
+
+从高级编程语言的开端起，追求更好的抽象一直是语言设计者努力的目标。因此，许多关于代码重用的想法应运而生。其中第一个就是函数。函数允许你将一系列指令封装在可以稍后多次调用的命名实体中，并且可以选择性地为每次调用接受任何参数。它们降低了代码的复杂性并提高了可读性。然而，函数只能带你走这么远。如果你有一个名为`avg`的函数，它计算给定整数列表的平均值，后来你有一个用例需要计算浮点值列表的平均值，那么通常的解决方案是创建一个新的函数来从浮点值列表中计算平均值。如果你还想接受双精度值列表呢？我们可能需要再次编写另一个函数。反复编写只有参数不同的相同函数是程序员宝贵时间的浪费。为了减少这种重复，语言设计者希望有一种方法来表达代码，使得`avg`函数可以以接受多种类型的方式编写，从而产生了泛型编程，或称为泛型。泛型编程的一个特征是函数可以接受多种类型，还有其他地方可以使用泛型。我们将在本节中探讨所有这些内容。
+
+泛型编程是一种仅在静态类型编程语言中适用的技术。它们最初出现在 ML 语言中，这是一种静态类型函数式语言。像 Python 这样的动态语言使用鸭子类型，API 根据对象能做什么而不是它们是什么来处理参数，因此它们不依赖于泛型。泛型是语言设计特征的一部分，它使得代码重用和**不要重复自己（DRY**）原则成为可能。使用这种技术，你可以编写带有类型占位符的算法、函数、方法和类型，并在这些类型上指定一个类型变量（通常用单个字母表示，通常是`T`、`K`或`V`），告诉编译器在代码实例化时填充实际类型。这些类型被称为泛型类型或项。类型上的单个字母符号，如`T`，被称为**泛型类型参数**。当你使用或实例化任何泛型项时，它们会被替换为具体的类型，例如`u32`。
+
+**注意**：通过替换，我们是指每次使用泛型项与具体类型结合时，在编译时都会生成一个具有类型变量`T`的专用代码副本，其中`T`会被替换为具体类型。在编译时生成具有具体类型的专用函数的过程称为**单态化**，这是执行多态函数相反的过程。
+
+让我们看看 Rust 标准库中的一些现有通用类型。
+
+标准库中的`Vec<T>`类型是一个定义为以下内容的通用类型：
+
+```rs
+pub struct Vec<T> {
+    buf: RawVec<T>,
+    len: usize,
+}
+```
+
+我们可以看到`Vec`的类型签名在其名称之后包含一个类型参数`T`，由一对尖括号`< >`包围。其成员字段`buf`也是一个通用类型，因此`Vec`本身也必须是泛型的。如果我们没有在泛型类型`Vec<T>`上使用`T`，即使在其`buf`字段上有`T`，我们也会得到以下错误：
+
+```rs
+error[E0412]: cannot find type `T` in this scope
+```
+
+这个`T`需要成为`Vec`类型定义的一部分。因此，当我们表示`Vec`时，我们总是使用`Vec<T>`来表示泛型，或者当我们知道具体的类型时，使用`Vec<u64>`。接下来，让我们看看如何创建我们自己的通用类型。
+
+# 创建通用类型
+
+Rust 允许我们声明许多泛型，如结构体、枚举、函数、特质、方法和实现块。它们共同的一点是泛型类型参数由`< >`括号分隔。在其中，你可以放置任意数量的逗号分隔的泛型类型参数。让我们通过查看泛型函数的创建方法来了解如何创建泛型。
+
+# 泛型函数
+
+要创建一个泛型函数，我们将泛型类型参数直接放置在函数名称之后和括号之前，如下所示：
+
+```rs
+// generic_function.rs
+
+fn give_me<T>(value: T) {
+    let _ = value;
+}
+
+fn main() {
+    let a = "generics";
+    let b = 1024;
+    give_me(a);
+    give_me(b);
+}
+```
+
+在前面的代码中，`give_me`是一个泛型函数，其名称后有`<T>`，`value`参数是类型`T`。在`main`中，我们可以用任何参数调用此函数。在编译过程中，我们的编译对象文件将包含此函数的两个专门副本。我们可以通过使用`nm`命令来确认这一点，如下所示：
+
+![](img/3876463a-6779-4ef4-9d8e-20433f15aa1e.png)
+
+`nm`是 GNU binutils 包中的一个实用工具，用于查看编译对象文件中的符号。通过将我们的二进制文件传递给`nm`，我们可以使用管道和 grep 来搜索我们的`give_me`函数的前缀。正如你所见，我们有两个函数副本，它们后面附加了随机 ID 以区分它们。其中一个接受`&str`，另一个接受`i32`，因为有两个具有不同参数的调用。
+
+泛型函数是一种以低成本实现多态代码幻觉的方法。我说幻觉，因为编译后，它都是具有具体类型参数的重复代码。尽管如此，它们也有一个缺点，那就是由于代码重复，编译后的对象文件大小增加。这与使用的具体类型数量成正比。在后面的章节中，当我们到达特质时，我们将看到多态的真正形式，即特质对象。尽管如此，泛型多态在大多数情况下仍然是首选的，因为它没有运行时开销，就像特质对象一样。特质对象应该只在泛型无法满足解决方案和需要将多种类型一起存储在集合中的情况下使用。当我们到达特质对象时，我们将看到那些示例。接下来，我们将看看我们如何使我们的结构体和枚举泛型化。我们首先将探索如何声明它们。创建和使用这些类型的内容将在后面的章节中介绍。
+
+# 泛型类型
+
+**泛型结构体**：我们可以像这样泛型地声明元组结构体和普通结构体：
+
+```rs
+// generic_struct.rs
+
+struct GenericStruct<T>(T);
+
+struct Container<T> {
+    item: T
+}
+
+fn main() {
+    // stuff
+}
+```
+
+泛型结构体在结构体名称之后包含泛型类型参数，如前述代码所示。有了这个，无论我们在代码的任何地方引用这个结构体，我们都需要一起输入 `<T>` 部分，以及类型。
+
+**泛型枚举**：同样，我们也可以创建泛型枚举：
+
+```rs
+// generic_enum.rs
+
+enum Transmission<T> {
+    Signal(T),
+    NoSignal
+}
+
+fn main() {
+    // stuff
+}
+```
+
+我们的 `Transmission` 枚举有一个名为 `Signal` 的变体，它包含一个泛型值，还有一个名为 `NoSignal` 的变体，它是一个无值变体。
+
+# 泛型实现
+
+我们也可以为我们的泛型类型编写 `impl` 块，但由于额外的泛型类型参数，这会变得冗长，正如我们将看到的。让我们在 `Container<T>` 结构体上实现一个 `new()` 方法：
+
+```rs
+// generic_struct_impl.rs
+
+struct Container<T> {
+    item: T
+}
+
+impl Container<T> {
+    fn new(item: T) -> Self {
+        Container { item }
+    }
+}
+
+fn main() {
+    // stuff
+}
+```
+
+让我们编译这个：
+
+![](img/030da4c0-1c15-493c-82f0-fa4967b03e75.png)
+
+错误信息无法找到我们的泛型类型 `T`。在为任何泛型类型编写 `impl` 块时，我们需要在使用它之前声明泛型类型参数。`T` 就像是一个变量——一个类型变量——我们需要声明它。因此，我们需要通过在 `impl` 后面添加 `<T>` 来稍微修改实现块，如下所示：
+
+```rs
+impl<T> Container<T> {
+    fn new(item: T) -> Self {
+        Container { item }
+    }
+}
+```
+
+随着这个更改，前面的代码可以编译。之前的 `impl` 块基本上意味着我们正在为出现在 `Container<T>` 中的所有类型 `T` 实现这些方法。这个 `impl` 块是一个泛型实现。因此，每个生成的具体 `Container` 都将具有这些方法。现在，我们也可以为 `Container<T>` 编写一个更具体的 `impl` 块，通过将任何具体类型放在 `T` 的位置。这将看起来像这样：
+
+```rs
+impl Container<u32> {
+    fn sum(item: u32) -> Self {
+        Container { item }
+    }
+}
+```
+
+在前面的代码中，我们实现了一个名为`sum`的方法，这个方法只存在于`Container<u32>`类型上。在这里，由于存在具体的类型`u32`，我们不需要在`impl`后面加上`<T>`。这是`impl`块另一个很好的特性，它允许你通过独立实现方法来专门化泛型类型。
+
+# 使用泛型
+
+现在，我们实例化或使用泛型类型的方式也与其非泛型对应物略有不同。每次我们实例化它们时，编译器都需要知道在它们的类型签名中将`T`替换为具体类型，从而为单态化泛型代码提供类型信息。大多数情况下，具体类型是根据类型的实例化或泛型函数中调用接受具体类型的方法来推断的。在罕见的情况下，我们需要通过使用尖括号操作符（`::<>`）将具体类型显式地替换为泛型类型来帮助编译器。我们将在稍后看到它是如何使用的。
+
+让我们看看实例化泛型类型`Vec<T>`的情况。在没有任何类型签名的情况下，以下代码无法编译：
+
+```rs
+// creating_generic_vec.rs
+
+fn main() {
+    let a = Vec::new();
+}
+```
+
+编译前面的代码，会得到以下错误：
+
+![图片](img/156ddf29-ad47-42a3-af39-d8a5a315707a.png)
+
+这是因为编译器不知道类型`a`会包含什么，直到我们手动指定它或调用它的一个方法，从而传递一个具体值。这在上面的代码片段中有所体现：
+
+```rs
+// using_generic_vec.rs
+
+fn main() {
+    // providing a type
+    let v1: Vec<u8> = Vec::new();
+
+    // or calling method
+    let mut v2 = Vec::new();
+    v2.push(2);    // v2 is now Vec<i32>
+
+    // or using turbofish
+    let v3 = Vec::<u8>::new();    // not so readable
+}
+```
+
+在第二个代码片段中，我们将`v1`的类型指定为`u8`的`Vec`，并且它编译正常。另一种方法，就像`v2`一样，是调用一个接受任何具体类型的方法。在`push`方法调用之后，编译器可以推断出`v2`是`Vec<i32>`。创建`Vec`的另一种方法是使用尖括号操作符，就像前面代码中的`v3`绑定一样。
+
+泛型函数中的尖括号操作符出现在函数名之后和括号之前。另一个例子是`std::str`模块中的泛型`parse`函数。`parse`可以从字符串中解析值，许多类型能够从中解析，例如`i32`、`f64`、`usize`等，因此它是一个泛型类型。所以，当使用`parse`时，你确实需要使用尖括号操作符，如下所示：
+
+```rs
+// using_generic_func.rs
+
+use std::str;
+
+fn main() {
+    let num_from_str = str::parse::<u8>("34").unwrap();
+    println!("Parsed number {}", num_from_str);
+}
+```
+
+需要注意的是，只有实现了`FromStr`接口或特质的类型才能传递给`parse`函数。`u8`有一个`FromStr`的实现，因此我们能够在前面的代码中解析它。`parse`函数使用`FromStr`特质来限制可以传递给它的类型。在探索特质之后，我们将了解如何混合泛型和特质。
+
+在掌握泛型概念的基础上，让我们关注 Rust 中最常见的一个特性——特质！
+
+# 使用特质抽象行为
+
+从多态和代码重用的角度来看，通常将类型的共享行为和共同属性从它们自身分离出来，在代码中只保留独特的属性是一个好主意。这样做，我们允许不同的类型通过这些共同属性相互关联，这使得我们可以为更通用或包容的 API 编程，在参数方面。这意味着我们可以接受具有这些共享属性的类型，而不会局限于某一特定类型。
+
+在像 Java 或 C# 这样的面向对象语言中，接口传达了相同的概念，我们可以定义许多类型可以实现的共享行为。例如，我们不必有多个 `sort` 函数，这些函数接受整数值的列表，以及其他接受字符串值列表的函数，我们可以有一个单一的 `sort` 函数，它可以接受实现了 `Comparable` 或 `Comparator` 接口的项的列表。这允许我们将任何 `Comparable` 的东西传递给我们的 `sort` 函数。
+
+Rust 也有一个类似但功能强大的结构，称为 **特质**。Rust 中有许多特质的形态，我们将简要地查看它们以及我们如何与之交互。此外，当特质与泛型结合使用时，我们可以限制传递给我们的 API 的参数范围。当我们更多地了解特质边界时，我们将看到这是如何发生的。
+
+# 特质
+
+特质是一个定义了一组合同或共享行为的项，类型可以选择实现。特质本身不可用，旨在由类型实现。特质有建立不同类型之间关系的能力。它们是许多语言特性的骨干，如闭包、运算符、智能指针、循环、编译时数据竞争检查等等。Rust 中许多高级语言特性归结为某些类型调用它们实现的特质方法。话虽如此，让我们看看如何在 Rust 中定义和使用特质！
+
+假设我们正在模拟一个简单的媒体播放器应用程序，它可以播放音频和视频文件。对于这个演示，我们将通过运行 `cargo new super_player` 来创建一个项目。为了传达特质的概念并使这个例子简单化，在我们的 `main.rs` 文件中，我们将音频和视频媒体表示为具有媒体名称的元组结构体 `String`，如下所示：
+
+```rs
+// super_player/src/main.rs
+
+struct Audio(String);
+struct Video(String);
+
+fn main() {
+    // stuff
+}
+```
+
+现在，至少，`Audio` 和 `Video` 结构体都需要有一个 `play` 和 `pause` 方法。这是它们共有的功能。这是一个很好的机会让我们在这里使用一个特质。在这里，我们将在一个名为 `media.rs` 的单独模块中定义一个名为 `Playable` 的特质，如下所示：
+
+```rs
+// super_player/src/media.rs
+
+trait Playable {
+    fn play(&self);
+    fn pause() {
+        println!("Paused");
+    }
+}
+```
+
+我们使用`trait`关键字来创建一个特性，后面跟着其名称和一对大括号。在大括号内，我们可以提供零个或多个方法，任何实现该特性的类型都应该实现这些方法。我们还可以在特性中定义常量，所有实现者都可以共享这些常量。实现者可以是任何结构体（struct）、枚举（enum）、原始类型（primitive）、函数、闭包（closure），甚至是另一个特性。
+
+你可能已经注意到了`play`方法的签名；它接受一个符号的引用`self`，但没有方法体，并以分号结束。`self`只是一个类型别名，指向正在实现特性的类型`Self`。我们将在第七章高级概念中详细讨论这些内容。这意味着特性内的方法类似于 Java 中的抽象方法。实现这个特性并定义函数的具体实现取决于类型。然而，在特性内声明的函数也可以有默认实现，就像前面代码中的`pause`函数一样。`pause`不接受`self`，因此它类似于一个不需要实现者实例即可调用的静态方法。
+
+在一个特性（trait）中，我们可以有两种方法：
+
++   **关联方法**：这些方法可以直接在实现特性的类型上使用，不需要该类型的实例来调用它们。它们也被称为主流语言中的静态方法，例如，标准库中`FromStr`特性的`from_str`方法。它为`String`实现，因此允许你通过调用`String::from_str("foo")`从`&str`创建一个`String`。
+
++   **实例方法**：这些方法的第一参数是`self`。这些方法仅在实现该特性的类型的实例上可用。`self`指向实现该特性的类型的实例。它可以是三种类型：`self`方法，在调用时消耗实例；`&self`方法，只有对实例成员（如果有）的读取访问权限；以及`&mut self`方法，对其实例成员有可变访问权限，可以修改它们，甚至可以用另一个实例替换它们。例如，标准库中`AsRef`特性的`as_ref`方法是一个实例方法，它接受`&self`，并且旨在由可以转换为引用或指针的类型实现。当我们到达第五章内存管理和安全性时，我们将涵盖引用和这些方法类型签名中的`&`和`&mut`部分。
+
+现在，我们将像这样在我们的`Audio`和`Video`类型上实现前面的`Playable`特性：
+
+```rs
+// super_player/src/main.rs
+
+struct Audio(String);
+struct Video(String);
+
+impl Playable for Audio {
+    fn play(&self) {
+        println!("Now playing: {}", self.0);
+    }
+}
+
+impl Playable for Video {
+    fn play(&self) {
+        println!("Now playing: {}", self.0);
+    }
+}
+
+fn main() {
+    println!("Super player!");
+}
+```
+
+我们使用`impl`关键字后跟特质名称，然后是`for`关键字和我们要为其实现特质的类型，之后是一对大括号。在这些大括号内，我们必须提供方法的实现，并且可以选择覆盖特质中存在的任何默认实现。让我们编译这段代码：
+
+![图片](img/cfa66081-2815-459f-94f9-16b38038c29f.png)
+
+前面的错误突出了特质的 重要特性：特质默认是私有的。为了能被其他模块或跨 crate 使用，它们需要被公开。这需要两个步骤。首先，我们需要将我们的特质暴露给外界。为此，我们需要在`Playable`特质声明前加上`pub`关键字：
+
+```rs
+// super_player/src/media.rs
+
+pub trait Playable {
+    fn play(&self);
+    fn pause() {
+        println!("Paused");
+    }
+}
+```
+
+在我们暴露了我们的特质之后，我们需要使用`use`关键字将特质引入我们想要使用特质的模块的作用域。这将允许我们调用其方法，如下所示：
+
+```rs
+// super_player/src/main.rs
+
+mod media;
+
+struct Audio(String);
+struct Video(String);
+
+impl Playable for Audio {
+    fn play(&self) {
+        println!("Now playing: {}", self.0);
+    }
+}
+
+impl Playable for Video {
+    fn play(&self) {
+        println!("Now playing: {}", self.0);
+    }
+}
+
+fn main() {
+    println!("Super player!");
+    let audio = Audio("ambient_music.mp3".to_string());
+    let video = Video("big_buck_bunny.mkv".to_string());
+    audio.play();
+    video.play();
+}
+```
+
+这样，我们就可以播放我们的音频和视频媒体：
+
+![图片](img/6e9db8c6-9ad4-4880-b753-13f114e2fe5e.png)
+
+这与任何实际的媒体播放器实现都相去甚远，但我们的目标是探索特质的使用场景。
+
+特质也可以在其声明中指定它们依赖于其他特质；这是一个称为特质继承的功能。我们可以这样声明继承的特质：
+
+```rs
+// trait_inheritance.rs
+
+trait Vehicle {
+    fn get_price(&self) -> u64;
+}
+
+trait Car: Vehicle {
+    fn model(&self) -> String;
+}
+
+struct TeslaRoadster {
+    model: String,
+    release_date: u16
+}
+
+impl TeslaRoadster {
+    fn new(model: &str, release_date: u16) -> Self {
+        Self { model: model.to_string(), release_date }
+    }
+}
+
+impl Car for TeslaRoadster {
+    fn model(&self) -> String {
+        "Tesla Roadster I".to_string()
+    }
+}
+
+fn main() {
+    let my_roadster = TeslaRoadster::new("Tesla Roadster II", 2020);
+    println!("{} is priced at ${}", my_roadster.model, my_roadster.get_price());
+}
+```
+
+在前面的代码中，我们声明了两个特质：一个更通用的`Vehicle`特质和一个依赖于`Vehicle`的更具体的`Car`特质。由于`TeslaRoadster`是一辆车，我们为它实现了`Car`特质。注意`TeslaRoadster`上`new`方法的主体，它使用`Self`作为返回类型。这也会被用来替换我们从`new`返回的`TeslaRoadster`实例。`Self`只是特质 impl 块内实现类型的便利别名。它也可以用来创建其他类型，如元组结构和枚举，以及匹配表达式。让我们尝试编译这段代码：
+
+![图片](img/f86789bc-8698-45a2-a43d-017c212d109e.png)
+
+看到那个错误吗？在其定义中，`Car`特质指定了任何实现该特质的类型也必须实现`Vehicle`特质，`Car: Vehicle`。我们没有为我们的`TeslaRoadster`实现`Vehicle`，Rust 为我们捕获并报告了它。因此，我们必须像这样实现`Vehicle`特质：
+
+```rs
+// trait_inheritance.rs
+
+impl Vehicle for TeslaRoadster {
+    fn get_price(&self) -> u64 {
+        200_000
+    }
+}
+```
+
+在这个实现满足后，我们的程序编译良好，以下是其输出：
+
+```rs
+ Tesla Roadster II is priced at $200000
+```
+
+在`get_price`方法中的`200_200`中的下划线是一个方便的语法，用于创建可读的数字字面量。
+
+作为面向对象语言的类比，特质及其实现类似于接口和实现这些接口的类。然而，需要注意的是，特质与接口非常不同：
+
++   尽管特性在 Rust 中具有一种继承形式，但实现却没有。这意味着可以声明一个名为 `Panda` 的特性，它要求实现 `Panda` 的类型实现另一个名为 `KungFu` 的特性。然而，这些类型本身并没有任何继承形式。因此，而不是使用对象继承，使用类型组合，这依赖于特性继承来在代码中建模任何现实世界的实体。
+
++   你可以在任何地方编写特性实现块，而不需要访问实际类型。
+
++   你也可以在任何类型上实现自己的特性，从内置的基本类型到泛型类型。
+
++   你不能像在 Java 中将接口作为返回类型一样隐式地拥有函数中的返回类型作为特性。你必须返回一个称为特性对象的东西，并且执行此操作的语法是明确的。当我们到达特性对象时，我们将看到如何做到这一点。
+
+# 特性的多种形式
+
+在前面的例子中，我们瞥见了特性的最简单形式。但特性比表面看起来要复杂得多。当你开始在更大的代码库中与特性交互时，你会遇到它们的不同形式。根据程序复杂性和要解决的问题，简单的特性形式可能不适合。Rust 为我们提供了其他形式的特性，这些特性很好地模拟了问题。我们将查看一些标准库特性，并尝试对它们进行分类，以便我们有一个很好的想法在何时使用什么。
+
+# 标记特性
+
+在 `std::marker` 模块中定义的特性被称为**标记特性**。这些特性没有任何方法，只是简单地声明了它们的名称，并且体为空。标准库中的例子包括 `Copy`、`Send` 和 `Sync`。它们被称为标记特性，因为它们被用来简单地标记一个类型属于特定的家族，以获得一些编译时保证。标准库中的两个例子是 `Send` 和 `Sync` 特性，这些特性在适当的时候由语言自动实现，并传达了哪些值是可以在线程间安全发送和共享的。我们将在第八章并发中了解更多关于它们的信息。
+
+# 简单特性
+
+这可能是特性定义可能的最简单形式。我们已经在特性的介绍中讨论了这一点：
+
+```rs
+trait Foo {
+    fn foo();
+}
+```
+
+标准库中的一个例子是 `Default` 特性，它为可以初始化为默认值的类型实现。它在[`doc.rust-lang.org/std/default/trait.Default.html`](https://doc.rust-lang.org/std/default/trait.Default.html)上有文档说明。
+
+# 泛型特性
+
+特性也可以是泛型的。这在需要为广泛的各种类型实现特性时很有用：
+
+```rs
+pub trait From<T> {
+    fn from(T) -> Self;
+}
+```
+
+两个这样的例子是`From<T>`和`Into<T>`特质，它们允许从类型到类型`T`的转换以及相反的转换。当这些特质用作函数参数的特质界限时，它们的使用变得尤为突出。我们将在稍后看到特质界限是什么以及它们是如何工作的。然而，当泛型特质声明了三个或四个泛型类型时，它们可能会变得相当冗长。对于这些情况，我们有关联类型特质。
+
+# 关联类型特质
+
+```rs
+trait Foo {
+    type Out;
+    fn get_value(self) -> Self::Out;
+}
+```
+
+由于它们能够在特质内声明关联类型，如前面代码中`Foo`声明中的`Out`类型，这些特质是泛型特质的更好替代品。它们具有更简洁的类型签名。它们的优点在于，在实现中，它们允许我们一次性声明关联类型，并在任何特质方法或函数中将`Self::Out`用作返回类型或参数类型。这消除了与泛型特质相同的情况下的类型冗余。关联类型特质的一个最佳例子是`Iterator`特质，它用于遍历自定义类型的值。其文档可以在[`doc.rust-lang.org/std/iter/trait.Iterator.html`](https://doc.rust-lang.org/std/iter/trait.Iterator.html)找到。当我们到达第八章高级主题时，我们将更深入地探讨迭代器。
+
+# 继承的特质
+
+我们已经在`trait_inheritance.rs`代码示例中看到了这些特质。与 Rust 中的类型不同，特质可以具有继承关系，例如：
+
+```rs
+trait Bar {
+    fn bar();
+}
+
+trait Foo: Bar {
+    fn foo();
+}
+```
+
+在前面的代码片段中，我们声明了一个特质，名为`Foo`，它依赖于一个超特质，名为`Bar`。`Foo`的定义要求在为你的类型实现`Foo`时，必须实现`Bar`。标准库中的一个例子是`Copy`特质，它要求类型也实现`Clone`特质。
+
+# 使用泛型特质 - 特质界限
+
+现在我们对泛型和特质有了相当的了解，我们可以探索如何将它们结合起来，在编译时表达更多关于我们接口的信息。考虑以下代码：
+
+```rs
+// trait_bound_intro.rs
+
+struct Game;
+struct Enemy;
+struct Hero;
+
+impl Game {
+    fn load<T>(&self, entity: T) {
+        entity.init();
+    }
+}
+
+fn main() {
+    let game = Game;
+    game.load(Enemy);
+    game.load(Hero);
+}
+```
+
+在前面的代码中，我们有一个泛型函数`load`，它位于我们的`Game`类型上，可以接受任何游戏实体并通过在所有类型的`T`上调用`init()`来将其加载到我们的游戏世界中。然而，这个例子由于以下错误而无法编译：
+
+![](img/f9c1cf25-669f-4489-9bb2-f5592e705788.png)
+
+因此，一个接受任何类型`T`的泛型函数无法默认知道或假设`T`上存在`init`方法。如果它确实存在，那么它就根本不是泛型，而只能接受具有`init()`方法上的类型。所以，有一种方法可以让我们让编译器知道这一点，并使用 traits 约束`load`可以接受的一组类型。这就是 trait 边界发挥作用的地方。我们可以定义一个名为`Loadable`的 trait，并在我们的`Enemy`和`Hero`类型上实现它。随后，我们必须在我们的泛型类型声明旁边放置几个符号来指定 trait。我们称这为 trait 边界。代码的更改如下：
+
+```rs
+// trait_bounds_intro_fixed.rs
+
+struct Game;
+struct Enemy;
+struct Hero;
+
+trait Loadable {
+    fn init(&self);
+}
+
+impl Loadable for Enemy {
+    fn init(&self) {
+        println!("Enemy loaded");
+    }
+}
+
+impl Loadable for Hero {
+    fn init(&self) {
+        println!("Hero loaded");
+    }
+}
+
+impl Game {
+    fn load<T: Loadable>(&self, entity: T) {
+        entity.init();
+    }
+}
+
+fn main() {
+    let game = Game;
+    game.load(Enemy);
+    game.load(Hero);
+}
+```
+
+在这段新代码中，我们为`Enemy`和`Hero`都实现了`Loadable`，并且我们还按如下方式修改了`load`方法：
+
+```rs
+fn load<T: Loadable>(&self, entity: T) { .. }
+```
+
+注意`: Loadable`部分。这就是我们指定 trait 边界的做法。Trait 边界允许我们约束泛型 API 可以接受的参数范围。在泛型项上指定 trait 边界类似于我们为变量指定类型，但在这里变量是泛型类型`T`，而类型是某个 trait，例如`T: SomeTrait`。在定义泛型函数时，trait 边界几乎是必需的。如果定义了一个没有任何 trait 边界的泛型函数，那么我们不能调用任何方法，因为 Rust 不知道为给定方法使用哪种实现。它需要知道`T`是否有`foo`方法，以便对代码进行单态化。看看另一个例子：
+
+```rs
+// trait_bounds_basics.rs
+
+fn add_thing<T>(fst: T, snd: T) {
+    let _ = fst + snd;
+}
+
+fn main() {
+    add_thing(2, 2);
+}
+```
+
+我们有一个名为`add_thing`的方法，它可以添加任何类型`T`。如果我们编译前面的代码片段，它将无法编译并给出以下错误：
+
+![](img/677a9ad2-011e-4d14-a6ff-adf0b2af2dc0.png)
+
+它表示在`T`上添加一个`Add` trait 边界。这样做的原因是加法操作由`Add` trait 决定，它是泛型的，不同类型有不同的实现，甚至可能返回完全不同的类型。这意味着 Rust 需要我们的帮助来为我们注解这一点。在这里，我们需要像这样修改我们的函数定义：
+
+```rs
+// trait_bound_basics_fixed.rs
+
+use std::ops::Add;
+
+fn add_thing<T: Add>(fst: T, snd: T) {
+    let _ = fst + snd;
+}
+
+fn main() {
+    add_thing(2, 2);
+}
+```
+
+我们在`T`之后添加了`: Add`，随着这个更改，我们的代码可以编译了。现在，根据在定义带有 trait 边界的泛型项时类型签名变得有多复杂，有两种方式来指定 trait 和边界：
+
+**泛型之间的操作**：
+
+```rs
+fn show_me<T: Display>(val: T) {
+    // can use {} format string now, because of Display bound
+    println!("{}", val);
+}
+```
+
+这是指定泛型项上 trait 边界的最常见语法。我们读取前面的函数如下：`show_me`是一个接受任何实现了`Display`trait 的类型的方法。这是在泛型函数的类型签名长度较小时声明 trait 边界的常用语法。此语法在指定类型上的 trait 边界时也适用。现在，让我们看看指定 trait 边界的第二种方式。
+
+**使用 where 子句：**
+
+当任何泛型项的类型签名太大而无法在一行中显示时，使用此语法。例如，标准库的 `std::str` 模块中有一个 `parse` 方法，其签名如下：
+
+```rs
+pub fn parse<F>(&self) -> Result<F, <F as FromStr>::Err>
+where F: FromStr { ... }
+```
+
+注意到 `where F: FromStr` 部分。这告诉我们我们的 `F` 类型必须实现 `FromStr` 特性。`where` 子句将特征界限从函数签名中解耦，使其易于阅读。
+
+看过如何编写特征界限后，了解我们可以在哪里指定这些界限是很重要的。特征界限适用于所有可以使用泛型的地方。
+
+# 类型上的特征界限
+
+我们也可以在类型上指定特征界限：
+
+```rs
+// trait_bounds_types.rs
+
+use std::fmt::Display;
+
+struct Foo<T: Display> {
+    bar: T
+}
+
+// or
+
+struct Bar<F> where F: Display {
+    inner: F
+}
+
+fn main() {}
+```
+
+然而，对类型使用特征界限是不推荐的，因为它对类型本身施加了限制。通常，我们希望类型尽可能泛化，允许我们使用任何类型创建实例，并且通过在函数或方法中使用特征界限来限制它们的行为。
+
+# 泛型函数和 impl 块上的特征界限
+
+这是最常见的使用特征界限的地方。我们可以在函数上指定特征界限，也可以在泛型实现上指定，如下面的示例所示：
+
+```rs
+// trait_bounds_functions.rs
+
+use std::fmt::Debug;
+
+trait Eatable {
+    fn eat(&self);
+}
+
+#[derive(Debug)]
+struct Food<T>(T);
+
+#[derive(Debug)]
+struct Apple;
+
+impl<T> Eatable for Food<T> where T: Debug {
+    fn eat(&self) {
+        println!("Eating {:?}", self);
+    }
+}
+
+fn eat<T>(val: T) where T: Eatable {
+    val.eat();
+}
+
+fn main() {
+    let apple = Food(Apple);
+    eat(apple);
+}
+```
+
+我们有一个泛型类型 `Food` 和一个特定的食物类型 `Apple`，我们将它放入 `Food` 实例中，并将其绑定到变量 `apple`。接下来，我们调用泛型方法 `eat`，传递 `apple`。查看 `eat` 方法的签名，类型 `T` 必须是 `Eatable`。为了使 `apple` 可食用，我们为 `Food` 实现了 `Eatable` 特性，并指定我们的类型必须是 `Debug` 以使其可以在我们的方法中打印到控制台。这是一个愚蠢的例子，但演示了这一概念。
+
+# 使用 `+` 符号组合特征界限
+
+我们也可以使用 `+` 符号为泛型类型指定多个特征界限。让我们看看标准库中 `HashMap` 类型的 impl 块：
+
+```rs
+impl<K: Hash + Eq, V> HashMap<K, V, RandomState>
+```
+
+在这里，我们可以看到 `K`，表示 `HashMap` 键的类型，必须实现 `Eq` 特性，以及 `Hash` 特性。
+
+我们还可以组合特性来创建一个新的特性，代表所有这些特性：
+
+```rs
+// traits_composition.rs
+
+trait Eat {
+    fn eat(&self) {
+        println!("eat");
+    }
+}
+trait Code {
+    fn code(&self) {
+        println!("code");
+    }
+}
+trait Sleep {
+    fn sleep(&self) {
+        println!("sleep");
+    }
+}
+
+trait Programmer : Eat + Code + Sleep {
+    fn animate(&self) {
+        self.eat();
+        self.code();
+        self.sleep();
+        println!("repeat!");
+    }
+}
+
+struct Bob;
+impl Programmer for Bob {}
+impl Eat for Bob {}
+impl Code for Bob {}
+impl Sleep for Bob {}
+
+fn main() {
+    Bob.animate();
+}
+```
+
+在前面的代码中，我们创建了一个新的特性 `Programmer`，它是三个特性 `Eat`、`Code` 和 `Sleep` 的组合。这样，我们对类型施加了约束，因此如果类型 `T` 实现 `Programmer`，它必须实现所有其他特性。运行代码产生以下输出：
+
+```rs
+eat
+code
+sleep
+repeat!
+```
+
+# 使用 impl 特性语法的特征界限
+
+声明特征界限的另一种语法是 impl 特性语法，这是编译器最近添加的一个特性。使用这种语法，您也可以编写具有特征界限的泛型函数，如下所示：
+
+```rs
+// impl_trait_syntax.rs
+
+use std::fmt::Display;
+
+fn show_me(val: impl Display) {
+    println!("{}", val);
+}
+
+fn main() {
+    show_me("Trait bounds are awesome");
+}
+```
+
+我们不是指定`T: Display`，而是直接使用`impl Display`。这是`impl`特质语法。在需要返回复杂或无法表示的类型的情况下，例如从函数返回闭包，这提供了优势。如果没有这种语法，你必须通过使用`Box`智能指针类型将其放在指针后面来返回它，这涉及到堆分配。闭包在底层被实现为实现了多个特质的结构体。其中一个是`Fn(T) -> U`特质。因此，使用`impl`特质语法，现在我们可以编写函数，在其中我们可以写出如下内容：
+
+```rs
+// impl_trait_closure.rs
+
+fn lazy_adder(a:u32, b: u32) -> impl Fn() -> u32 {
+    move || a + b
+}
+
+fn main() {
+    let add_later = lazy_adder(1024, 2048);
+    println!("{:?}", add_later());
+}
+```
+
+在前面的代码中，我们创建了一个函数，名为`lazy_adder`，它接受两个数字并返回一个闭包，该闭包可以将两个数字相加。然后我们调用`lazy_adder`，传入两个数字。这将在`add_later`中创建一个闭包，但不会立即执行它。在`main`中，我们在`println!`宏中调用了`add_later`。我们甚至可以在两个地方都使用这种语法，如下所示：
+
+```rs
+// impl_trait_both.rs
+
+use std::fmt::Display;
+
+fn surround_with_braces(val: impl Display) -> impl Display {
+    format!("{{{}}}", val)
+}
+
+fn main() {
+    println!("{}", surround_with_braces("Hello"));
+}
+```
+
+`surround_with_braces`接受任何实现了`Display`特质的类型，并返回一个被`{}`包围的字符串。在这里，我们的返回类型都是`impl Display`。
+
+多余的大括号是用来避免大括号本身的特殊含义，因为在字符串格式化中`{}`有特殊的字符串插值意义。
+
+对于特质界限的`impl`语法，主要推荐用作函数的返回类型。在参数位置使用它意味着我们无法使用 turbofish 运算符。如果某些依赖代码使用 turbofish 运算符调用你的 crate 中的某个方法，这可能会导致 API 不兼容。它只应在没有具体类型可用的情况下使用，例如闭包的情况。
+
+# 探索标准库特质
+
+Rust 的标准库中有很多内置的特质。Rust 中的大部分语法糖都归因于特质。这些特质还为 crate 作者提供了一个很好的基线，他们可以在其库上提供一个惯用的接口。在本节中，我们将探讨标准库特质的一些抽象和便利之处，这些特质可以增强 crate 作者和消费者的体验。我们将从库作者的视角出发，创建一个提供复杂数字类型支持的库。这个例子很好地介绍了如果你创建自己的 crate 时必须实现的常见特质。
+
+我们将通过运行`cargo new complex --lib`来创建一个新的项目。首先，我们需要将我们的复杂数字表示为一个类型。我们将使用一个结构体来完成这个任务。我们的复杂数字结构体有两个字段：复杂数字的*实部*和*虚部*。以下是它的定义方式：
+
+```rs
+// complex/src/lib.rs
+
+struct Complex<T> {
+    // Real part
+    re: T,
+    // Complex part
+    im: T
+}
+```
+
+我们使其泛型化于`T`，因为`re`和`im`都可以是浮点数或整数值。为了使这种类型有任何用途，我们希望有创建其实例的方法。通常的做法是实现关联方法`new`，其中我们传递`re`和`im`的值。如果我们还想用默认值（比如`re = 0`，`im = 0`）初始化一个复数值怎么办？为此，我们有一个名为`Default`的特性。对于用户定义的类型，实现`Default`非常简单；我们只需在`Complex`结构体上放置一个`#[derive(Default)]`属性，就可以自动为它实现`Default`特性。
+
+注意：`Default`只能为那些其成员和字段本身实现`Default`的结构体、枚举或联合体实现。
+
+现在，我们的更新代码带有`new`方法和`Default`注解，看起来是这样的：
+
+```rs
+// complex/src/lib.rs
+
+#[derive(Default)]
+struct Complex<T> {
+    // Real part
+    re: T,
+    // Complex part
+    im: T
+}
+
+impl<T> Complex<T> {
+    fn new(re: T, im: T) -> Self {
+        Complex { re, im }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use Complex;
+    #[test]
+    fn complex_basics() {
+        let first = Complex::new(3,5);
+        let second: Complex<i32> = Complex::default();
+        assert_eq!(first.re, 3);
+        assert_eq!(first.im, 5);
+        assert!(second.re == second.im);
+    }
+}
+```
+
+我们还在`tests`模块底部添加了一个简单的初始化测试用例。`#[derive(Default)]`属性的功能是通过一个过程宏实现的，它可以自动为出现的类型实现特性。这种自动推导要求任何自定义类型的字段，如结构体或枚举，也必须自己实现`Default`特性。使用它们推导特性仅适用于结构体、枚举和联合体。我们将在第九章“使用宏进行元编程”中查看如何编写自己的推导过程宏。此外，函数`new`并不是一个特殊的构造函数（如果你熟悉具有构造函数的语言），而只是一个社区采用的常规名称，用作创建类型新实例的方法名。
+
+现在，在我们深入研究更复杂的特性实现之前，我们需要自动推导一些更多的内置特性，这将帮助我们实现更高级的功能。让我们看看其中的一些：
+
++   `Debug`: 我们之前已经见过这个了。正如其名所示，这个特性帮助类型在控制台上以调试为目的进行打印。在复合类型的情况下，类型将以类似 JSON 的格式打印，包含花括号和括号，如果类型是字符串，则包含引号。这在 Rust 中的大多数内置类型中都已实现。
+
++   `PartialEq`和`Eq`：这些特性允许两个项目进行比较以确定它们是否相等。对于我们的复数类型，只有`PartialEq`是有意义的，因为当我们的复数类型包含`f32`或`f64`值时，我们无法比较它们，因为`Eq`没有为`f32`和`f64`值实现。`PartialEq`定义了部分排序，而`Eq`要求完全排序。对于浮点数，完全排序是未定义的，因为`NaN`不等于`NaN`。"NaN"是浮点数类型中的一个类型，它表示结果未定义的操作，例如`0.0 / 0.0`。
+
++   `Copy`和`Clone`：这些特质定义了类型如何被复制。我们在第六章中有一个单独的部分来介绍它们，*内存管理和安全性*。简而言之，当在任何自定义类型上自动推导时，这些特质允许你从实例创建一个新的副本，无论是当`Copy`被实现时隐式地，还是当`Clone`被实现时通过调用`clone()`来显式地。请注意，`Copy`特质依赖于类型上实现了`Clone`。
+
+在这些解释之后，我们将为这些内置特质添加自动推导，如下所示：
+
+```rs
+#[derive(Default, Debug, PartialEq, Copy, Clone)]
+struct Complex<T> {
+    // Real part
+    re: T,
+    // Complex part
+    im: T
+}
+```
+
+接下来，让我们增强我们的`Complex<T>`类型，以便在使用方面有更好的用户体验。我们将实现的一些额外特质（不分先后）如下：
+
++   来自`std::ops`模块的`Add`特质，它将使我们能够使用`+`运算符来添加`Complex`类型
+
++   来自`std::convert`模块的`Into`和`From`特质，它将赋予我们从其他类型创建`Complex`类型的能力
+
++   `Display`特质将使我们能够打印出我们`Complex`类型的人类可读版本
+
+让我们从`Add`特质的实现开始。它在[`doc.rust-lang.org/std/ops/trait.Add.html`](https://doc.rust-lang.org/std/ops/trait.Add.html)有文档说明，特质的声明如下：
+
+```rs
+pub trait Add<RHS = Self> { 
+    type Output; 
+    fn add(self, rhs: RHS) -> Self::Output; 
+} 
+```
+
+让我们逐行分析它：
+
++   `pub trait Add<RHS = Self>`表示`Add`是一个具有泛型类型`RHS`的特质，默认设置为`Self`。在这里，`Self`是一个别名，用于在特质内部引用实现者，在我们的例子中是`Complex`。这是一个在特质内部引用实现者的方便方式。
+
++   `Output`是一个需要由实现者声明的关联类型。
+
++   `fn add(self, rhs: RHS) -> Self::Output`是`Add`特质提供的核心功能，并且是每次我们在两个实现类型之间使用`+`运算符时调用的方法。它是一个实例方法，通过值传递`self`，并接受一个参数`rhs`，在特质定义中为`RHS`。在我们的例子中，`+`运算符两边的左右手边默认为同一类型，但当我们编写`impl`块时，`RHS`可以被更改为任何其他类型。例如，我们可以有一个实现，它将`Meter`和`Centimeter`类型相加。在这种情况下，我们将在我们的`impl`块中写`RHS=Centimeter`。最后，它表示`add`方法必须返回我们在第二行用`Self::Output`语法声明的`Output`类型。
+
+好的，让我们尝试实现它。以下是代码，以及相应的测试：
+
+```rs
+// complex/src/lib.rs
+
+use std::ops::Add;
+
+#[derive(Default, Debug, PartialEq, Copy, Clone)]
+struct Complex<T> {
+    // Real part
+    re: T,
+    // Complex part
+    im: T
+}
+
+impl<T> Complex<T> {
+    fn new(re: T, im: T) -> Self {
+        Complex { re, im }
+    }
+}
+
+impl<T: Add<T, Output=T>> Add for Complex<T> { 
+    type Output = Complex<T>; 
+    fn add(self, rhs: Complex<T>) -> Self::Output { 
+        Complex { re: self.re + rhs.re, im: self.im + rhs.im } 
+    } 
+}
+
+#[cfg(test)]
+mod tests {
+    use Complex;
+    #[test]
+    fn complex_basics() {
+        let first = Complex::new(3,5);
+        let second: Complex<i32> = Complex::default();
+    }
+
+    fn complex_addition() {
+        let a = Complex::new(1,-2);
+        let b = Complex::default();
+        let res = a + b;
+        assert_eq!(res, a);
+    }
+}
+```
+
+让我们深入到`Complex<T>`的`impl`块：
+
+```rs
+impl<T: Add<T, Output=T> Add for Complex<T>
+```
+
+`Add`的`impl`块看起来更复杂。让我们逐个分析：
+
++   `impl<T: Add<T, Output=T>>`部分表示我们正在为泛型类型`T`实现`Add`，其中`T`实现了`Add<T, Output=T>`。`<T, Output=T>`部分表示`Add`特质的实现必须具有相同的输入和输出类型。
+
++   `Add for Complex<T>` 表示我们正在为 `Complex<T>` 类型实现 `Add` 特质。
+
++   `T: Add` 必须实现 `Add` 特质。如果不实现，我们就不能在它上面使用 `+` 操作符。
+
+然后是 `From` 特质。如果我们能够从内置的原始类型（如包含实部和虚部的两个元素的元组）构建 `Complex` 类型，那将很方便。我们可以通过实现 `From` 特质来实现这一点。这个特质定义了一个 `from` 方法，为我们提供了在类型之间进行转换的通用方式。它的文档可以在 [`doc.rust-lang.org/std/convert/trait.From.html`](https://doc.rust-lang.org/std/convert/trait.From.html) 找到。
+
+下面是特质定义：
+
+```rs
+pub trait From<T> { 
+    fn from(self) -> T;
+} 
+```
+
+这比之前的要简单一些。它是一个泛型特质，其中 `T` 指定了要转换的类型。当我们实现它时，我们只需要用我们想要实现它的类型替换 `T` 并实现 `from` 方法。然后，我们就可以在我们的类型上使用这个方法。以下是一个将我们的 `Complex` 值转换为两个元素的元组类型的实现，这是 Rust 中原生已知的：
+
+```rs
+// complex/src/lib.rs
+
+// previous code omitted for brevity
+
+use std::convert::From;
+
+impl<T> From<(T, T)> for Complex<T> { 
+    fn from(value: (T, T)) -> Complex<T> { 
+        Complex { re: value.0, im: value.1 }
+    } 
+}
+
+// other impls omitted
+
+#[cfg(test)]
+mod tests {
+
+    // other tests
+
+     use Complex;
+     #[test]
+     fn complex_from() {
+         let a = (2345, 456);
+         let complex = Complex::from(a);
+         assert_eq!(complex.re, 2345);
+         assert_eq!(complex.im, 456);
+     }
+}
+```
+
+让我们看看这个的 `impl` 行。这与 `Add` 特质类似，但不同之处在于我们不需要通过任何特殊的输出类型来约束我们的泛型，因为 `From` 没有这个要求：
+
+```rs
+impl<T> From<(T, T)> for Complex<T> { 
+    fn from(value: (T, T)) -> Complex<T> { 
+        Complex { re: value.0, im: value.1 }
+    } 
+}
+```
+
+第一个 `<T>` 是泛型类型 `T` 的声明，第二个和第三个是它的使用。我们是从 `(T, T)` 类型创建它的。
+
+最后，为了能让用户以数学符号的形式查看复杂类型，我们应该实现 `Display` 特质。它在 [`doc.rust-lang.org/std/fmt/trait.Display.html`](https://doc.rust-lang.org/std/fmt/trait.Display.html) 中有文档说明，以下是特质的类型签名：
+
+```rs
+pub trait Display { 
+    fn fmt(&self, &mut Formatter) -> Result<(), Error>; 
+}
+```
+
+以下代码展示了 `Complex<T>` 类型的 `Display` 实现：
+
+```rs
+// complex/src/lib.rs
+
+// previous code omitted for brevity
+
+use std::fmt::{Formatter, Display, Result};
+
+impl<T: Display> Display for Complex<T> {
+    fn fmt(&self, f: &mut Formatter) -> Result { 
+        write!(f, "{} + {}i", self.re, self.im)
+    } 
+} 
+
+#[cfg(test)]
+mod tests {
+
+    // other tests
+
+    use Complex;
+    #[test]
+    fn complex_display() {
+        let my_imaginary = Complex::new(2345,456);
+        println!("{}", my_imaginary);
+    }
+}
+```
+
+`Display` 特质有一个 `fmt` 方法，它接受一个 `Formatter` 类型，我们使用 `write!` 宏将其写入。像之前一样，因为我们的 `Complex<T>` 类型同时使用泛型类型 `re` 和 `im` 字段，我们需要指定它也必须满足 `Display` 特质。
+
+运行 `cargo test -- --nocapture`，我们得到以下输出：
+
+![](img/931da4d9-fcd8-4c68-aaaf-2f87d58dfb61.png)
+
+我们可以看到我们的复杂数型以可读的格式 `2345 + 456i` 打印出来，并且所有的测试都是绿色的。接下来，让我们看看多态的概念以及 Rust 特质如何建模这一点。
+
+# 使用特质对象实现真正的多态
+
+Rust 通过特殊形式的类型实现特质，允许一种真正的多态形式。这些被称为 *特质对象*。在我们解释 Rust 如何使用特质对象实现多态之前，我们需要理解 **分发** 的概念。
+
+# 分发
+
+分发是从面向对象编程范式中的一个概念出现的，主要是在其一个称为多态的特征的上下文中。在 OOP 的上下文中，当 API 是泛型或接受实现接口的参数时，它必须确定在传递给 API 的类型实例上调用哪个方法实现。在多态上下文中进行的方法解析过程称为**分发**，调用方法称为分发。在支持多态的主流语言中，分发可能以下列两种方式之一发生：
+
++   **静态分发**：当要调用的方法在编译时确定时，它被称为静态分发或早期绑定。使用方法的签名来决定要调用的方法，所有这些都是在编译时决定的。在 Rust 中，泛型表现出这种分发形式，因为尽管泛型函数可以接受许多参数，但在编译时会产生一个具有该具体类型的函数的专用副本。
+
++   **动态分发**：在面向对象的语言中，有时方法调用只能在运行时决定。这是因为具体类型是隐藏的，只有接口方法可以调用。在 Java 中，当一个函数有一个参数时，这种情况就出现了，这个参数被称为**接口**。这种场景只能通过动态分发来处理。在动态分发中，方法通过遍历接口的实现列表从`vtable`中动态确定，并调用该方法。`vtable`是一个指向每个类型实现方法的函数指针列表。这因为方法调用中额外的指针间接引用而有一些开销。
+
+让我们接下来探索特性对象。
+
+# 特性对象
+
+现在，直到这一点，我们主要看到特性被用于静态分发上下文中，我们在泛型 API 中指定了特性界限。然而，我们还有另一种创建多态 API 的方法，其中我们可以指定参数为实现了特性而不是泛型或具体类型的东西。这种类型，指定为实现了特性 API，被称为特性对象。特性对象类似于 C++的虚方法。特性对象实现为一个胖指针，是一个无大小类型，这意味着它们只能用于引用（`&`）之后。我们在第七章，*高级概念*中解释了无大小类型。特性对象的胖指针的第一个指针指向与对象关联的实际数据，而第二个指针指向一个虚表（vtable），这是一个结构，为对象的每个方法持有固定偏移量处的函数指针。
+
+特性对象是 Rust 执行动态分派的方式，其中我们没有实际的实体类型信息。方法解析是通过跳转到 vtable 并调用适当的方法来完成的。特性对象的一个用例是，它们允许你在可以具有多个类型的集合上操作，但在运行时有一个额外的指针间接引用。为了说明这一点，考虑以下程序：
+
+```rs
+// trait_objects.rs
+
+use std::fmt::Debug;
+
+#[derive(Debug)]
+struct Square(f32);
+#[derive(Debug)]
+struct Rectangle(f32, f32);
+
+trait Area: Debug {
+    fn get_area(&self) -> f32; 
+}
+
+impl Area for Square {
+    fn get_area(&self) -> f32 {
+        self.0 * self.0
+    }
+}
+
+impl Area for Rectangle {
+    fn get_area(&self) -> f32 {
+        self.0 * self.1
+    }
+}
+
+fn main() {
+    let shapes: Vec<&dyn Area> = vec![&Square(3f32), &Rectangle(4f32, 2f32)];
+    for s in shapes {
+        println!("{:?}", s);
+    }
+}
+```
+
+如您所见，形状的元素类型为 `&dyn Area`，这是一种表示为特性的类型。特性对象通过 `dyn Area` 表示，表示它是指向 `Area` 特性某个实现的指针。以特性对象形式存在的类型允许你在集合类型（如 `Vec`）中存储不同的类型。在前面的例子中，`Square` 和 `Rectangle` 被隐式转换为特性对象，因为我们向它们推送了引用。我们还可以通过手动转换来使类型成为特性对象。这是一个高级案例，并且仅在编译器无法自行将类型转换为特性对象时使用。请注意，我们只能创建在编译时已知大小的类型的特性对象。`dyn Trait` 是一个无大小类型，只能作为引用创建。我们还可以通过将它们放在其他指针类型（如 `Box`、`Rc`、`Arc` 等）之后来创建特性对象。
+
+在较旧的 Rust 2015 版本中，特性对象仅被称为特性的名称，对于一个特性对象 `dyn Foo`，它被表示为 `Foo`。这种语法很令人困惑，并且在最新的 2018 版本中已被弃用。
+
+在以下代码中，我们展示了如何将 `dyn Trait` 作为函数的参数使用：
+
+```rs
+// dyn_trait.rs
+
+use std::fmt::Display;
+
+fn show_me(item: &dyn Display) {
+    println!("{}", item);
+}
+
+fn main() {
+    show_me(&"Hello trait object");
+}
+```
+
+特性，连同泛型一起，提供了两种代码复用方式，要么通过单态化（早期绑定）要么通过运行时多态（晚期绑定）。何时使用哪种方式取决于上下文和所讨论的应用需求。通常，错误类型会被倾向于动态分派，因为它们被认为是很少被执行的代码路径。单态化对于小型用例来说可能很有用，但它的缺点是引入了代码膨胀和重复，这影响了缓存行并增加了二进制文件大小。然而，在这两种选项中，除非有对二进制文件大小的硬性约束，否则静态分派应该是首选的。
+
+# 摘要
+
+类型是任何静态类型语言最美丽的方面之一。它们允许你在编译时表达很多内容。本章可能不是本书中最先进的章节，但内容可能是最重的。我们现在对代码的不同复用方式有了实际了解。我们还了解了强大的特性以及 Rust 标准库如何大量使用它们。
+
+在下一章中，我们将学习程序如何使用内存以及 Rust 如何提供编译时内存管理。
