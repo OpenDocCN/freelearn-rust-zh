@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# 精通 Rust 第二版
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/f8130c086c32d8a769f8fc5df1fb7bb7`](https://annas-archive.org/md5/f8130c086c32d8a769f8fc5df1fb7bb7)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 
