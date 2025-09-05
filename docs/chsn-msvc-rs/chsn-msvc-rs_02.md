@@ -1,4 +1,4 @@
-# 使用 Hyper Crate 开发微服务
+# 第二章：使用 Hyper Crate 开发微服务
 
 本章将简要介绍使用 Rust 和`hyper` crate 创建微服务。我们将探讨 HTTP 协议的基础和路由原则。我们还将描述一个完全使用 Rust 编写的最小 REST 服务，使用简单的方法。
 

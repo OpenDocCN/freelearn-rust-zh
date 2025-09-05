@@ -1,4 +1,4 @@
-# 锁定机制 – Mutex、Condvar、屏障和 RWLock
+# 第五章：锁定机制 – Mutex、Condvar、屏障和 RWLock
 
 在本章中，我们将深入研究 hopper，它是第四章，*Sync 和 Send – Rust 并发基础*中 Ring 的成熟版本。hopper 处理背压——我们在 telem*中识别出的弱点——是在填满容量时阻塞，就像`SyncSender`一样。hopper 的特殊技巧是将其页面输出到磁盘。hopper 用户定义了 hopper 允许消耗多少内存空间，就像`SyncSender`一样，只是以字节为单位而不是`T`的总元素数。此外，当 hopper 的内存容量填满并需要页面输出到磁盘时，用户还可以配置消耗的磁盘字节数。MSPC 的其他属性保持不变，如有序交付、存储后保留数据等。
 

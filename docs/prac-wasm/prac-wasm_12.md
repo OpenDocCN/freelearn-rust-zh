@@ -1,4 +1,4 @@
-# *第九章*：Rust 和 WebAssembly 之间的边界跨越
+# 第九章：*第九章*：Rust 和 WebAssembly 之间的边界跨越
 
 到目前为止，我们只看到了在 JavaScript 和 WebAssembly 之间共享简单数字的示例。在上一节中，我们看到了 `wasm-bindgen` 如何轻松地将字符串从 Rust 传递到 JavaScript。在本章中，我们将探讨 `wasm-bindgen` 如何通过 Rust 使在 JavaScript 和 WebAssembly 之间转换更复杂的数据类型变得更加容易。本章将涵盖以下内容：
 

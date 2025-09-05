@@ -1,4 +1,4 @@
-# 使用 WebAssembly 在 Web 上构建 Rust
+# 第十五章：使用 WebAssembly 在 Web 上构建 Rust
 
 Rust 超出了其系统编程领域，也可以在 Web 上运行。在本章中，我们将探讨一种实现这一目标的技术，称为 WebAssembly。我们将详细介绍 WebAssembly 究竟是什么，以及如何使用这项技术使 Rust 能够与 JavaScript 一起运行。能够在 Web 浏览器上运行解锁了一个领域，使得 Rust 能够被更广泛的受众使用，即 Web 开发者社区，并使他们能够在应用程序中利用系统语言的功能。在本章的后面部分，我们将探讨提供 WebAssembly 支持的工具和库，并构建一个实时 Markdown 编辑器，该编辑器调用在 Rust 中实现的 API，将 Markdown 文档渲染到 HTML 页面上。
 

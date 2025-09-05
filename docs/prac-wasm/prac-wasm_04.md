@@ -1,4 +1,4 @@
-# *第三章*：探索 WebAssembly 模块
+# 第三章：*第三章*：探索 WebAssembly 模块
 
 WebAssembly 是一种低级类似汇编的代码，旨在高效执行和紧凑表示。WebAssembly 在所有 JavaScript 引擎中（包括现代桌面和移动浏览器以及 Node.js）以接近原生速度运行。二进制的紧凑表示使得生成的二进制文件尽可能小。
 

@@ -1,4 +1,4 @@
-# 使用 AWS Lambda 的有界微服务
+# 第十七章：使用 AWS Lambda 的有界微服务
 
 在上一章中，我们学习了如何使用 AWS Lambda 和官方的 `lambda-runtime` 包创建无服务器应用程序。这对于使用 **Amazon Web Services** (**AWS**) 的开发者尤其有用，尤其是那些特别想使用 AWS Lambda 的开发者。它与我们在创建独立网络服务器时的方法不同，因为 AWS Lambda 会自动存储、扩展和运行，而我们唯一需要提供的是微服务的编译代码。
 

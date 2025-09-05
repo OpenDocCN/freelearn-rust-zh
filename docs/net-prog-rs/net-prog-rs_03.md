@@ -1,4 +1,4 @@
-# 使用 Rust 进行 TCP 和 UDP
+# 第三章：使用 Rust 进行 TCP 和 UDP
 
 作为一种系统编程语言，Rust 标准库支持与网络栈交互。所有与网络相关的功能都位于`std::net`命名空间中；读取和写入套接字也使用了来自`std::io`的`Read`和`Write`特质。这里一些最重要的结构包括`IpAddr`，它表示一个通用的 IP 地址，可以是 v4 或 v6，`SocketAddr`表示一个通用的套接字地址（主机上的 IP 和端口的组合），`TcpListener`和`TcpStream`用于 TCP 通信，`UdpSocket`用于 UDP，等等。目前，标准库不提供任何用于处理较低级别网络栈的 API。虽然这可能在将来改变，但许多 crate 填补了这一空白。其中最重要的是`libpnet`，它提供了一套用于低级别网络编程的 API。
 

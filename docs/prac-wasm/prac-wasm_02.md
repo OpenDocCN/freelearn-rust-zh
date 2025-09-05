@@ -1,4 +1,4 @@
-# *第一章*：理解 LLVM
+# 第一章：*第一章*：理解 LLVM
 
 JavaScript 是最受欢迎的编程语言之一。然而，JavaScript 有两个主要缺点：
 

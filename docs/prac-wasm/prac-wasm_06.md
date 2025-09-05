@@ -1,4 +1,4 @@
-# *第四章*：理解 WebAssembly 二进制工具包
+# 第四章：*第四章*：理解 WebAssembly 二进制工具包
 
 Rust 编译器链将 Rust 代码转换为 WebAssembly 二进制。但生成的二进制文件在大小和性能上都进行了优化。理解、调试和验证二进制代码（它是一堆十六进制数字）是困难的。将 WebAssembly 二进制转换回原始源代码非常困难。**WebAssembly 二进制工具包**（**WABT**）有助于将 WebAssembly 二进制转换为人类可读的格式，例如**WebAssembly 文本**（**WAST**）格式或 C 本地代码。
 

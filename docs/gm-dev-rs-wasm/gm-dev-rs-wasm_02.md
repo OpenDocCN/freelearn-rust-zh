@@ -1,4 +1,4 @@
-# *第一章*: 欢迎来到 WebAssembly
+# 第一章：*第一章*: 欢迎来到 WebAssembly
 
 让我们直奔主题——如果你拿着这本书，你可能已经知道你喜欢 Rust，并且认为 **WebAssembly** 是将你的 Rust 程序部署到网页上的绝佳方式。好消息——你是对的！Rust 和 WebAssembly 是程序员天堂中的完美搭配，尽管 WebAssembly 仍处于早期阶段，但游戏开发是 WebAssembly 的理想候选者。我很高兴能引导你使用 Stack Overflow 的“最受欢迎”的语言 Rust 来构建网页游戏。
 

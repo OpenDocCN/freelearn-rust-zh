@@ -1,4 +1,4 @@
-# *第二章*：理解 Emscripten
+# 第二章：*第二章*：理解 Emscripten
 
 在本章中，我们将了解**Emscripten**，这是一个将 C/C++代码转换为 WebAssembly 模块的工具链。
 

@@ -1,4 +1,4 @@
-# 系统编程变得简单
+# 第九章：系统编程变得简单
 
 Rust 最初被设想为与 C（以及可能 C++）一样的系统编程语言。尽管其吸引力导致了该领域之外的重大增长（有点像 C/C++），但仍有许多特性显著地简化了低级项目的工作。我们怀疑新颖性方面（以及强大的编译器、错误信息和社区）导致了该领域非常有趣的项目——例如操作系统。其中之一是 intermezzOS（[`intermezzos.github.io/`](https://intermezzos.github.io/)），一个用于学习编程（使用 Rust）的操作系统；另一个是 Redox OS（[`www.redox-os.org/`](https://www.redox-os.org/)），一个纯 Rust 的微内核项目。然而，这并没有结束——Rust 嵌入式工作组已经编译了一份资源列表，并在他们的 GitHub 上突出显示了一些项目（[`github.com/rust-embedded/awesome-embedded-rust`](https://github.com/rust-embedded/awesome-embedded-rust)）。
 

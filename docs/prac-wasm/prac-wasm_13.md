@@ -1,4 +1,4 @@
-# *第十章*：优化 Rust 和 WebAssembly
+# 第十章：*第十章*：优化 Rust 和 WebAssembly
 
 到目前为止，我们已经看到了 Rust 如何使创建和运行 WebAssembly 模块变得容易，以及 Rust 社区提供的各种工具。在本章中，我们将涵盖以下部分：
 

@@ -1,4 +1,4 @@
-# *第五章*：理解 WebAssembly 模块中的部分
+# 第五章：*第五章*：理解 WebAssembly 模块中的部分
 
 WebAssembly 模块由零个或多个部分组成。每个部分都有其自身的功能。在前几章中，我们看到了如何在 WebAssembly 模块内部定义函数。函数是 WebAssembly 模块内部的一个部分。
 

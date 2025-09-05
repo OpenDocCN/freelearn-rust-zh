@@ -20,7 +20,7 @@
 
 +   如何查询或操作 Redis 数据库中的数据
 
-# 技术要求
+# 第三章：技术要求
 
 当你运行 SQLite 代码时，需要安装 SQLite 运行时库。然而，安装 SQLite 交互式管理器也是有用的（尽管不是必需的）。你可以从[`www.sqlite.org/download.html`](https://www.sqlite.org/download.html)下载 SQLite 工具的预编译二进制文件。然而，版本 3.11 或更高版本是理想的。
 

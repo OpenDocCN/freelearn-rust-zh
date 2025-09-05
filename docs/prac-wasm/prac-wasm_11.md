@@ -1,4 +1,4 @@
-# *第八章*：使用 wasm-pack 打包 WebAssembly
+# 第八章：*第八章*：使用 wasm-pack 打包 WebAssembly
 
 JavaScript 无处不在，但无处不在既是优点也是缺点。有许多不同的生态系统，它们有不同的标准和目的。为所有生态系统构建独特的解决方案并不实际。
 

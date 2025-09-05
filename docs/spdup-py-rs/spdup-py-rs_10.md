@@ -1,4 +1,4 @@
-# *第十章*：将 Rust 注入 Python Flask 应用
+# 第九章：*第十章*：将 Rust 注入 Python Flask 应用
 
 在 *第九章* 中，*为 Rust 结构化 Python Flask 应用*，我们设置了一个基本的 Python 网络应用程序，该应用程序可以使用 Docker 部署。在本章中，我们将把 Rust 融入该网络应用程序的各个方面。这意味着我们将磨练定义可以安装使用 `pip` 的 Rust 包的技能。有了这些包，我们将把 Rust 代码插入我们的 Flask 和 Celery 容器中。我们还将直接使用 Rust 与现有的数据库交互，无需担心迁移。这是因为我们的 Rust 包将镜像现有数据库的模式。我们需要 Rust `nightly` 版本来编译我们的包，因此我们还将学习如何在构建 Flask 镜像时管理 Rust `nightly`。我们还将学习如何使用来自私有 GitHub 仓库的 Rust 包。
 
