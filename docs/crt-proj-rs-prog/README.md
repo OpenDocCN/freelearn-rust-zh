@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# Rust 程序员的创造性项目
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/623bec88fb2b2fd627860a706828e8f4`](https://annas-archive.org/md5/623bec88fb2b2fd627860a706828e8f4)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 

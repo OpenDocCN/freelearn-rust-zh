@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# Rust 和 Webassembly 游戏开发
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/dc6184b37704cf034149c322f30f8917`](https://annas-archive.org/md5/dc6184b37704cf034149c322f30f8917)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 
