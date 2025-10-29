@@ -10,6 +10,7 @@
 +   [Rust 网络编程](docs/net-prog-rs/README.md)
 +   [Rust 开发者的系统编程实践指南](docs/prac-sys-prog-rs-dev/README.md)
 +   [Webassembly 实践指南](docs/prac-wasm/README.md)
++   [Rust 秘籍](docs/rs-cb/README.md)
 +   [Rust 精要](docs/rs-ess/README.md)
 +   [Rust 高性能指南](docs/rs-hiperf/README.md)
 +   [Rust 编程秘籍](docs/rs-prog-cb/README.md)
